@@ -1,63 +1,38 @@
 /*
- * The desk (CENTER.md "The top of the stream: an actual Mac"): the Mac's own top edge at the head of the Now stream.
- * The menu bar spans the stream at 37 px, translucent over the dithered ground, one hairline under it: the Apple mark,
- * the bold app name, the menus 16 apart, the status area, the clock (components/console/MenuBar.tsx draws it; the Sleep
- * section's island strip draws the same bar over a render, console.css .strip). The notch is cut out of it at the centre (185 × 37, the one
- * pure black on the page: it is the bezel) with its two 14 px fillets. The island hangs under the notch at 1:1 (420 × 184,
- * its four bands, the blob's face in the anchor band) and carries the six phase faces in its foot band while it is open.
- * Every class is .desk-*; every colour is a --jh-* token or a mix of two; the phase colour arrives as --desk-phase (set
+ * The desk: the Mac's own top edge (components/site/Top.tsx and MenuBar.tsx draw it; styles/site.css lays it out). The notch
+ * is cut out of the menu bar at the centre (--notch-w × --bar-h, the one pure black on the page: it is the bezel) with its two
+ * 14 px fillets. The island hangs under it at 1:1 (420 × 184: its four bands, the blob's face in the anchor band), always
+ * open. Every class is .desk-*; every colour is a --jh-* token or a mix of two; the phase colour arrives as --desk-phase (set
  * inline from the kind). The island is a screen: black-and-orb in both themes, its whites composed from --jh-paper with
- * color-mix, its box hairline the plate's (.22). The menu bar alone follows the theme: ink on paper in light, paper on
- * the render's grey bar in dark, as macOS draws it over a wallpaper.
+ * color-mix, its box hairline the plate's (.22).
+ *
+ * Legibility: the island is drawn at --top-s (set by the top engine as it docks), so every word in it takes
+ * max(its own size, 11 px / --top-s) and never renders under 11 px on screen, docked or not (--isl-min below).
  */
 
-/* ---- the holder: the dock's custom properties ---- */
-.desk { position: relative; --desk-phase: var(--jh-listening); --desk-eye-ink: color-mix(in srgb, var(--desk-phase) 15%, var(--jh-paper)); --desk-white-92: color-mix(in srgb, var(--jh-paper) 92%, transparent); --desk-white-72: color-mix(in srgb, var(--jh-paper) 72%, transparent); --desk-white-48: color-mix(in srgb, var(--jh-paper) 48%, transparent); --desk-box: color-mix(in srgb, var(--jh-desk-notch) 35%, transparent); font-family: var(--font-sans); font-feature-settings: "cv11", "ss01", "ss03"; }
-/* the menu bar's fill and ink: paper at .55 over the ground in light; in dark the island render's own bar grey (--jh-island-bar, notch-island-working.png's bar, the Sleep strip's too) at .85 over the ground, so the black notch reads as cut out of it; the ink is the page's ink at 1 for the app name and .85 for the rest (html[data-theme] is the one switch) */
-.desk { --desk-bar-fill: color-mix(in srgb, var(--jh-paper) 55%, transparent); --desk-bar-ink: var(--jh-fg); --desk-bar-ink-85: color-mix(in srgb, var(--jh-fg) 85%, transparent); }
-html[data-theme="dark"] .desk { --desk-bar-fill: color-mix(in srgb, var(--jh-island-bar) 85%, transparent); }
+/* ---- the holder: the island's custom properties ---- */
+.desk { position: relative; --desk-phase: var(--jh-listening); --desk-eye-ink: color-mix(in srgb, var(--desk-phase) 15%, var(--jh-paper)); --desk-white-92: color-mix(in srgb, var(--jh-paper) 92%, transparent); --desk-white-72: color-mix(in srgb, var(--jh-paper) 72%, transparent); --desk-white-48: color-mix(in srgb, var(--jh-paper) 48%, transparent); --desk-box: color-mix(in srgb, var(--jh-desk-notch) 35%, transparent); --isl-min: calc(11px / var(--top-s, 1)); font-family: var(--font-sans); font-feature-settings: "cv11", "ss01", "ss03"; }
 
-/* ---- the menu bar: 37 px edge to edge, the hairline under it drawn outside the box so the notch keeps its full height ---- */
-.desk-bar { position: absolute; left: 0; right: 0; top: 0; height: 37px; background: var(--desk-bar-fill); box-shadow: 0 1px 0 var(--jh-hair); color: var(--desk-bar-ink-85); display: flex; align-items: center; gap: 16px; padding: 0 16px; font-size: 13px; font-weight: 400; line-height: 1; letter-spacing: -0.005em; font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 1; }
-.desk-bar-apple { width: 16px; height: 16px; flex: none; color: var(--desk-bar-ink); }
-/* the app name is the one bold word macOS draws (CENTER.md §1): 13/600, the ink at 1 */
-.desk-bar-app { font-weight: 600; color: var(--desk-bar-ink); }
-/* the menus 16 apart (bar's spacing): `File Edit View Window Help` ends 10 px before the notch on the 880 px stream at 1440, so all five show */
-.desk-bar-menus { display: flex; align-items: center; gap: 16px; }
-.desk-bar-r { margin-left: auto; display: flex; align-items: center; gap: 16px; }
-.desk-bar-r .jh-icon, .desk-bar-cc { width: 16px; height: 16px; flex: none; }
-.desk-bar-clock { white-space: pre; }
-/* the menus never reach the notch: on a narrow stream they leave the bar last first, as a Mac drops menu titles that would not fit (the dock is the container) */
-@container dock (max-width: 864px) { .desk-bar-menus > span:nth-child(5) { display: none; } }
-@container dock (max-width: 776px) { .desk-bar-menus > span:nth-child(4) { display: none; } }
-@container dock (max-width: 645px) { .desk-bar-menus > span:nth-child(3) { display: none; } }
+/* ---- the notch, cut out of the bar at the centre over its hairline, and the two fillets that join it to the island's top edge (NotchInk.swift:45-51) ---- */
+.desk-notch { position: absolute; left: calc(50% - var(--notch-w) / 2); top: 0; width: var(--notch-w); height: calc(var(--bar-h) + 1px); background: var(--jh-desk-notch); z-index: 3; }
+.desk-fillet { position: absolute; top: calc(var(--bar-h) - 13px); width: 14px; height: 14px; z-index: 3; background: radial-gradient(circle at 0 0, transparent 13.5px, var(--jh-desk-notch) 14px); }
+.desk-fillet-l { left: calc(50% - var(--notch-w) / 2 - 14px); }
+.desk-fillet-r { left: calc(50% + var(--notch-w) / 2); background: radial-gradient(circle at 100% 0, transparent 13.5px, var(--jh-desk-notch) 14px); }
 
-/* ---- the notch, cut out of the bar at the centre, and the two fillets that join it to the island's top edge (NotchInk.swift:45-51) ---- */
-.desk-notch { position: absolute; left: calc(50% - 92.5px); top: 0; width: 185px; height: 37px; background: var(--jh-desk-notch); z-index: 3; }
-.desk-fillet { position: absolute; top: 23px; width: 14px; height: 14px; z-index: 3; background: radial-gradient(circle at 0 0, transparent 13.5px, var(--jh-desk-notch) 14px); transition: opacity var(--jh-slow) var(--jh-ease-out); }
-.desk-fillet-l { left: calc(50% - 92.5px - 14px); }
-.desk-fillet-r { left: calc(50% + 92.5px); background: radial-gradient(circle at 100% 0, transparent 13.5px, var(--jh-desk-notch) 14px); }
-.desk[data-island="tucked"] .desk-fillet { opacity: 0; transition-timing-function: var(--jh-ease-in); }
-
-/* ---- the island: one shape, three states (design.md §4.3–4.4), its top edge continuous with the notch's shoulders ---- */
-.desk-island { position: absolute; left: calc(50% - 210px); top: 0; width: 420px; height: 184px; background: var(--jh-desk-notch); border-radius: 18px 18px 12px 12px; overflow: hidden; z-index: 4; color: var(--jh-paper); transition: width var(--jh-slow) var(--jh-ease-out), height var(--jh-slow) var(--jh-ease-out), left var(--jh-slow) var(--jh-ease-out), border-radius var(--jh-slow) var(--jh-ease-out); }
-.desk-island[data-state="peek"] { width: 240px; height: 26px; left: calc(50% - 120px); border-radius: 0 0 12px 12px; }
-.desk-island[data-state="tucked"] { width: 185px; height: 12px; left: calc(50% - 92.5px); border-radius: 0 0 12px 12px; transition-timing-function: var(--jh-ease-in); }
+/* ---- the island: one open shape (design.md §4.3–4.4), its top edge continuous with the notch's shoulders ---- */
+.desk-island { position: absolute; left: calc(50% - 210px); top: 0; width: 420px; height: 184px; background: var(--jh-desk-notch); border-radius: 18px 18px 12px 12px; overflow: hidden; z-index: 4; color: var(--jh-paper); }
 .desk-ink { position: absolute; left: 0; top: 0; image-rendering: pixelated; }
-.desk-island[data-state="tucked"] .desk-ink { visibility: hidden; }
 .desk-island > * { position: absolute; }
-.desk-anchor, .desk-display, .desk-foot, .desk-hair { transition: opacity var(--jh-quick) var(--jh-ease-in-out); }
-.desk-island:not([data-state="open"]) .desk-anchor, .desk-island:not([data-state="open"]) .desk-display, .desk-island:not([data-state="open"]) .desk-foot { opacity: 0; pointer-events: none; }
+.desk-anchor, .desk-display, .desk-foot { left: 0; top: 0; width: 100%; height: 100%; transition: opacity var(--jh-quick) var(--jh-ease-in-out); }
 .desk-display[data-swap], .desk-foot[data-swap] { opacity: 0; }
-.desk-anchor, .desk-display, .desk-foot { left: 0; top: 0; width: 100%; height: 100%; }
 .desk-anchor > *, .desk-display > *, .desk-foot > * { position: absolute; }
 
 /* the anchor: the face at (57, 40), the word, Go · Stop · Mute */
 .desk-eyes { left: 57px; top: 40px; width: 0; height: 0; font: 700 27px/1 var(--font-mono); white-space: nowrap; transition: transform var(--jh-quick) var(--jh-ease-out); }
-.desk-eyes span, .desk-lipface span { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); }
+.desk-eyes span { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); }
 .desk-eye-under { color: var(--jh-desk-notch); font-size: calc(1.12em + 1.6px); }
 .desk-eye-top { color: var(--desk-eye-ink); transition: color var(--jh-drift) var(--jh-ease-in-out); }
-.desk-word { left: 14px; top: 60px; width: 86px; height: 16px; font-size: 12px; font-weight: 500; line-height: 16px; text-align: center; color: var(--desk-white-92); }
+.desk-word { left: 6px; top: 60px; width: 102px; height: 16px; font-size: max(12px, var(--isl-min)); font-weight: 500; line-height: 16px; text-align: center; color: var(--desk-white-92); white-space: nowrap; }
 .desk-word-x { position: relative; display: block; }
 .desk-word-x > span { position: absolute; left: 0; right: 0; top: 0; }
 .desk-word-out { animation: desk-word-out var(--jh-drift) var(--jh-ease-in-out) forwards; }
@@ -70,77 +45,59 @@ html[data-theme="dark"] .desk { --desk-bar-fill: color-mix(in srgb, var(--jh-isl
 .desk-mute { left: 74px; top: 122px; width: 26px; height: 24px; }
 .desk-mute.is-dim { opacity: .4; }
 
-/* the display: head, hero, the kind's middle */
-.desk-head { left: 114px; top: 12px; width: 292px; height: 18px; display: flex; align-items: center; justify-content: space-between; font: 500 11px/1 var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* the display: the head, the hero line, the kind's middle */
+.desk-head { left: 114px; top: 12px; width: 292px; height: 18px; display: flex; align-items: center; justify-content: space-between; font: 500 max(11px, var(--isl-min))/1 var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .desk-meter { image-rendering: pixelated; display: block; }
 .desk-meter-head { width: 100px; height: 6px; }
-.desk-head-work, .desk-head-ask, .desk-head-alarm { display: inline-flex; align-items: center; gap: 6px; }
+.desk-head-work, .desk-head-ask, .desk-head-alarm, .desk-head-asleep { display: inline-flex; align-items: center; gap: 6px; }
 .desk-head-ask { color: var(--jh-speaking); }
 .desk-head-alarm .kit-glyph { color: var(--jh-mark); width: 10px; height: 10px; }
+.desk-head-asleep .jh-icon { width: 11px; height: 11px; }
 .desk-glyphs { color: var(--desk-white-48); letter-spacing: .02em; white-space: pre; }
-.desk-hero { left: 114px; top: 30px; width: 292px; max-height: 66px; font-size: 18px; line-height: 22px; font-weight: 400; letter-spacing: -.012em; color: var(--desk-white-92); text-shadow: 0 1px 0 var(--jh-desk-notch); overflow: hidden; }
+.desk-hero { left: 114px; top: 30px; width: 292px; max-height: 66px; font-size: max(18px, var(--isl-min)); line-height: 22px; font-weight: 400; letter-spacing: -.012em; color: var(--desk-white-92); text-shadow: 0 1px 0 var(--jh-desk-notch); overflow: hidden; }
 .desk-hero.is-question { color: var(--jh-paper); }
-.desk-hero.is-mono { font-family: var(--font-mono); font-size: 17px; letter-spacing: 0; font-variant-numeric: tabular-nums; }
-.desk-hero-dim { display: block; color: var(--desk-white-48); font-family: var(--font-sans); font-size: 13px; letter-spacing: -.005em; }
+.desk-hero.is-mono { font-family: var(--font-mono); font-size: max(17px, var(--isl-min)); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+/* asleep: the clock the app's foot carries, set as the island's one big line in the quiet white */
+.desk-hero.is-clock { top: 28px; max-height: none; font: 500 44px/52px var(--font-mono); letter-spacing: -0.02em; color: var(--desk-white-72); font-variant-numeric: tabular-nums; }
+.desk-hero-dim { display: block; color: var(--desk-white-48); font-family: var(--font-sans); font-size: max(13px, var(--isl-min)); letter-spacing: -.005em; }
 .desk-tiles { left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
-.desk-tile { position: absolute; top: 80px; width: 140px; height: 32px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 3px 8px; font-size: 11px; line-height: 1.2; }
+.desk-tile { position: absolute; top: 80px; width: 140px; min-height: 32px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 3px 8px; font-size: max(11px, var(--isl-min)); line-height: 1.2; }
 .desk-tile-name { display: flex; align-items: center; gap: 5px; font-weight: 500; color: var(--jh-paper); }
 .desk-tile-name i { width: 6px; height: 6px; background: var(--jh-acting); border-radius: 1px; }
-.desk-tile-s { display: block; font: 500 10px/1.2 var(--font-mono); color: var(--desk-white-72); font-variant-numeric: tabular-nums; }
+.desk-tile-s { display: block; font: 500 max(10px, var(--isl-min))/1.2 var(--font-mono); color: var(--desk-white-72); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: clip; }
+/* docked, a tile keeps its name and its Stop: the clock line would not fit at the legible size */
+.top[data-docked] .desk-tile-s { display: none; }
+.top[data-docked] .desk-tile { display: flex; align-items: center; }
 .desk-tile-stop { position: absolute; right: 8px; top: 10px; width: 8px; height: 8px; background: var(--desk-white-92); border-radius: 1px; }
-.desk-btn { height: 28px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 500; color: var(--desk-white-92); }
+.desk-btn { height: 28px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; font-size: max(12px, var(--isl-min)); font-weight: 500; letter-spacing: -0.01em; white-space: nowrap; color: var(--desk-white-92); }
 .desk-btn.is-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
 /* the control row: the Say box and the strip */
-.desk-say { left: 114px; top: 122px; width: 176px; height: 24px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 0 8px; display: flex; align-items: center; overflow: hidden; font-size: 11.5px; color: var(--jh-paper); white-space: nowrap; }
+.desk-say { left: 114px; top: 122px; width: 176px; height: 24px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 0 8px; display: flex; align-items: center; overflow: hidden; font-size: max(11.5px, var(--isl-min)); color: var(--jh-paper); white-space: nowrap; }
 .desk-say-ph { color: var(--desk-white-48); }
+.desk-caret { flex: none; width: 1px; height: 13px; background: var(--jh-paper); margin-right: 1px; animation: desk-caret .5s steps(1) infinite; }
+.desk[data-still] .desk-caret { animation: none; }
+@keyframes desk-caret { 50% { opacity: 0; } }
 .desk-strip { top: 122px; height: 24px; display: flex; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); overflow: hidden; color: var(--desk-white-92); }
 .desk-strip i { flex: 1; display: flex; align-items: center; justify-content: center; }
 .desk-strip i + i { border-left: 1px solid var(--jh-plate-hair); }
+.desk-strip--foot { left: 354px; top: 156px; width: 52px; }
 
-/* the foot: the clock, the meter and its figure (the app's), then the six phase faces where the app's two tiles sit (CENTER.md §5, angle B) */
-.desk-foot-l { left: 14px; top: 160px; width: 36px; height: 16px; font: 500 11px/16px var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.desk-foot-l.is-wide { width: 236px; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; }
-.desk-meter-foot { left: 52px; top: 165px; width: 64px; height: 6px; }
-.desk-foot-r { left: 124px; top: 160px; width: 108px; height: 16px; font: 500 11px/16px var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
-/* the six faces as a compact kit Segments (ConsoleSegments.swift): 24 tall at the foot tiles' line, 148 wide from 258 to the island's 14 px edge
-   (the asleep foot line ends 8 px before it). The word of each cell stays for the reader (sr) and the face shows. */
-.desk-phases { position: absolute; left: 258px; top: 156px; width: 148px; height: 24px; z-index: 5; pointer-events: auto; opacity: 1; transition: opacity var(--jh-quick) var(--jh-ease-in-out); }
-/* on the open island the row is drawn on the island's own ink: the tile is the island's box, the hairline the plate's, the on cell paper with the bezel's
-   black face (the kit's inverted on, in the island's two colours), the ring the dark accent. Off the island (the lip, the peek) it keeps the page's own kit
-   colours, so the on cell is the kit's inverted --jh-fg in both themes (ink on paper in light, paper on ink in dark), as the phone's 2 × 3 grid draws it. */
-.desk[data-island="open"] .desk-phases { --jh-fg: var(--jh-paper); --jh-ground: var(--jh-desk-notch); --jh-fg-2: var(--desk-white-72); --jh-hair: var(--jh-plate-hair); --jh-lift: var(--desk-box); --jh-hover: var(--jh-screen-hover); --jh-accent: var(--jh-accent-dark); }
-.desk-phases.kit-segments { display: flex; height: 24px; }
-.desk-phases .kit-seg { flex: 1 1 0; min-width: 0; padding: 0; gap: 0; }
-.desk-phases .kit-seg-face { font: 700 10px/1 var(--font-mono); letter-spacing: 0.04em; }
-.desk-phases .kit-seg > span:not(.kit-seg-face) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-/* while the island is the lip or the peek the foot is gone, so the faces sit under the pill, centred: a 24 px row with no margin (CENTER.md §5's second seat) */
-.desk:not([data-island="open"]) .desk-phases { left: calc(50% - 74px); top: 44px; }
-.desk-hair { left: 0; right: 0; bottom: 0; height: 1px; background: var(--desk-phase); transition: background-color var(--jh-drift) var(--jh-ease-in-out), opacity var(--jh-quick); }
-.desk-island[data-state="tucked"] .desk-hair { animation: desk-breathe 4s ease-in-out infinite; }
+/* the foot: the clock, the meter and its figure; asleep, the crescent and `asleep`, then the next thing armed (the app's own line) */
+.desk-foot-row { left: 14px; top: 156px; width: 332px; height: 24px; display: flex; align-items: center; gap: 8px; overflow: hidden; font: 500 max(11px, var(--isl-min))/1 var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.desk-foot-l { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.desk-meter-foot { width: 64px; height: 6px; flex: none; }
+.desk-foot-r { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.desk-island[data-kind="asleep"] .desk-foot-r, .desk-island[data-kind="alarm"] .desk-foot-r { margin-left: auto; }
+.desk-hair { left: 0; right: 0; bottom: 0; height: 1px; background: var(--desk-phase); transition: background-color var(--jh-drift) var(--jh-ease-in-out); }
+.desk-island[data-kind="asleep"] .desk-hair { animation: desk-breathe 4s ease-in-out infinite; }
 .desk[data-still] .desk-hair { animation: none; }
 @keyframes desk-breathe { 0%, 100% { opacity: .35; } 50% { opacity: .9; } }
 
-/* the lip and the peek: the face alone */
-.desk-lipface { left: 50%; top: 50%; width: 0; height: 0; font: 700 9px/1 var(--font-mono); white-space: nowrap; opacity: 0; transition: opacity var(--jh-quick) var(--jh-ease-in-out); }
-.desk-lipface .desk-eye-top { color: var(--jh-desk-lip); }
-.desk-island[data-state="tucked"] .desk-lipface, .desk-island[data-state="peek"] .desk-lipface { opacity: 1; }
-.desk-island[data-state="tucked"] .desk-lipface[data-face=". ."] .desk-eye-top { color: var(--desk-white-72); }
-.desk-island[data-state="peek"] .desk-lipface { font-size: 17px; }
-.desk-island[data-state="peek"] .desk-lipface .desk-eye-top { color: var(--desk-eye-ink); }
-
-/* the pill slot: 20 px, 6 under the lip */
-.desk-pill { position: absolute; left: 50%; top: 18px; transform: translateX(-50%); height: 20px; padding: 0 10px; border-radius: var(--jh-radius); background: var(--jh-screen-raised); border: 1px solid var(--jh-plate-hair); color: var(--desk-white-72); font: 500 11px/18px var(--font-mono); white-space: nowrap; opacity: 0; z-index: 4; transition: opacity var(--jh-quick) var(--jh-ease-in-out); pointer-events: none; }
-.desk-pill[data-on] { opacity: 1; }
-/* the asleep pill: the app's own foot line (`☾ asleep · next Timer 11:56 · pasta`) under the tucked lip; the moon in the row's ink */
-.desk-pill--asleep { display: inline-flex; align-items: center; gap: 6px; }
-.desk-pill--asleep .jh-icon { width: 12px; height: 12px; }
-
-/* ---- the picture's own glyphs and the kit mark's image ---- */
+/* ---- the picture's own glyphs ---- */
 .jh-icon { fill: currentColor; flex: none; pointer-events: none; }
-.desk-mark { display: inline-block; image-rendering: pixelated; vertical-align: middle; }
 
 @media (prefers-reduced-motion: reduce) {
-  .desk-hair, .desk-word-in, .desk-word-out { animation: none; }
+  .desk-caret, .desk-hair, .desk-word-in, .desk-word-out { animation: none; }
   .desk-word-out { display: none; }
 }

@@ -6,8 +6,6 @@ const config: NextConfig = {
   poweredByHeader: false,
   // Next 16 would otherwise write AGENTS.md and CLAUDE.md into site/ on every dev start.
   agentRules: false,
-  // The captures are the repo's own files, served as they are: a dithered JPEG must never be re-encoded.
-  images: { unoptimized: true },
   async headers() {
     return [
       {

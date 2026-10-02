@@ -3,16 +3,16 @@
  * console-settings.jpg; ITERATE.md §7): the Threads group, the conversations' folds, the Agents group.
  * These are the app's rendered strings over the harness's fixed data, kept byte for byte; nothing here is a claim.
  */
-import type { AgentTool } from "@/components/kit";
+import type { AgentTool } from "@/components/kit/AgentMark";
 
-export interface ThreadRow {
+interface ThreadRow {
   readonly name: string;
   /** `asks` wears the speaking tone as a badge; `done` sits as the row's value. */
   readonly status: "asks" | "done";
   readonly meta: string;
 }
 
-export interface FoldHead {
+interface FoldHead {
   readonly word: string;
   readonly count: number;
   readonly summary: string;
@@ -29,15 +29,11 @@ export const RAIL_APP = {
       { name: "Notes", status: "done", meta: "00:03 · background · 3 steps" },
     ] as readonly ThreadRow[],
   },
-  /** The right rail's own Threads group (console-threads.jpg, the Now rail): the count, the running figure, the Jarhead row. */
-  threadsNow: { count: 4, figure: "1 running", stop: "Stop", jarhead: { name: "Jarhead", value: "idle", meta: "14:37 · voice" } },
   pinned: { word: "Pinned", count: 1, row: { name: "Auth branch triage", value: "11:20" } },
   today: { word: "Today", count: 1, row: { name: "Pull up my sessions and tell me who's stuck.", badge: "×1", value: "14:15" } },
   folds: [
     { word: "Yesterday", count: 2, summary: "4.2 min" },
     { word: "Older", count: 3, summary: "since Sep 9" },
-    { word: "Archived", count: 2, summary: "2 · 15 min" },
-    { word: "Trash", count: 2, summary: "3 days · 129 MB" },
   ] as readonly FoldHead[],
   agents: {
     word: "Agents",

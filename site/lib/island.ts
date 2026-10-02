@@ -1,27 +1,28 @@
 /**
- * The island's ink: the orb ramp pooling out of the notch's black (UI/Orb/NotchInk.swift:356-433,
+ * The island's ink: the orb ramp (or its titanium twin, asleep) pooling out of the notch's black (UI/Orb/NotchInk.swift:356-433,
  * facts-orb.md §1.8). Five bands of ORB_STOPS on 1.5 CSS px cells, a per-state bias, the pale-cyan
  * highlight (σ 18 pt) that breathes, black pooling from the top edge (deep under the notch, a short
  * rim at the corners), a vignette on the open island. One buffer pixel per cell; the canvas is
  * upscaled with image-rendering: pixelated by the caller's CSS.
  */
-import { BAYER8, ORB_STOPS, cellCss, clamp01, lut, quantise, smoothstep, type RGB } from "@/lib/dither";
+import { BAYER8, ORB_STOPS, cellCss, clamp01, lut, quantise, smoothstep, type RGB, type Stops } from "@/lib/dither";
 
 const CYAN: RGB = [160, 240, 255];
 
 interface Buf { n: number; m: number; img: ImageData; px: Uint32Array; g: CanvasRenderingContext2D }
 const bufs = new WeakMap<HTMLCanvasElement, Buf>();
 
-export interface IslandInkOptions {
+interface IslandInkOptions {
   width: number;
   height: number;
-  state: "open" | "peek";
   notchWidth: number;
   wing: number;
   /** 0…1, the 4 s breath of the highlight's amplitude. */
   breath: number;
   /** Cell size in the canvas's own CSS px (default 1.5 CSS px on screen). */
   cell?: number;
+  /** The ramp: the orb's by default; asleep wears QUIET_STOPS, the titanium twin. */
+  stops?: Stops;
 }
 
 export function renderIslandInk(canvas: HTMLCanvasElement, o: IslandInkOptions): void {
@@ -42,8 +43,8 @@ export function renderIslandInk(canvas: HTMLCanvasElement, o: IslandInkOptions):
   }
   canvas.style.width = `${n * cell}px`;
   canvas.style.height = `${m * cell}px`;
-  const L = lut(ORB_STOPS, 5);
-  const sizeT = o.state === "peek" ? 0 : smoothstep(26, 184, H);
+  const L = lut(o.stops ?? ORB_STOPS, 5);
+  const sizeT = smoothstep(26, 184, H);
   const bias = 0.08 + (0.3 - 0.08) * sizeT;
   const hx = -0.01 * W;
   const hy = 0.36 * H;

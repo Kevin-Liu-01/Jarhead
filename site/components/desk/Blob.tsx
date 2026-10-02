@@ -1,66 +1,47 @@
 "use client";
-import { useEffect, useRef, type ReactElement } from "react";
-import { mountBlob, type BlobFrame, type BlobHandle } from "@/lib/blob";
+import { useEffect, useRef, type KeyboardEvent, type ReactElement } from "react";
+import { mountBlob, type BlobHandle } from "@/lib/blob";
 import type { Phase } from "@/lib/phase";
 import type { Theme } from "@/lib/theme";
 
-export interface BlobProps {
-  phase: Phase;
-  theme: Theme;
-  hidden: boolean;
-  still: boolean;
-  label: string;
-  onAdvance?: () => void;
-  onFrame?: (f: BlobFrame) => void;
+interface BlobProps {
+  readonly phase: Phase;
+  readonly theme: Theme;
+  readonly still: boolean;
+  readonly label: string;
+  readonly onAdvance: () => void;
 }
 
 /**
- * The live blob's host: `role="img"` with the phase in its label, the still PNG as its background so
- * no-JS and pre-paint show the resting orb, and `mountBlob` in an effect that returns `destroy`.
- * The flight into the notch is measured from the DOM (the host's rest to the notch's lip).
+ * The live blob's host: a button named with the phase (a press or Enter steps the island to the next kind), the still PNG
+ * as its background so no-JS and pre-paint show the resting orb, and `mountBlob` in an effect that returns `destroy`. The
+ * pointer is watched over the whole page, so the eyes follow it from anywhere.
  */
-export function Blob({ phase, theme, hidden, still, label, onAdvance, onFrame }: BlobProps): ReactElement {
+export function Blob({ phase, theme, still, label, onAdvance }: BlobProps): ReactElement {
   const host = useRef<HTMLDivElement>(null);
   const handle = useRef<BlobHandle | null>(null);
-  const latest = useRef({ phase, theme, hidden, onAdvance, onFrame });
-  latest.current = { phase, theme, hidden, onAdvance, onFrame };
+  const latest = useRef({ phase, theme, onAdvance });
+  latest.current = { phase, theme, onAdvance };
 
   useEffect(() => {
     const el = host.current;
     if (!el) return;
     const stage = el.closest<HTMLElement>("[data-desk-stage]");
-    const notch = stage?.querySelector<HTMLElement>(".desk-notch") ?? null;
     let h: BlobHandle | null = null;
-    let ro: ResizeObserver | null = null;
     const mount = () => {
-      el.style.transform = "";
-      el.style.opacity = "";
-      el.style.transition = "none";
-      const size = el.clientWidth || 300;
-      const r1 = el.getBoundingClientRect();
-      const scale = r1.width / size || 1;
-      let flight = { x: 0, y: -Math.round(size * 1.4) };
-      if (notch) {
-        const r2 = notch.getBoundingClientRect();
-        flight = { x: (r2.left + r2.width / 2 - (r1.left + r1.width / 2)) / scale, y: (r2.bottom + 6 - (r1.top + r1.height / 2)) / scale };
-      }
       h = mountBlob(el, {
-        size,
+        size: el.clientWidth || 300,
         phase: latest.current.phase,
         theme: latest.current.theme,
         still,
-        flight,
         pointerRoot: stage,
-        onPhaseAdvance: () => latest.current.onAdvance?.(),
+        onPhaseAdvance: () => latest.current.onAdvance(),
       });
-      h.onFrame((f) => latest.current.onFrame?.(f));
-      if (latest.current.hidden) h.hide();
       handle.current = h;
-      if (process.env.NODE_ENV !== "production") (window as unknown as { __jhBlob?: BlobHandle }).__jhBlob = h; // frameStats() for the notes
     };
     mount();
     let lastW = el.clientWidth;
-    ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver(() => {
       const w = el.clientWidth;
       if (!w || Math.abs(w - lastW) < 2) return;
       lastW = w;
@@ -69,7 +50,7 @@ export function Blob({ phase, theme, hidden, still, label, onAdvance, onFrame }:
     });
     ro.observe(el);
     return () => {
-      ro?.disconnect();
+      ro.disconnect();
       h?.destroy();
       handle.current = null;
     };
@@ -81,10 +62,11 @@ export function Blob({ phase, theme, hidden, still, label, onAdvance, onFrame }:
   useEffect(() => {
     handle.current?.setTheme(theme);
   }, [theme]);
-  useEffect(() => {
-    if (hidden) handle.current?.hide();
-    else handle.current?.show();
-  }, [hidden]);
 
-  return <div ref={host} className="desk-blob" role="img" aria-label={label} />;
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    onAdvance();
+  };
+  return <div ref={host} className="desk-blob" role="button" tabIndex={0} aria-label={label} onKeyDown={onKey} />;
 }

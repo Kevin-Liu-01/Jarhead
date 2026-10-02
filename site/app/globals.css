@@ -1,69 +1,68 @@
-@import "tailwindcss";
-
 /*
- * jarhead.kevinliu.studio · CONSOLE · the token sheet (facts-canon.md §1) and the reset. Four colours, one accent, every
+ * jarhead.kevinliu.studio · the token sheet (facts-canon.md §1) and the reset. Four colours, one accent, every
  * line drawn once by one owner, no shadows. Light on :root; dark is a token remap under html[data-theme="dark"], stamped
- * before paint by lib/theme.ts. No raw hex outside this sheet. The page's own classes are in styles/console.css.
+ * before paint by lib/theme.ts. No raw hex outside this sheet. The page's own classes are in styles/site.css.
  */
 :root {
   color-scheme: light;
   /* the four colours (PT/DESIGN.md §1; ConsoleTheme.swift:14-19) */
-  --jh-ink: #070707; --jh-ink-raised: #101010; --jh-titanium: #8a8f98; --jh-paper: #ffffff;
+  --jh-ink: #070707; --jh-titanium: #8a8f98; --jh-paper: #ffffff;
   /* surfaces (ConsoleTheme.swift:14-15) */
-  --jh-ground: #ffffff; --jh-raised: #f6f6f6; --jh-whisper: #f2f5fd;
-  /* ink steps 1 / .72 / .48 / .30 */
-  --jh-fg: #070707; --jh-fg-2: rgba(7, 7, 7, 0.72); --jh-fg-3: rgba(7, 7, 7, 0.48); --jh-fg-4: rgba(7, 7, 7, 0.30);
+  --jh-ground: #ffffff; --jh-raised: #f6f6f6;
+  /* ink steps 1 / .72 / .48 */
+  --jh-fg: #070707; --jh-fg-2: rgba(7, 7, 7, 0.72); --jh-fg-3: rgba(7, 7, 7, 0.48);
   /* lines: structural / row / frame, 1px each, drawn once by one owner */
   --jh-hair: rgba(7, 7, 7, 0.18); --jh-hair-row: rgba(7, 7, 7, 0.09); --jh-hair-frame: rgba(7, 7, 7, 0.62);
   /* states */
   --jh-hover: rgba(7, 7, 7, 0.04); --jh-active: rgba(7, 7, 7, 0.07); --jh-lift: rgba(7, 7, 7, 0.08);
-  --jh-lift-raised: rgba(7, 7, 7, 0.12); --jh-thumb: rgba(7, 7, 7, 0.32); --jh-scrim: rgba(0, 0, 0, 0.6);
-  /* words in the quiet steps and the two tones, light only (kit/README Contrast) */
-  --jh-fg-3-word: rgba(7, 7, 7, 0.6); --jh-titanium-word: #585c64; --jh-speaking-word: #915608; --jh-error-word: #bb1b2b;
+  --jh-lift-raised: rgba(7, 7, 7, 0.12); --jh-thumb: rgba(7, 7, 7, 0.32);
+  /* words in the quiet step, titanium and the speaking tone, light only (kit/README Contrast) */
+  --jh-fg-3-word: rgba(7, 7, 7, 0.6); --jh-titanium-word: #585c64; --jh-speaking-word: #915608;
   /* the one accent: the primary fill, the keyboard ring, the selection bar; the word on it follows the fill */
   --jh-accent: #2f5ce0; --jh-on-accent: #ffffff;
   /* phases: dots, halos, rings, hairlines, the blob's halo; never a wash; same in both themes */
   --jh-listening: #5ad7ff; --jh-speaking: #ffb454; --jh-thinking: #b48cff; --jh-acting: #6ee7a0;
   --jh-error: #ff5d6c; --jh-asleep: #7a6a5a; --jh-muted: #6b7280; --jh-connecting: #9fb4c8;
-  --jh-paused: #8a8f98; --jh-mark: #ffb454;
-  /* screens: a capture sits on its own baked ground in both themes (facts-media §2) */
-  --jh-screen: #0b0c10; --jh-screen-ink: #070707; --jh-screen-raised: #101010;
+  --jh-mark: #ffb454;
+  /* screens: the terminal and the island are ink in both themes, their words composed from paper */
+  --jh-screen-ink: #070707;
   --jh-screen-fg-2: rgba(255, 255, 255, 0.72); --jh-screen-fg-3: rgba(255, 255, 255, 0.48); --jh-screen-hover: rgba(255, 255, 255, 0.05); --jh-screen-active: rgba(255, 255, 255, 0.08);
   --jh-accent-dark: #5b82ff; --jh-plate-hair: rgba(255, 255, 255, 0.22);
-  --jh-blob-ground: #0b0c10; --jh-blob-text: #e8eaf0;
-  /* the drawn Mac: the notch's black, the tucked lip's grey, the traffic lights */
-  --jh-desk-notch: #000000; --jh-desk-lip: #4a4d55; --jh-light-red: #ff5f57; --jh-light-yellow: #febc2e; --jh-light-green: #28c840;
-  /* the island strip: the render's own bar and ground as a browser paints the PNG's gAMA chunk; the same in both themes */
-  --jh-island-bar: #25272c; --jh-island-notch: #000000; --jh-island-ground: #030407; --jh-island-fg: rgba(255, 255, 255, 0.9);
+  --jh-blob-ground: #0b0c10;
+  /* the drawn Mac: the notch's black, the traffic lights */
+  --jh-desk-notch: #000000; --jh-light-red: #ff5f57; --jh-light-yellow: #febc2e; --jh-light-green: #28c840;
+  /* the menu bar's grey in dark and the island's ground: the render's own, as a browser paints the PNG's gAMA chunk */
+  --jh-island-bar: #25272c; --jh-island-ground: #030407;
   /* agent marks (BrandMarks.swift:15-38) */
-  --jh-mark-claude: #d97757; --jh-mark-gemini: #4796e3; --jh-mark-opencode: #6ee7a0; --jh-mark-amp: #ffb454;
-  /* the kit: the Codex chip (BrandMarks.swift:22) and the seam, 2 px of ground outside a float's hairline (ConsoleTheme.swift:44) */
-  --jh-mark-chip: #070707; --jh-seam: 2px;
-  /* the one glass surface (ITERATE.md §1, Kevin's ask over facts-canon §8.5): the hero's install button alone. The fill, its hover lift and its press, the hairline, the inner top highlight */
-  --jh-glass-fill: rgba(255, 255, 255, 0.55); --jh-glass-hover: rgba(255, 255, 255, 0.59); --jh-glass-press: rgba(255, 255, 255, 0.51);
-  --jh-glass-hair: rgba(0, 0, 0, 0.10); --jh-glass-top: rgba(255, 255, 255, 0.22);
-  /* geometry: the one control corner; the Console's title bar (ConsoleRootView.swift ConsoleHeader), its two rails (ConsoleTheme.swift:1031-1042) */
-  --jh-radius: 6px; --jh-tb: 44px; --jh-rail-l: 264px; --jh-rail-r: 296px;
+  --jh-mark-claude: #d97757;
+  /* the kit: the Codex chip (BrandMarks.swift:22) */
+  --jh-mark-chip: #070707;
+  /* the one glass surface (ITERATE.md §1, Kevin's ask over facts-canon §8.5): the hero's install button alone. The fill, its hover lift and its press, the hairline, the inner top highlight.
+     On paper the frost is dense, the hairline dark and the highlight paper, so the glass outweighs the raised source tile beside it */
+  --jh-glass-fill: rgba(255, 255, 255, 0.72); --jh-glass-hover: rgba(255, 255, 255, 0.76); --jh-glass-press: rgba(255, 255, 255, 0.68);
+  --jh-glass-hair: rgba(7, 7, 7, 0.28); --jh-glass-top: var(--jh-paper);
+  /* geometry: the one control corner */
+  --jh-radius: 6px;
   /* type */
   --font-sans: var(--font-inter), "Inter", "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   /* motion (Motion.swift:22-64) */
-  --jh-instant: 80ms; --jh-quick: 160ms; --jh-base: 240ms; --jh-slow: 400ms; --jh-drift: 600ms; --jh-pulse: 1.6s;
-  --jh-ease-out: cubic-bezier(0.16, 1, 0.3, 1); --jh-ease-in: cubic-bezier(0.7, 0, 0.84, 0); --jh-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --jh-instant: 80ms; --jh-quick: 160ms; --jh-base: 240ms; --jh-drift: 600ms; --jh-pulse: 1.6s;
+  --jh-ease-out: cubic-bezier(0.16, 1, 0.3, 1); --jh-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 html[data-theme="dark"] {
   color-scheme: dark;
-  --jh-ground: #070707; --jh-raised: #101010; --jh-whisper: #161e35;
-  --jh-fg: #ffffff; --jh-fg-2: rgba(255, 255, 255, 0.72); --jh-fg-3: rgba(255, 255, 255, 0.48); --jh-fg-4: rgba(255, 255, 255, 0.30);
+  --jh-ground: #070707; --jh-raised: #101010;
+  --jh-fg: #ffffff; --jh-fg-2: rgba(255, 255, 255, 0.72); --jh-fg-3: rgba(255, 255, 255, 0.48);
   --jh-hair: rgba(255, 255, 255, 0.22); --jh-hair-row: rgba(255, 255, 255, 0.10); --jh-hair-frame: rgba(255, 255, 255, 0.55);
   --jh-hover: rgba(255, 255, 255, 0.05); --jh-active: rgba(255, 255, 255, 0.08); --jh-lift: rgba(255, 255, 255, 0.10);
   --jh-lift-raised: rgba(255, 255, 255, 0.16); --jh-thumb: rgba(242, 242, 240, 0.32);
   --jh-accent: #5b82ff; --jh-on-accent: var(--jh-ink);
   --jh-mark-chip: #101010;
   --jh-glass-fill: rgba(255, 255, 255, 0.10); --jh-glass-hover: rgba(255, 255, 255, 0.14); --jh-glass-press: rgba(255, 255, 255, 0.06);
-  --jh-glass-hair: rgba(255, 255, 255, 0.18);
+  --jh-glass-hair: rgba(255, 255, 255, 0.18); --jh-glass-top: rgba(255, 255, 255, 0.22);
   /* dark passes AA at the canon values, so the word aliases are the canon */
-  --jh-fg-3-word: var(--jh-fg-3); --jh-titanium-word: var(--jh-titanium); --jh-speaking-word: var(--jh-speaking); --jh-error-word: var(--jh-error);
+  --jh-fg-3-word: var(--jh-fg-3); --jh-titanium-word: var(--jh-titanium); --jh-speaking-word: var(--jh-speaking);
   /* phases, screens, marks, lights do not remap */
 }
 
@@ -71,6 +70,8 @@ html[data-theme="dark"] {
 *, *::before, *::after { box-sizing: border-box; }
 * { margin: 0; }
 html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -101,21 +102,10 @@ figure { margin: 0; }
 code, kbd, pre, samp { font-family: var(--font-mono); }
 ::selection { background: var(--jh-accent); color: var(--jh-on-accent); }
 :focus-visible { outline: 2px solid var(--jh-accent); outline-offset: 2px; }
-.jh-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-
-/* the skip link: visible on focus only, moves by transform and opacity; a 40 px tile centred in the 44 px title bar */
+/* the skip link: visible on focus only, moves by transform and opacity; a 40 px tile just under the menu bar (site.css) */
 .jh-skip { position: absolute; left: 12px; top: 2px; z-index: 40; display: inline-flex; align-items: center; height: 40px; padding: 0 12px;
   border-radius: var(--jh-radius); background: var(--jh-accent); color: var(--jh-on-accent); font-size: 12px; font-weight: 500; opacity: 0; transform: translateY(-64px); pointer-events: none; }
 .jh-skip:focus-visible { opacity: 1; transform: none; pointer-events: auto; outline: 0; }
-
-/* the theme toggle: a kit ghost tile, 28, icon-only; the glyph is CSS content on html[data-theme] so it is right before hydration */
-.kit-btn.jh-theme { --kit-h: 28px; width: 28px; padding: 0; font-size: 15px; font-weight: 400; color: var(--jh-fg); }
-.jh-theme::before { content: "◐"; }
-html[data-theme="dark"] .jh-theme::before { content: "◑"; }
-
-/* a light/dark capture pair (components/ui/Screen): both lazy, html[data-theme] shows one; a lazy image with no box never loads, so only the shown file is fetched */
-html[data-theme="dark"] .shot-light, html:not([data-theme="dark"]) .shot-dark { display: none; }
-
 /* ---------- reduced motion: the only !important on the site ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }

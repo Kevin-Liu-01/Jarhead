@@ -1,8 +1,10 @@
 /**
  * COPY.md (scratchpad/site/COPY.md, 2026-09-25), verbatim, as data: the only source of strings on the page.
  * Every string here is the deck's; components may drop or cut one (lib/cut.ts), never add or reword.
- * `README:NN` is /Users/kevinliu/jarvis/README.md line NN. What the CONSOLE page does not set is left out (the nav's
- * links, the desk caption): the deck says only what the page says.
+ * `README:NN` is /Users/kevinliu/jarvis/README.md line NN. An entry the CONSOLE page never sets is left out (the nav's
+ * links, the desk caption, the plate eyebrow, the phase hints, the hero's note, the Setup steps, the alt lines of renders
+ * the build drops). A story keeps its number and face, a phase its face, a figure its tip and a list its rows, the ones the
+ * page drops included.
  */
 
 import type { DeskKind } from "@/lib/phase";
@@ -24,22 +26,21 @@ export const HERO = {
   lead: "Say jarhead, pass Touch ID, talk. It uses the computer for you. The brain is whatever you already have a login for.", // README:16, README:7, README:17
   install: "Install",
   source: "Read the source", // README:10
-  note: "Send, pay, delete, post and purchase ask every time.", // README:347
   figures: "v2.0.0 · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto", // facts:15, README:13, README:362, README:334, README:341
   blobLabel: "Jarhead's blob, {phase}",
 } as const;
 
-/** The phase words and hints (COPY.md "Phase words and hints"): a dot, a badge or a tooltip at most, never a line above a heading. */
-export const PHASES: Record<DeskKind, { readonly word: string; readonly hint: string; readonly face: string }> = {
-  asleep: { word: "Asleep", hint: "No session. Nothing billed.", face: "- -" }, // README:536, AUTOMATIONS:6-7
-  listening: { word: "Listening", hint: "The mic is open. The meter runs.", face: "O O" }, // README:41, README:536
-  thinking: { word: "Thinking", hint: "The brain has the task.", face: "- -" }, // README:254-255
-  acting: { word: "Acting", hint: "The hands are using the Mac.", face: "o o" }, // README:18, README:45
-  speaking: { word: "Speaking", hint: "It is talking. Say stop to interrupt.", face: "^ ^" }, // README:41
-  alarm: { word: "Alarm", hint: "Rings asleep. Nothing billed.", face: "- -" }, // README:289-292
+/** The phase words (COPY.md "Phase words and hints"): a dot, a badge or a tooltip at most, never a line above a heading. */
+export const PHASES: Record<DeskKind, { readonly word: string; readonly face: string }> = {
+  asleep: { word: "Asleep", face: "- -" }, // README:536, AUTOMATIONS:6-7
+  listening: { word: "Listening", face: "O O" }, // README:41, README:536
+  thinking: { word: "Thinking", face: "- -" }, // README:254-255
+  acting: { word: "Acting", face: "o o" }, // README:18, README:45
+  speaking: { word: "Speaking", face: "^ ^" }, // README:41
+  alarm: { word: "Alarm", face: "- -" }, // README:289-292
 };
 
-export interface Story {
+interface Story {
   readonly id: string;
   readonly n: string;
   readonly name: string;
@@ -129,7 +130,7 @@ export const SLEEP: Story = {
   lines: ["No session, no brain turn, nothing billed.", "Set-up asks once. Fire time never asks.", "Nothing fires while Jarhead is quit."], // AUTOMATIONS:6-7, AUTOMATIONS:11-13, AUTOMATIONS:116-117
 };
 
-export interface Figure {
+interface Figure {
   readonly value: string;
   readonly label: string;
   readonly tip: string;
@@ -139,7 +140,6 @@ export interface Figure {
 export const NUMBERS = {
   id: "numbers",
   name: "Numbers",
-  label: "the ledger",
   h2: ["Measured on one Mac.", "Written down."] as const, // README:316
   lead: "Measured on the author's Mac and written down. The harnesses are in the repo. Every latency carries its n and date.", // README:316, facts:388
   display: { value: "3 ms", label: "ear final to hands dispatch, median", tip: "6 ms p95 · real helper · n = 50 · 2026-09-11" } satisfies Figure, // README:322, facts:308
@@ -166,7 +166,6 @@ export const NUMBERS = {
 export const COSTS = {
   id: "costs",
   name: "Costs",
-  label: "what it bills",
   h2: ["Five cents a minute.", "Asleep costs nothing."] as const, // README:536
   lead: "The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.", // README:536
   figures: [
@@ -177,16 +176,6 @@ export const COSTS = {
   lines: ["Codex runs on your ChatGPT plan.", "A local brain bills nothing. The voice does.", "The Ledger tab totals each day."] as const, // README:537, LOCAL:4, README:68
 } as const;
 
-/** Made */
-export const MADE = {
-  id: "made",
-  name: "Made",
-  label: "how it is made",
-  h2: ["Swift in the app.", "TypeScript in the daemon."] as const, // README:224, README:232
-  lead: "Jarhead.app is Swift. The daemon jarheadd is TypeScript. Two Swift helpers act on the Mac.", // README:224, README:232, README:245-249
-  lines: ["One 8×8 Bayer renderer dithers everything that shades.", "The ledger is append-only. Nothing is deleted.", "Its self-edits apply only on your yes."] as const, // README:67, README:56, README:64
-} as const;
-
 /** Install */
 export const INSTALL = {
   id: "install",
@@ -194,7 +183,6 @@ export const INSTALL = {
   label: "source only", // facts:40-41
   h2: ["Four commands.", "Then say jarhead."] as const, // README:21-23, README:36
   lead: "Source only. One line clones the repo and runs four commands. Setup opens on first launch and writes your key.", // facts:40-41, README:21-23, README:371
-  eyebrow: "INSTALL · ONE LINE",
   url: "https://jarhead.kevinliu.studio/install.sh",
   code: "curl -fsSL https://jarhead.kevinliu.studio/install.sh | sh", // README:26
   copy: "Copy",
@@ -209,8 +197,6 @@ export const INSTALL = {
     { cmd: "pnpm build:mac", note: "builds, signs, installs /Applications/Jarhead.app" },
     { cmd: "open -a Jarhead", note: "Setup opens: your OpenAI key, a brain, permissions" },
   ] as const,
-  then: 'Then say "jarhead", pass Touch ID, talk.', // README:36
-  lines: ["Keys go into ~/.jarhead/env at mode 0600.", "Sixteen permissions in one sweep. Seven required.", "pnpm run doctor checks keys, brain and permissions."] as const, // README:375, README:62, README:372
   requirements: {
     word: "Requirements",
     count: 6,
@@ -224,20 +210,14 @@ export const INSTALL = {
     ] as const,
     certNote: "Self-signed is enough. Without one every rebuild resets the permission grants.", // README:62, README:382-386
   },
-  setup: "Setup has seven steps. Welcome, Voice, Brain, Permissions, Wake, Agents, Done.", // README:66
-  /** The wizard's own rail, cut from the setup line (README:66); `Setup` is its window's name, the same cut. */
-  steps: ["Welcome", "Voice", "Brain", "Permissions", "Wake", "Agents", "Done"] as const,
-  setupWord: "Setup",
 } as const;
 if (`${INSTALL.runs.cmd} ${INSTALL.runs.host}${INSTALL.runs.script} ${INSTALL.runs.tail}` !== INSTALL.code || `${INSTALL.runs.host}${INSTALL.runs.script}` !== INSTALL.url) throw new Error("the one-liner's runs drifted from INSTALL.code");
-if (!INSTALL.setup.startsWith(INSTALL.setupWord) || INSTALL.setup.indexOf(INSTALL.steps.join(", ")) < 0) throw new Error("the Setup steps drifted from the setup line");
 
 /** Footer */
 export const FOOTER = {
   brand: "Jarhead", // README:5
   line1: "A voice-first Mac assistant that uses the computer for you.", // README:7
   line2: "Built with Swift and TypeScript.", // README:12
-  mono: "GitHub · MIT · Kevin Liu · v2.0.0 · macOS 14+ · Apple silicon", // README:10, README:554, facts:15-16, README:362
   disclosures: [
     "Every picture is rendered by the app's own preview harnesses over fixed fake data.", // README:75-76
     "None is a photo of a desktop.", // README:76
@@ -252,53 +232,5 @@ export const FOOTER = {
 /** Alt text (COPY.md "Alt text"), one line per render the build keeps. */
 export const ALT = {
   blobGate: "The wake gate. Touch ID or passphrase.", // README:171
-  islandWorking: "The island acting. Two thread tiles, each with a Stop.", // README:92
-  islandAlarm: "The island ringing an alarm while asleep. Snooze 10 and Done.", // README:283
-  consoleConversation: "A Claude Code session in the Console. Allow and Deny.", // README:131
-  consoleLight: "The Console in the light appearance.", // README:157
-  consoleSettings: "Settings. Voice, mic, brain, idle sleep, retention.", // README:140
   consoleThreads: "The Console during a split. Slack asks before it sends.", // README:122-127
-  consoleLedger: "The Ledger tab. A day's rows and what it billed.", // README:139
-  consoleAutomations: "Automations in the Console. One row each.", // README:280
-  blobFly: "The blob beside its target ring, acting.", // README:170
-  blobCapsule: "The capsule. Phase, meter, the exchange, the running step.", // README:189
-  overlayShapes: "The overlay's shapes. Circle, arrow, rectangle, text, stroke.", // README:190
-  iconSizes: "The Dock icon at 16, 32, 64, 128 and 256.", // README:214
-  setupPermissions: "Setup, Permissions", // README:202-207
 } as const;
-
-const MEDIA = "/media";
-/** The renders the page keeps, at their pixel sizes (docs/media). */
-export const SHOTS = {
-  blobGate: { src: `${MEDIA}/blob-gate.png`, alt: ALT.blobGate, width: 520, height: 520 },
-  islandWorking: { src: `${MEDIA}/notch-island-working.png`, alt: ALT.islandWorking, width: 920, height: 500 },
-  islandAlarm: { src: `${MEDIA}/notch-island-alarm.png`, alt: ALT.islandAlarm, width: 920, height: 500 },
-  consoleDark: { src: `${MEDIA}/console-conversation.jpg`, alt: ALT.consoleConversation },
-  consoleLight: { src: `${MEDIA}/console-light.jpg`, alt: ALT.consoleLight },
-  consoleSettings: { src: `${MEDIA}/console-settings.jpg`, alt: ALT.consoleSettings, width: 1600, height: 1220 },
-  consoleThreads: { src: `${MEDIA}/console-threads.jpg`, alt: ALT.consoleThreads, width: 1600, height: 1030 },
-  consoleLedger: { src: `${MEDIA}/console-ledger.jpg`, alt: ALT.consoleLedger, width: 1600, height: 1030 },
-  consoleAutomations: { src: `${MEDIA}/console-automations.jpg`, alt: ALT.consoleAutomations, width: 1600, height: 1030 },
-  blobFly: { src: `${MEDIA}/blob-fly.png`, alt: ALT.blobFly, width: 524, height: 522 },
-  blobCapsule: { src: `${MEDIA}/blob-capsule.png`, alt: ALT.blobCapsule, width: 1112, height: 696 },
-  overlayShapes: { src: `${MEDIA}/overlay-shapes.png`, alt: ALT.overlayShapes, width: 1600, height: 589 },
-  iconSizes: { src: `${MEDIA}/icon-sizes.png`, alt: ALT.iconSizes, width: 640, height: 584 },
-  setupPermissions: { src: `${MEDIA}/onboarding-permissions.png`, alt: ALT.setupPermissions, width: 620, height: 552 },
-} as const;
-
-/** The left rail: the page's conversations in the order the stream tells them, each with its orb; the phase is the kind the island wears while the section is in view. */
-export const RAIL: ReadonlyArray<{ readonly id: string; readonly name: string; readonly value: string; readonly phase: DeskKind }> = [
-  { id: WAKE.id, name: WAKE.name, value: WAKE.n, phase: WAKE.phase },
-  { id: SAY.id, name: SAY.name, value: SAY.n, phase: SAY.phase },
-  { id: THREADS.id, name: THREADS.name, value: THREADS.n, phase: THREADS.phase },
-  { id: HANDS.id, name: HANDS.name, value: HANDS.n, phase: HANDS.phase },
-  { id: RAILS.id, name: RAILS.name, value: RAILS.n, phase: RAILS.phase },
-  { id: SLEEP.id, name: SLEEP.name, value: SLEEP.n, phase: SLEEP.phase },
-  { id: NUMBERS.id, name: NUMBERS.name, value: NUMBERS.label, phase: "listening" },
-  { id: COSTS.id, name: COSTS.name, value: COSTS.label, phase: "listening" },
-  { id: MADE.id, name: MADE.name, value: MADE.label, phase: "thinking" },
-  { id: INSTALL.id, name: INSTALL.name, value: INSTALL.label, phase: "listening" },
-];
-
-/** The kind a section in view sets: the island, the title bar and the rail's phase card read it (lib/live.ts). */
-export const SECTION_KIND: Readonly<Record<string, DeskKind>> = Object.fromEntries(RAIL.map((r) => [r.id, r.phase]));

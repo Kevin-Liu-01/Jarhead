@@ -13,10 +13,10 @@ export type Face = "^^" | "OO" | null;
 const PAPER: RGB = [255, 255, 255];
 const INK: RGB = [7, 7, 7];
 
-export interface Gleam { readonly x: number; readonly y: number; readonly sigma: number; readonly amp: number }
+interface Gleam { readonly x: number; readonly y: number; readonly sigma: number; readonly amp: number }
 
 /** The orb's shading knobs, in R units (dither.ts:107-126). */
-export const ORB = {
+const ORB = {
   highlight: { x: -0.36, y: -0.4, sigma: 0.3, amp: 0.9 } as Gleam,
   rimDarken: 0.42,
   rimTone: [8, 26, 96] as RGB,
@@ -29,7 +29,7 @@ export const ORB = {
 };
 
 /** The face, in R units (dither.ts:189-224): the icon's proportions, what the banner shows. */
-export const FACE = {
+const FACE = {
   row: -0.307,
   spread: 0.461,
   w: 0.307,
@@ -41,7 +41,7 @@ export const FACE = {
   ring: { rx: 0.14, ry: 0.19 },
 };
 
-export function gleamLift(g: Gleam, nx: number, ny: number): number {
+function gleamLift(g: Gleam, nx: number, ny: number): number {
   const hx = nx - g.x;
   const hy = ny - g.y;
   return g.amp * Math.exp(-(hx * hx + hy * hy) / (2 * g.sigma * g.sigma));
@@ -55,7 +55,7 @@ function capsule(px: number, py: number, ax: number, ay: number, bx: number, by:
 }
 
 /** Signed distance (R units) to the nearer eye glyph; ≤ 0 inside a stroke. */
-export function faceSdf(nx: number, ny: number, pair: "^^" | "OO"): number {
+function faceSdf(nx: number, ny: number, pair: "^^" | "OO"): number {
   const sw = FACE.stroke / 2;
   let best = Infinity;
   for (const side of [-1, 1]) {
@@ -79,7 +79,7 @@ export function faceSdf(nx: number, ny: number, pair: "^^" | "OO"): number {
 }
 
 /** The face on a cols × rows cell grid: 0 orb, 1 glyph (paper), 2 box (ink); box = Chebyshev dilation by max(1, round(outline · R / cell)) cells. */
-export function faceMask(cols: number, rows: number, cell: number, cx: number, cy: number, R: number, pair: "^^" | "OO"): Uint8Array {
+function faceMask(cols: number, rows: number, cell: number, cx: number, cy: number, R: number, pair: "^^" | "OO"): Uint8Array {
   const m = new Uint8Array(cols * rows);
   const rad = Math.max(1, Math.round((FACE.outline * R) / cell));
   // Only the eye region: |nx| ≤ 0.75, ny in [−0.6, 0].
@@ -116,17 +116,17 @@ export function faceMask(cols: number, rows: number, cell: number, cx: number, c
 }
 
 /** An RGBA buffer; structurally an ImageData, also in Node where ImageData does not exist. */
-export interface OrbImage { readonly width: number; readonly height: number; readonly data: Uint8ClampedArray }
+interface OrbImage { readonly width: number; readonly height: number; readonly data: Uint8ClampedArray }
 
-export function makeImage(width: number, height: number): ImageData {
+function makeImage(width: number, height: number): ImageData {
   if (typeof ImageData !== "undefined") return new ImageData(width, height);
   return { width, height, data: new Uint8ClampedArray(width * height * 4), colorSpace: "srgb" } as unknown as ImageData;
 }
 
 /** The desktop blob's halo: the phase colour in a five-level dithered coverage mask, over a dark backing or over nothing. */
-export interface Halo { readonly color: RGB; readonly glow: number; readonly backing: RGB | null }
+interface Halo { readonly color: RGB; readonly glow: number; readonly backing: RGB | null }
 
-export interface PaintOrbOptions {
+interface PaintOrbOptions {
   cx: number;
   cy: number;
   R: number;
@@ -142,7 +142,7 @@ export interface PaintOrbOptions {
 }
 
 /** Paint the orb into `img` (RGBA, straight alpha). Fills only the disc and its glow reach. */
-export function paintOrb(img: OrbImage, o: PaintOrbOptions): void {
+function paintOrb(img: OrbImage, o: PaintOrbOptions): void {
   const { width: W, height: H, data } = img;
   const { cx, cy, R, cell, face } = o;
   const bands = o.bands ?? 5;
@@ -233,27 +233,6 @@ export function paintOrb(img: OrbImage, o: PaintOrbOptions): void {
   }
 }
 
-/** Fill `img` with the diagonal field (light from the upper left, the whisper lower-right), threshold per cell, geometry per pixel. */
-export function paintField(img: OrbImage, o: { cell: number; stops: Stops; bands: number }): void {
-  const { width: W, height: H, data } = img;
-  const L = lut(o.stops, o.bands);
-  for (let y = 0; y < H; y++) {
-    const cy8 = ((y / o.cell) | 0) & 7;
-    const fy = (y + 0.5) / H;
-    for (let x = 0; x < W; x++) {
-      const t = BAYER8[cy8 * 8 + (((x / o.cell) | 0) & 7)]!;
-      const fx = (x + 0.5) / W;
-      const u = 0.5 + (fx - 0.5 + (fy - 0.5)) / 2;
-      const col = L[Math.min(o.bands, Math.floor(clamp01(u) * o.bands + t))]!;
-      const i = (y * W + x) * 4;
-      data[i] = col[0];
-      data[i + 1] = col[1];
-      data[i + 2] = col[2];
-      data[i + 3] = 255;
-    }
-  }
-}
-
 /** The JarheadMark's sheen: a paper disc at `alpha`, radius `r`, centred at (cx, cy), flat (BrandMarks.swift:446-466). */
 export function paintPaperDisc(img: OrbImage, cx: number, cy: number, r: number, alpha: number): void {
   const { width: W, height: H, data } = img;
@@ -269,7 +248,7 @@ export function paintPaperDisc(img: OrbImage, cx: number, cy: number, r: number,
   }
 }
 
-export interface RenderOrbOptions {
+interface RenderOrbOptions {
   size: number;
   cell: number;
   face: Face;
@@ -299,7 +278,7 @@ export function renderOrb(o: RenderOrbOptions): ImageData {
   return img;
 }
 
-// ---- a minimal PNG writer (stored deflate blocks, no zlib) for inline data URIs ----
+// ---- a minimal PNG writer for inline data URIs: stored deflate blocks in the browser, a real zlib stream when the server passes one ----
 
 let CRC_TABLE: Uint32Array | null = null;
 function crc32(bytes: Uint8Array): number {
@@ -328,8 +307,8 @@ function chunk(type: string, body: number[] | Uint8Array): number[] {
   return [...u32(body.length), ...tb, ...u32(crc32(tb))];
 }
 
-/** RGBA → PNG bytes with stored (uncompressed) deflate blocks. Small images only (a mark, a favicon). */
-export function encodePngStored(img: OrbImage): Uint8Array {
+/** The PNG's raw scanlines: a zero filter byte, then the row's RGBA. */
+function scanlines(img: OrbImage): Uint8Array {
   const { width, height, data } = img;
   const stride = width * 4 + 1;
   const raw = new Uint8Array(height * stride);
@@ -337,6 +316,11 @@ export function encodePngStored(img: OrbImage): Uint8Array {
     raw[y * stride] = 0;
     raw.set(data.subarray(y * width * 4, (y + 1) * width * 4), y * stride + 1);
   }
+  return raw;
+}
+
+/** A zlib stream of `raw` in stored (uncompressed) deflate blocks: no compressor needed, so it runs in the browser too. */
+function storedZlib(raw: Uint8Array): Uint8Array {
   const blocks: number[] = [0x78, 0x01];
   for (let off = 0; off < raw.length || off === 0; off += 65535) {
     const end = Math.min(raw.length, off + 65535);
@@ -351,14 +335,27 @@ export function encodePngStored(img: OrbImage): Uint8Array {
     b = (b + a) % 65521;
   }
   blocks.push(...u32(((b << 16) | a) >>> 0));
-  const ihdr = [...u32(width), ...u32(height), 8, 6, 0, 0, 0];
-  return Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunk("IHDR", ihdr), ...chunk("IDAT", blocks), ...chunk("IEND", [])]);
+  return Uint8Array.from(blocks);
 }
 
-export function pngDataUri(img: OrbImage): string {
-  const bytes = encodePngStored(img);
+/** A zlib compressor: raw bytes in, a zlib stream (header, deflate blocks, Adler-32) out. Node's `zlib.deflateSync` is one. */
+type Zlib = (raw: Uint8Array) => Uint8Array;
+
+/**
+ * RGBA → PNG bytes. With no compressor the IDAT is stored deflate (small images only: a mark, a favicon); a server caller
+ * passes a real compressor (`node:zlib` deflateSync) so a 128 px orb inlined in a picture is a few KB, not sixty.
+ */
+function encodePng(img: OrbImage, zlib?: Zlib): Uint8Array {
+  const raw = scanlines(img);
+  const idat = zlib ? zlib(raw) : storedZlib(raw);
+  const ihdr = [...u32(img.width), ...u32(img.height), 8, 6, 0, 0, 0];
+  return Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunk("IHDR", ihdr), ...chunk("IDAT", idat), ...chunk("IEND", [])]);
+}
+
+export function pngDataUri(img: OrbImage, zlib?: Zlib): string {
+  const bytes = encodePng(img, zlib);
   let s = "";
   for (let i = 0; i < bytes.length; i += 0x2000) s += String.fromCharCode(...bytes.subarray(i, i + 0x2000));
-  const b64 = typeof btoa === "function" ? btoa(s) : Buffer.from(s, "binary").toString("base64");
-  return `data:image/png;base64,${b64}`;
+  // btoa is global in browsers and in Node 16+; no Buffer, so no client bundle can pull in a polyfill through here.
+  return `data:image/png;base64,${btoa(s)}`;
 }

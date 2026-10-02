@@ -5,7 +5,6 @@
  *
  *   app/icon.png                 32   the 3 × 2 mini face (Next emits <link rel="icon">)
  *   public/favicon-16.png        16   faceless: a dot pair with its shadow (no face below the Dock's 32 px class)
- *   public/favicon-32.png        32
  *   app/apple-icon.png          180   flattened on ink: iOS paints transparency black; the squircle keeps its corners
  *   public/icon-192.png         192   transparent, manifest purpose "any"
  *   public/icon-512.png         512   transparent, manifest purpose "any"
@@ -70,7 +69,6 @@ function main(): void {
   const files: ReadonlyArray<readonly [string, () => Buffer]> = [
     ["app/icon.png", () => transparent(32)],
     ["public/favicon-16.png", () => transparent(16)],
-    ["public/favicon-32.png", () => transparent(32)],
     ["app/apple-icon.png", () => flattened(180, INK)],
     ["public/icon-192.png", () => transparent(192)],
     ["public/icon-512.png", () => transparent(512)],

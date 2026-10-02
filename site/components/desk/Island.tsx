@@ -1,45 +1,14 @@
 "use client";
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
-import { Glyph } from "@/components/kit";
-import { Icon } from "@/components/ui/Icons";
+import { Glyph } from "@/components/kit/Glyph";
+import { ISLAND } from "@/content/island";
+import { after, upTo } from "@/lib/cut";
+import type { DeskKind } from "@/lib/phase";
+import { Icon } from "./Icons";
 
-export type IslandState = "open" | "peek" | "tucked";
-export type IslandKind = "listening" | "thinking" | "acting" | "speaking" | "alarm";
-export type LipFace = string;
-
-/** The island's strings per kind (design.md §4.4; README:39, README:45, README:117-119, README:274-281, docs/DEMO.md:21; notch-island*.png). */
-export const ISLAND = {
-  utterance: "Tell Ben on Slack I'm late and put on Focus on Spotify",
-  word: { listening: "Listening", thinking: "Thinking", acting: "Acting", speaking: "Speaking", alarm: "Alarm" } as const,
-  hero: {
-    listening: "Tell Ben on Slack I'm late and put on Focus on Spotify",
-    thinking: "Three independent apps: Notes and Spotify take Apple events, Slack needs the pointer.",
-    acting: "opening the PR in Cursor",
-    speaking: 'Slack asks: send "I\'m running late" to Ben?',
-    alarm: "07:10 · Wake up, Kevin",
-  } as const,
-  alarmSub: "Monday · standup notes at 9",
-  headSpeaking: "Slack asks",
-  headAlarm: "Alarm · weekdays",
-  working: "Working",
-  tiles: [
-    { name: "Slack", state: "working" },
-    { name: "Spotify", state: "working" },
-  ],
-  allow: "Allow",
-  deny: "Deny",
-  snooze: "Snooze 10",
-  done: "Done",
-  five: "5",
-  thirty: "30",
-  sayAwake: "Say something…",
-  sayAsleep: "Asleep · press Go",
-  footClock: "12:37",
-  footMeter: "7.2 min · $0.36",
-  footAsleep: "asleep · next Timer 11:56 · pasta",
-  pill: "Touch ID or passphrase",
-  clockBase: { thinking: 1, acting: 8 } as const,
-};
+/** The asleep foot as the app splits it (notch-island-alarm.png): the crescent and `asleep` at the left, the next thing armed at the right. */
+const ASLEEP_WORD = upTo(ISLAND.footAsleep, " · ");
+const ASLEEP_NEXT = after(ISLAND.footAsleep, `${ASLEEP_WORD} · `);
 
 export interface IslandRefs {
   ink: RefObject<HTMLCanvasElement | null>;
@@ -66,118 +35,172 @@ function WordCrossfade({ text }: { text: string }): ReactElement {
   const settle = () => setPair((p) => (p.prev ? { ...p, prev: null } : p));
   return (
     <span className="desk-word-x">
-      {pair.prev ? <span key={`p${pair.n}`} className="desk-word-out" onAnimationEnd={settle}>{pair.prev}</span> : null}
-      <span key={`c${pair.n}`} className={pair.prev ? "desk-word-in" : undefined}>{pair.cur}</span>
+      {pair.prev ? (
+        <span key={`p${pair.n}`} className="desk-word-out" onAnimationEnd={settle}>
+          {pair.prev}
+        </span>
+      ) : null}
+      <span key={`c${pair.n}`} className={pair.prev ? "desk-word-in" : undefined}>
+        {pair.cur}
+      </span>
     </span>
   );
 }
 
-export interface IslandProps {
-  kind: IslandKind;
-  state: IslandState;
-  lipFace: LipFace;
-  swap: boolean;
-  still: boolean;
-  pill: boolean;
-  /** Tucked and asleep: the app's own foot line as the pill under the lip (`☾ asleep · next Timer 11:56 · pasta`). */
-  asleepPill: boolean;
-  refs: IslandRefs;
+interface IslandProps {
+  readonly kind: DeskKind;
+  readonly swap: boolean;
+  readonly still: boolean;
+  readonly refs: IslandRefs;
 }
 
 /**
- * The island (design.md §4.3–4.4; docs/REDESIGN.md §20): one shape in three states over the ink
- * canvas, four DOM bands in px from its top-left: anchor (face, word, Go · Stop · Mute), display
- * (head, hero, the kind's middle), the control row (the Say box with the app's own placeholder, the composer carries
- * the typing; Circle · Window · Ask), the foot
- * (clock, bar, meter, then the six phase faces where the app's Console · Sleep tiles sit), the phase hairline along the
- * bottom. Tucked it is the lip with `- -`; peeking it is the face on a 26 px strip. Every control glyph is the kit's; the
- * two the kit lacks (Window, the asleep crescent) are the picture's own twins (ui/Icons). No emoji: the ask is the
- * handRaised glyph, the alarm a dot in the mark tone, asleep the crescent. Drawn, so aria-hidden.
+ * The island (design.md §4.3–4.4): one open shape over the ink canvas, never folded to the lip, four DOM bands in px from
+ * its top-left: the anchor (the face, the word, Go · Stop · Mute), the display (the head, the hero line, the kind's middle),
+ * the control row (the Say box with its placeholder, Circle · Window · Ask), the foot (the clock, the meter and its figure, or the asleep line;
+ * then the app's Console · Sleep tiles), and the phase hairline along the bottom. It wears all six kinds open: asleep is the
+ * app's quiet island (the titanium ink, `- -`, the crescent, the clock), the alarm rings over it. Every control glyph is the
+ * kit's; Window and the crescent are the drawn Mac's own (desk/Icons). A drawing of the app, so aria-hidden: the menu bar
+ * names its state in words.
  */
-export function Island({ kind, state, lipFace, swap, still, pill, asleepPill, refs }: IslandProps): ReactElement {
-  const asleep = kind === "alarm";
+export function Island({ kind, swap, still, refs }: IslandProps): ReactElement {
+  const sleeping = kind === "asleep" || kind === "alarm";
   const question = kind === "speaking";
   const working = kind === "thinking" || kind === "acting";
   return (
-    <>
-      <div className="desk-island" data-state={state} data-kind={kind} aria-hidden="true">
-        <canvas ref={refs.ink} className="desk-ink" />
-        <div className="desk-anchor">
-          <div ref={refs.eyes} className="desk-eyes">
-            <span ref={refs.eyeUnder} className="desk-eye-under">O O</span>
-            <span ref={refs.eyeTop} className="desk-eye-top">O O</span>
-          </div>
-          <div className="desk-word"><WordCrossfade text={ISLAND.word[kind]} /></div>
-          <div className="desk-go"><Glyph name={asleep ? "play" : "pause"} size={14} /></div>
-          <div className="desk-box desk-stop"><Glyph name="stop" size={14} /></div>
-          <div className={`desk-box desk-mute${asleep ? " is-dim" : ""}`}><Glyph name="mic" size={14} /></div>
+    <div className="desk-island" data-kind={kind} aria-hidden="true">
+      <canvas ref={refs.ink} className="desk-ink" />
+      <div className="desk-anchor">
+        <div ref={refs.eyes} className="desk-eyes">
+          <span ref={refs.eyeUnder} className="desk-eye-under">
+            O O
+          </span>
+          <span ref={refs.eyeTop} className="desk-eye-top">
+            O O
+          </span>
         </div>
-        <div className="desk-display" data-swap={swap ? "" : undefined}>
-          <div className="desk-head">
-            {kind === "listening" ? <canvas ref={refs.meterHead} className="desk-meter desk-meter-head" /> : null}
-            {working ? (
-              <span className="desk-head-work">
-                {ISLAND.working} · <span ref={refs.clock}>{`0:0${ISLAND.clockBase[kind]}`}</span>
-                {kind === "thinking" ? <span ref={refs.glyphs} className="desk-glyphs">{still ? ".#.#.#.#" : "        "}</span> : null}
-              </span>
-            ) : null}
-            {question ? (
-              <span className="desk-head-ask">
-                <Glyph name="handRaised" size={14} />
-                {ISLAND.headSpeaking}
-              </span>
-            ) : null}
-            {asleep ? (
-              <span className="desk-head-alarm">
-                <Glyph name="dot" size={14} />
-                {ISLAND.headAlarm}
-              </span>
-            ) : null}
-          </div>
-          <div className={`desk-hero${question ? " is-question" : ""}${asleep ? " is-mono" : ""}`}>
-            {ISLAND.hero[kind]}
-            {asleep ? <span className="desk-hero-dim">{ISLAND.alarmSub}</span> : null}
-          </div>
-          {kind === "acting" ? (
-            <div ref={refs.tiles} className="desk-tiles">
-              {ISLAND.tiles.map((tl, i) => (
-                <div key={tl.name} className="desk-tile" style={{ left: i === 0 ? 114 : 266 }}>
-                  <span className="desk-tile-name"><i /> {tl.name}</span>
-                  <span className="desk-tile-s">{tl.state} · <span className="t">0:08</span></span>
-                  <span className="desk-tile-stop" />
-                </div>
-              ))}
-            </div>
+        <div className="desk-word">
+          <WordCrossfade text={ISLAND.word[kind]} />
+        </div>
+        <div className="desk-go">
+          <Glyph name={sleeping ? "play" : "pause"} size={14} />
+        </div>
+        <div className="desk-box desk-stop">
+          <Glyph name="stop" size={14} />
+        </div>
+        <div className={`desk-box desk-mute${sleeping ? " is-dim" : ""}`}>
+          <Glyph name="mic" size={14} />
+        </div>
+      </div>
+      <div className="desk-display" data-swap={swap ? "" : undefined}>
+        <div className="desk-head">
+          {kind === "listening" ? <canvas ref={refs.meterHead} className="desk-meter desk-meter-head" /> : null}
+          {working ? (
+            <span className="desk-head-work">
+              {ISLAND.working} · <span ref={refs.clock}>{`0:0${ISLAND.clockBase[kind]}`}</span>
+              {kind === "thinking" ? (
+                <span ref={refs.glyphs} className="desk-glyphs">
+                  {still ? ".#.#.#.#" : "        "}
+                </span>
+              ) : null}
+            </span>
           ) : null}
           {question ? (
-            <>
-              <div className="desk-btn" style={{ left: 114, top: 82, width: 84 }}>{ISLAND.allow}</div>
-              <div className="desk-btn" style={{ left: 206, top: 82, width: 84 }}>{ISLAND.deny}</div>
-            </>
-          ) : null}
-          {asleep ? (
-            <>
-              <div className="desk-btn" style={{ left: 114, top: 82, width: 84 }}>{ISLAND.snooze}</div>
-              <div className="desk-btn" style={{ left: 206, top: 82, width: 84 }}>{ISLAND.done}</div>
-              <div className="desk-btn is-mono" style={{ left: 300, top: 82, width: 48 }}>{ISLAND.five}</div>
-              <div className="desk-btn is-mono" style={{ left: 356, top: 82, width: 48 }}>{ISLAND.thirty}</div>
-            </>
-          ) : null}
-          <div className="desk-say">
-            <span className="desk-say-ph">{asleep ? ISLAND.sayAsleep : ISLAND.sayAwake}</span>
-          </div>
-          <div className="desk-strip" style={{ left: 328, width: question ? 52 : 78 }}>
-            <i><Glyph name="scopeMark" size={14} /></i>
-            <i><Icon.window size={13} /></i>
-            {question ? null : <i><Glyph name="questionCircle" size={14} /></i>}
-          </div>
-        </div>
-        <div className="desk-foot" data-swap={swap ? "" : undefined}>
-          {asleep ? (
-            <span className="desk-foot-l is-wide">
-              <Icon.moon size={12} />
-              {ISLAND.footAsleep}
+            <span className="desk-head-ask">
+              <Glyph name="handRaised" size={14} />
+              {ISLAND.headSpeaking}
             </span>
+          ) : null}
+          {kind === "alarm" ? (
+            <span className="desk-head-alarm">
+              <Glyph name="dot" size={14} />
+              {ISLAND.headAlarm}
+            </span>
+          ) : null}
+          {kind === "asleep" ? (
+            <span className="desk-head-asleep">
+              <Icon.moon size={12} />
+              {ASLEEP_WORD}
+            </span>
+          ) : null}
+        </div>
+        {kind === "asleep" ? (
+          <div className="desk-hero is-clock">{ISLAND.footClock}</div>
+        ) : (
+          <div className={`desk-hero${question ? " is-question" : ""}${kind === "alarm" ? " is-mono" : ""}`}>
+            {ISLAND.hero[kind]}
+            {kind === "alarm" ? <span className="desk-hero-dim">{ISLAND.alarmSub}</span> : null}
+          </div>
+        )}
+        {kind === "acting" ? (
+          <div ref={refs.tiles} className="desk-tiles">
+            {ISLAND.tiles.map((name, i) => (
+              <div key={name} className="desk-tile" style={{ left: i === 0 ? 114 : 266 }}>
+                <span className="desk-tile-name">
+                  <i /> {name}
+                </span>
+                <span className="desk-tile-s">
+                  {ISLAND.tileState} · <span className="t">0:08</span>
+                </span>
+                <span className="desk-tile-stop" />
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {question ? (
+          <>
+            <div className="desk-btn" style={{ left: 114, top: 82, width: 84 }}>
+              {ISLAND.allow}
+            </div>
+            <div className="desk-btn" style={{ left: 206, top: 82, width: 84 }}>
+              {ISLAND.deny}
+            </div>
+          </>
+        ) : null}
+        {kind === "alarm" ? (
+          <>
+            <div className="desk-btn" style={{ left: 114, top: 82, width: 84 }}>
+              {ISLAND.snooze}
+            </div>
+            <div className="desk-btn" style={{ left: 206, top: 82, width: 84 }}>
+              {ISLAND.done}
+            </div>
+            <div className="desk-btn is-mono" style={{ left: 300, top: 82, width: 48 }}>
+              {ISLAND.five}
+            </div>
+            <div className="desk-btn is-mono" style={{ left: 356, top: 82, width: 48 }}>
+              {ISLAND.thirty}
+            </div>
+          </>
+        ) : null}
+        <div className="desk-say">
+          {kind === "listening" ? <span className="desk-caret" /> : null}
+          <span className="desk-say-ph">{sleeping ? ISLAND.sayAsleep : ISLAND.sayAwake}</span>
+        </div>
+        <div className="desk-strip" style={{ left: 328, width: question ? 52 : 78 }}>
+          <i>
+            <Glyph name="scopeMark" size={14} />
+          </i>
+          <i>
+            <Icon.window size={13} />
+          </i>
+          {question ? null : (
+            <i>
+              <Glyph name="questionCircle" size={14} />
+            </i>
+          )}
+        </div>
+      </div>
+      <div className="desk-foot" data-swap={swap ? "" : undefined}>
+        <div className="desk-foot-row">
+          {sleeping ? (
+            <>
+              <span className="desk-foot-l">
+                <Icon.moon size={12} />
+                {ASLEEP_WORD}
+              </span>
+              <span className="desk-foot-r">{ASLEEP_NEXT}</span>
+            </>
           ) : (
             <>
               <span className="desk-foot-l">{ISLAND.footClock}</span>
@@ -186,17 +209,16 @@ export function Island({ kind, state, lipFace, swap, still, pill, asleepPill, re
             </>
           )}
         </div>
-        <div className="desk-hair" />
-        <div className="desk-lipface" data-face={lipFace}>
-          <span className="desk-eye-under">{lipFace}</span>
-          <span className="desk-eye-top">{lipFace}</span>
+        <div className="desk-strip desk-strip--foot">
+          <i>
+            <Icon.console size={13} />
+          </i>
+          <i>
+            <Icon.moon size={12} />
+          </i>
         </div>
       </div>
-      <div className="desk-pill" data-on={pill ? "" : undefined} aria-hidden="true">{ISLAND.pill}</div>
-      <div className="desk-pill desk-pill--asleep" data-on={asleepPill ? "" : undefined} aria-hidden="true">
-        <Icon.moon size={12} />
-        {ISLAND.footAsleep}
-      </div>
-    </>
+      <div className="desk-hair" />
+    </div>
   );
 }

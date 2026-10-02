@@ -1,26 +1,45 @@
 /**
  * The theme is one attribute on <html>: data-theme="light" | "dark". A stored choice wins; else the
  * system, followed live while nothing is stored. data-theme-source says which ("stored" | "system").
+ * The browser chrome follows the same switch: one <meta name="theme-color">, stamped beside data-theme.
  */
 // A namespace import: this module is also read by the server layout (for THEME_BOOT), and only client
 // components call useTheme, so the hook must not pull a client-only named import into a server module.
 import * as React from "react";
 
-export const THEME_KEY = "jh-theme";
+const THEME_KEY = "jh-theme";
 export type Theme = "light" | "dark";
 
-/** Runs before paint (inlined in <head>), so the first frame already wears the right theme. */
-export const THEME_BOOT = `(function(){var d=document.documentElement,s=null,m=null;try{s=localStorage.getItem("${THEME_KEY}")}catch(e){}try{m=matchMedia("(prefers-color-scheme: dark)")}catch(e){}var st=s==="light"||s==="dark";d.dataset.theme=st?s:(m&&m.matches?"dark":"light");d.dataset.themeSource=st?"stored":"system";if(!st&&m){m.addEventListener("change",function(e){if(d.dataset.themeSource!=="stored")d.dataset.theme=e.matches?"dark":"light"})}})();`;
+/** The two grounds, `--jh-ground` light and dark (globals.css); a meta value has no token to read. */
+export const THEME_COLOR: Readonly<Record<Theme, string>> = { light: "#ffffff", dark: "#070707" };
+
+/**
+ * Runs before paint (inlined in <head>), so the first frame already wears the right theme. It also makes the
+ * page's only theme-color meta (nothing server-rendered, so hydration never sees its content change).
+ */
+export const THEME_BOOT = `(function(){var d=document.documentElement,s=null,m=null;function a(t){d.dataset.theme=t;var e=document.querySelector('meta[name="theme-color"]');if(!e){e=document.createElement("meta");e.name="theme-color";document.head.appendChild(e)}e.content=t==="dark"?"${THEME_COLOR.dark}":"${THEME_COLOR.light}"}try{s=localStorage.getItem("${THEME_KEY}")}catch(e){}try{m=matchMedia("(prefers-color-scheme: dark)")}catch(e){}var st=s==="light"||s==="dark";a(st?s:(m&&m.matches?"dark":"light"));d.dataset.themeSource=st?"stored":"system";if(!st&&m){m.addEventListener("change",function(e){if(d.dataset.themeSource!=="stored")a(e.matches?"dark":"light")})}})();`;
 
 export function readTheme(): Theme {
   if (typeof document === "undefined") return "light";
   return document.documentElement.dataset["theme"] === "dark" ? "dark" : "light";
 }
 
-/** Stamps the attribute, stores the choice, and marks the source as stored (the system listener then stands down). */
+/** THEME_BOOT's meta (made again if something dropped it), set to the ground of `theme`. */
+function stampThemeColor(theme: Theme): void {
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.name = "theme-color";
+    document.head.append(meta);
+  }
+  meta.content = THEME_COLOR[theme];
+}
+
+/** Stamps the attribute and the theme-color, stores the choice, and marks the source as stored (the system listener then stands down). */
 export function setTheme(theme: Theme): void {
   const root = document.documentElement;
   root.dataset["theme"] = theme;
+  stampThemeColor(theme);
   root.dataset["themeSource"] = "stored";
   try {
     localStorage.setItem(THEME_KEY, theme);

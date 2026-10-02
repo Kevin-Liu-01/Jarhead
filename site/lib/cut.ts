@@ -1,7 +1,7 @@
 /**
  * Cuts, never rewrites: every string on the page is a deck string from content/deck.ts or a cut of one,
- * checked here at build. `upTo` keeps the text before `marker`; `after` keeps the text after it; `head` keeps
- * the text before the first of the deck's own joiners; `sentences`, `first`, `from` and `nth` cut whole sentences.
+ * checked here at build. `upTo` keeps the text before `marker`; `after` keeps the text after it; `first`, `from`
+ * and `nth` cut whole sentences.
  * A marker that is not in the deck string is a build error.
  */
 export function upTo(text: string, marker: string): string {
@@ -22,11 +22,6 @@ export function part(text: string, piece: string): string {
   return piece;
 }
 
-export function head(text: string, markers: readonly string[] = [" · ", ", "]): string {
-  const cuts = markers.map((m) => text.indexOf(m)).filter((i) => i >= 0);
-  return cuts.length ? text.slice(0, Math.min(...cuts)) : text;
-}
-
 /** The ` · `-joined parts of a figures line. */
 export function parts(text: string): string[] {
   return text.split(" · ");
@@ -43,7 +38,7 @@ export function row<T>(rows: readonly T[], i: number): T {
  * Whole-sentence cuts: a sentence ends at a full stop followed by a space or the end; a full stop inside a
  * figure (2.0.0, $0.05) or before a closing quote ("night.") does not end one.
  */
-export function sentences(text: string): string[] {
+function sentences(text: string): string[] {
   const out: string[] = [];
   let start = 0;
   for (let i = 0; i < text.length; i++) {

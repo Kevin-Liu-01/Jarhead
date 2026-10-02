@@ -1,24 +1,19 @@
 /**
- * The page's one live state: the phase the island is cycling through (the kind and the wake beat), whether the
- * island is open, and the section in view. Written by the top engine (components/console/Top.tsx) and the left
- * rail; read by the title bar, the Session card, the composer and the blob through `useLive`. A tiny external
- * store so the engine's rAF never re-renders the page: only a kind change or a section change notifies.
+ * The page's one live state: the kind the island wears, the section in view and whether the page is still. Written by the
+ * top engine (components/site/Top.tsx) and the section spy (components/site/SectionSpy.tsx); read by the menu bar and the
+ * hero's blob through `useLive`. A tiny external store so the engine's rAF never re-renders the page: only a kind change or
+ * a section change notifies.
  */
 import { useSyncExternalStore } from "react";
-import type { BlobFrame } from "./blob";
 import type { DeskKind } from "./phase";
 
-export type Beat = "none" | "gate" | "heard";
-
-export interface LiveState {
+interface LiveState {
   readonly kind: DeskKind;
-  readonly beat: Beat;
-  readonly open: boolean;
   readonly section: string;
   readonly still: boolean;
 }
 
-const SERVER: LiveState = { kind: "listening", beat: "none", open: false, section: "", still: false };
+const SERVER: LiveState = { kind: "listening", section: "", still: false };
 let state: LiveState = SERVER;
 const subs = new Set<() => void>();
 
@@ -47,14 +42,7 @@ export function useLive(): LiveState {
   return useSyncExternalStore(subscribeLive, getLive, () => SERVER);
 }
 
-/** The phase word's kind: the wake beat's gate is asleep, its heard beat is listening. */
-export function shownKind(s: Pick<LiveState, "kind" | "beat">): DeskKind {
-  return s.beat === "gate" ? "asleep" : s.beat === "heard" ? "listening" : s.kind;
-}
-
-/** The engine registers these once it is mounted; the blob and the rail call them. */
-export const liveActions: { pick: (k: DeskKind) => void; advance: () => void; onBlobFrame: (f: BlobFrame) => void } = {
-  pick: () => undefined,
+/** The engine registers this once it is mounted; a press on the hero's blob calls it. */
+export const liveActions: { advance: () => void } = {
   advance: () => undefined,
-  onBlobFrame: () => undefined,
 };

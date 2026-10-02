@@ -4,7 +4,7 @@ import { THEME_BOOT } from "@/lib/theme";
 import "./globals.css";
 import "@/styles/kit.css";
 import "@/styles/desk.css";
-import "@/styles/console.css";
+import "@/styles/site.css";
 
 export { metadata, viewport } from "@/lib/metadata";
 
@@ -21,7 +21,7 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
   return (
     <html lang="en" className={inter.variable} suppressHydrationWarning>
       <head>
-        {/* The theme before paint: a stored choice, else the system, stamped as data-theme and data-theme-source. */}
+        {/* The theme before paint: a stored choice, else the system, stamped as data-theme, data-theme-source and the theme-color meta. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
       </head>
       <body>{children}</body>

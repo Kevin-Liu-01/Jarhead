@@ -2,7 +2,7 @@
  * The repo's star count (ITERATE.md §2): GitHub's public endpoint, no token, fetched in the server component with an
  * hour's revalidation, refreshed once on the client (lib/stars is shared by both). A failure is silent: the glyph alone.
  */
-export const STARS_URL = "https://api.github.com/repos/Kevin-Liu-01/Jarhead";
+const STARS_URL = "https://api.github.com/repos/Kevin-Liu-01/Jarhead";
 export const STARS_KEY = "jh-stars";
 
 function read(j: unknown): number | null {

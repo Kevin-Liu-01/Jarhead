@@ -6,48 +6,28 @@
  * Two canvases in the host: the field (one buffer pixel per 1.5 CSS px cell, image-rendering:
  * pixelated) and the face (full DPR, type stays crisp). The sim steps every rAF tick; the raster
  * runs at the phase's fps (60 through a blink, 24 while anything is live). Per-cell caches carry
- * the geometry whenever the body is not stretched. The loop is paused offscreen, on a hidden tab,
- * while hidden in the notch (0.5 s after) and after 20 s of static sleep; `destroy()` releases all.
+ * the geometry whenever the body is not stretched. The loop is paused offscreen, on a hidden tab and
+ * after 20 s of static sleep; `destroy()` releases all.
  *
  * The body is blue in every awake phase (ORB_STOPS) and titanium asleep / paused / muted
- * (QUIET_STOPS); the phase colour lives on the halo, read from `--jh-<phase>` once per change.
+ * (QUIET_STOPS); the phase colour lives on the halo, read from `--jh-<phase>` once per change
+ * (thinking wears the accent blue: no violet anywhere on the orb).
  */
 import { BAYER8, ORB_STOPS, QUIET_STOPS, cellCss, clamp01, lut, mix3, parseColor, smoothstep, type RGB, type Stops } from "@/lib/dither";
 import { cssVar, type Theme } from "@/lib/theme";
 import type { Phase } from "@/lib/phase";
 
-export interface BlobFrame {
-  /** The pair on screen this frame, e.g. "OO", "--", ">>". */
-  readonly pair: string;
-  readonly blinking: boolean;
-  readonly look: readonly [number, number];
-  readonly phase: Phase;
-  readonly hidden: boolean;
-}
-
 export interface BlobHandle {
   setPhase(p: Phase): void;
   setTheme(t: Theme): void;
-  hide(): void;
-  show(): void;
-  start(): void;
-  stop(): void;
-  still(): void;
   destroy(): void;
-  // b2 extras (optional for consumers):
-  resize(size: number): void;
-  onFrame(cb: (f: BlobFrame) => void): () => void;
-  frameStats(): { median: number; p90: number; n: number };
-  readonly phase: Phase;
 }
 
-export interface BlobOptions {
+interface BlobOptions {
   size: number;
   phase: Phase;
   theme: Theme;
   onPhaseAdvance?: () => void;
-  /** The flight into the notch: the translate (host px) from the resting place to the lip. */
-  flight?: { x: number; y: number };
   /** Render one frame, no loop (`#still`, reduced motion). */
   still?: boolean;
   /** Where the pointer is watched (the whole desk); default the host. */
@@ -55,7 +35,7 @@ export interface BlobOptions {
 }
 
 /** The eyes' recipe, shared with the island's anchor: bold ui-monospace, lifted 0.85 toward white, over a ground under-copy. */
-export const EYE = {
+const EYE = {
   font: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
   weight: 700,
   underScale: 1.12,
@@ -64,7 +44,7 @@ export const EYE = {
   /** The `o`'s box centre sits 0.27 em above the baseline (BlobField.swift:2017). */
   baseline: 0.27,
 };
-export function eyeInk(phase: RGB): RGB {
+function eyeInk(phase: RGB): RGB {
   return mix3(phase, [255, 255, 255], EYE.lift);
 }
 
@@ -116,14 +96,15 @@ function advance(m: Mode, dt: number): void {
   m.x = x < -m.cap ? -m.cap : x > m.cap ? m.cap : x;
 }
 
+/** The halo's colour: the phase's own token, but the orb's blue while thinking (no violet in anything orb-like). */
 function phaseColor(p: Phase): RGB {
-  const v = cssVar(`--jh-${p}`);
+  const v = cssVar(p === "thinking" ? "--jh-accent" : `--jh-${p}`);
   return v ? parseColor(v) : [90, 215, 255];
 }
 
 export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
-  let stillMode = !!o.still || (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const stillMode = !!o.still || (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
   let size = o.size;
   let cell = cellCss(1.5);
   let n = 0;
@@ -228,20 +209,12 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let blinkUntil = -1;
   let nextBlink = 3 + Math.random() * 3;
   let lastPair = P.face;
-  let hidden = false;
-  let flight: "none" | "in" | "out" = "none";
-  let flightStart = 0;
-  let quietSince = -1;
   let activeAt = 0;
-  let wanted = !stillMode;
   let visible = true;
   let raf = 0;
   let last = 0;
   let lastDraw = 0;
   let destroyed = false;
-  const listeners = new Set<(f: BlobFrame) => void>();
-  const stats: number[] = [];
-  const flightVec = o.flight ?? { x: 0, y: -400 };
 
   function resolveTheme(): void {
     const ground = cssVar("--jh-blob-ground");
@@ -316,29 +289,11 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       else if (h.a < -cap) h.a = -cap;
       h.ph += (h.d * cur.speed + gauss() * 0.12) * st;
     }
-    // Stretch: the flight's elongation, else the hover law within 1.6 R.
+    // Stretch: the hover law within 1.6 R.
     let want = 0;
     let dx = sx;
     let dy = sy;
-    if (flight !== "none") {
-      const prog = clamp01((t - flightStart) / 0.4);
-      const len = Math.hypot(flightVec.x, flightVec.y) || 1;
-      const dirx = flightVec.x / len;
-      const diry = flightVec.y / len;
-      want = 0.42 * Math.sin(Math.PI * prog);
-      dx = flight === "in" ? dirx : -dirx;
-      dy = flight === "in" ? diry : -diry;
-      if (prog >= 1) {
-        if (flight === "in") {
-          hidden = true;
-          quietSince = t;
-        }
-        flight = "none";
-        m2.v += 0.18 * TAU * m2.hz;
-        m3.v += 0.08 * TAU * m3.hz;
-        shiver += 0.8;
-      }
-    } else if (pointer && !stillMode) {
+    if (pointer && !stillMode) {
       const l = Math.hypot(pointer[0], pointer[1]);
       if (l > 3 && l < R * 1.6) {
         want = Math.min(0.35, (l / 90) * 0.35) * (1 - smoothstep(R * 1.3, R * 1.6, l));
@@ -369,7 +324,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     }
     if (pointer && !stillMode) {
       const pl = Math.hypot(pointer[0], pointer[1]);
-      if (pl < 300 && pl > 1) {
+      // The look follows the pointer across the page: within 300 px, or two and a half bodies of a big blob.
+      if (pl < Math.max(300, size * 2.5) && pl > 1) {
         const m = Math.min(1, pl / 120);
         wx = (pointer[0] / pl) * m;
         wy = (pointer[1] / pl) * m;
@@ -406,7 +362,6 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   }
 
   function draw(): void {
-    const t0 = performance.now();
     const breath = stillMode ? 1 : 1 + Math.sin(t * (1.1 + cur.speed * 1.6)) * (0.03 + cur.speed * 0.016);
     const ear = phase === "asleep" && !stillMode ? 1 + 0.18 * Math.sin((TAU * t) / 4) : 1;
     const sq = cur.squash;
@@ -530,20 +485,12 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       fg!.fillStyle = inkCss;
       fg!.fillText(ch, ex, ey);
     }
-    const cost = performance.now() - t0;
-    stats.push(cost);
-    if (stats.length > 240) stats.shift();
     if (!host.dataset["live"]) host.dataset["live"] = "1";
-    if (listeners.size) {
-      const f: BlobFrame = { pair, blinking: open < 0.3, look: [look[0], look[1]], phase, hidden };
-      for (const cb of listeners) cb(f);
-    }
   }
 
   function shouldRun(): boolean {
-    if (destroyed || stillMode || !wanted || !visible || document.hidden) return false;
-    if (hidden && quietSince >= 0 && t - quietSince > 0.5) return false;
-    if (P.quiet && flight === "none" && !pointer && t - activeAt > 20 && shiver < 0.02 && str < 0.005) return false;
+    if (destroyed || stillMode || !visible || document.hidden) return false;
+    if (P.quiet && !pointer && t - activeAt > 20 && shiver < 0.02 && str < 0.005) return false;
     return true;
   }
   function frame(now: number): void {
@@ -551,7 +498,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const dt = Math.min(0.1, (now - (last || now)) / 1000);
     last = now;
     step(dt);
-    const live = t < blinkUntil + 0.1 ? 60 : shiver > 0.03 || str > 0.01 || t - fadeAt < 0.6 || pointer || flight !== "none" ? 24 : P.fps;
+    const live = t < blinkUntil + 0.1 ? 60 : shiver > 0.03 || str > 0.01 || t - fadeAt < 0.6 || pointer ? 24 : P.fps;
     if (now - lastDraw >= 1000 / live - 2) {
       draw();
       lastDraw = now;
@@ -595,7 +542,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   // Pointer over the desk reaches the blob; a press advances the phase.
   const root = o.pointerRoot ?? host;
   const onMove = (e: PointerEvent): void => {
-    if (stillMode || hidden) return;
+    if (stillMode) return;
     const rect = host.getBoundingClientRect();
     const scale = rect.width / (size || 1) || 1;
     pointer = [(e.clientX - (rect.left + rect.width / 2)) / scale, (e.clientY - (rect.top + rect.height / 2)) / scale];
@@ -606,7 +553,6 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     pointer = null;
   };
   const onClick = (): void => {
-    if (hidden) return;
     o.onPhaseAdvance?.();
   };
   const onVis = (): void => {
@@ -636,51 +582,6 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       haloTo = phaseColor(phase);
       if (stillMode || !raf) stillFrame();
     },
-    hide() {
-      if (hidden || flight === "in") return;
-      flight = "in";
-      flightStart = t;
-      activeAt = t;
-      host.style.transition = stillMode ? "none" : "transform var(--jh-slow) var(--jh-ease-in), opacity var(--jh-quick) linear var(--jh-base)";
-      host.style.transform = `translate(${flightVec.x}px, ${flightVec.y}px) scale(0.1)`;
-      host.style.opacity = "0";
-      host.dataset["hidden"] = "1";
-      if (stillMode) {
-        hidden = true;
-        flight = "none";
-      }
-      wake();
-    },
-    show() {
-      if (!hidden && flight !== "in") return;
-      hidden = false;
-      quietSince = -1;
-      flight = "out";
-      flightStart = t;
-      activeAt = t;
-      host.style.transition = stillMode ? "none" : "transform var(--jh-slow) var(--jh-ease-out), opacity var(--jh-quick) linear";
-      host.style.transform = "";
-      host.style.opacity = "";
-      delete host.dataset["hidden"];
-      if (stillMode) {
-        flight = "none";
-        stillFrame();
-      }
-      wake();
-    },
-    start() {
-      wanted = true;
-      wake();
-    },
-    stop() {
-      wanted = false;
-      halt();
-    },
-    still() {
-      stillMode = true;
-      halt();
-      stillFrame();
-    },
     destroy() {
       destroyed = true;
       halt();
@@ -689,26 +590,9 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       root.removeEventListener("pointerleave", onLeave);
       host.removeEventListener("click", onClick);
       document.removeEventListener("visibilitychange", onVis);
-      listeners.clear();
       field.remove();
       faceCv.remove();
       delete host.dataset["live"];
-    },
-    resize(sz) {
-      alloc(sz);
-      if (stillMode || !raf) stillFrame();
-    },
-    onFrame(cb) {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
-    frameStats() {
-      const s = stats.slice().sort((a, b) => a - b);
-      const at = (q: number) => s[Math.min(s.length - 1, Math.floor(q * s.length))] ?? 0;
-      return { median: at(0.5), p90: at(0.9), n: s.length };
-    },
-    get phase() {
-      return phase;
     },
   };
   return handle;

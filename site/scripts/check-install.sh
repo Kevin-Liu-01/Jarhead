@@ -3,14 +3,14 @@
 # installed, a dry run that must exit 0 and print the plan and exactly the README's four commands
 # (README:23-29) in order, and greps for what the script must never do. Also checks that the page's
 # own words never claim a download, a .dmg or a cask (facts-product.md §5.1).
-# Wired as `pnpm -C site check:install`.
+# Run it from the repo root: `sh site/scripts/check-install.sh`.
 set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"
 site="$(cd "$here/.." && pwd)"
 root="$(cd "$site/.." && pwd)"
 script="$root/scripts/install.sh"
-content="$site/content/install.ts"
+content="$site/content/deck.ts"
 status=0
 
 ok() { printf 'check-install: ok    %s\n' "$*"; }
@@ -71,7 +71,7 @@ if grep -q '^set -eu$' "$script"; then ok "set -eu"; else bad "no set -eu"; fi
 
 # 5  the page's own words
 if [ -f "$content" ]; then
-  if grep -q -i -E 'download|\.dmg|cask' "$content"; then bad "content/install.ts claims a download, .dmg or cask"; else ok "no download, .dmg or cask in content/install.ts"; fi
+  if grep -q -i -E 'download|\.dmg|cask' "$content"; then bad "content/deck.ts claims a download, .dmg or cask"; else ok "no download, .dmg or cask in content/deck.ts"; fi
 fi
 
 exit "$status"
