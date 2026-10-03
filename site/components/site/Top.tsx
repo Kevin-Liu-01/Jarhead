@@ -1,37 +1,26 @@
 "use client";
+import { animate } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
-import { Island, type IslandRefs } from "@/components/desk/Island";
+import { Island, islandFace, type IslandRefs } from "@/components/desk/Island";
 import { ISLAND } from "@/content/island";
 import { BAYER8, QUIET_STOPS, cellCss, ditherGlyphs, mix3, parseColor, renderMeter, type RGB } from "@/lib/dither";
 import { renderIslandInk } from "@/lib/island";
-import { getLive, liveActions, setLive, subscribeLive } from "@/lib/live";
-import { DESK_KINDS, type DeskKind } from "@/lib/phase";
-import { cssVar, isStill, subscribeTheme } from "@/lib/theme";
+import { getLive, resolveShow, setLive, subscribeLive, type Show } from "@/lib/live";
+import { SPRING, useCalm } from "@/lib/motion";
+import type { DeskKind } from "@/lib/phase";
+import { cssVar, subscribeTheme } from "@/lib/theme";
 import { MenuBar } from "./MenuBar";
 import { SECTION_KIND } from "./sections";
 
-/** The timeline (design.md §4.5) over the hero: listening 6 → thinking 3 → acting 6 → speaking 5 → asleep 4 → alarm 5 → listening. Never a fold. */
-const SEGS: ReadonlyArray<{ kind: DeskKind; dur: number }> = [
-  { kind: "listening", dur: 6 },
-  { kind: "thinking", dur: 3 },
-  { kind: "acting", dur: 6 },
-  { kind: "speaking", dur: 5 },
-  { kind: "asleep", dur: 4 },
-  { kind: "alarm", dur: 5 },
-];
-const CYCLE = SEGS.reduce((s, x) => s + x.dur, 0);
-/** Docked on Sleep the island plays asleep, then the alarm that still rings, and again. */
-const NIGHT = { asleep: 4, alarm: 5 } as const;
-const HOLD_MS = 15000;
 const SWAP_MS = 160; // --jh-quick
 const NOTCH = 185;
 const WING = 40;
 const ISL_H = 184;
 
-/** The island's face per kind: the round eyes listening, the flat pair thinking and asleep, `o o` acting (the eyes look along the travel), `^ ^` speaking. */
+/** The island's face per kind: round eyes listening, the flat pair thinking and asleep, `o o` acting and ringing, `^ ^` speaking. */
 const ISLAND_FACE: Record<DeskKind, string> = { listening: "O O", thinking: "- -", acting: "o o", speaking: "^ ^", asleep: "- -", alarm: "o o" };
 const BLINKS = new Set<DeskKind>(["listening", "alarm"]);
-/** The island's hairline and the tint in its eyes: the phase tone, but the orb's own blue while thinking (no violet in anything orb-like). */
+/** The island's hairline and eye tint: the phase tone, but the orb's own blue while thinking (no violet in anything orb-like). */
 const ISLAND_TONE: Record<DeskKind, `--jh-${string}`> = {
   listening: "--jh-listening",
   thinking: "--jh-accent",
@@ -49,36 +38,16 @@ function over(token: string, ground: RGB): RGB {
   return mix3(ground, parseColor(raw), Number.isFinite(a) ? a : 1);
 }
 
-/** The island's meters (NotchPanel.swift drawBar): the screen's fg-2 and active tones over the island ground; the island is a screen in both themes. */
+/** The island's meters: the screen's fg-2 and active tones over the island ground; the island is a screen in both themes. */
 function islandInk(): { fill: RGB; track: RGB } {
   const ground = parseColor(cssVar("--jh-island-ground"));
   return { fill: over("--jh-screen-fg-2", ground), track: over("--jh-screen-active", ground) };
 }
 
-function locate(pos: number): { idx: number; local: number } {
-  let acc = 0;
-  for (let i = 0; i < SEGS.length; i++) {
-    const d = SEGS[i]!.dur;
-    if (pos < acc + d) return { idx: i, local: pos - acc };
-    acc += d;
-  }
-  return { idx: 0, local: pos };
-}
-
-function segStart(kind: DeskKind): number {
-  let acc = 0;
-  for (const s of SEGS) {
-    if (s.kind === kind) return acc;
-    acc += s.dur;
-  }
-  return 0;
-}
-
 /**
- * The dissolve under the bar: the page's ground solid down past the docked island's foot, then an 8×8 Bayer dissolve to
- * nothing, in 3 px cells, so content scrolling up thins out in the family's dots before it reaches the island and never
- * shows as slivers beside it. Sized from its CSS box (styles/site.css .top-fade), solid to 4 px past `foot` (the docked
- * island's height as the engine measures it from the dock probe), re-inked on a theme flip.
+ * The dissolve under the bar once the island has docked: the page's ground solid down past the island's foot, then an
+ * 8×8 Bayer dissolve to nothing in one-device-pixel cells. At that grain the dither reads as a fade: words and the ink
+ * plates thin out before they reach the island, and none of them breaks into a checkerboard.
  */
 function paintFade(cv: HTMLCanvasElement, foot: number): void {
   const box = cv.parentElement;
@@ -86,7 +55,7 @@ function paintFade(cv: HTMLCanvasElement, foot: number): void {
   const w = box.clientWidth;
   const h = box.clientHeight;
   const solid = foot + 4;
-  const cell = cellCss(3);
+  const cell = 1 / (window.devicePixelRatio || 1);
   const nx = Math.max(1, Math.ceil(w / cell));
   const ny = Math.max(1, Math.ceil(h / cell));
   cv.width = nx;
@@ -110,20 +79,22 @@ function paintFade(cv: HTMLCanvasElement, foot: number): void {
 }
 
 /**
- * The sticky top (SCRATCH.md "The top is sticky and always visible"): the Mac's menu bar edge to edge with the notch cut out of
- * it, and the island hanging from the notch with the blob's face in its anchor band, fixed over the page at every scroll
- * position and never folded. Over the hero it hangs at the hero scale; as the page scrolls its foot travels up with the page
- * (the scale falls by the scroll over 184 px) until it docks at the compact scale, so nothing in the hero ever passes under
- * it. Docked, the dissolve shows under the bar and the island wears the kind of the section in view. Over the hero it runs
- * the one timeline the page reads (lib/live.ts): the kinds cycle, Working counts, the meters tick, the ink breathes, the face blinks and turns to the pointer. `#still` and reduced motion give one pose per section
- * and step the scale.
+ * The sticky top: the Mac's menu bar edge to edge with the notch cut out of it, and the island hanging from the notch,
+ * fixed over the page at every scroll position and never folded. Over the hero it hangs at the hero scale; as the page
+ * scrolls its foot travels up with the page until it docks at the compact scale, and the dissolve shows under the bar.
+ * It wears what the visitor is doing (lib/live.ts resolveShow): the hero blob's claim over the hero, then the claim of the
+ * demo in view (its kind, its line, its question, its tiles, the foot, the clock), or that section's own kind. A new kind
+ * fades the content out over --jh-quick and lands with the island settling on the spring from its top edge. Its ink
+ * breathes, its meters tick, its face blinks and turns to the pointer, at 8 fps while the tab is visible. Calm (reduced
+ * motion, `#still`): one pose per change and a stepped scale.
  */
 export function Top({ stars }: { readonly stars: number | null }): ReactElement {
-  const [still, setStill] = useState(false);
-  const [kind, setKind] = useState<DeskKind>("listening");
-  const [shown, setShown] = useState<DeskKind>("listening");
+  const still = useCalm();
+  const [kind, setKind] = useState<DeskKind>("asleep");
+  const [view, setView] = useState<Show>({ kind: "asleep" });
   const [swap, setSwap] = useState(false);
   const top = useRef<HTMLElement>(null);
+  const scaleBox = useRef<HTMLDivElement>(null);
   const fade = useRef<HTMLCanvasElement>(null);
   const probeHero = useRef<HTMLElement>(null);
   const probeDock = useRef<HTMLElement>(null);
@@ -136,59 +107,87 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       clock: { current: null },
       tiles: { current: null },
       eyes: { current: null },
-      eyeTop: { current: null },
-      eyeUnder: { current: null },
+      face: { current: null },
     }),
     [],
   );
   const tl = useRef({
-    pos: 0,
-    last: 0,
     raf: 0,
-    hold: 0,
-    seg: -1,
     running: false,
-    swapAt: 0,
-    pending: null as DeskKind | null,
-    inkAt: 0,
+    swapT: 0,
+    want: { kind: "asleep" } as Show,
+    since: 0,
     inkScale: 0,
     blinkAt: 0,
     blinkUntil: 0,
-    shown: "listening" as DeskKind,
-    kind: "listening" as DeskKind,
+    shown: "asleep" as DeskKind,
+    kind: "asleep" as DeskKind,
     docked: false,
-    spyAt: 0,
     scale: 1,
     s0: 1,
-    s1: 0.66,
+    s1: 0.62,
     pointerNear: false,
+    turn: 0,
+    face: "",
     ink: null as { fill: RGB; track: RGB } | null,
   });
   const meterInk = useCallback(() => (tl.current.ink ??= islandInk()), []);
   const style = { "--desk-phase": `var(${ISLAND_TONE[kind]})` } as CSSProperties;
 
-  const applyKind = useCallback((next: DeskKind, now: number) => {
+  // A new kind lands: the content that faded out comes back as the new kind's, and the island settles on the spring,
+  // hung from the notch (its transform origin is its top edge, styles/desk.css), so it never leaves the notch.
+  const commit = useCallback((next: Show, calm: boolean) => {
     const s = tl.current;
-    if (next === s.kind) return;
-    s.kind = next;
-    setKind(next);
-    setLive({ kind: next });
-    if (next !== s.shown) {
-      s.pending = next;
-      s.swapAt = now + SWAP_MS;
-      setSwap(true);
+    const changed = s.shown !== next.kind;
+    s.shown = next.kind;
+    setView(next);
+    setSwap(false);
+    if (changed && !calm) {
+      const isl = scaleBox.current?.querySelector<HTMLElement>(".desk-island");
+      if (isl) void animate(isl, { scale: [0.965, 1] }, SPRING);
     }
   }, []);
 
-  const commitShown = useCallback((k: DeskKind) => {
+  // What the island wears: resolved from the live state on every change (a section crossing, a demo's step, the hero
+  // blob). The same kind updates in place; a new kind fades the content out over --jh-quick, then lands.
+  useEffect(() => {
     const s = tl.current;
-    s.shown = k;
-    s.pending = null;
-    setShown(k);
-    setSwap(false);
-  }, []);
+    const follow = () => {
+      const next = resolveShow(getLive(), SECTION_KIND);
+      s.want = next;
+      if (next.kind !== s.kind) {
+        s.kind = next.kind;
+        s.since = performance.now();
+        setKind(next.kind);
+        setLive({ kind: next.kind });
+      }
+      if (next.kind === s.shown) {
+        if (s.swapT) {
+          window.clearTimeout(s.swapT);
+          s.swapT = 0;
+        }
+        setSwap(false);
+        setView(next);
+        return;
+      }
+      if (still) return commit(next, true);
+      if (s.swapT) return;
+      setSwap(true);
+      s.swapT = window.setTimeout(() => {
+        s.swapT = 0;
+        commit(s.want, false);
+      }, SWAP_MS);
+    };
+    follow();
+    const off = subscribeLive(follow);
+    return () => {
+      off();
+      if (s.swapT) window.clearTimeout(s.swapT);
+      s.swapT = 0;
+    };
+  }, [commit, still]);
 
-  // The island's ink at the scale it is drawn at, so a cell is 1.5 CSS px on screen at any scale (and breathing at 8 fps from the loop).
+  // The island's ink at the scale it is drawn at, so a cell is 1.5 CSS px on screen at any scale.
   const paintInk = useCallback(
     (breath: number) => {
       const cv = refs.ink.current;
@@ -202,24 +201,23 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
   );
   useEffect(() => {
     paintInk(0.5);
-  }, [paintInk, shown]);
+  }, [paintInk, view.kind]);
 
-  // The scale: the hero's (measured from its CSS probe) falling with the scroll to the docked one; reduced motion steps it.
+  // The scale: the hero's (measured from its CSS probe) falling with the scroll to the docked one; calm steps it.
   useEffect(() => {
     const s = tl.current;
     const el = top.current;
     if (!el) return;
     let raf = 0;
-    const stepped = isStill();
     const measure = () => {
       s.s0 = (probeHero.current?.offsetHeight ?? ISL_H) / ISL_H || 1;
-      s.s1 = Math.min(s.s0, (probeDock.current?.offsetHeight ?? ISL_H * 0.66) / ISL_H || 0.66);
+      s.s1 = Math.min(s.s0, (probeDock.current?.offsetHeight ?? ISL_H * 0.62) / ISL_H || 0.62);
     };
     const apply = () => {
       raf = 0;
       const y = Math.max(0, window.scrollY);
       const travel = ISL_H * (s.s0 - s.s1);
-      const sc = stepped ? (y < travel / 2 ? s.s0 : s.s1) : Math.max(s.s1, s.s0 - y / ISL_H);
+      const sc = still ? (y < travel / 2 ? s.s0 : s.s1) : Math.max(s.s1, s.s0 - y / ISL_H);
       s.scale = sc;
       el.style.setProperty("--top-s", sc.toFixed(4));
       const docked = sc <= s.s1 + 0.001 && y > 0;
@@ -244,7 +242,10 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     measure();
     apply();
     inkFade();
-    const offTheme = subscribeTheme(inkFade);
+    const offTheme = subscribeTheme(() => {
+      tl.current.ink = null;
+      inkFade();
+    });
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onResize);
     return () => {
@@ -253,41 +254,38 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       window.removeEventListener("resize", onResize);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [paintInk]);
+  }, [paintInk, still]);
 
-  // Meters and the still glyphs when the shown kind changes.
+  // Meters and the still glyphs when the shown kind or the claim's meter changes.
+  const footMeter = view.meter;
   useEffect(() => {
     const { fill, track } = meterInk();
     if (refs.meterHead.current) renderMeter(refs.meterHead.current, { width: 100, height: 6, fraction: 0.68, fill, track });
-    if (refs.meterFoot.current) renderMeter(refs.meterFoot.current, { width: 64, height: 6, fraction: 0.84, fill, track });
+    if (refs.meterFoot.current) renderMeter(refs.meterFoot.current, { width: 64, height: 6, fraction: footMeter ?? 0.84, fill, track });
     if (still && refs.glyphs.current) refs.glyphs.current.textContent = ditherGlyphs(8, 1, 0, true)[0] ?? "";
-  }, [shown, still, meterInk, refs.meterHead, refs.meterFoot, refs.glyphs]);
+  }, [view.kind, footMeter, still, meterInk, refs.meterHead, refs.meterFoot, refs.glyphs]);
 
-  // The island's eyes: the kind's own face, written straight to the DOM (no re-render per frame).
+  // The island's eyes: the kind's own face (lib/eyes.ts, as SVG), shut for a blink and turned with the pointer, written
+  // straight to the DOM (no re-render per frame) and only when the pose changes.
   const setEyes = useCallback(
-    (pair: string) => {
-      if (refs.eyeTop.current && refs.eyeTop.current.textContent !== pair) {
-        refs.eyeTop.current.textContent = pair;
-        if (refs.eyeUnder.current) refs.eyeUnder.current.textContent = pair;
-      }
+    (pair: string, open = 1) => {
+      const svg = refs.face.current;
+      if (!svg) return;
+      const s = tl.current;
+      const key = `${pair}|${open}|${s.turn}`;
+      if (s.face === key) return;
+      s.face = key;
+      svg.innerHTML = islandFace(pair, { open, sparkle: 0, turn: s.turn });
     },
-    [refs.eyeTop, refs.eyeUnder],
+    [refs.face],
   );
   useEffect(() => {
     setEyes(ISLAND_FACE[kind]);
   }, [kind, setEyes]);
 
-  // The pointer turns the island's eyes by ±8 / ±5 px; away from it they rest centred.
-  const restEyes = useCallback(() => {
-    const eyes = refs.eyes.current;
-    if (!eyes) return;
-    eyes.style.transform = "";
-  }, [refs.eyes]);
+  // The pointer turns the island's eyes by ±8 / ±5 px; away from it, and once calm, they rest centred.
   useEffect(() => {
-    tl.current.pointerNear = false;
-    restEyes();
-  }, [kind, restEyes]);
-  useEffect(() => {
+    if (still) return;
     const move = (e: PointerEvent) => {
       const eyes = refs.eyes.current;
       if (!eyes) return;
@@ -296,85 +294,46 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       const x = (e.clientX - r.left) / sc;
       const y = (e.clientY - r.top) / sc;
       const l = Math.hypot(x, y);
+      const s = tl.current;
       if (l < 900 && l > 1) {
         const m = Math.min(1, l / 160);
         eyes.style.transform = `translate(${((x / l) * m * 8).toFixed(1)}px, ${((y / l) * m * 5).toFixed(1)}px)`;
-        tl.current.pointerNear = true;
-      } else if (tl.current.pointerNear) {
-        tl.current.pointerNear = false;
-        restEyes();
+        s.pointerNear = true;
+        s.turn = Math.round((x / l) * m * 10) / 10;
+      } else if (s.pointerNear) {
+        s.pointerNear = false;
+        s.turn = 0;
+        eyes.style.transform = "";
       }
     };
     window.addEventListener("pointermove", move, { passive: true });
-    return () => window.removeEventListener("pointermove", move);
-  }, [refs.eyes, restEyes]);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      tl.current.pointerNear = false;
+      tl.current.turn = 0;
+      if (refs.eyes.current) refs.eyes.current.style.transform = "";
+    };
+  }, [refs.eyes, still]);
 
-  // The timeline: one rAF, played while the tab is visible.
+  // The loop: 8 fps for the ink's breath, the head's level trace, the glyph ticker, Working's clock and the blink (one
+  // tick shut). Each tick waits 125 ms, then takes the next frame, so nothing runs between ticks. Calm stops it at rest.
   useEffect(() => {
+    if (still) return;
     const s = tl.current;
-    const stillNow = isStill();
-    setStill(stillNow);
-    setLive({ still: stillNow });
-    if (stillNow) {
-      // One pose that still follows the section in view, done once per section change.
-      const follow = () => {
-        const want = SECTION_KIND[getLive().section];
-        const k: DeskKind = want === "asleep" ? "alarm" : (want ?? SEGS[locate(s.pos).idx]!.kind);
-        applyKind(k, performance.now());
-        if (s.pending) commitShown(s.pending);
-      };
-      follow();
-      return subscribeLive(follow);
-    }
-    let wantWas: DeskKind | undefined;
+    let wait = 0;
     const frame = (now: number) => {
       s.raf = 0;
-      const dt = Math.min(0.1, (now - (s.last || now)) / 1000);
-      s.last = now;
-      let local: number;
-      const want = SECTION_KIND[getLive().section];
-      if (want) {
-        if (want !== wantWas) {
-          wantWas = want;
-          s.spyAt = now;
-        }
-        let k: DeskKind = want;
-        local = (now - s.spyAt) / 1000;
-        if (want === "asleep") {
-          const t = local % (NIGHT.asleep + NIGHT.alarm);
-          k = t < NIGHT.asleep ? "asleep" : "alarm";
-        }
-        applyKind(k, now);
-        s.seg = -1;
-      } else {
-        wantWas = undefined;
-        const held = now < s.hold;
-        const at = locate(s.pos);
-        s.pos = held ? Math.min(s.pos + dt, segStart(SEGS[at.idx]!.kind) + SEGS[at.idx]!.dur - 0.001) : (s.pos + dt) % CYCLE;
-        const found = locate(s.pos);
-        local = found.local;
-        if (found.idx !== s.seg) {
-          s.seg = found.idx;
-          applyKind(SEGS[found.idx]!.kind, now);
-        }
+      const t = now / 1000;
+      paintInk(0.5 + 0.5 * Math.sin((2 * Math.PI * t) / (s.shown === "asleep" ? 8 : 4)));
+      const gl = refs.glyphs.current;
+      if (gl) gl.textContent = ditherGlyphs(8, 1, Math.floor(now / 125) % 8)[0] ?? "";
+      const mh = refs.meterHead.current;
+      if (mh) {
+        const { fill, track } = meterInk();
+        renderMeter(mh, { width: 100, height: 6, fraction: 0.55 + 0.2 * Math.sin(t * 3.1) + 0.12 * Math.sin(t * 7.3), fill, track });
       }
-      if (s.pending && now >= s.swapAt) commitShown(s.pending);
-      // 8 fps: the ink's breath (asleep breathes over 8 s), the head's level trace, the glyph ticker.
-      if (now - s.inkAt >= 125) {
-        s.inkAt = now;
-        const t = now / 1000;
-        paintInk(0.5 + 0.5 * Math.sin((2 * Math.PI * t) / (s.shown === "asleep" ? 8 : 4)));
-        const gl = refs.glyphs.current;
-        if (gl) gl.textContent = ditherGlyphs(8, 1, Math.floor(now / 125) % 8)[0] ?? "";
-        const mh = refs.meterHead.current;
-        if (mh) {
-          const { fill, track } = meterInk();
-          renderMeter(mh, { width: 100, height: 6, fraction: 0.55 + 0.2 * Math.sin(t * 3.1) + 0.12 * Math.sin(t * 7.3), fill, track });
-        }
-      }
-      // Working · m:ss counts from the kind's base.
       if (s.shown === "thinking" || s.shown === "acting") {
-        const sec = ISLAND.clockBase[s.shown] + Math.floor(local);
+        const sec = ISLAND.clockBase[s.shown] + Math.floor((now - s.since) / 1000);
         const txt = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
         const ck = refs.clock.current;
         if (ck && ck.textContent !== txt) {
@@ -384,22 +343,29 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
           });
         }
       }
-      // The face: the kind's own, with a 120 ms blink every 3 to 6 s on the round eyes.
       if (BLINKS.has(s.kind)) {
         if (now >= s.blinkAt) {
           s.blinkUntil = now + 120;
           s.blinkAt = now + 3000 + Math.random() * 3000;
         }
-        setEyes(now < s.blinkUntil ? "- -" : ISLAND_FACE[s.kind]);
+        setEyes(ISLAND_FACE[s.kind], now < s.blinkUntil ? 0 : 1);
       } else setEyes(ISLAND_FACE[s.kind]);
-      if (s.running && !document.hidden) s.raf = requestAnimationFrame(frame);
+      next();
+    };
+    const next = () => {
+      if (wait || s.raf || !s.running || document.hidden) return;
+      wait = window.setTimeout(() => {
+        wait = 0;
+        if (s.running && !document.hidden) s.raf = requestAnimationFrame(frame);
+      }, 125);
     };
     const play = () => {
-      if (s.raf || !s.running || document.hidden) return;
-      s.last = 0;
+      if (wait || s.raf || !s.running || document.hidden) return;
       s.raf = requestAnimationFrame(frame);
     };
     const pause = () => {
+      window.clearTimeout(wait);
+      wait = 0;
       if (s.raf) cancelAnimationFrame(s.raf);
       s.raf = 0;
     };
@@ -411,33 +377,10 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       s.running = false;
       document.removeEventListener("visibilitychange", vis);
       pause();
+      paintInk(0.5);
+      setEyes(ISLAND_FACE[s.kind]);
     };
-  }, [applyKind, commitShown, meterInk, paintInk, refs, setEyes]);
-
-  // A press on the hero blob steps the island to the next kind and holds it there for a while.
-  const pick = useCallback(
-    (k: DeskKind) => {
-      const s = tl.current;
-      const now = performance.now();
-      s.pos = segStart(k);
-      s.hold = now + HOLD_MS;
-      s.seg = -1;
-      if (still) {
-        applyKind(k, now);
-        if (s.pending) commitShown(s.pending);
-      }
-    },
-    [still, applyKind, commitShown],
-  );
-  useEffect(() => {
-    liveActions.advance = () => {
-      const i = DESK_KINDS.indexOf(tl.current.kind);
-      pick(DESK_KINDS[(i + 1) % DESK_KINDS.length] ?? "listening");
-    };
-    return () => {
-      liveActions.advance = () => undefined;
-    };
-  }, [pick]);
+  }, [meterInk, paintInk, refs, setEyes, still]);
 
   return (
     <header ref={top} className="top desk" style={style} data-still={still ? "" : undefined} data-kind={kind}>
@@ -445,8 +388,8 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
         <canvas ref={fade} width={1} height={1} />
       </div>
       <MenuBar stars={stars} />
-      <div className="top-scale">
-        <Island kind={shown} swap={swap} still={still} refs={refs} />
+      <div ref={scaleBox} className="top-scale">
+        <Island kind={view.kind} swap={swap} still={still} refs={refs} show={view} />
       </div>
       <i ref={probeHero} className="top-probe top-probe--hero" aria-hidden="true" />
       <i ref={probeDock} className="top-probe top-probe--dock" aria-hidden="true" />

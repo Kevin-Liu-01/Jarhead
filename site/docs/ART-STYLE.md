@@ -1,3 +1,6 @@
+> HISTORY (retired 2026-10-02). The 2.5D stack this file describes is gone from the page; the law for the drawings is
+> `DIAGRAM-STYLE.md`. Kept to show what was tried; never draw from it.
+
 # ART-STYLE · THE 2.5D STACK, FILLED, THE BLOB IN IT (the law for the section pictures, 2026-10-01, round two, finished)
 
 The system every section picture is drawn in. All of the page's drawings are finished: `components/art/{Wake,Say,Hands,

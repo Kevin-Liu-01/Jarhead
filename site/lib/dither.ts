@@ -9,7 +9,7 @@ export type RGB = readonly [number, number, number];
 export type Stops = ReadonlyArray<readonly [number, RGB]>;
 
 /** The raw ranks (0…63) of the 8×8 Bayer matrix, row-major (Dither.swift:127; dither.ts:50-59). */
-export const BAYER8_RANKS: readonly number[] = [
+const BAYER8_RANKS: readonly number[] = [
   0, 32, 8, 40, 2, 34, 10, 42,
   48, 16, 56, 24, 50, 18, 58, 26,
   12, 44, 4, 36, 14, 46, 6, 38,
@@ -84,6 +84,26 @@ export function quantise(v: number, levels: number, t: number): number {
 export function cellCss(pt: number, dpr?: number): number {
   const d = dpr ?? (typeof window === "undefined" ? 1 : window.devicePixelRatio || 1);
   return Math.max(1, Math.round(d * pt)) / d;
+}
+
+/**
+ * Calls `fn` whenever the device pixel ratio changes (the window moves to another display, the browser zooms), so a
+ * canvas sized in device px can re-size; the query is re-armed at each new ratio. Returns the unsubscribe.
+ */
+export function watchDpr(fn: () => void): () => void {
+  if (typeof window === "undefined" || typeof matchMedia !== "function") return () => undefined;
+  let mq: MediaQueryList | null = null;
+  function arm(): void {
+    mq?.removeEventListener("change", changed);
+    mq = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    mq.addEventListener("change", changed);
+  }
+  function changed(): void {
+    arm();
+    fn();
+  }
+  arm();
+  return () => mq?.removeEventListener("change", changed);
 }
 
 /** `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb(…)`, `rgba(…)` → RGB (alpha dropped). Anything else → ink. */

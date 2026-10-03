@@ -1,8 +1,10 @@
 import type { Metadata, Viewport } from "next";
+import { ALT, FOOTER, HERO } from "@/content/deck";
+import { first, parts } from "@/lib/cut";
 
 /**
- * The page's metadata, in one place; `app/layout.tsx` re-exports both. The words are the
- * deck's (COPY.md:251, COPY.md:36, COPY.md:40, COPY.md:268); the OG picture is `/og.png`
+ * The page's metadata, in one place; `app/layout.tsx` re-exports both. The words are read
+ * from content/deck.ts (FOOTER, HERO, ALT), never typed here; the OG picture is `/og.png`
  * (`app/og.png/route.tsx`), the favicons are `scripts/make-icons.mts`'s output, the
  * manifest is `app/manifest.ts`. `app/icon.png` and `app/apple-icon.png` are Next's file
  * conventions, but Next links them only when `icons` is unset, so they are named in `icons`
@@ -10,12 +12,12 @@ import type { Metadata, Viewport } from "next";
  */
 
 const SITE_URL = "https://jarhead.kevinliu.studio";
-export const SITE_NAME = "Jarhead";
+export const SITE_NAME = FOOTER.brand;
 
-/** The footer line, the lead's first sentence, then three parts of the figures line. 125 characters. */
-export const DESCRIPTION = "A voice-first Mac assistant that uses the computer for you. Say jarhead, pass Touch ID, talk. MIT · macOS 14+ · Apple silicon";
+/** The footer line, the lead's first sentence, then three parts of the figures line. 125 characters today. */
+export const DESCRIPTION = `${FOOTER.line1} ${first(HERO.lead, 1)} ${parts(HERO.figures).slice(1, 4).join(" · ")}`;
 
-const OG_IMAGE = { url: "/og.png", width: 1200, height: 630, alt: "The dithered orb over an ink field.", type: "image/png" } as const;
+const OG_IMAGE = { url: "/og.png", width: 1200, height: 630, alt: ALT.banner, type: "image/png" } as const;
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -50,7 +52,7 @@ export const metadata: Metadata = {
   },
 };
 
-// No `themeColor`: the one theme-color meta is THEME_BOOT's (lib/theme.ts), so it follows html[data-theme].
+// No `themeColor`: the one theme-color meta is the boot script's (lib/theme.ts themeBoot), so it follows html[data-theme].
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,

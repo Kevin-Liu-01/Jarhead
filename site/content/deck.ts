@@ -229,8 +229,16 @@ export const FOOTER = {
   licence: "MIT.", // README:554
 } as const;
 
-/** Alt text (COPY.md "Alt text"), one line per render the build keeps. */
+/** Alt text (COPY.md "Alt text"): the one render the build keeps, the banner's field under /og.png. */
 export const ALT = {
-  blobGate: "The wake gate. Touch ID or passphrase.", // README:171
-  consoleThreads: "The Console during a split. Slack asks before it sends.", // README:122-127
+  banner: "The dithered orb over an ink field.", // README:2
+} as const;
+
+/**
+ * UI (LANDING.md "Copy"): the control verbs the deck does not have, at most six, verbs only. Every other control on the
+ * page is an icon or a deck word.
+ */
+export const UI = {
+  replay: "Replay", // every demo: back to its first frame
+  hold: "Hold", // Wake: the Touch ID pad passes on a held press
 } as const;

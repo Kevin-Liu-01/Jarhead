@@ -9,6 +9,8 @@ const PLATE_COPIED = INSTALL.copied;
 
 /** The confirmed word holds for one pulse (--jh-pulse, 1.6 s). */
 const HOLD_MS = 1600;
+/** Said on the window after any copy lands: the blob asleep at the end of Install's h2 wakes on it (InstallBlob.tsx). */
+export const COPIED_EVENT = "jh:copied";
 
 interface CopyButtonProps {
   readonly text: string;
@@ -76,17 +78,19 @@ function useHeld(ms: number): readonly [boolean, () => void] {
 
 /**
  * The kit's natural spent (facts-kit.md §1.3): Copy (primary or ghost) → Copied (spent, its deed done) for 1.6 s,
- * one width through the change, the polite live region announcing it. The glyph swaps copy → checkmark.
+ * one width through the change, the polite live region announcing it. The icon swaps copy → checkCircle.
  */
 export function CopyButton({ text, kind = "primary", size = 32 }: CopyButtonProps) {
   const [done, arm] = useHeld(HOLD_MS);
   const onClick = () => {
     void copyText(text).then((ok) => {
-      if (ok) arm();
+      if (!ok) return;
+      arm();
+      window.dispatchEvent(new Event(COPIED_EVENT));
     });
   };
   return (
-    <Button kind={done ? "spent" : kind} size={size} glyph={done ? "checkmark" : "copy"} hold={done ? PLATE_COPY : PLATE_COPIED} ariaLabel={`${PLATE_COPY}: ${text}`} onClick={onClick}>
+    <Button kind={done ? "spent" : kind} size={size} icon={done ? "checkCircle" : "copy"} hold={done ? PLATE_COPY : PLATE_COPIED} ariaLabel={`${PLATE_COPY}: ${text}`} onClick={onClick}>
       {done ? PLATE_COPIED : PLATE_COPY}
     </Button>
   );

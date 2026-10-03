@@ -1,34 +1,75 @@
 /**
- * The page's one live state: the kind the island wears, the section in view and whether the page is still. Written by the
- * top engine (components/site/Top.tsx) and the section spy (components/site/SectionSpy.tsx); read by the menu bar and the
- * hero's blob through `useLive`. A tiny external store so the engine's rAF never re-renders the page: only a kind change or
- * a section change notifies.
+ * The page's one live state, so the island at the top answers what the visitor does. Every demo claims the island for its
+ * own section with a Show: the kind, and where the flow says so the line it heard or says, its question, the thread tiles,
+ * the foot's figure and the clock. The hero's blob claims it for the hero. The section spy writes the section in view, and
+ * a claim shows only while its own section is in view (`resolveShow`), so the island never wears another demo's state. A
+ * section whose demo has claimed nothing wears its own kind with nothing heard. A tiny external store, so the top engine's
+ * rAF never re-renders the page: only a change notifies.
  */
 import { useSyncExternalStore } from "react";
 import type { DeskKind } from "./phase";
 
-interface LiveState {
-  readonly kind: DeskKind;
-  readonly section: string;
-  readonly still: boolean;
+/** A thread tile on the island: the app's tile name and where its thread stands. */
+export interface Tile {
+  readonly name: string;
+  readonly state: "working" | "asks" | "done" | "stopped";
 }
 
-const SERVER: LiveState = { kind: "listening", section: "", still: false };
+/** What a demo puts on the island. Every string is a deck, island or rail string, or a cut of one. */
+export interface Show {
+  readonly kind: DeskKind;
+  /** The island's big line: what it heard, or what it says. Absent, the island has heard nothing yet. */
+  readonly line?: string;
+  /** Speaking only: the island asks its own question (the Slack send) with Allow and Deny. */
+  readonly ask?: boolean;
+  /** The asking demo's own answer, so the island's Allow and Deny decide it too; absent, they are only drawn. */
+  readonly answer?: (yes: boolean) => void;
+  /** Acting: the thread tiles. */
+  readonly tiles?: readonly Tile[];
+  /** The foot's figure (`7.2 min · $0.36`) and the meter beside it, 0 to 1. */
+  readonly foot?: string;
+  readonly meter?: number;
+  /** The clock: the asleep island's big line, and the foot's clock. */
+  readonly clock?: string;
+}
+
+interface LiveState {
+  /** The kind the island wears, as the top engine resolved it (the menu bar names it). */
+  readonly kind: DeskKind;
+  /** The section in view ("" over the hero). */
+  readonly section: string;
+  /** Each owner's claim: a section id, or "hero". */
+  readonly claims: Readonly<Record<string, Show>>;
+}
+
+const SERVER: LiveState = { kind: "asleep", section: "", claims: {} };
 let state: LiveState = SERVER;
 const subs = new Set<() => void>();
+
+function emit(): void {
+  for (const cb of subs) cb();
+}
 
 export function getLive(): LiveState {
   return state;
 }
 
-export function setLive(patch: Partial<LiveState>): void {
-  let changed = false;
-  for (const k of Object.keys(patch) as (keyof LiveState)[]) {
-    if (patch[k] !== undefined && patch[k] !== state[k]) changed = true;
-  }
-  if (!changed) return;
+export function setLive(patch: Partial<Pick<LiveState, "kind" | "section">>): void {
+  if ((patch.kind === undefined || patch.kind === state.kind) && (patch.section === undefined || patch.section === state.section)) return;
   state = { ...state, ...patch };
-  for (const cb of subs) cb();
+  emit();
+}
+
+function same(a: Show | undefined, b: Show): boolean {
+  if (!a) return false;
+  return a.kind === b.kind && a.line === b.line && a.ask === b.ask && a.answer === b.answer && a.foot === b.foot && a.meter === b.meter && a.clock === b.clock && JSON.stringify(a.tiles) === JSON.stringify(b.tiles);
+}
+
+/** A demo (or the hero) puts its moment on the island; it shows while the owner's section is in view. */
+export function claim(owner: string, show: Show): void {
+  if (same(state.claims[owner], show)) return;
+  state = { ...state, claims: { ...state.claims, [owner]: show } };
+  emit();
 }
 
 export function subscribeLive(cb: () => void): () => void {
@@ -42,7 +83,8 @@ export function useLive(): LiveState {
   return useSyncExternalStore(subscribeLive, getLive, () => SERVER);
 }
 
-/** The engine registers this once it is mounted; a press on the hero's blob calls it. */
-export const liveActions: { advance: () => void } = {
-  advance: () => undefined,
-};
+/** What the island wears: the claim of the section in view, else that section's own kind with nothing heard, else the hero's. */
+export function resolveShow(l: LiveState, sectionKind: Readonly<Record<string, DeskKind>>): Show {
+  if (l.section) return l.claims[l.section] ?? { kind: sectionKind[l.section] ?? "listening" };
+  return l.claims["hero"] ?? { kind: "asleep" };
+}

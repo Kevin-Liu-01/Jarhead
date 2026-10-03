@@ -29,6 +29,8 @@ interface ToneField {
   readonly bands: number;
   /** A second light: an ellipse (centre and radii in CSS px on the section's box), its intensity as a fraction of the peak. */
   readonly band?: { readonly x: number; readonly y: number; readonly rx: number; readonly ry: number; readonly strength: number };
+  /** The fraction of the section's height, at its foot, over which every light thins to nothing (0 leaves the foot as drawn). */
+  readonly foot?: number;
 }
 
 /** Little-endian ABGR for a Uint32 view of ImageData. */
@@ -59,12 +61,15 @@ export function renderToneField(canvas: HTMLCanvasElement, o: ToneField): void {
   const R = Math.max(1, o.r * Math.max(o.width, o.height));
   const floor = clamp01(o.floor);
   const band = o.band;
+  // The foot: the section's last `foot` of height thins every light to nothing, so a field never ends on the box's edge.
+  const foot = clamp01(o.foot ?? 0);
   for (let y = 0; y < ny; y++) {
     const yc = (y + 0.5) * cell;
     const py = yc - cy;
     const row = (y & 7) * 8;
     const base = y * nx;
     const by = band ? (yc - band.y) / Math.max(1, band.ry) : 0;
+    const fade = foot > 0 ? 1 - smoothstep(o.height * (1 - foot), o.height, yc) : 1;
     for (let x = 0; x < nx; x++) {
       const qx = (x + 0.5) * cell - cx;
       const d = Math.sqrt(qx * qx + py * py) / R;
@@ -73,6 +78,7 @@ export function renderToneField(canvas: HTMLCanvasElement, o: ToneField): void {
         const bx = ((x + 0.5) * cell - band.x) / Math.max(1, band.rx);
         u = Math.max(u, band.strength * (1 - smoothstep(0, 1, Math.sqrt(bx * bx + by * by))));
       }
+      u *= fade;
       const t = BAYER8[row + (x & 7)] ?? 0.5;
       const i = Math.min(bands, Math.floor(u * bands + t));
       px[base + x] = L[i] ?? 0;

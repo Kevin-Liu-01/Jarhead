@@ -1,7 +1,7 @@
 import { Fragment, type ReactElement } from "react";
 import { JarheadMark } from "@/components/kit/Mark";
 import { FOOTER, HERO } from "@/content/deck";
-import { parts } from "@/lib/cut";
+import { aroundQuote, parts, row } from "@/lib/cut";
 
 /**
  * The version and the licence, the two figures said nowhere else (the hero, Costs and Hands carry the rest), held whole
@@ -11,9 +11,11 @@ const FIGURES = parts(HERO.figures).slice(0, 2);
 
 /**
  * The disclosures that still hold for drawn pictures: the alarm's fixed words, the voice's one language, the marks' source
- * (the first two speak of captures, and the page shows none), then the credit (the licence is on the figures line).
+ * (the first two speak of captures, and the page shows none), then the credit (the licence is on the figures line). The
+ * alarm's words are a spoken line, set in a <q> as the chips are.
  */
-const NOTES = [...FOOTER.disclosures.slice(2), FOOTER.credit];
+const ALARM = aroundQuote(row(FOOTER.disclosures, 2), "Wake up, Kevin");
+const NOTES = [...FOOTER.disclosures.slice(3), FOOTER.credit];
 
 /**
  * The foot, centred and calm: the orb mark at 56 and the name, the line that says what it is and what it is built with, the
@@ -38,6 +40,11 @@ export function Footer(): ReactElement {
           ))}
         </p>
         <ul className="foot-notes" role="list">
+          <li>
+            {ALARM[0]}
+            <q>{ALARM[1]}</q>
+            {ALARM[2]}
+          </li>
           {NOTES.map((n) => (
             <li key={n}>{n}</li>
           ))}

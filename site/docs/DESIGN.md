@@ -1,101 +1,177 @@
-# DESIGN · the page as built (2026-10-01)
+# DESIGN · the page as built (2026-10-02)
 
-The landing page in one page. `SCRATCH.md` is the brief this answers; `ART-STYLE.md` is the law for the drawings;
-`content/deck.ts` (`COPY.md`) is the only source of words. Where this page and the code disagree, fix one of them.
+The landing page in one page. `LANDING.md` is the brief this answers (LoveFrom's restraint and character, OpenAI's
+confident playable product pages, Jarhead's own material); `SCRATCH.md` holds everything Kevin has said and still applies
+where LANDING.md does not override it. `content/deck.ts` (`COPY.md`) is the only source of words. Where this page and the
+code disagree, fix one of them.
 
-## The composition
+## The look
 
-A poster, dark first, one dominant thing per viewport. The Mac's top edge is fixed over the page: the menu bar edge to
-edge, the notch cut out of it, and the real island hanging from the notch. Under it the hero sets `Your Mac, by voice.` on
-one line beside the live blob, then one section per question, each a full viewport on its own tone, the words beside one
-big picture, the picture side alternating. Install closes with the terminal; the foot is centred and quiet.
+Paper first, one character, one idea per screen. A warm near-white ground (`--jh-ground`), ink type, white sheets on it.
+The hero holds almost nothing: `Your Mac, by voice.` on one line in a light serif, two short sentences, the glass Install
+(a physical key, `components/site/InstallKey.tsx`: a glass cap on a body of the blob's dithered ramp that lights the glass
+and the paper round it, leans to the pointer, sinks under a press and sends its light running out along its foot from
+the press point, under the words) and Read the source, and one quiet mono line (`MIT · $0.05 / min, per second`). Its full
+stop is the blob. Every section
+after it is a large serif h2 in two lines (the second quieter), one short line of Inter, at most two quiet notes on icons,
+and a **plate**: a white sheet with one hairline, its section's phase tone ordered-dithered across it in 2 px Bayer cells
+(`components/play/Plate.tsx`, `lib/field.ts`), densest in one corner and thinning to a scatter. The plates are the page's
+colour and its pictures; the demo is played on the pale part. Nothing on the page is a capture.
+
+## The type
+
+| face | file | where |
+|---|---|---|
+| Newsreader (Production Type, OFL), instanced to opsz 36 to 72, wght 300 to 420, Latin, 48 KB | `app/fonts/Newsreader-Display.woff2` | the h1 (330, opsz 72), the h2s (340, opsz 60), the Costs figure, the foot's name |
+| Newsreader Italic, one static instance (opsz 22, wght 400), 14 KB | `app/fonts/Newsreader-Italic.woff2` | the voice: every line someone says (the chips, the blob's spoken reasons, `"night."`), always inside a `<q>` or set as speech |
+| Inter 4.1 (rsms, OFL), cut with fontTools to wght 400 to 600 with the opsz axis, Latin and the page's punctuation and Mac keys, 48 KB | `app/fonts/InterVariable.woff2` | every other word, 400 and 500; 600 on the bar's app name alone |
+| JetBrains Mono 2.304 (OFL), subset, 24 KB | `app/fonts/JetBrainsMono-wght.woff2` | values, commands, the island's head and foot, the terminal, the race, the Sleep clock |
+
+Licences sit beside each file. Weight never goes above 500 outside the bar's app name. No text under 12 px outside the
+drawn island (checked at 1440, 1280 and 390).
+
+## The character
+
+The real blob (`lib/blob.ts` on `lib/orb.ts`'s material, `components/desk/Character.tsx`) is the one character. It is blue
+in every awake phase, quiet titanium asleep, its halo the phase tone (never violet; thinking wears the accent blue), and
+its face never under 32 px.
+
+- **The face** (`lib/eyes.ts`): drawn as shapes, never type. Open eyes are ink ovals (the blob's own ink) with one paper
+  catchlight toward its gleam, set low, close and round (just above the body's middle, 0.31 R from it each side); the other
+  faces are round-capped lines in the same ink: `- -` a soft lid, `^ ^` an arc drawn a touch bolder, `u u` a deep cup,
+  `_ _` flat, `x x`, `> <` squeezed shut, `~ ~` a soft ripple. The lids are a spring: a blink squashes the oval shut, the
+  body dips with it, and the eye reopens a touch taller before it settles; a happy squint (`^ ^`) comes now and then while
+  it listens; the face travels with the look (0.19 R sideways, 0.13 R up and down) and the far eye narrows. Small blobs
+  grow their eyes (40 % at a 32 px body) and no line goes under 1.75 px. The stills (`lib/orb.ts` `faceField`) rasterise
+  the same geometry: `O O`, `^ ^` and the quiet still's `- -`, their catchlight a touch larger so a small still keeps it;
+  the stills' URLs carry the face's version (`Character.tsx`). The island draws the same face as SVG paths
+  (`faceMarks`, `components/desk/Island.tsx` `islandFace`, crisp at every island scale): the ink pupils with their paper
+  catchlight and the ink lines, each rimmed in the phase-tinted paper so they read on the island's dark; it blinks shut
+  for one tick and the far eye narrows as it turns to the pointer.
+
+- **The hero** (`components/site/HeroCharacter.tsx`): the h1's full stop is a dot of ink on arrival; the blob, asleep and
+  the size of the dot, takes its place, wakes, turns blue and springs up to stand on the baseline (`SPRING_CHAR`), glances
+  about, then follows the pointer. A press steps it through listening, thinking, acting and asleep, and the island follows.
+  Under 600 px it springs up to stand over the line at 108 px (a 77 px body) and leaves the stop a stop. Calm: it is simply
+  there. Its keyboard twin is a hidden button beside the h1 (`HeroPoke`). The stop's advance and the mark's margin keep a
+  0.26 em breath between the e and a round body (never under a sixth of an em through the wobble; the line is 8.88 em, so
+  `--h1` caps at 145.5 px). It loves the glass Install (`components/site/glass.ts`): its first look once it stands is at
+  the key (which lights in reply), and while the key is hovered, focused or touched it turns its eyes to it, squints with
+  joy (not again within 2 s), then gazes with lit eyes (a second catchlight) and a brighter halo, and goes back to the
+  pointer when it is let go; a press makes it squint again and hop. Calm: one pose, turned to the key with lit eyes.
+- **The glass Install** (`components/site/InstallKey.tsx`): the one glass surface, as a key. The cap is the frosted glass;
+  its body, 6 px of the blob's ramp in 1.5 px cells, shows as a lit wall and as a halo on the paper that pools under the
+  key and fades in up its sides to the same height on both (its density evened for each colour's contrast). Near the
+  pointer the key leans a few px; on it the cap rises level and the light gathers under the finger; focus lights it under
+  the mark. A press sinks the cap its full depth with a squash, the Apple mark ducks then hops while its leaf wobbles, and
+  the light gathered under the finger runs out both ways along the cap's foot as a crest with the flare behind it,
+  spilling a few px at the ends and none toward the terms line; the press point flashes only on bare glass.
+  The mark and both lines are masked out of the light with a soft moat, so nothing crosses the words. Springs only while
+  something moves; calm cuts between rest, lit and pressed.
+- **Install** (`components/site/InstallBlob.tsx`): `Then say jarhead.` ends the same way, its stop the blob, asleep until
+  any Copy lands (`COPIED_EVENT`), when it wakes and listens and the island wakes with it.
+- **Every demo** has its blob: it hears, thinks, acts, flies to the control the hands press, splits into thread blobs,
+  frowns `> <` at a refusal, speaks a reason, falls asleep, looks up at the alarm.
+- **Cost**: an engine mounts only when its host comes within a viewport of the screen and is released 4 s after it leaves
+  (`Character.tsx`); off screen a blob reads no layout. Until it mounts, and without JS, the host shows its phase's still
+  (`app/stills/{awake,happy,quiet}.png`, rendered at build by `lib/still.ts` from the orb engine, the halo read from the
+  token sheet).
 
 ## The sticky top (`components/site/Top.tsx`, `MenuBar.tsx`, `components/desk/*`, `styles/desk.css`)
 
-- **The bar** (37 px; 44 on the phone): the Apple mark, `Jarhead` (the one weight above 500), the sections as its menus with
-  the one in view marked (`aria-current="location"`), then at the right the phase dot and word, GitHub with the live star
-  count, the theme glyph, the accent `Install` and the island's clock. Menus drop last first as the bar narrows (1250,
-  1160, 1020, 900 px) so they never reach the notch; the phase word goes under 940; the phone keeps the mark, the name,
-  GitHub and the theme, each a 40 px target; under 380 the notch narrows to 100 px and the bar's star count goes to the
-  screen reader alone.
-- **The island** is the app's open island at 1:1 (420 × 184) scaled from the notch: over the hero at `--hero-s` (1:1 at
-  900 px of height, 0.8 to 1.15), and as the page scrolls its foot travels up at scroll speed (`scale = max(s1, s0 − y/184)`)
-  until it docks at `--compact-s` (0.66: 37 + 121 = 158 px at 1440 × 900; 0.62 and 158 px on the phone). Nothing in the hero
-  passes under it. It never folds: all six kinds are open. Asleep is the app's quiet island (the titanium ink, `- -`, the
-  crescent and `asleep`, the clock, the asleep line), the alarm rings over it.
-- **Legibility**: every word in the island takes `max(its size, 11px / --top-s)`, so it never renders under 11 px; docked,
-  a thread tile keeps its name and its Stop. The bar names the state at 13 px.
-- **What it wears**: over the hero the timeline cycles listening 6 s, thinking 3, acting 6, speaking 5, asleep 4, alarm 5;
-  the Say box holds its placeholder and caret (the line above carries the utterance), Working counts, the meters tick, the
-  ink breathes, the face blinks and follows the pointer, a press or Enter on the blob steps it. Docked, it wears the kind of
-  the section whose top last crossed the middle of the viewport (`SectionSpy.tsx`); on Sleep it plays asleep, then the
-  alarm. Thinking wears the orb's blue on the hairline and the blob's halo: no violet in anything orb-like.
-- **The dissolve**: once docked, a band under the bar in the page's ground, solid past the island's foot, then an 8 × 8
-  Bayer dissolve in 3 px cells (about 170 px in all), so content thins out in the family's dots before it reaches the
-  island and never shows as slivers beside it.
+- **The bar** (37 px; 44 on the phone) is the paper itself with one hairline: the Apple mark, `Jarhead`, the sections as its
+  menus (the one in view marked), the phase dot and word, GitHub with the live star count, the theme, Install, the clock.
+  Menus drop last first as the bar narrows; the phone keeps the mark, the name, GitHub and the theme, each a 40 px target.
+- **The island** is the app's open island at 1:1 (420 × 184) hung from the notch, scaled as one from its top edge: over the
+  hero at `--hero-s`, then its foot rises with the scroll until it docks at `--compact-s` (0.62: 37 + 114 = 151 px). It
+  never folds. Every word in it takes `max(its size, 11px / --top-s)`. Once docked a band of the page's ground dissolves in
+  one-device-pixel Bayer cells under it, a grain that reads as a fade, so words and ink plates thin out before they reach
+  the island and never break into a checkerboard; every section's words start below that band.
+- **What it wears** (`lib/live.ts`): each demo **claims** the island for its own section with a `Show` (its kind, the line
+  it heard or says, its question, its thread tiles, the foot's figure and meter, the clock), and the hero claims it for the
+  hero. A claim shows only while its section is in view (`resolveShow`), so the island never wears another demo's state; a
+  section that has claimed nothing wears its own kind with nothing heard. The island's own question (`Slack asks: send "I'm
+  running late" to Ben?` with Allow and Deny) appears only when a demo asks for it: Threads at `asks`, Rails when Send is
+  sorted into Confirm. Any other spoken line (a reason, `night.`, a reading) is said without buttons.
+- **Its motion**: a new kind fades the content out over `--jh-quick`, lands, and the island settles from 0.965 on `SPRING`
+  from its top edge (`transform-origin: 50% 0`), so it never leaves the notch. The ink breathes, the head's level trace
+  moves, Working counts, the face blinks and turns to the pointer, at 8 fps while the tab is visible. Calm: one pose per
+  change and a stepped scale.
 
-## The sections (ids, in order)
+## The demos (`components/play/*`, `styles/play.css`)
 
-| id | kind · tone | h2 | the picture |
-|---|---|---|---|
-| `hero` | the timeline · accent | `Your Mac, by voice.` (h1) | the live blob (`lib/blob.ts`), 320 to 480 px, on the h1's horizon; under 1000 px above the h1, centred |
-| `wake` | listening · listening | Wakes on a word. / Touch ID opens it. | `art/Wake`: the word's wave, the blob `O O`, the Touch ID key, the five gate faces |
-| `say` | thinking · thinking | Codex, Claude Code, a key, / or a model on this Mac. | `art/Say`: the blob, the reflex to `"Click Save"`, the brain picker with the four names |
-| `threads` | acting · acting | Several things at once. / Each with its own brain. | `site/ConsoleWindow`: the app's Threads and Agents rows, drawn with the kit |
-| `hands` | acting · accent | Label first. Click second. / Screenshot last. | `art/Hands`: the window, `Save` found and circled, the blob `^ ^`, the screenshot's check |
-| `rails` | speaking · speaking | One policy table. / Run, confirm or refuse. | `site/RailsPicture`: the run, confirm, refuse rails; NEVER and its seven items in text |
-| `sleep` | asleep, then alarm · asleep | Say good night. / Alarms still ring. | `art/Sleep`: the quiet blob, the clock at 07:10, the alarm and the timer still armed |
-| `numbers` | listening · connecting | Measured on one Mac. / Written down. | `3 ms` set huge in the words; `art/Numbers`: five latencies, labelled, on an honest broken axis |
-| `costs` | listening · listening | Five cents a minute. / Asleep costs nothing. | `art/Costs`: the awake meter `$0.05` to `$3`, asleep `$0` |
-| `install` | listening · titanium | Four commands. / Then say jarhead. | the terminal: the one-liner with the script's note and the primary Copy, the four commands each with its Copy |
+Every demo works by mouse, touch and keyboard, server-renders a still that explains its idea before anything is pressed
+(checked with the bundles blocked), claims the island, and replays (its line again, or the labelled `Replay` pill at the
+plate's top right). Threads, Hands, Rails and Sleep play their own route once when the plate first comes into view
+(`useFirstView`, a third of it on screen) and rest on the frame the route resolves to, which is also their still. Calm
+(reduced motion or `#still`) never autoplays, cuts every move (`CUT`) and keeps each blob to one pose.
 
-Each section says its idea once: the cost lives in Costs (Wake drops "Nothing billed."), the spoken step in the Install h2.
+| id | what it plays | how a visitor plays it | the still | the island |
+|---|---|---|---|---|
+| `wake` | asleep; say the word and it hears `O O`; the gate rises with its four ways; hold the round Touch ID pad while its ring draws: granted `^ ^`, the lock opens; let go early: `> <`, denied, one of the three small prints on the Hold line is spent; three misses lock the gate for the deck's minute, counted down on the pad | the `Say "jarhead"` chip (Enter moves focus to the pad), then press and hold the pad (pointer with capture, touch, or a held Space or Enter) | the gate waiting for the press | asleep, `jarhead` heard, awake |
+| `say` | two deck lines; `"Click Save"` takes the reflex lane in milliseconds and Save is pressed; the Slack and Spotify line goes to the brain picked in Settings, thinks, and ends with Slack and Spotify working in the hands; the wire taken draws along its length | a chip; the brain rows are a radio group (arrows move and pick) | the router at rest, Codex picked, its wires drawn | the heard line, thinking, acting, the two tiles |
+| `threads` | the blob splits: two thread blobs spring out of it (a FLIP from its centre, 60 ms apart) along two wires into their cards, each the app's rail row (mark, `00:06 · screen`, a bar per step, its badge); Spotify finishes in the background; Slack stops at `asks` with its question inside the card, Allow focused, Deny | the line chip; Allow or Deny; `"Stop the Slack one"` | Slack asks, Spotify done | thinking, acting with tiles, then the question |
+| `hands` | the h2 lights each sentence as its step plays: a ring draws round the control labelled Save and its tag is read; the blob flies on `SPRING_CHAR` to Save and presses it; the window flashes, its corners close in, and a check says the screenshot only verifies; the blob flies home | the `"Click Save"` chip; on a desk the section also pins its plate (plain CSS sticky, 230 svh) and the scroll steps the three sentences | the three steps at once | acting with `Click Save` |
+| `rails` | the table always shows what it holds: Run ends on `"Click Save" runs.`; Confirm lists send, pay, delete, post and purchase and asks every time; Refuse lists NEVER's seven commands. A call in the tray springs into its slot (shared layout), a wire draws down the rail into its row, the row lights, the blob says a second deck line (or frowns at a refusal, its command lit in NEVER) | press a tray chip; press a sorted chip to send it back | Send sorted into Confirm | acting for a run, the question for Send, the reason for the other verbs, listening after a refusal |
+| `sleep` | asleep at `$0` with the alarm armed, the plate gone to ink; the night runs on the island's own clock from 12:37 to 07:10 and the alarm rings while it sleeps (the row lights, Snooze 10 or Done; Done leaves it asleep, nothing billed); `"night."` says it back, closes the session and runs the night again | the `"night."` chip; Snooze 10, Done (focused when it rings) | asleep, 12:37, the alarm armed | asleep with the running clock, then the alarm |
+| `numbers` | the six latencies race in real time on one honest linear scale; each bar is a `scaleX` of a CSS property written by one rAF that runs only while the plate is on screen; the figure and its n land with the bar | the scale (`8.9 s` shows all six to size, `457 ms` makes the reflex rows race and runs the rest off the edge; a radio group with arrows); `Replay` | the finished race | listening |
+| `costs` | the serif figure follows the minutes at five cents a minute to three dollars at the hour; the blob talks while you drag; Asleep makes it `$0` | the native range (drag, tap, arrows); Listening or Asleep (a radio group with arrows) | 7.2 min and $0.36, the island's own reading | the reading on its foot and meter, said while dragging; asleep |
+| `install` | the blob at the h2's stop wakes on any Copy | `Copy` on the one-liner or a command | asleep | asleep, then listening |
 
-## The drawings
+The wires (`components/play/Wires.tsx`) are measured from the laid-out pieces; Say's and Threads' resting wires are also
+kept as a measured set (`AT_REST`, taken at 1440) that the server renders stretched to the stage with a stroke that never
+scales, so their stills have wires without JS.
 
-The art family (`components/art/parts.tsx`, `docs/ART-STYLE.md`): a 420 × 315 frame (Rails 420 × 200), plates offset along
-the 1:2 diagonal with dithered side faces (Bayer ranks as `<pattern>`, never a shadow), 1.5-unit strokes, the section's
-phase colour as the one lit face, the real orb (`renderOrb`, inlined PNG), the kit's filled glyphs and the agent marks, at
-most five elements (`Art` counts them). Words in a drawing are deck strings or the island's; on a narrow plate they set at
-15.5 units so they render at 12 px or more. The Console window and the NEVER list are real text in HTML.
+## The motion
 
-## Type, space, colour
+One set of tokens, in `app/globals.css` and mirrored in `lib/motion.ts`:
 
-- **Type**: Inter (self-hosted InterVariable), weights 400 and 500 only, 600 on the bar's app name, 700 on the faces. h1
-  `clamp(52px, 7.2vw, 112px)` at line-height .98, tracking −.04 em, one line (on the phone `(100vw − 2·pad) / 7.9`); h2
-  `clamp(28px, 2.9vw, 52px)` in two block lines (the second in `--jh-fg-3`), each line held whole so the longest
-  (`Codex, Claude Code, a key,`) fits the words column at every width from 961 to 1920; lead 17 to 20 px at .72; lines
-  16 px; commands mono. No page text under 12 px outside the island and the Console window.
-- **Space**: `--pad` 20 to 128 px, `--wrap` up to 1560; sections are at least a viewport tall, padded past the docked
-  island (`--top-dock + 48px`), the grid 5 : 7 with a 40 to 104 px gap; under 960 px they stack picture first.
-- **Colour**: tokens only (`--jh-*` in `app/globals.css`, `styles/kit.css`); one accent for the primary action and the
-  selection. Each section's ground is its tone ordered-dithered over the page ground at low intensity (`lib/field.ts`,
-  `components/site/Field.tsx`: 3 px cells, 4 bands at peak .22 in dark, 3 bands at .30 in light, rising behind the
-  picture); a phase tone tints a ground or lights a drawing, never text or a control. The one glass is the hero's
-  Install: a frosted fill over a second light the hero's field pools behind both calls, the hairline, the inner top
-  highlight, the Apple mark, `Install` and `macOS 14+ · Apple silicon · source only`, 80 px tall and 368 wide. Beside it
-  `Read the source` is the raised tile and a hairline, opaque in both themes, so the field never shows through it and the
-  glass leads.
+- **Durations**: `--jh-instant` 80, `--jh-quick` 160, `--jh-base` 240, `--jh-slow` 400, `--jh-drift` 600 ms.
+- **Eases**: out `(0.16, 1, 0.3, 1)` for what arrives, in-out `(0.65, 0, 0.35, 1)` for what changes in place.
+- **Springs**: `SPRING` (visualDuration 0.36, bounce 0.14) for the interface (chips, cards, the island's settle);
+  `SPRING_CHAR` (0.52, 0.34) for the blob's own moves (the arrival, the flight to Save, the thread split).
+- **Rules**: paths draw along their length (Motion `pathLength`, `slow` in-out); the island crossfades its kinds; chips
+  move by shared layout; numbers count (the race, the clock, the cost); each section's h2, words and plate rise once on
+  first view, 60 ms apart (three at most); direct manipulation never springs (the Costs range writes its value straight).
+  Every loop pauses off screen and on a hidden tab; a section's CSS loops pause while it is off screen (`data-inview`).
+- **Calm**: `useCalm()` (reduced motion or `#still`, live through `hashchange`) turns every transition into `CUT`; the boot
+  script stamps `html[data-still]` for `#still`, so the CSS loops (a spoken chip's level trace, the working dots, the alarm's
+  ring) stop exactly as under reduced motion. Scroll-linked choreography only as plain sticky (Hands), never a hijack.
+
+## The sections, with ids
+
+`hero` · `wake` (split) · `say` (stack) · `threads` (split, plate left) · `hands` (stack, pinned on a desk) · `rails`
+(split) · `sleep` (split, plate left) · `numbers` (center) · `costs` (split) · `install` (split, the terminal) · the foot.
+`components/site/sections.ts` holds each one's id, deck name, resting island kind and plate tone; the menu bar, the spy
+(`SectionSpy.tsx`) and the top read it. A split sets its words in 5.3 : 6.7 beside the plate; a stack sets the words as one
+row over a full-width plate; center does the same for the race. Sections are a viewport tall on a desk; at 1280 × 720 every
+plate ends inside the viewport under the docked top (short desks tighten the plates and start the words below the dissolve).
 
 ## Both themes
 
-`html[data-theme]` is the only switch (stamped before paint by `lib/theme.ts`; the bar's glyph toggles it). Dark is the
-first design: the bar the render's grey, the fields a whisper. Light is its own poster: the bar raised paper, denser
-fields in wider steps, the frames paper cards, the glass denser with a dark hairline, the island and the terminal ink
-screens on paper. Every canvas (fields, island ink, meters, blob, dissolve) re-inks on a flip.
+`html[data-theme]` is the only switch, stamped before paint by the boot script (`lib/theme.ts` `themeBoot`, its
+theme-color read from the token sheet by `lib/tokens.ts`); the visitor's system choice wins until they toggle. Light is
+the primary design: warm paper, white plates, the tones in their deeper `-line` steps for anything drawn as a line. Dark
+is warm ink with the same restraint: the plates a raised ink, the dither a whisper, the tones themselves. The island and
+the terminal are ink screens in both. Every canvas (fields, island ink, meters, blobs, the dissolve) re-inks on a flip.
+Tokens only: no raw colour outside `app/globals.css` and `styles/kit.css`.
 
-## Motion
+## The phone (390 × 844)
 
-The island's kinds and crossfades, the blob, the meters, the scale's travel, and one rise per section: a section still
-below the fold when the spy runs waits for it (fails open without JS). `prefers-reduced-motion` and `#still` give one pose
-per section, step the scale and drop the rise. Every rAF pauses on a hidden tab; the blob also pauses offscreen.
+The bar keeps its four items at 40 px; the island shrinks to fit and docks at 0.6. The hero sets the h1 on one line with
+its stop, the blob standing over it at 108 px, and the lead, both calls and the terms line all in the first screen. Every
+section stacks words first, then its plate; plates reflow by container query (the router, the cards and the table stack,
+their wires drop). Every control is at least 40 px. No sideways scroll.
 
-## Adding a section
+## Adding a demo
 
-1. Add strings to `content/deck.ts` only if the deck has them (COPY.md); cut with `lib/cut.ts`, never reword.
-2. Add a row to `components/site/sections.ts` (id, the deck name, the island's kind, the tone, the picture side). The menu,
-   the spy and the island read it.
-3. Draw the picture in the art family (`components/art/<Name>.tsx`, ART-STYLE §9) or as a drawing of the app with the kit.
-4. Place it in `app/page.tsx`: `<Section meta={section("<id>")} h2 lead pic={<Pic><Art… /></Pic>}>` with at most two
-   `Lines`. Check the h2's longest line holds at 1440 and the menus still clear the notch at 1280.
-5. Typecheck, build with `--webpack`, and look at it at 1440, 1280, 1920 and 390 in both themes.
+1. Take its words from `content/deck.ts` only, cut with `lib/cut.ts` (`part`, `nth`, `quoted`, `row`, ...), never reworded.
+   A control word the deck lacks goes in `UI` (verbs only, six at most; today `Replay` and `Hold`).
+2. Add a row to `components/site/sections.ts` (id, deck name, resting island kind, plate tone).
+3. Write `components/play/<Name>.tsx` as a client component on a `Plate`: a server-rendered still that explains the idea, a
+   `Character` where the blob belongs, `Utter` for anything said, `claim("<id>", …)` for the island, `useSteps` for its beats,
+   `useCalm` for cuts, `Replay` to start again, and `useFirstView` if it should play itself once.
+4. Put it in `app/page.tsx` inside `<Section meta h2 lead notes layout>`; style it in `styles/play.css` on tokens, with its
+   container query for narrow plates and its short-desk rule.
+5. Typecheck, build with `--webpack`, and look at it at 1440 × 900, 1280 × 720, 1920 × 1080 and 390 × 844 in both themes,
+   with the bundles blocked, under reduced motion, and by keyboard alone.

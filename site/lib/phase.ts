@@ -12,9 +12,6 @@ export type Phase =
 
 export type DeskKind = "listening" | "thinking" | "acting" | "speaking" | "asleep" | "alarm";
 
-/** In cycle order (design.md §4.5). */
-export const DESK_KINDS: readonly DeskKind[] = ["listening", "thinking", "acting", "speaking", "asleep", "alarm"];
-
 /** The app phase each kind wears; alarm is a site kind (README:281) that rings while the app sleeps, so it wears asleep. */
 export const DESK_PHASE: Record<DeskKind, Phase> = {
   listening: "listening",

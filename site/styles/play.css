@@ -1,0 +1,477 @@
+/*
+ * play.css · the playable vignettes (components/play/*): the plate each is played on (a white sheet with its section's
+ * tone dithered across it), the sheets that sit on the plate, the spoken chips, the wires, and each demo's own pieces.
+ * --tone and --tone-line come from the section (Section.tsx): the tone colours the plate's dots and the dot on a chip;
+ * --tone-line, its deeper step on paper, lights the path taken, the lit sheet and its icon. One accent per plate.
+ */
+
+/* ---------- the plate ---------- */
+.plate { position: relative; border-radius: var(--jh-r-plate); background: var(--jh-sheet); border: 1px solid var(--jh-hair-row); background-clip: padding-box; overflow: hidden; isolation: isolate;
+  --field-cell: 2; --field-peak: 0.44; --field-floor: 0.05; --field-r: 0.9; --field-bands: 5; }
+html[data-theme="dark"] .plate { --field-peak: 0.32; --field-floor: 0.07; }
+.plate-in { position: relative; z-index: 1; padding: clamp(20px, 2.8vw, 40px); container-type: inline-size; }
+.plate-foot { position: relative; z-index: 1; min-height: 1.5em; margin-top: 18px; font-size: 15px; line-height: 1.5; color: var(--jh-fg-2); text-align: center; text-wrap: balance; }
+.replay.plate-replay { position: absolute; top: 14px; right: 14px; z-index: 3; }
+/* an outcome said to a screen reader where the plate already shows it (Hands' check, Say's tiles, Threads' question) */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- the pieces on a plate ---------- */
+.sheet { position: relative; background: var(--jh-sheet); border: 1px solid var(--jh-hair); border-radius: var(--jh-r-sheet); background-clip: padding-box; box-shadow: var(--jh-shadow);
+  transition: border-color var(--jh-base) var(--jh-ease-out), box-shadow var(--jh-base) var(--jh-ease-out); }
+.sheet[data-lit] { border-color: var(--tone-line); box-shadow: inset 0 0 0 0.5px var(--tone-line), var(--jh-shadow); }
+.sheet-head { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 16px; border-bottom: 1px solid var(--jh-hair-row); font-size: 15px; font-weight: 500; color: var(--jh-fg); }
+.sheet-head > .jh-ico { color: var(--jh-fg-2); }
+.sheet[data-lit] .sheet-head > .jh-ico, .is-tone { color: var(--tone-line); }
+.tag { display: inline-flex; align-items: center; height: 24px; padding: 0 7px; margin-left: auto; border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); font: 400 13px/1 var(--font-mono); color: var(--jh-fg-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.badge { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border: 1px solid var(--jh-hair); border-radius: 999px; font-size: 13px; line-height: 1; color: var(--jh-fg-2); white-space: nowrap; }
+.badge[data-tone="speaking"] { color: var(--jh-speaking-word); border-color: var(--jh-speaking); }
+.badge[data-tone="acting"] { color: var(--jh-fg); border-color: var(--tone-line); }
+.state-word { display: block; min-height: 20px; font-size: 14px; line-height: 20px; color: var(--jh-fg-2); letter-spacing: -0.004em; }
+.dots { display: inline-flex; gap: 3px; margin-left: auto; }
+.dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--tone-line); animation: jh-dot 1s var(--jh-ease-in-out) infinite; }
+.dots i:nth-child(2) { animation-delay: 160ms; }
+.dots i:nth-child(3) { animation-delay: 320ms; }
+@keyframes jh-dot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+/* a window as the hands see one: the title strip's three quiet dots and a hairline */
+.win-bar { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-bottom: 1px solid var(--jh-hair-row); }
+.win-bar i { width: 8px; height: 8px; border-radius: 50%; background: var(--jh-hair); }
+
+/* ---------- the spoken chip: a line the visitor says, in the voice ---------- */
+.utter { display: inline-flex; align-items: center; gap: 11px; min-height: 44px; padding: 9px 20px 9px 15px; border-radius: 999px; text-align: left;
+  background: var(--jh-sheet); border: 1px solid var(--jh-hair); background-clip: padding-box; box-shadow: var(--jh-shadow); color: var(--jh-fg);
+  font: italic 400 18px/1.3 var(--font-voice); letter-spacing: 0; transition: transform var(--jh-quick) var(--jh-ease-out), border-color var(--jh-quick) var(--jh-ease-out), opacity var(--jh-base) var(--jh-ease-out); }
+@media (hover: hover) { .utter:not([aria-disabled="true"]):hover { border-color: var(--tone-line); } }
+.utter:not([aria-disabled="true"]):active { transform: scale(0.98); }
+.utter[aria-disabled="true"] { opacity: 0.42; cursor: default; box-shadow: none; }
+/* a quiet chip that holds focus keeps its ring at full strength; only its words stay dimmed */
+.utter[aria-disabled="true"]:focus-visible { opacity: 1; }
+.utter[aria-disabled="true"]:focus-visible > * { opacity: 0.42; }
+.utter-lead { font: normal 500 15px/1 var(--font-sans); }
+.utter-wave { display: inline-flex; align-items: center; gap: 2px; height: 16px; flex: none; color: var(--tone-line); }
+.utter-wave i { display: block; width: 2px; height: 6px; border-radius: 1px; background: currentColor; transform-origin: center; }
+.utter-wave i:nth-child(2) { height: 11px; }
+.utter-wave i:nth-child(3) { height: 15px; }
+.utter-wave i:nth-child(4) { height: 9px; }
+.utter-wave i:nth-child(5) { height: 5px; }
+.utter.is-saying { border-color: var(--tone-line); }
+.utter.is-saying .utter-wave i { animation: jh-say 420ms var(--jh-ease-in-out) infinite alternate; }
+.utter.is-saying .utter-wave i:nth-child(2) { animation-delay: 80ms; }
+.utter.is-saying .utter-wave i:nth-child(3) { animation-delay: 160ms; }
+.utter.is-saying .utter-wave i:nth-child(4) { animation-delay: 240ms; }
+.utter.is-saying .utter-wave i:nth-child(5) { animation-delay: 320ms; }
+@keyframes jh-say { from { transform: scaleY(0.35); } to { transform: scaleY(1.15); } }
+.utter q, .rail-chip q, .sleep-said { font-family: var(--font-voice); font-style: italic; }
+
+/* Replay: the labelled pill at the plate's top right (its icon and the word), 40 tall in a 48 target */
+.replay { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px 0 11px; border-radius: 999px; font-size: 14px; font-weight: 500; color: var(--jh-fg-2);
+  background: var(--jh-sheet); border: 1px solid var(--jh-hair); background-clip: padding-box; transition: color var(--jh-instant) var(--jh-ease-out); }
+@media (hover: hover) { .replay:hover { color: var(--jh-fg); } }
+.replay::after { content: ""; position: absolute; inset: -4px; }
+
+/* ---------- wires: quiet dashed ways, and the lit way drawn along its length ---------- */
+.wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 0; }
+.wire path { fill: none; stroke: var(--jh-hair-frame); stroke-opacity: 0.5; stroke-width: 1.5; stroke-linejoin: round; }
+.wire:not(.is-lit) > path:first-child { stroke-dasharray: 4 4; }
+.wire.is-lit path { stroke: var(--tone-line); stroke-opacity: 1; stroke-linecap: round; }
+.wire-head { stroke-linecap: round; }
+.wire-joint { fill: var(--jh-fg-3); }
+
+/* ---------- Wake ---------- */
+/* the top keeps a lane for the plate's Replay pill: the gate card starts below it, at rest and once it shows */
+.wake-stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 290px); align-items: center; gap: clamp(20px, 4cqw, 48px); min-height: 380px; padding-top: 40px; }
+.wake-me { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.wake-char { width: 196px; height: 196px; margin-bottom: -6px; }
+.wake-me .utter { margin-top: 10px; }
+.wake-gate { overflow: hidden; }
+.wake-misses { display: inline-flex; align-items: center; gap: 4px; }
+.wake-misses .jh-ico { color: var(--jh-hair); transition: color var(--jh-base) var(--jh-ease-out); }
+.wake-misses .is-spent { color: var(--jh-speaking-word); }
+.wake-ways li { display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 16px; font-size: 15px; color: var(--jh-fg-3-word); }
+.wake-ways li + li { border-top: 1px solid var(--jh-hair-row); }
+.wake-ways li[data-lit] { color: var(--jh-fg); }
+.wake-ways li[data-lit] > .jh-ico:first-child { color: var(--tone-line); }
+.wake-ok { margin-left: auto; }
+.wake-pad-row { display: flex; align-items: center; gap: 16px; padding: 16px; border-top: 1px solid var(--jh-hair-row); }
+.wake-pad { position: relative; flex: none; width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; color: var(--tone-line); background: var(--jh-raised);
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: transform var(--jh-quick) var(--jh-ease-out), color var(--jh-base) var(--jh-ease-out); }
+.wake-pad:active:not([aria-disabled="true"]) { transform: scale(0.96); }
+.wake-pad[aria-disabled="true"] { color: var(--jh-fg-3); cursor: default; }
+.wake-pad > .jh-ico { position: relative; }
+.wake-ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+.wake-ring circle { fill: none; stroke-width: 2.5; }
+.wake-ring-track { stroke: var(--jh-hair-row); }
+.wake-ring-fill { stroke: var(--tone-line); stroke-dasharray: 1; stroke-linecap: round; }
+.wake-pad-words { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; font-size: 15px; font-weight: 500; }
+.wake-hint { font-size: 14px; font-weight: 400; color: var(--jh-fg-2); }
+.wake[data-state="denied"] .wake-hint, .wake[data-state="locked"] .wake-hint { color: var(--jh-speaking-word); }
+.wake-lock { font: 500 14px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.wake[data-state="locked"] .wake-gate { opacity: 0.72; }
+
+/* ---------- Say ---------- */
+.say-stage { position: relative; display: grid; grid-template-columns: 168px minmax(0, 360px) minmax(0, 240px); justify-content: space-between; grid-template-areas: "lines lines lines" "me lanes hands";
+  column-gap: 88px; row-gap: 26px; align-items: center; --wired: 1; }
+.say-lines { grid-area: lines; display: flex; flex-wrap: wrap; gap: 10px; position: relative; z-index: 1; }
+.say-me { grid-area: me; display: flex; flex-direction: column; align-items: center; gap: 8px; position: relative; z-index: 1; }
+.say-char { width: 150px; height: 150px; }
+.say-lanes { grid-area: lanes; display: flex; flex-direction: column; gap: 14px; position: relative; z-index: 1; }
+.say-reflex { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
+.say-reflex-icon { color: var(--jh-fg-2); display: grid; }
+.say-reflex[data-lit] .say-reflex-icon { color: var(--tone-line); }
+.say-reflex-words, .say-head { min-width: 0; font-size: 15px; font-weight: 500; text-wrap: balance; }
+.say-quiet { color: var(--jh-fg-2); font-size: 14px; font-weight: 400; }
+.say-brain .sheet-head { padding-block: 10px; }
+.say-brain .sheet-head .tag { margin-left: auto; }
+.say-brain .sheet-head .tag[data-off] { visibility: hidden; }
+.say-row { display: flex; align-items: center; gap: 12px; width: 100%; height: 40px; padding: 0 16px; font-size: 15px; color: var(--jh-fg-2); text-align: left; transition: background-color var(--jh-instant) var(--jh-ease-out); }
+.say-row + .say-row { border-top: 1px solid var(--jh-hair-row); }
+.say-row[aria-checked="true"] { color: var(--jh-fg); }
+@media (hover: hover) { .say-row:hover { background-color: var(--jh-hover); } }
+.say-row:focus-visible { outline-offset: -2px; }
+.say-row:last-child { border-radius: 0 0 var(--jh-r-sheet) var(--jh-r-sheet); }
+.say-mark { width: 20px; display: grid; place-items: center; color: var(--jh-fg-2); }
+.say-check { margin-left: auto; color: var(--tone-line); }
+.say-hands { grid-area: hands; position: relative; z-index: 1; }
+.say-hands-name { position: absolute; top: 7px; right: 12px; font-size: 13px; color: var(--jh-fg-2); }
+.say-win { position: relative; min-height: 148px; padding: 18px 16px 16px; }
+.say-doc { display: flex; flex-direction: column; gap: 10px; }
+.say-doc > i { display: block; height: 8px; border-radius: 4px; background: var(--jh-hair-row); }
+.say-doc > i:nth-child(1) { width: 84%; }
+.say-doc > i:nth-child(2) { width: 62%; }
+.say-doc > i:nth-child(3) { width: 72%; }
+.say-save { position: relative; align-self: flex-end; display: inline-flex; align-items: center; justify-content: center; height: 32px; min-width: 72px; padding: 0 14px; margin-top: 8px; border-radius: var(--jh-radius);
+  background: var(--jh-lift); border: 1px solid var(--jh-hair); font-size: 14px; font-weight: 500; transition: background-color var(--jh-quick) var(--jh-ease-out), color var(--jh-quick) var(--jh-ease-out); }
+.say-save[data-pressed] { background: var(--tone-line); border-color: transparent; color: var(--jh-on-accent); }
+.say-cursor { position: absolute; right: -12px; bottom: -14px; color: var(--jh-fg); }
+.say-tiles { display: flex; flex-direction: column; gap: 10px; }
+.say-tile { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); font-size: 14px; font-weight: 500; }
+.say-tile > i { width: 7px; height: 7px; border-radius: 2px; background: var(--jh-acting); }
+.say-tile .say-quiet { margin-left: auto; font: 400 13px/1 var(--font-mono); }
+@container (max-width: 860px) {
+  .say-stage > .wires { display: none; }
+  .say-stage { --wired: 0; grid-template-columns: minmax(0, 1fr); grid-template-areas: "lines" "me" "lanes" "hands"; row-gap: 22px; justify-items: stretch; }
+  .say-me { flex-direction: row; justify-content: center; }
+  .say-char { width: 120px; height: 120px; }
+  .say-lanes, .say-hands { width: 100%; max-width: 440px; justify-self: center; }
+}
+
+/* ---------- Threads: the line beside the blob, the fork, two thread cards (the app's rail rows), the stop line ---------- */
+.threads-stage { position: relative; display: flex; flex-direction: column; --wired: 1; }
+.threads-said { position: relative; z-index: 1; display: flex; align-items: center; gap: 14px; }
+.threads-char { width: 112px; height: 112px; flex: none; margin: -10px -6px -10px -10px; }
+/* the line keeps clear of the Replay pill at the plate's top right */
+.threads-line { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; padding-right: 104px; }
+.threads-line .state-word { padding-left: 18px; }
+.threads-lanes { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 40px; align-items: stretch; }
+.thread { display: flex; flex-direction: column; padding: 14px 16px 14px; }
+.thread-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.thread-char { width: 64px; height: 64px; flex: none; margin: -8px -4px -8px -8px; }
+.thread-who { display: flex; flex-direction: column; gap: 7px; min-width: 0; flex: 1; padding-top: 2px; }
+.thread-name { display: flex; align-items: center; gap: 8px; min-height: 22px; font-size: 16px; font-weight: 500; line-height: 1; }
+.thread-name > svg { flex: none; color: var(--jh-fg); }
+/* a brand mark with no mono cut of its own (Slack) takes the words' ink */
+.mono-mark path { fill: currentColor; }
+.thread-status { margin-left: auto; }
+.thread-meta { font: 400 13px/1.2 var(--font-mono); color: var(--jh-fg-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.thread-steps { display: flex; gap: 4px; }
+.thread-steps i { width: 20px; height: 4px; border-radius: 2px; background: var(--jh-hair-row); transition: background-color var(--jh-base) var(--jh-ease-out); }
+.thread-steps i[data-on] { background: var(--tone-line); }
+.thread-steps[data-asks] i[data-on] { background: var(--jh-speaking); }
+.thread[data-state="done"], .thread[data-state="ended"] { box-shadow: none; }
+/* before the split a card waits as a ghost of itself, its blob not yet out of the main one */
+.thread[data-state="off"] { box-shadow: none; }
+.thread[data-state="off"] .thread-char { opacity: 0; }
+.thread[data-state="ended"] .thread-name, .thread[data-state="ended"] .thread-meta { color: var(--jh-fg-3-word); }
+.thread[data-state="asks"] { border-color: var(--jh-speaking); box-shadow: inset 0 0 0 0.5px var(--jh-speaking), var(--jh-shadow); }
+.thread-ask { margin-bottom: 14px; }
+/* out of turn the question is hidden in its place (it holds the card's height); it stays seen while its fade runs */
+.thread-ask[data-off] { visibility: hidden; transition: visibility 0s linear var(--jh-slow); }
+.thread-ask p { display: flex; align-items: flex-start; gap: 8px; font-size: 15px; line-height: 1.4; color: var(--jh-fg); text-wrap: pretty; }
+.thread-ask p .jh-ico { flex: none; margin-top: 2px; color: var(--jh-speaking-word); }
+.thread-btns { display: flex; gap: 8px; margin-top: 12px; padding-left: 24px; }
+.thread-btns .kit-btn { min-width: 84px; }
+.thread-foot { display: grid; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--jh-hair-row); font-size: 14px; line-height: 1.45; color: var(--jh-fg-2); text-wrap: pretty; }
+.thread-foot > span { grid-area: 1 / 1; }
+.thread-foot > [data-off] { visibility: hidden; }
+.threads-stop { position: relative; z-index: 1; display: flex; margin-top: 16px; }
+.threads-stop .utter { font-size: 17px; }
+@container (max-width: 520px) {
+  .threads-stage > .wires { display: none; }
+  .threads-stage { --wired: 0; }
+  .threads-said { flex-direction: column; align-items: flex-start; }
+  /* stacked, the line sits under the blob, below the pill */
+  .threads-line { padding-right: 0; }
+  .threads-lanes { grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 22px; }
+}
+
+/* ---------- Hands: the blob and its line, one window the hands work on (the ring and tag, Save, the corners and the check) ---------- */
+.hands-stage { display: flex; align-items: center; justify-content: center; gap: clamp(40px, 9cqw, 132px); min-height: 330px; }
+.hands-me { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: none; width: 200px; position: relative; z-index: 3; }
+.hands-char { width: 156px; height: 156px; }
+.hands-me .utter { margin-top: 8px; }
+.hands-shot { flex: 0 1 600px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+.hands-win { position: relative; overflow: visible; }
+.hands-doc { display: flex; flex-direction: column; gap: 14px; padding: 26px 28px 8px; }
+.hands-doc > i { display: block; height: 10px; border-radius: 5px; background: var(--jh-hair-row); }
+.hands-doc > i:nth-child(1) { width: 46%; height: 14px; background: var(--jh-hair); }
+.hands-doc > i:nth-child(2) { width: 88%; }
+.hands-doc > i:nth-child(3) { width: 74%; }
+.hands-doc > i:nth-child(4) { width: 81%; }
+.hands-foot { display: flex; justify-content: flex-end; padding: 26px 28px 26px; }
+.hands-save { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 96px; height: 36px; border-radius: var(--jh-radius); background: var(--jh-lift); border: 1px solid var(--jh-hair);
+  font-size: 14px; font-weight: 500; transition: background-color var(--jh-quick) var(--jh-ease-out), color var(--jh-quick) var(--jh-ease-out); }
+.hands-save[data-pressed] { background: var(--tone-line); border-color: transparent; color: var(--jh-on-accent); }
+.hands-ring { position: absolute; left: -9px; top: -9px; width: 114px; height: 54px; overflow: visible; pointer-events: none; }
+.hands-ring rect { fill: none; stroke: var(--tone-line); stroke-width: 1.5; }
+.hands-tag { position: absolute; right: -9px; bottom: calc(100% + 16px); display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: var(--jh-radius);
+  background: var(--jh-sheet); border: 1px solid var(--tone-line); font: 400 13px/1 var(--font-mono); color: var(--jh-fg); white-space: nowrap; box-shadow: var(--jh-shadow); }
+.hands-tag .jh-ico { color: var(--tone-line); }
+.hands-flash { position: absolute; inset: 0; border-radius: inherit; background: var(--jh-paper); opacity: 0; pointer-events: none; }
+/* the screenshot: four corners close in on the window, then the check under it */
+.hands-corners { position: absolute; inset: -12px; pointer-events: none; opacity: 0; transform: scale(1.05); transition: opacity var(--jh-base) var(--jh-ease-out), transform var(--jh-slow) var(--jh-ease-out); }
+.hands-shot[data-on] .hands-corners { opacity: 1; transform: none; }
+.hands-corners i { position: absolute; width: 22px; height: 22px; border: 0 solid var(--tone-line); }
+.hands-corners i:nth-child(1) { left: 0; top: 0; border-left-width: 1.5px; border-top-width: 1.5px; border-top-left-radius: 8px; }
+.hands-corners i:nth-child(2) { right: 0; top: 0; border-right-width: 1.5px; border-top-width: 1.5px; border-top-right-radius: 8px; }
+.hands-corners i:nth-child(3) { left: 0; bottom: 0; border-left-width: 1.5px; border-bottom-width: 1.5px; border-bottom-left-radius: 8px; }
+.hands-corners i:nth-child(4) { right: 0; bottom: 0; border-right-width: 1.5px; border-bottom-width: 1.5px; border-bottom-right-radius: 8px; }
+.hands-check { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 22px; font-size: 15px; color: var(--jh-fg-2); opacity: 0.32; transition: opacity var(--jh-base) var(--jh-ease-out); }
+.hands-check .jh-ico:first-child { color: var(--jh-fg-3); }
+.hands-check .is-tone { opacity: 0; transition: opacity var(--jh-base) var(--jh-ease-out); }
+.hands-shot[data-on] .hands-check, .hands-shot[data-on] .hands-check .is-tone { opacity: 1; }
+.sec[data-step="label"] .h2-step, .sec[data-step="click"] .h2-step, .sec[data-step="shot"] .h2-step { color: var(--jh-fg-3); transition: color var(--jh-base) var(--jh-ease-out); }
+.sec[data-step="label"] .h2-step[data-n="label"], .sec[data-step="click"] .h2-step[data-n="click"], .sec[data-step="shot"] .h2-step[data-n="shot"] { color: var(--jh-fg); }
+@container (max-width: 860px) {
+  .hands-stage { flex-direction: column; gap: 28px; }
+  .hands-me { flex-direction: row; flex-wrap: wrap; justify-content: center; width: auto; }
+  .hands-char { width: 112px; height: 112px; }
+  .hands-shot { flex: none; width: 100%; max-width: 520px; }
+}
+
+/* ---------- Rails: the blob and its reason, the tray of calls, the table (a rail down its left, a row per verdict) ---------- */
+.rails-top { display: flex; align-items: center; gap: 14px; min-height: 92px; }
+.rails-char { width: 104px; height: 104px; margin: -10px 0 -10px -14px; flex: none; }
+/* the reason keeps clear of the Replay pill at the plate's top right */
+.rails-say { flex: 1; min-width: 0; padding-right: 104px; }
+.rails-reason { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 16px; line-height: 1.4; color: var(--jh-fg-2); }
+.rails-reason[data-spoken] { display: block; font: italic 400 22px/1.3 var(--font-voice); color: var(--jh-fg); }
+.rails-reason .tag { margin-left: 0; color: var(--jh-speaking-word); border-color: var(--jh-speaking); }
+.rails-reason code { font: 400 16px/1 var(--font-mono); color: var(--jh-fg); }
+.rails-tray { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 8px; min-height: 48px; margin: 12px 0 18px; }
+.rail-chip { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-radius: 999px; background: var(--jh-sheet); border: 1px solid var(--jh-hair); background-clip: padding-box;
+  box-shadow: var(--jh-shadow); font-size: 15px; color: var(--jh-fg); white-space: nowrap; }
+.rail-chip > .jh-ico { color: var(--jh-fg-2); }
+.rail-chip q { font-size: 17px; }
+.rail-chip code { font: 400 14px/1 var(--font-mono); }
+@media (hover: hover) { .rail-chip:hover { border-color: var(--tone-line); } }
+.rail-chip[data-placed] { height: 30px; padding: 0 10px; gap: 6px; box-shadow: none; border-color: var(--tone-line); font-size: 14px; }
+.rail-chip[data-placed] > .jh-ico { color: var(--tone-line); }
+.rail-chip[data-placed] q { font-size: 16px; }
+.rail-chip[data-placed] code { font-size: 13px; }
+.rail-chip[data-placed]::after { content: ""; position: absolute; inset: -5px -2px; }
+.rail-chip { position: relative; }
+.rails-table { position: relative; display: flex; flex-direction: column; gap: 8px; padding-left: 24px; }
+.rails-table > .wires { z-index: 0; }
+.rail-row { position: relative; z-index: 1; display: grid; grid-template-columns: 150px minmax(0, 1fr); column-gap: 14px; padding: 12px 16px; box-shadow: none; }
+.rail-head { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding-left: 28px; }
+.rail-head > .jh-ico { position: absolute; left: 0; top: 4px; color: var(--jh-fg-2); }
+.rail-word { display: flex; align-items: center; min-height: 28px; font-size: 15px; font-weight: 500; text-transform: capitalize; }
+.rail-head .tag { margin-left: -28px; height: 22px; font-size: 13px; }
+.rail-row[data-lit] .rail-head > .jh-ico { color: var(--tone-line); }
+.rail-body { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+.rail-runs { min-height: 28px; font-size: 15px; line-height: 28px; color: var(--jh-fg-2); }
+.rail-runs > .rail-chip, .rail-runs > .rail-quiet { vertical-align: middle; }
+.rail-runs q { font-family: var(--font-voice); font-style: italic; font-size: 17px; }
+.rail-row[data-lit] .rail-runs { color: var(--jh-fg); }
+.rail-quiet { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; font-size: 15px; color: var(--jh-fg-2); white-space: nowrap; }
+.rail-quiet > .jh-ico { color: var(--jh-fg-3); }
+.rail-quiet code { font: 400 13px/1.3 var(--font-mono); }
+.rail-verbs { display: flex; flex-wrap: wrap; column-gap: 14px; row-gap: 4px; }
+.rail-why { font-size: 14px; line-height: 1.4; color: var(--jh-fg-3-word); transition: color var(--jh-base) var(--jh-ease-out); }
+.rail-row[data-lit] .rail-why { color: var(--jh-fg); }
+.rail-never { display: grid; grid-template-columns: repeat(2, minmax(0, max-content)); column-gap: 18px; row-gap: 0; }
+.rail-never .rail-quiet { min-height: 26px; white-space: normal; }
+@container (max-width: 470px) {
+  .rail-chip[data-placed] { height: 40px; }
+  /* narrow, the reason takes the plate's width under the Replay pill */
+  .rails-top { padding-top: 40px; }
+  .rails-say { padding-right: 0; }
+  .rail-row { grid-template-columns: minmax(0, 1fr); row-gap: 8px; }
+  .rail-head { flex-direction: row; align-items: center; }
+  .rail-head .tag { margin-left: 4px; }
+  .rail-never { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- Sleep ---------- */
+/* the night: the plate goes to ink while it sleeps (the dots barely through), and the morning comes back with the alarm */
+.sleep-night { position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0; background: var(--jh-screen-ink); transition: opacity var(--jh-drift) var(--jh-ease-in-out); }
+.sleep[data-dark] .sleep-night { opacity: 0.84; }
+.sleep[data-dark] .sleep-me .state-word, .sleep[data-dark] .sleep-meter, .sleep[data-dark] .plate-foot { color: var(--jh-screen-fg-2); }
+.sleep[data-dark] .sleep-meter b, .sleep[data-dark] .sleep-clock { color: var(--jh-paper); }
+.sleep-me .state-word, .sleep-meter, .sleep .plate-foot, .sleep-clock { transition: color var(--jh-drift) var(--jh-ease-in-out); }
+.sleep-stage { position: relative; z-index: 1; }
+.sleep-stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 330px); align-items: center; gap: clamp(20px, 4cqw, 44px); min-height: 360px; }
+.sleep-me { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.sleep-who { position: relative; }
+.sleep-char { width: 180px; height: 180px; }
+/* "night." rides above the blob's head, clear of the card beside it; stacked (one column) it sits at its right */
+.sleep-said { position: absolute; z-index: 2; inset: auto 0 94% 0; width: max-content; margin-inline: auto; padding: 6px 16px 7px; border-radius: 999px; background: var(--jh-sheet); border: 1px solid var(--jh-hair); box-shadow: var(--jh-shadow); font-size: 24px; line-height: 1.2; white-space: nowrap; color: var(--jh-fg); }
+.sleep-meter { font: 400 14px/1.4 var(--font-mono); color: var(--jh-fg-2); font-variant-numeric: tabular-nums; }
+.sleep-meter b { font-weight: 500; color: var(--jh-fg); }
+/* the "night." chip sits under the blob that says it */
+.sleep-me .utter { margin-top: 10px; }
+.sleep-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+/* the island's clock, set large: it runs while it sleeps */
+.sleep-clock { display: block; padding-left: 4px; font: 400 44px/1 var(--font-mono); letter-spacing: -0.03em; color: var(--jh-fg); font-variant-numeric: tabular-nums; }
+.sleep-kinds li { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; row-gap: 10px; min-height: 48px; padding: 11px 16px; font-size: 15px; color: var(--jh-fg-2); transition: background-color var(--jh-base) var(--jh-ease-out); }
+.sleep-kinds li + li { border-top: 1px solid var(--jh-hair-row); }
+/* the alarm row is the card's top edge: its lit tint keeps the sheet's corners */
+.sleep-kinds li:first-child { color: var(--jh-fg); border-radius: calc(var(--jh-r-sheet) - 1px) calc(var(--jh-r-sheet) - 1px) 0 0; }
+.sleep-kinds li[data-lit] { background: color-mix(in srgb, var(--jh-mark) 12%, transparent); }
+.sleep-icon { display: grid; color: var(--jh-fg-3); }
+.sleep-kinds li:first-child .sleep-icon { color: var(--jh-fg-2); }
+.sleep-kinds li[data-lit] .sleep-icon { color: var(--jh-mark-line); }
+.sleep-icon.is-ringing { animation: jh-ring 1s var(--jh-ease-in-out) infinite; transform-origin: 50% 20%; }
+@keyframes jh-ring { 0%, 50%, 100% { rotate: 0deg; } 10% { rotate: -14deg; } 20% { rotate: 12deg; } 30% { rotate: -9deg; } 40% { rotate: 6deg; } }
+.sleep-word { text-transform: capitalize; }
+.sleep-what { font: 400 13px/1.3 var(--font-mono); color: var(--jh-fg); }
+.sleep-kinds .tag { margin-left: auto; }
+.sleep-ok { color: var(--jh-mark-line); }
+.sleep-btns { display: flex; gap: 8px; flex-basis: 100%; padding-left: 30px; }
+@container (max-width: 470px) {
+  .sleep-stage { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .sleep-char { width: 160px; height: 160px; }
+  .sleep-said { inset: 10% auto auto 76%; margin-inline: 0; }
+  .sleep-clock { text-align: center; }
+}
+
+/* ---------- Numbers: the race (each bar a scaleX of --p, the count riding its head; the scale is the visitor's) ---------- */
+/* the top keeps the plate's Replay pill clear of the first row's figure */
+.race { display: flex; flex-direction: column; margin-top: 24px; }
+.race-row { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr) 150px; align-items: center; column-gap: 28px; min-height: 52px; }
+.race-row + .race-row { border-top: 1px solid var(--jh-hair-row); }
+.race-label { display: flex; align-items: center; gap: 10px; font-size: 15px; line-height: 1.35; color: var(--jh-fg-2); }
+.race-label .jh-ico { color: var(--jh-fg-3); flex: none; }
+.race-track { position: relative; height: 10px; border-radius: 5px; background: var(--jh-hair-row); }
+.race-track::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: var(--tone-line); }
+.race-track > i { position: absolute; inset: 0; border-radius: 5px; background: var(--tone-line); transform: scaleX(var(--p)); transform-origin: 0 50%; }
+/* a row past the scale's end runs off the edge: its bar fills the track, quiet, cut square with a break across its end,
+   and runs on past the axis into a filled arrowhead; its count waits on the bar, short of the break */
+.race-track[data-over] > i { background: var(--jh-fg-3); border-radius: 5px 0 0 5px;
+  -webkit-mask: linear-gradient(110deg, #000 calc(100% - 20px), transparent 0 calc(100% - 16px), #000 0);
+  mask: linear-gradient(110deg, #000 calc(100% - 20px), transparent 0 calc(100% - 16px), #000 0); }
+.race-track[data-over]::after { content: ""; position: absolute; left: 100%; top: 50%; width: 10px; height: 16px; margin-top: -8px; background: var(--jh-fg-3); clip-path: polygon(0 0, 100% 50%, 0 100%); }
+.race-head { position: absolute; inset: 0; transform: translateX(calc(min(var(--p), 0.84) * 100%)); pointer-events: none; }
+.race-now { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font: 500 13px/1 var(--font-mono); color: var(--jh-fg); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.race-track[data-over] .race-head { transform: none; }
+.race-track[data-over] .race-now { left: auto; right: 28px; color: var(--jh-sheet); }
+.race-row[data-landed] .race-now { opacity: 0; }
+/* every figure ends on one right edge: its n sits in a fixed column of its own, empty where the deck gives none */
+.race-val { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; white-space: nowrap; }
+.race-fig { font: 500 17px/1.1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--jh-fg-3-word); transition: color var(--jh-base) var(--jh-ease-out); }
+.race-row[data-landed] .race-fig { color: var(--jh-fg); }
+.race-n { flex: none; width: 6ch; font: 400 12px/1 var(--font-mono); color: var(--jh-fg-3-word); opacity: 0; transition: opacity var(--jh-base) var(--jh-ease-out); }
+.race-row[data-landed] .race-n { opacity: 1; }
+/* the scale is the axis: its end is a tick on the hairline, the scale's own control sits under that end, and each option
+   carries the same mark */
+.race-axis { position: relative; display: flex; justify-content: flex-end; margin: 6px calc(150px + 28px) 0 calc(min(340px, 34cqw) + 28px); padding-top: 10px; border-top: 1px solid var(--jh-hair); color: var(--jh-fg); }
+.race-axis::after, .numbers .seg-opt::before { content: ""; border: solid currentColor; border-width: 0 1.5px 1.5px 0; }
+.race-axis::after { position: absolute; right: 0; top: -9px; height: 9px; border-bottom: 0; }
+.numbers .seg-opt::before { flex: none; width: 12px; height: 8px; margin-top: 1px; opacity: 0.72; }
+@container (max-width: 760px) {
+  .race-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label val" "track track"; row-gap: 10px; padding: 12px 0; }
+  .race-label { grid-area: label; }
+  .race-val { grid-area: val; }
+  .race-track { grid-area: track; }
+  .race { margin-top: 34px; }
+  .race-axis { margin: 6px 0 0; }
+}
+
+/* ---------- Costs ---------- */
+.costs-stage { display: flex; flex-direction: column; gap: 34px; padding: 6px 4px; }
+.costs-top { display: flex; align-items: center; gap: clamp(16px, 3cqw, 32px); min-height: 170px; }
+.costs-char { width: 160px; height: 160px; }
+.costs-fig { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.costs-dollars { display: block; font-family: var(--font-serif); font-size: clamp(64px, 13cqw, 112px); font-weight: 330; font-variation-settings: "opsz" 72; line-height: 0.95; letter-spacing: -0.02em; font-variant-numeric: lining-nums tabular-nums; color: var(--jh-fg); }
+.costs-what { font: 400 15px/1.3 var(--font-mono); color: var(--jh-fg-2); font-variant-numeric: tabular-nums; }
+.costs-slider { transition: opacity var(--jh-base) var(--jh-ease-out); }
+.costs[data-asleep] .costs-slider { opacity: 0.4; }
+.costs-slider input { display: block; width: 100%; height: 40px; margin: 0; background: transparent; appearance: none; -webkit-appearance: none; cursor: pointer; }
+.costs-slider input:disabled { cursor: default; }
+.costs-slider input::-webkit-slider-runnable-track { height: 10px; border-radius: 5px; background: linear-gradient(to right, var(--tone-line) calc(var(--p) * 100%), var(--jh-hair-row) 0); }
+.costs-slider input::-moz-range-track { height: 10px; border-radius: 5px; background: var(--jh-hair-row); }
+.costs-slider input::-moz-range-progress { height: 10px; border-radius: 5px; background: var(--tone-line); }
+.costs-slider input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 28px; height: 28px; margin-top: -9px; border-radius: 50%; background: var(--jh-sheet); border: 1px solid var(--jh-hair); box-shadow: var(--jh-shadow); }
+.costs-slider input::-moz-range-thumb { width: 28px; height: 28px; border-radius: 50%; background: var(--jh-sheet); border: 1px solid var(--jh-hair); box-shadow: var(--jh-shadow); }
+.costs-slider input:focus-visible { outline: none; }
+.costs-slider input:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--jh-accent); outline-offset: 2px; }
+.costs-slider input:focus-visible::-moz-range-thumb { outline: 2px solid var(--jh-accent); outline-offset: 2px; }
+.costs-ends { display: flex; justify-content: space-between; gap: 16px; margin-top: 8px; font-size: 14px; line-height: 1.4; color: var(--jh-fg-2); }
+.costs-ends span:last-child { text-align: right; }
+.costs-ends b { font: 500 14px/1 var(--font-mono); color: var(--jh-fg); }
+.seg { display: inline-flex; align-self: flex-start; padding: 3px; border-radius: 999px; background: var(--jh-raised); border: 1px solid var(--jh-hair-row); }
+.seg-opt { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: 999px; font-size: 14px; font-weight: 500; color: var(--jh-fg-2); transition: background-color var(--jh-quick) var(--jh-ease-out), color var(--jh-quick) var(--jh-ease-out); }
+.seg-opt[aria-checked="true"] { background: var(--jh-sheet); color: var(--jh-fg); box-shadow: var(--jh-shadow); }
+.seg-dot { width: 7px; height: 7px; border-radius: 50%; }
+.seg-dot[data-kind="listening"] { background: var(--jh-listening); }
+.seg-dot[data-kind="asleep"] { background: var(--jh-asleep); }
+@container (max-width: 520px) {
+  .costs-top { flex-direction: column; align-items: flex-start; }
+  .costs-char { width: 120px; height: 120px; }
+}
+
+/* ---------- a stage on the phone and narrow plates ---------- */
+@container (max-width: 460px) {
+  /* stacked, the blob heads the plate and the card sits far below the pill: no lane */
+  .wake-stage { grid-template-columns: minmax(0, 1fr); min-height: 0; justify-items: center; padding-top: 0; }
+  .wake-char { width: 168px; height: 168px; }
+  .wake-gate { width: 100%; max-width: 360px; }
+}
+
+/* ---------- a short desk (1280 × 720): every plate holds its whole demo under the docked top ---------- */
+@media (min-width: 1001px) and (max-height: 820px) {
+  .plate-in { padding: 22px 24px; }
+  .plate-foot { margin-top: 10px; }
+  .wake-stage { min-height: 0; }
+  .wake-char { width: 156px; height: 156px; }
+  .wake-ways li { height: 36px; }
+  .wake-pad-row { padding: 12px 16px; }
+  .wake-pad { width: 60px; height: 60px; }
+  .say-stage { row-gap: 16px; }
+  .say-char { width: 120px; height: 120px; }
+  .say-row { height: 34px; }
+  .say-reflex { padding: 9px 16px; }
+  .say-win { min-height: 120px; }
+  .threads-char { width: 92px; height: 92px; }
+  .threads-lanes { margin-top: 26px; }
+  .thread { padding: 12px 14px; }
+  .thread-head { margin-bottom: 10px; }
+  .thread-char { width: 56px; height: 56px; }
+  .thread-ask { margin-bottom: 10px; }
+  .thread-btns { margin-top: 8px; }
+  .thread-foot { padding-top: 8px; }
+  .threads-stop { margin-top: 10px; }
+  .hands-stage { min-height: 0; }
+  .hands-char { width: 124px; height: 124px; }
+  .hands-doc { padding-top: 20px; gap: 11px; }
+  .hands-foot { padding-top: 18px; padding-bottom: 18px; }
+  .rails-top { min-height: 72px; }
+  .rails-char { width: 84px; height: 84px; }
+  .rails-tray { min-height: 0; margin: 6px 0 10px; gap: 6px; }
+  .rail-chip:not([data-placed]) { height: 36px; }
+  .rail-row { padding-top: 8px; padding-bottom: 8px; }
+  .rails-table { gap: 6px; }
+  .rail-never .rail-quiet { min-height: 22px; }
+  .rail-body { gap: 4px; }
+  .sleep-stage { min-height: 0; }
+  /* the blob's column is the stage's tallest here: room above its head for "night." inside the plate */
+  .sleep-me { padding-top: 32px; }
+  .sleep-char { width: 140px; height: 140px; }
+  .sleep-clock { font-size: 36px; }
+  .sleep-kinds li { min-height: 40px; padding-top: 7px; padding-bottom: 7px; }
+  .race-row { min-height: 38px; }
+  .race { margin-top: 34px; }
+  .costs-stage { gap: 24px; }
+  .costs-top { min-height: 0; }
+  .costs-char { width: 124px; height: 124px; }
+}

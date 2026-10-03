@@ -1,5 +1,9 @@
 # DIAGRAMS · Kevin (2026-10-02), on the live redesign (main 1aacc19): "our diagrams need to be completely redesigned, use a far better font, lay out stuff better, make far better visuals and use better icons"
 
+> **History (2026-10-02).** The schematic drawings this brief asked for (`components/art/*`) were replaced by the
+> playable plates in `components/play/*` (LANDING.md); `DESIGN.md` describes the page as built. The font and icon choices
+> made under this brief still hold (DIAGRAM-STYLE.md §1 and §2).
+
 Scope: every picture in the sections, meaning `components/art/*` (Wake, Say, Hands, Rails, Sleep, Numbers, Costs),
 `components/site/ConsoleWindow.tsx` (Threads), `components/site/RailsPicture.tsx`, the Install terminal, and how each
 section lays its words and its diagram out. The page's frame stays: the hero, the sticky Mac top edge with the island,

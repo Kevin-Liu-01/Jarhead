@@ -1,287 +1,281 @@
 /*
- * site.css · the page (docs/DESIGN.md): the Mac's top edge fixed over everything (the menu bar, the notch, the island hanging
- * from it, the dissolve under it once docked), the hero with the real blob huge beside the h1 on one line, then one section
- * per question on its own full-bleed ground (its tone ordered-dithered over the page ground at low intensity,
- * components/site/Field), the words beside one big drawing, the picture side alternating, Install with the terminal, the
- * foot. Every colour a --jh-* token (no hex here); weight ≤ 500 except the menu bar's app name; Inter, figures tabular,
- * commands mono. The one glass is the hero's Install. Dark is the first design; light is its own poster.
+ * site.css · the page's shell: the Mac's top edge fixed over everything (the bar, the notch, the island, the dissolve once
+ * docked), the hero (the h1 in Newsreader with the blob as its full stop, the two calls on a dithered horizon), the
+ * sections (one idea per screen: a serif h2, one line, a plate), Install's terminal and the foot. The demos' own classes
+ * are in styles/play.css. Tokens only (app/globals.css); weight ≤ 500 except the bar's app name; no shadow but the one
+ * token; the one glass is the hero's Install.
  */
 
 /* ---------- the page's measures ---------- */
 :root {
   --bar-h: 37px;
   --notch-w: 185px;
-  --pad: clamp(20px, 6.67vw, 128px);
-  --wrap: min(100% - 2 * var(--pad), 1560px);
-  /* the island's scale over the hero (1:1 at 900 px of height, 0.8 to 1.15) and docked (0.66: 37 + 121 = 158 px at 1440 × 900) */
+  --pad: clamp(20px, 6vw, 112px);
+  --wrap: min(100% - 2 * var(--pad), 1296px);
+  /* the island's scale over the hero (0.86 at 950 px of height, 0.7 to 0.86) and docked (0.62: 37 + 114 = 151 px) */
   --fit-s: tan(atan2(100vw - 24px, 420px));
-  --hero-s: min(var(--fit-s), clamp(0.8, tan(atan2(100svh, 900px)), 1.15));
-  --compact-s: min(0.66, var(--fit-s));
+  --hero-s: min(var(--fit-s), clamp(0.7, tan(atan2(100svh, 1100px)), 0.86));
+  --compact-s: min(0.62, var(--fit-s));
   --top-dock: calc(var(--bar-h) + 184px * var(--compact-s));
-  --blob: clamp(320px, min(31vw, 52svh), 480px);
-  --h1: clamp(52px, 7.2vw, 112px);
-  /* every section h2 is set so its longest line (`Codex, Claude Code, a key,`, 11.3 em) holds on one line in the words column
-     (about 0.34 × 100vw beside the picture): 2.9vw clears it at every width from 961 to 1920 */
-  --h2: clamp(28px, 2.9vw, 52px);
-  /* the menu bar: the render's own grey in dark, the raised paper in light; the ink at 1 for the app name, .72 for the rest */
-  --bar-fill: var(--jh-raised);
-  --bar-ink: var(--jh-fg);
-  --bar-ink-2: var(--jh-fg-2);
+  /* the h1 holds `Your Mac, by voice`, the stop's breath and the blob on one line: 8.88 em, so the cap is 145.5 px (the
+     1296 px wrap) */
+  --h1: clamp(40px, 8.2vw, 145.5px);
+  --h2: clamp(34px, 3.4vw, 52px);
 }
-html[data-theme="dark"] { --bar-fill: var(--jh-island-bar); }
 
-body { background: var(--jh-ground); }
 .page { position: relative; }
-.jh-skip { z-index: 60; top: 46px; }
 
 /* ---------- the top: fixed, the bar edge to edge, the island hanging from the notch ---------- */
 .top { position: fixed; left: 0; right: 0; top: 0; z-index: 50; height: var(--bar-h); pointer-events: none; --top-s: var(--hero-s); }
-.bar { position: relative; z-index: 2; height: var(--bar-h); display: flex; align-items: center; padding: 0 16px; background: var(--bar-fill); border-bottom: 1px solid var(--jh-hair-row);
-  color: var(--bar-ink-2); font-size: 13px; line-height: 1; letter-spacing: -0.005em; white-space: nowrap; pointer-events: auto; }
+.bar { position: relative; z-index: 2; height: var(--bar-h); display: flex; align-items: center; padding: 0 14px; background: var(--jh-bar); border-bottom: 1px solid var(--jh-hair-row);
+  color: var(--jh-fg-2); font-size: 13px; line-height: 1; letter-spacing: -0.005em; white-space: nowrap; pointer-events: auto; }
 .bar-l { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 12px; max-width: calc(50% - var(--notch-w) / 2 - 20px); overflow: hidden; }
-.bar-apple { width: 16px; height: 16px; flex: none; color: var(--bar-ink); }
-.bar-app { font-weight: 600; color: var(--bar-ink); flex: none; }
+.bar-apple { width: 15px; height: 15px; flex: none; color: var(--jh-fg); }
+.bar-app { font-weight: 600; color: var(--jh-fg); flex: none; }
 .bar-menus { display: flex; align-items: center; gap: 1px; min-width: 0; }
-.bar-menus a { display: inline-flex; align-items: center; height: 24px; padding: 0 6px; border-radius: 5px; color: var(--bar-ink-2); transition: color var(--jh-instant) var(--jh-ease-out), background-color var(--jh-instant) var(--jh-ease-out); }
-.bar-menus a[aria-current] { color: var(--bar-ink); background-color: var(--jh-lift-raised); }
-@media (hover: hover) { .bar-menus a:hover, .bar-item:hover { color: var(--bar-ink); background-color: var(--jh-hover); } }
-.bar-r { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
-/* the phase: the dot in the island's tone and its word, so the docked island's state is named at the bar's size */
-.bar-phase { display: inline-flex; align-items: center; gap: 7px; min-width: 86px; margin-right: 4px; color: var(--bar-ink-2); }
+.bar-menus a { display: inline-flex; align-items: center; height: 24px; padding: 0 7px; border-radius: 5px; color: var(--jh-fg-2); transition: color var(--jh-instant) var(--jh-ease-out), background-color var(--jh-instant) var(--jh-ease-out); }
+.bar-menus a[aria-current] { color: var(--jh-fg); background-color: var(--jh-lift); }
+@media (hover: hover) { .bar-menus a:hover, .bar-item:hover { color: var(--jh-fg); background-color: var(--jh-hover); } }
+.bar-r { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.bar-phase { display: inline-flex; align-items: center; gap: 7px; min-width: 84px; margin-right: 6px; color: var(--jh-fg-2); }
 .bar-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--desk-phase); flex: none; transition: background-color var(--jh-drift) var(--jh-ease-in-out); }
-.bar-item { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 5px; color: var(--bar-ink-2); }
+.bar-item { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 5px; color: var(--jh-fg-2); }
 .bar-item svg { flex: none; }
-.bar-gh .stars { color: var(--bar-ink-2); }
 .bar-theme { width: 30px; padding: 0; justify-content: center; }
-.bar-install { display: inline-flex; align-items: center; height: 24px; margin: 0 6px 0 4px; padding: 0 10px; border-radius: var(--jh-radius); background: var(--jh-accent); color: var(--jh-on-accent); font-weight: 500; }
+.bar-install { display: inline-flex; align-items: center; height: 24px; margin: 0 6px 0 4px; padding: 0 11px; border-radius: 999px; background: var(--jh-accent); color: var(--jh-on-accent); font-weight: 500; }
 .bar-install:active { opacity: 0.8; }
-.bar-clock { color: var(--bar-ink); font-variant-numeric: tabular-nums; padding-right: 2px; }
+.bar-clock { color: var(--jh-fg); font-variant-numeric: tabular-nums; padding-right: 2px; }
 .bar a:focus-visible, .bar button:focus-visible { outline: 2px solid var(--jh-accent); outline-offset: 1px; }
-/* the menus never reach the notch: a narrower bar drops them last first, as a Mac drops menu titles that would not fit */
 @media (max-width: 1250px) { .bar-menus a:nth-child(8) { display: none; } }
 @media (max-width: 1160px) { .bar-menus a:nth-child(7), .bar-clock { display: none; } }
-@media (max-width: 1020px) { .bar-menus a:nth-child(2), .bar-menus a:nth-child(6) { display: none; } }
-@media (max-width: 940px) { .bar-phase { display: none; } }
+@media (max-width: 1060px) { .bar-menus a:nth-child(2), .bar-menus a:nth-child(6) { display: none; } }
+@media (max-width: 960px) { .bar-phase { display: none; } }
 @media (max-width: 900px) { .bar-menus { display: none; } .bar-gh-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } }
 
-/* the island at 1:1 in its 420 × 184 box, scaled as one from the notch's centre by --top-s (the top engine writes it per scroll) */
+/* the island at 1:1 in its 420 × 184 box, scaled as one from the notch's centre by --top-s */
 .top-scale { position: absolute; left: 50%; top: var(--bar-h); z-index: 1; width: 420px; height: 184px; margin-left: -210px; transform: scale(var(--top-s)); transform-origin: top center; pointer-events: none; }
-/* the two scales as boxes the engine measures, so the CSS stays their one source */
 .top-probe { position: absolute; left: 0; top: 0; width: 0; visibility: hidden; }
 .top-probe--hero { height: calc(184px * var(--hero-s)); }
 .top-probe--dock { height: calc(184px * var(--compact-s)); }
-/* the dissolve under the bar once docked: the page's ground solid past the island's foot, then Bayer steps to nothing (Top.tsx paintFade) */
-.top-fade { position: absolute; left: 0; right: 0; top: var(--bar-h); z-index: 0; height: calc(184px * var(--compact-s) + 52px); overflow: hidden; opacity: 0; transition: opacity var(--jh-base) var(--jh-ease-out); }
+.top-fade { position: absolute; left: 0; right: 0; top: var(--bar-h); z-index: 0; height: calc(184px * var(--compact-s) + 48px); overflow: hidden; opacity: 0; transition: opacity var(--jh-base) var(--jh-ease-out); }
 .top-fade canvas { display: block; image-rendering: pixelated; }
 .top[data-docked] .top-fade { opacity: 1; }
-/* a focused control scrolls into view clear of the docked top (the bar, the island, the dissolve's last row at --top-dock + 52); the sections pad for it themselves */
+/* docked, the band takes the pointer down to the dissolve's middle (the ground solid to the foot + 4, then 44 px of
+   dissolve): nothing the ground hides can be pressed, and what shows through below it stays live */
+.top-fade::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: calc(184px * var(--compact-s) + 26px); }
+.top[data-docked] .top-fade::after { pointer-events: auto; cursor: default; }
 main a, main button, main [tabindex], .foot a { scroll-margin-top: calc(var(--top-dock) + 64px); }
 
-/* ---------- the stars (the bar's GitHub, the hero's source, the foot) ---------- */
+/* ---------- the stars ---------- */
 .stars { display: inline-flex; align-items: center; gap: 4px; }
 .stars-n { font: 500 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
-/* the pause before the count for a screen reader (", "): taking no room */
 .stars-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: pre; }
 
-/* ---------- the grounds: a section's tone field (components/site/Field) under its content, 3 px Bayer cells ---------- */
+/* ---------- a field: a tone dithered over a ground (components/site/Field), the page's one picture material ---------- */
 .field { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
 .field canvas { position: absolute; left: 0; top: 0; image-rendering: pixelated; }
 
-/* ---------- the hero ---------- */
-.hero { position: relative; overflow: hidden; background: var(--jh-ground); --field-peak: 0.34; --field-floor: 0.05; --field-r: 0.5; --field-bands: 4; --field-band: 0.62; }
-html:not([data-theme="dark"]) .hero { --field-peak: 0.42; --field-floor: 0.04; --field-r: 0.46; --field-bands: 3; --field-band: 0.7; }
-.hero-in { position: relative; z-index: 1; width: var(--wrap); min-height: 100svh; margin: 0 auto; display: flex; flex-direction: column; justify-content: center;
-  padding: calc(var(--bar-h) + 184px * var(--hero-s) + 32px) 0 clamp(40px, 7svh, 96px); }
-/* the blob on the h1's horizon at the right edge: the headline and the character read as one line, the island above them */
-.hero-blob { position: absolute; right: calc(-1 * clamp(0px, 2vw, 40px)); top: calc(var(--h1) * 0.49 - var(--blob) / 2 - 5svh); width: var(--blob); height: var(--blob); }
-.hero-words { position: relative; }
-.hero-h1 { position: relative; font-size: var(--h1); line-height: 0.98; letter-spacing: -0.04em; font-weight: 500; white-space: nowrap; }
-.hero-lead { margin-top: clamp(18px, 2.4svh, 28px); font-size: clamp(18px, 1.5vw, 22px); line-height: 1.45; color: var(--jh-fg-2); letter-spacing: -0.01em; max-width: 60ch; }
-.hero-calls { margin-top: clamp(28px, 4.4svh, 44px); display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+/* ---------- the character (components/desk/Character): the still until its first frame, then the live blob ---------- */
+.char { position: relative; display: block; flex: none; border-radius: 50%; background: var(--still) center / 100% 100% no-repeat; }
+.char[data-live] { background: none; }
+.char > canvas { position: absolute; left: 0; top: 0; }
+.char > .desk-blob-field { image-rendering: pixelated; }
+.char--press { cursor: pointer; }
+.char--press:focus-visible { outline: 2px solid var(--jh-accent); outline-offset: -14%; }
 
-/* the glass Install (the one glass surface): a frosted fill over the field's band of light, the hairline, the inner top highlight; the Apple mark, two lines */
-.glass { position: relative; display: inline-flex; align-items: center; gap: 18px; min-width: 368px; height: 80px; padding: 0 32px 0 26px; border-radius: 18px; color: var(--jh-fg);
+/* ---------- the hero ---------- */
+.hero { position: relative; overflow: hidden; --field-cell: 2; --field-peak: 0.44; --field-floor: 0; --field-r: 0.3; --field-bands: 5; --field-band: 0.42; --field-foot: 0.3; }
+html[data-theme="dark"] .hero { --field-peak: 0.34; --field-band: 0.3; }
+/* the foot's padding gives back the Install key's depth (its wall hangs under the calls), so the hero's words sit where
+   they did */
+.hero-in { position: relative; z-index: 1; width: var(--wrap); min-height: 100svh; margin: 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+  padding: calc(var(--bar-h) + 184px * var(--hero-s) + 24px) 0 calc(clamp(64px, 12svh, 140px) - 6px); }
+.hero-line { position: relative; }
+/* the h1: Newsreader at its display size, light and quiet; the full stop is the blob (the mark holds its place on the baseline) */
+.hero-h1 { --hb: 1.1em; font-family: var(--font-serif); font-size: var(--h1); font-weight: 330; font-variation-settings: "opsz" 72; line-height: 1; letter-spacing: -0.024em; white-space: nowrap; color: var(--jh-fg); padding-right: 0.04em; }
+/* the stop stays in the text (a screen reader reads it) and is cleared where the blob stands; the stop's advance and the
+   mark's margin leave a deliberate breath between the e's ink and the blob's body: 0.26 em for a round body, measured at
+   1440, 1280 and 1920 so the wobble never takes it under a sixth of an em (it was 0.14 em and the wobble closed it) */
+.h1-stop, .h2-stop { color: transparent; }
+.h1-mark { display: inline-block; position: relative; width: calc(var(--hb) * 0.714); height: 0; margin-left: 0.07em; vertical-align: baseline; }
+.hero-char { position: absolute; left: calc(var(--hb) * -0.143); bottom: calc(var(--hb) * -0.143); width: var(--hb); height: var(--hb); }
+/* the arrival: the stop shows and the blob waits until the hero takes over; if the script never runs, both settle at 3 s */
+html[data-arrive] .h1-stop { color: inherit; animation: jh-clear 0s linear 3s forwards; }
+html[data-arrive] .hero-char { opacity: 0; animation: jh-show 0s linear 3s forwards; }
+@keyframes jh-show { to { opacity: 1; } }
+@keyframes jh-clear { to { color: transparent; } }
+.hero-line:has(.hero-poke:focus-visible) .hero-char { outline: 2px solid var(--jh-accent); outline-offset: -12%; }
+.hero-lead { margin-top: clamp(22px, 3.4svh, 40px); font-size: clamp(17px, 1.4vw, 21px); line-height: 1.45; color: var(--jh-fg-2); letter-spacing: -0.008em; }
+/* the calls line up by their tops (the key's cap with Read the source); the key's wall hangs below */
+.hero-calls { margin-top: clamp(28px, 4.6svh, 52px); display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 14px; }
+.hero-terms { margin-top: 18px; font: 400 13px/1.4 var(--font-mono); color: var(--jh-fg-3-word); font-variant-numeric: tabular-nums; }
+
+/* the glass Install as a physical key (components/site/InstallKey.tsx; the one glass surface): the anchor is the key's
+   steady box (the cap and its body, the focus ring's frame, the hit target); inside it the key leans toward the pointer,
+   the cap is the frosted glass (fill, hairline, inner top highlight) with its light canvas, and beside the key one canvas
+   draws the body: the blob's dithered ramp as a side wall and its light on the paper round the key. Before the script
+   paints, a border in the accent stands in for the wall. Transforms and canvas only. */
+.glass { --key-depth: 6px; --key-h: 76px; --key-r: 18px; position: relative; display: inline-flex; min-width: 344px; height: calc(var(--key-h) + var(--key-depth)); border-radius: var(--key-r); color: var(--jh-fg); touch-action: manipulation; }
+.glass-key { position: relative; display: block; width: 100%; height: 100%; border-radius: inherit; }
+/* the one shadow, under the wall: the soft depth the key needs to sit on the horizon */
+.glass-key::before { content: ""; position: absolute; left: 0; right: 0; top: var(--key-depth); bottom: 0; border-radius: inherit; box-shadow: var(--jh-shadow); }
+.glass-key::after { content: ""; position: absolute; left: 0; right: 0; top: var(--key-depth); bottom: 0; border-radius: inherit; border-bottom: var(--key-depth) solid var(--jh-accent); }
+.glass[data-live] .glass-key::after { content: none; }
+/* the body and its halo: a sibling of the key (never inside its transform), so it stays under the hero's words (the lead,
+   Read the source and the terms paint over the halo) */
+.glass-base { position: absolute; left: 0; top: 0; z-index: -1; pointer-events: none; }
+.glass-cap { position: relative; z-index: 1; display: flex; align-items: center; gap: 16px; width: 100%; height: var(--key-h); padding: 0 30px 0 24px; border-radius: inherit; overflow: hidden;
   background-color: var(--jh-glass-fill); background-clip: padding-box; border: 1px solid var(--jh-glass-hair); box-shadow: inset 0 1px 0 var(--jh-glass-top);
-  backdrop-filter: blur(18px) saturate(1.8); -webkit-backdrop-filter: blur(18px) saturate(1.8); transition: background-color var(--jh-instant) var(--jh-ease-out); }
-.glass-mark { flex: none; }
-.glass-lines { display: flex; flex-direction: column; gap: 5px; min-width: 0; text-align: left; }
-.glass-l1 { font-size: 21px; font-weight: 500; line-height: 1.1; letter-spacing: -0.015em; }
+  backdrop-filter: blur(16px) saturate(1.7); -webkit-backdrop-filter: blur(16px) saturate(1.7); transform-origin: 50% 100%; transition: background-color var(--jh-instant) var(--jh-ease-out); }
+.glass-ink { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: pixelated; }
+.glass-mark { position: relative; flex: none; overflow: visible; transform-origin: 50% 100%; }
+.glass-leaf { transform-box: view-box; transform-origin: 12.2px 5.6px; }
+.glass-lines { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; text-align: left; }
+.glass-l1 { font-size: 20px; font-weight: 500; line-height: 1.1; letter-spacing: -0.015em; }
 .glass-l2 { font-size: 13px; line-height: 1.2; color: var(--jh-fg-2); white-space: nowrap; }
-@media (hover: hover) { .glass:hover { background-color: var(--jh-glass-hover); } }
-.glass:active { background-color: var(--jh-glass-press); }
+@media (hover: hover) { .glass:hover .glass-cap { background-color: var(--jh-glass-hover); } }
+.glass:active .glass-cap { background-color: var(--jh-glass-press); }
+/* without the script the cap still sinks onto its wall */
+.glass:not([data-live]):active .glass-cap { transform: translateY(var(--key-depth)); }
+/* the key's halo cuts a moat round this ring (InstallKey.tsx HALO.ring): change the two together */
 .glass:focus-visible, .source:focus-visible { outline: 2px solid var(--jh-accent); outline-offset: 3px; }
-/* Read the source: a plain button beside the glass, its height, the GitHub mark, the words, the live count. The raised tile, opaque in both themes, and a hairline, so the field stops at its edge, only the glass frosts it, and the glass leads; hover lays the kit's wash over the tile */
-.source { display: inline-flex; align-items: center; gap: 10px; height: 80px; padding: 0 26px; border-radius: 18px; color: var(--jh-fg); font-size: 17px; font-weight: 500; letter-spacing: -0.01em;
-  background-color: var(--jh-raised); background-clip: padding-box; border: 1px solid var(--jh-hair); }
+.source { display: inline-flex; align-items: center; gap: 10px; height: 76px; padding: 0 24px; border-radius: 18px; color: var(--jh-fg); font-size: 16px; font-weight: 500; letter-spacing: -0.01em;
+  background-color: var(--jh-sheet); background-clip: padding-box; border: 1px solid var(--jh-hair); transition: transform var(--jh-quick) var(--jh-ease-out); }
 .source .stars { margin-left: 4px; padding-left: 12px; border-left: 1px solid var(--jh-hair); height: 20px; color: var(--jh-fg-2); }
 .source .stars-n { font-size: 14px; }
 @media (hover: hover) { .source:hover { background-image: linear-gradient(var(--jh-hover), var(--jh-hover)); } }
+.source:active { transform: scale(0.99); }
 
-/* the live blob's host (lib/blob.ts mounts two canvases in it); the still PNG until its first frame and without JS */
-.desk-blob { position: relative; width: 100%; height: 100%; cursor: pointer; border-radius: 50%; background: url("/blob-still.png") center / 100% no-repeat; }
-.desk-blob[data-live] { background: none; }
-.desk-blob > canvas { position: absolute; left: 0; top: 0; }
-.desk-blob-field { image-rendering: pixelated; }
-.desk-blob:focus-visible { outline: 2px solid var(--jh-accent); outline-offset: -12%; }
-
-/* ---------- a section: its ground, the words beside the picture ---------- */
-.sec { position: relative; overflow: hidden; background: var(--jh-ground); border-top: 1px solid var(--jh-hair-row); --field-cell: 3; --field-peak: 0.22; --field-floor: 0.1; --field-r: 0.6; --field-bands: 4; }
-html:not([data-theme="dark"]) .sec { --field-peak: 0.3; --field-floor: 0.12; --field-r: 0.58; --field-bands: 3; }
-.sec-in { position: relative; z-index: 1; width: var(--wrap); min-height: 100svh; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); column-gap: clamp(40px, 5vw, 104px);
-  align-items: center; padding: calc(var(--top-dock) + 48px) 0 clamp(32px, 5svh, 96px); }
-.sec[data-pic="left"] .sec-in { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
-.sec[data-pic="left"] .sec-pic { order: -1; }
+/* ---------- a section: one idea per screen ---------- */
+.sec { position: relative; }
+.sec-in { position: relative; width: var(--wrap); min-height: 100svh; margin: 0 auto; display: grid; align-content: center;
+  padding: calc(var(--top-dock) + clamp(28px, 5svh, 64px)) 0 clamp(40px, 7svh, 88px); }
+.sec[data-layout="split"] .sec-in { grid-template-columns: minmax(0, 5.3fr) minmax(0, 6.7fr); column-gap: clamp(48px, 6vw, 104px); align-items: center; }
+.sec[data-layout="split"][data-side="left"] .sec-in { grid-template-columns: minmax(0, 6.7fr) minmax(0, 5.3fr); }
+.sec[data-layout="split"][data-side="left"] .sec-stage { order: -1; }
+.sec[data-layout="stack"] .sec-in { grid-template-columns: minmax(0, 1fr); row-gap: clamp(24px, 4svh, 44px); }
+.sec[data-layout="stack"] .sec-words { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); column-gap: clamp(48px, 6vw, 104px); align-items: end; }
+.sec[data-layout="stack"] .sec-lead { margin-top: 0; }
+.sec[data-layout="stack"] .notes { margin-top: 14px; }
+.sec[data-layout="center"] .sec-in { grid-template-columns: minmax(0, 1fr); row-gap: clamp(24px, 4svh, 44px); }
+.sec[data-layout="center"] .sec-words { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); column-gap: clamp(48px, 6vw, 104px); align-items: end; }
+.sec[data-layout="center"] .sec-lead { margin-top: 0; }
+.sec[data-layout="center"] .notes { margin-top: 14px; }
 .sec-words { min-width: 0; }
-.sec-h2 { font-size: var(--h2); line-height: 1.06; letter-spacing: -0.034em; font-weight: 500; }
-.sec-h2 > span { display: block; white-space: nowrap; }
+.sec-h2 { font-family: var(--font-serif); font-size: var(--h2); font-weight: 340; font-variation-settings: "opsz" 60; line-height: 1.04; letter-spacing: -0.018em; color: var(--jh-fg); }
+.sec-h2 > span { display: block; }
 .sec-h2-2 { color: var(--jh-fg-3); }
-.sec-lead { margin-top: 24px; font-size: clamp(17px, 1.3vw, 20px); line-height: 1.5; color: var(--jh-fg-2); letter-spacing: -0.008em; max-width: 34em; text-wrap: pretty; }
-.sec-pic { min-width: 0; }
+/* Install's h2 ends as the hero's does: its full stop is the blob, standing on the baseline */
+.h2-mark { display: inline-block; position: relative; width: calc(1.3em * 0.714); height: 0; margin-left: -0.04em; vertical-align: baseline; }
+.ins-char { position: absolute; left: calc(1.3em * -0.143); bottom: calc(1.3em * -0.143); width: 1.3em; height: 1.3em; }
+.keep { white-space: nowrap; }
+.sec-lead { margin-top: 22px; font-size: clamp(17px, 1.3vw, 19px); line-height: 1.5; color: var(--jh-fg-2); letter-spacing: -0.006em; max-width: 30em; text-wrap: balance; }
+.sec-stage { min-width: 0; }
+.notes { margin-top: 28px; display: flex; flex-direction: column; gap: 10px; }
+.notes li { display: flex; align-items: flex-start; gap: 12px; font-size: 15px; line-height: 1.45; color: var(--jh-fg-2); }
+.notes-icon { color: var(--jh-fg-3); margin-top: 1px; }
 
-/* the section's lines: the kit glyph on the 20 column in the quiet ink, one idea each */
-.lines { margin-top: 36px; display: flex; flex-direction: column; }
-.lines li { display: flex; align-items: center; gap: 14px; padding: 14px 0; font-size: 16px; line-height: 1.4; color: var(--jh-fg); }
-.lines li + li { border-top: 1px solid var(--jh-hair-row); }
-.lines-icon { width: 20px; height: 20px; flex: none; color: var(--jh-fg-3); }
-
-/* a drawing in its frame: the raised plate the art family stands on, one frame hairline, 4:3 */
-.pic { position: relative; aspect-ratio: 4 / 3; background: var(--jh-raised); border: 1px solid var(--jh-hair-frame); border-radius: var(--jh-radius); background-clip: padding-box; overflow: hidden; container-type: inline-size; }
-.pic > .art { display: block; width: 100%; }
-.pic > .art:only-child, .pic > .art:has(+ .art-words:last-child) { height: 100%; }
-/* a drawing's words for a screen reader (Numbers' five pairs): beside the svg, taking no room */
-.art-words { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.art text { user-select: none; }
-.art-brand path { fill: currentColor; }
-@container (max-width: 396px) { .art .art-side--sm { display: none; } }
-/* a narrow plate (the phone) sets the drawings' words at 15.5 units, so they render at 12 px or more */
-@container (max-width: 420px) { .art text[font-size="13"], .art text[font-size="14"] { font-size: 15.5px; } }
-html:not([data-theme="dark"]) .pic { background-color: var(--jh-paper); }
-
-/* Rails: the three verdict rails drawn, then NEVER as the Console lists it, real text sized by the frame */
-.pic--rails { display: flex; flex-direction: column; aspect-ratio: auto; }
-.pic--rails > .art { flex: none; }
-.never { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 1.6cqw; margin: 0 3.8cqw; padding: 2.4cqw 0 3cqw; border-top: 1px solid var(--jh-hair-row); }
-.never-head { display: flex; align-items: baseline; gap: 8px; font: 500 clamp(12px, 2.1cqw, 15px)/1 var(--font-sans); color: var(--jh-titanium-word); }
-.never-count { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.never-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.3cqw 3cqw; }
-.never-list li { display: flex; align-items: center; gap: 10px; min-width: 0; font: 400 clamp(12px, 2.3cqw, 17px)/1.3 var(--font-mono); color: var(--jh-fg); }
-.never-icon { width: 16px; height: 16px; flex: none; display: grid; place-items: center; color: var(--jh-error); }
-@container (max-width: 520px) {
-  .never { gap: 10px; margin: 0 16px; padding: 14px 0 18px; }
-  .never-list { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+/* the pinned beat (Hands on a desk, motion allowed; the query is PIN in components/play/Hands.tsx): the section grows by a
+   scroll's worth and its words and plate stick under the top while the scroll steps the h2's sentences; plain CSS sticky,
+   never a hijack. Server-rendered, so the layout is final before the browser scrolls to a #fragment past it */
+@media (min-width: 1001px) and (min-height: 700px) and (prefers-reduced-motion: no-preference) {
+  html:not([data-still]) #hands { height: 230svh; }
+  html:not([data-still]) #hands > .sec-in { position: sticky; top: 0; height: 100svh; min-height: 0; }
 }
 
-/* the one rise per section on first view: only a section still below the fold when the spy runs waits for it (SectionSpy); no JS, reduced motion or #still: none */
+/* the one rise per section on first view (SectionSpy): the h2, its words, the plate, 60 ms apart; no JS, calm: none */
 .rise { transition: opacity var(--jh-drift) var(--jh-ease-out), transform var(--jh-drift) var(--jh-ease-out); }
-.sec-pic.rise { transition-delay: 90ms; }
-html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(28px); }
+.sec-more.rise { transition-delay: 60ms; }
+.sec-stage.rise { transition-delay: 120ms; }
+html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(24px); }
+/* a section's CSS loops run only while it is on screen */
+.sec:not([data-inview]) *, .sec:not([data-inview]) *::before, .sec:not([data-inview]) *::after { animation-play-state: paused; }
 
-/* Numbers: the lead figure set huge */
-.big-fig { margin-top: clamp(28px, 4svh, 48px); }
-.big-fig-v { display: block; font-size: clamp(96px, 11.5vw, 200px); line-height: 0.86; letter-spacing: -0.06em; font-weight: 500; font-variant-numeric: tabular-nums; }
-.big-fig-l { display: block; margin-top: 18px; font-size: 17px; line-height: 1.4; color: var(--jh-fg-2); }
-.big-fig + .sec-lead { margin-top: 28px; }
-
-/* ---------- Threads: the Console window drawn with the kit (560 × 420, scaled as one to its frame) ---------- */
-.winbox { position: relative; aspect-ratio: 4 / 3; container-type: inline-size; }
-.win { position: absolute; left: 0; top: 0; width: 560px; height: 420px; transform-origin: 0 0; transform: scale(tan(atan2(100cqw, 560px))); display: flex; flex-direction: column;
-  background: var(--jh-ground); border: 1px solid var(--jh-hair); border-radius: 10px; background-clip: padding-box; overflow: hidden; font-size: 12px; color: var(--jh-fg); }
-.win-bar { flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--jh-hair-row); }
-.win-lights { display: flex; gap: 8px; margin-right: 10px; }
-.win-light { display: block; width: 12px; height: 12px; border-radius: 50%; }
-.win-light-r { background: var(--jh-light-red); }
-.win-light-y { background: var(--jh-light-yellow); }
-.win-light-g { background: var(--jh-light-green); }
-.win-name { font-size: 13px; font-weight: 500; }
-.win-phase { display: inline-flex; align-items: center; gap: 7px; margin-left: 6px; color: var(--jh-fg-2); }
-.win-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.win-col { min-width: 0; padding: 4px 0; }
-.win-col + .win-col { border-left: 1px solid var(--jh-hair-row); }
-.win-head { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; font: 500 12px/1 var(--font-sans); color: var(--jh-titanium-word); }
-.win-head-fig { margin-left: auto; font: 400 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
-.win-head--rule { margin-top: 4px; border-top: 1px solid var(--jh-hair-row); }
-.win-row { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 8px; align-items: start; min-height: 30px; padding: 5px 12px; }
-.win-row.has-meta { min-height: 44px; }
-.win-row-icon { width: 20px; height: 20px; display: grid; place-items: center; color: var(--jh-titanium); }
-.win-row-main { min-width: 0; display: flex; flex-direction: column; }
-.win-row-line { display: flex; align-items: center; gap: 6px; min-height: 20px; min-width: 0; }
-.win-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--jh-fg-2); }
-.win-row.is-strong .win-row-title { color: var(--jh-fg); }
-.win-row-value { margin-left: auto; padding-left: 6px; font: 400 11px/20px var(--font-mono); color: var(--jh-titanium-word); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.win-row-meta { display: block; font: 400 11px/14px var(--font-mono); color: var(--jh-fg-3-word); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.win-live { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 11px; color: var(--jh-fg-2); white-space: nowrap; }
-.win-tone { display: grid; place-items: center; }
-.win-tone--speaking { color: var(--jh-speaking); }
-.win-tone--acting { color: var(--jh-acting); }
-.win-fold { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 10px; font: 500 12px/1 var(--font-sans); color: var(--jh-titanium-word); white-space: nowrap; }
-.win-fold-chevron { width: 12px; height: 20px; display: grid; place-items: center; color: var(--jh-fg-3); }
-.win-fold.is-open .win-fold-chevron { transform: rotate(90deg); }
-.win-fold.is-open { color: var(--jh-fg-2); }
-.win-fold-count { font: 400 11px/1 var(--font-mono); color: var(--jh-titanium-word); font-variant-numeric: tabular-nums; }
-.win-fold-summary { margin-left: auto; font: 400 11px/1 var(--font-mono); color: var(--jh-titanium-word); font-variant-numeric: tabular-nums; }
-.win-col > .win-row + .win-row, .win-col > .win-fold, .win-col > .win-fold + .win-row, .win-col > .win-row + .win-fold { border-top: 1px solid var(--jh-hair-row); }
-.win-col > .win-head + .win-fold { border-top: 0; }
-
-/* ---------- Install: the terminal (an ink plate in both themes), the requirements ---------- */
+/* ---------- Install: the terminal (an ink plate in both themes) and the requirements ---------- */
+/* the family (DIAGRAM-STYLE §3): radius 8, title dots 8 in the quiet step. The rail is the Wire's ink tone (the screen's
+   second ink, .72 of paper) flattened over the screen ink, so a Joint or the bend never doubles where it meets the wire */
 .term { --jh-fg: var(--jh-paper); --jh-fg-2: var(--jh-screen-fg-2); --jh-fg-3: var(--jh-screen-fg-3); --jh-fg-3-word: var(--jh-screen-fg-3); --jh-titanium-word: var(--jh-titanium);
   --jh-hair: var(--jh-plate-hair); --jh-hair-row: color-mix(in srgb, var(--jh-paper) 11%, transparent); --jh-lift: color-mix(in srgb, var(--jh-paper) 8%, transparent);
   --jh-hover: var(--jh-screen-hover); --jh-active: var(--jh-screen-active); --jh-accent: var(--jh-accent-dark); --jh-on-accent: var(--jh-ink);
-  background: var(--jh-screen-ink); color: var(--jh-fg); border: 1px solid var(--jh-plate-hair); border-radius: 10px; background-clip: padding-box; overflow: hidden; container-type: inline-size; }
+  --term-rail: color-mix(in srgb, var(--jh-paper) 72%, var(--jh-screen-ink));
+  background: var(--jh-screen-ink); color: var(--jh-fg); border: 1px solid var(--jh-plate-hair); border-radius: 8px; background-clip: padding-box; overflow: hidden; container-type: inline-size; box-shadow: var(--jh-shadow); }
 .term-bar { display: flex; gap: 8px; align-items: center; height: 40px; padding: 0 16px; border-bottom: 1px solid var(--jh-hair-row); }
-.term-bar i { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--jh-fg-3); opacity: 0.5; }
+.term-bar i { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--jh-fg-3); }
 .term-one { display: flex; flex-direction: column; align-items: flex-start; gap: 22px; padding: 30px 28px 28px; }
-/* the one line sized to hold on one line in the terminal's width (59 mono characters), down to 13 px where it wraps between its runs */
-.term-line { font: 500 clamp(13px, calc((100cqw - 60px) / 36), 20px)/1.55 var(--font-mono); color: var(--jh-fg); }
+/* the one line never under 15 px, so it never sits under the 14 px rows */
+.term-line { font: 500 clamp(15px, calc((100cqw - 60px) / 36), 20px)/1.55 var(--font-mono); color: var(--jh-fg); }
 .term-line > span { white-space: nowrap; }
-/* the script's own note sits under the one line, so its "It" is the script */
 .term-said { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .ins-note { font: 400 13px/1.5 var(--font-mono); color: var(--jh-fg-2); }
-/* the script's link is a 40 px target: the padding grows the box, not the line */
 .ins-note a { display: inline-block; padding: 10px 0; margin: -10px 0; color: var(--jh-fg); text-decoration: underline; text-decoration-color: var(--jh-hair); text-underline-offset: 3px; overflow-wrap: anywhere; }
 .ins-note a:focus-visible { outline: 2px solid var(--jh-accent); outline-offset: -6px; }
 .term-cmds { border-top: 1px solid var(--jh-hair-row); }
-.term-cmds li { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; column-gap: 12px; padding: 14px 28px; }
+.term-cmds li { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; column-gap: 12px; padding: 14px 28px; }
 .term-cmds li + li { border-top: 1px solid var(--jh-hair-row); }
-/* a row's Copy is 32 to the eye and 40 to the finger */
+.term-cmds li > .kit-btn { grid-column: 3; }
 .term-cmds .kit-btn::after { content: ""; position: absolute; inset: -4px -2px; }
-.term-glyph { width: 20px; height: 20px; display: grid; place-items: center; color: var(--jh-fg-3); }
-.term-cmd { min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-top: 5px; }
-.term-cmd code { font: 400 14px/1.45 var(--font-mono); color: var(--jh-fg); overflow-wrap: anywhere; }
-.term-note { font: 400 12px/1.4 var(--font-mono); color: var(--jh-fg-3-word); }
-.req-h { margin-top: 40px; font-size: 15px; line-height: 1.2; font-weight: 500; letter-spacing: -0.005em; color: var(--jh-fg-2); }
-.req { margin-top: 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 11px; }
-.req li { display: flex; align-items: flex-start; gap: 12px; font-size: 15px; line-height: 1.4; color: var(--jh-fg); }
+.term-cmd { grid-column: 2; position: relative; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-top: 5px; }
+.term-cmd code { font: 400 14px/1.45 var(--font-mono); color: var(--jh-fg); text-wrap: pretty; }
+/* a run from its && on and a whole URL each move down whole before they wrap (Held in components/site/Install.tsx) */
+.term-hold { display: inline-block; }
+/* the notes 13 in the quiet ink; the last, `Setup opens: ...`, the sequence's end, in the second */
+.term-note { font: 400 13px/1.45 var(--font-mono); color: var(--jh-fg-3-word); }
+.term-cmds li:last-child .term-note { position: relative; color: var(--jh-fg-2); }
+/* the schematic's rail (DIAGRAM-STYLE §12): a 1.5 wire on the 20 column (x = row padding + 10) leaves the primary Copy, runs
+   down the four rows with a 6 px Joint on each command's first line, and turns at the last row through a 12 bend into a 5
+   open chevron before `Setup opens: ...` (the bend is .term-arrow, drawn as a stroke in Install.tsx; the note's ::before
+   carries the straight run above it) */
+.term-one > .kit-btn::before { content: ""; position: absolute; left: 8.25px; top: 100%; width: 1.5px; height: 96px; background: var(--term-rail); pointer-events: none; }
+.term-cmds li::before { content: ""; position: absolute; left: 37.25px; top: -1px; bottom: 0; width: 1.5px; background: var(--term-rail); }
+.term-cmds li:last-child::before { content: none; }
+.term-cmd::before { content: ""; position: absolute; left: -25px; top: 12px; width: 6px; height: 6px; border-radius: 50%; background: var(--term-rail); }
+.term-cmds li:last-child .term-note::before { content: ""; position: absolute; left: -22.75px; width: 1.5px; top: -96px; height: calc(84px + 0.725em); background: var(--term-rail); }
+.term-arrow { position: absolute; left: -23px; top: calc(0.725em - 13px); fill: none; stroke: var(--term-rail); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.req-h { margin-top: 36px; font-size: 15px; line-height: 1.2; font-weight: 500; color: var(--jh-fg); }
+.req { margin-top: 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.req li { display: flex; align-items: flex-start; gap: 12px; font-size: 15px; line-height: 1.4; color: var(--jh-fg-2); }
 .req-icon { width: 18px; height: 21px; flex: none; display: grid; place-items: center; color: var(--jh-fg-2); }
 .req-note { margin-top: 16px; font-size: 14px; line-height: 1.5; color: var(--jh-fg-3-word); max-width: 46ch; }
 
 /* ---------- the foot: centred and calm ---------- */
-.foot { position: relative; border-top: 1px solid var(--jh-hair-row); background: var(--jh-ground); }
+.foot { position: relative; border-top: 1px solid var(--jh-hair-row); }
 .foot-in { width: var(--wrap); margin: 0 auto; padding: 112px 0 88px; display: flex; flex-direction: column; align-items: center; text-align: center; }
-.foot-brand { display: flex; flex-direction: column; align-items: center; gap: 16px; font-size: 26px; font-weight: 500; letter-spacing: -0.02em; }
-.foot-line { margin-top: 18px; font-size: 19px; line-height: 1.45; color: var(--jh-fg-2); max-width: 36ch; }
+.foot-brand { display: flex; flex-direction: column; align-items: center; gap: 16px; font-family: var(--font-serif); font-size: 34px; font-weight: 340; letter-spacing: -0.015em; }
+.foot-line { margin-top: 18px; font-size: 18px; line-height: 1.45; color: var(--jh-fg-2); max-width: 36ch; text-wrap: balance; }
 .foot-line--2 { margin-top: 4px; color: var(--jh-fg-3-word); }
 .foot-mono { margin-top: 22px; font: 400 13px/1.6 var(--font-mono); color: var(--jh-fg-3-word); font-variant-numeric: tabular-nums; }
 .foot-mono > span { white-space: nowrap; }
-.foot-notes { margin-top: 40px; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 20px; max-width: 980px; font-size: 13px; line-height: 1.6; color: var(--jh-fg-3-word); }
+.foot-notes { margin-top: 40px; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 20px; max-width: 980px; font-size: 13px; line-height: 1.6; color: var(--jh-fg-3-word); text-wrap: balance; }
 
-/* ---------- narrower desks: the hero stacks under 1000, the blob first and centred, clear of the h1 and the lead ---------- */
-@media (max-width: 1000px) {
-  :root { --blob: min(48vw, 360px, 40svh); }
-  .hero-in { justify-content: flex-start; min-height: 0; padding: calc(var(--bar-h) + 184px * var(--hero-s) + 12px) 0 64px; }
-  .hero-blob { position: relative; right: auto; top: auto; margin: 0 auto; }
-  .hero-words { margin-top: 8px; }
+/* ---------- a short desk: the section closes up under the docked top ---------- */
+@media (min-width: 1001px) and (max-height: 820px) {
+  /* the words start below the docked top's dissolve (the island's foot and 48 px of dots) */
+  .sec-in { padding-top: calc(var(--top-dock) + 46px); padding-bottom: 14px; }
+  .sec[data-layout="stack"] .sec-in, .sec[data-layout="center"] .sec-in { row-gap: 18px; }
+  .sec-lead { margin-top: 16px; }
+  .notes { margin-top: 18px; }
+  .term-one { padding: 20px 24px 18px; gap: 14px; }
+  /* the plate's 24 padding puts the primary Copy 4 left of the rows, so its wire steps 4 right to stay one wire */
+  .term-one > .kit-btn::before { left: 12.25px; }
+  .term-cmds li { padding-top: 9px; padding-bottom: 9px; }
+  .req-h { margin-top: 24px; }
+  .req { gap: 7px; }
 }
 
-/* ---------- narrower desks: the sections stack under 960, picture first ---------- */
-@media (max-width: 960px) {
-  :root { --h2: clamp(30px, 6.2vw, 52px); }
-  .sec-in, .sec[data-pic="left"] .sec-in { grid-template-columns: minmax(0, 1fr); row-gap: 40px; min-height: 0; align-items: start; }
-  .sec-pic, .sec[data-pic="left"] .sec-pic { order: -1; }
+/* ---------- narrower desks: every section stacks, words first ---------- */
+@media (max-width: 1000px) {
+  .sec[data-layout] .sec-in { grid-template-columns: minmax(0, 1fr); row-gap: 32px; align-content: start; }
+  .sec[data-layout] .sec-words { display: block; }
+  .sec[data-layout] .sec-lead { margin-top: 18px; }
+  .sec[data-layout="split"][data-side="left"] .sec-in { grid-template-columns: minmax(0, 1fr); }
+  .sec[data-layout="split"][data-side="left"] .sec-stage { order: 0; }
+  .sec[data-layout] .notes { margin-top: 20px; }
 }
 
 /* ---------- the phone: the bar at the tap floor, the island shrunk to fit and always shown, the calls stacked ---------- */
 @media (max-width: 720px) {
-  :root { --bar-h: 44px; --notch-w: 132px; --blob: min(62vw, 250px); --compact-s: min(0.62, var(--fit-s)); --h2: clamp(26px, 7.4vw, 40px); }
+  /* the h1's 8.88 em (the stop's breath and the blob) fits the wrap from 600 to 720 */
+  :root { --bar-h: 44px; --notch-w: 132px; --compact-s: min(0.6, var(--fit-s)); --h1: calc((100vw - 2 * var(--pad)) / 8.95); --h2: clamp(28px, 7.8vw, 42px); }
   .bar { padding: 0 6px 0 12px; }
   .bar-l { gap: 10px; }
   .bar-r { gap: 0; }
@@ -289,32 +283,39 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
   .bar-item { height: 40px; min-width: 40px; justify-content: center; padding: 0 8px; }
   .bar-theme { width: 40px; }
   .bar-app { display: inline-flex; align-items: center; height: 40px; }
-  /* "Your Mac, by voice." holds on one line: 7.9 em wide at this tracking */
-  .hero-h1 { font-size: min(calc((100vw - 2 * var(--pad)) / 7.9), 64px); }
-  .hero-calls { flex-direction: column; align-items: stretch; gap: 12px; }
+  .hero-in { padding-bottom: 48px; }
+  .hero-calls { flex-direction: column; align-items: stretch; gap: 18px; width: 100%; }
   .glass, .source { width: 100%; min-width: 0; }
-  .glass { height: 72px; padding: 0 18px; gap: 14px; }
+  .glass { --key-h: 72px; }
+  .glass-cap { padding: 0 18px; gap: 14px; }
   .glass-l2 { font-size: 12px; }
   .source { height: 56px; justify-content: center; }
-  .sec-in { padding-top: calc(var(--top-dock) + 64px); padding-bottom: 72px; row-gap: 32px; }
-  .sec-h2 > span { white-space: normal; }
-  .sec-lead { margin-top: 18px; }
-  .lines { margin-top: 24px; }
+  .sec-in { padding-top: calc(var(--top-dock) + 40px); padding-bottom: 64px; min-height: 0; }
+  /* one sentence a line as on the desk (Hands' three steps on three), at a size the longest, Say's first, fits from 360 up */
+  .sec-h2 > span, .sec-h2 .h2-step { display: block; text-wrap: balance; }
+  .h2-mark { width: calc(1.45em * 0.714); }
+  .ins-char { left: calc(1.45em * -0.143); bottom: calc(1.45em * -0.143); width: 1.45em; height: 1.45em; }
   .term-one { padding: 22px 18px; }
-  .term-cmds li { padding: 12px 18px; grid-template-columns: 20px minmax(0, 1fr); }
-  .term-cmds li > .kit-btn { grid-column: 2; justify-self: start; margin-top: 10px; }
-  .winbox { aspect-ratio: auto; }
+  /* a row's Copy stays on its command's first line as a 40 square, its word kept for the screen reader alone */
+  .term-cmds li { padding: 10px 18px; grid-template-columns: 20px minmax(0, 1fr) 40px; }
+  .term-cmds li::before { left: 27.25px; }
+  .term-cmds li > .kit-btn { justify-self: end; width: 40px; padding: 0; margin-top: -5px; }
+  .term-cmds .kit-btn-hold { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .foot-in { padding: 80px 0 64px; }
 }
-/* the narrowest phones: a narrower notch so `Jarhead` and GitHub both clear its fillets; the bar's count goes to the screen reader alone */
+/* the phone's hero: the h1 on one line with its full stop, the blob standing over it at a size its face reads at, and the
+   lead, the calls and the terms all in the first screen under the top */
+@media (max-width: 600px) {
+  :root { --h1: calc((100vw - 2 * var(--pad)) / 7.9); }
+  .hero-in { justify-content: flex-start; min-height: 0; padding-top: calc(var(--bar-h) + 184px * var(--hero-s) + 136px); padding-bottom: 56px; }
+  .hero-h1 { position: relative; }
+  .h1-stop { color: inherit; }
+  .h1-mark { position: absolute; left: 50%; bottom: 100%; width: 0; height: 0; margin: 0; }
+  .hero-char { width: 108px; height: 108px; left: -54px; bottom: 12px; }
+  .hero-lead { margin-top: 20px; }
+  .hero-calls { margin-top: 26px; }
+}
 @media (max-width: 380px) {
   :root { --notch-w: 100px; }
   .bar-gh .stars { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
-/* the window at the phone: drawn at 1:1, its two groups stacked */
-@container (max-width: 520px) {
-  .win { position: relative; width: 100%; height: auto; transform: none; }
-  .win-body { grid-template-columns: minmax(0, 1fr); }
-  .win-col + .win-col { border-left: 0; border-top: 1px solid var(--jh-hair-row); }
-}
-

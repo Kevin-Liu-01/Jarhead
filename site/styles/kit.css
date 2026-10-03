@@ -1,5 +1,5 @@
 /*
- * kit.css · the Console kit's web twins the page uses (components/kit/*: Glyph, Button, Badge, AgentMark, Mark) and the
+ * kit.css · the Console kit's web twins the page uses (components/kit/*: Button, AgentMark, Mark), the icon class and the
  * kit's live dot. Every class is .kit-*; every colour is a --jh-* token from globals.css (no hex here). A control is a tile
  * plus a hairline, radius 6, no shadow, no dither (ConsoleFill.swift:4-9). The accent is spent on the primary fill and the
  * keyboard ring alone (ConsoleTheme.swift:46). Hover answers in --jh-instant; the words and the glyph never move on hover or
@@ -7,8 +7,8 @@
  * aliases (globals.css), so small text reaches AA on paper; a dot, a glyph tint or a hairline keeps the canon token.
  */
 
-/* ---------- glyphs: the filled set on a 20-unit box ---------- */
-.kit-glyph { display: block; flex: none; pointer-events: none; }
+/* ---------- icons: Phosphor Fill (components/icons/Icon.tsx), the site's one family, in currentColor ---------- */
+.jh-ico { display: block; flex: none; pointer-events: none; }
 
 /* ---------- button: primary · ghost · spent (ConsoleButton.swift:28-63, 113-144) ---------- */
 .kit-btn {
@@ -40,24 +40,9 @@
 .kit-btn-hold > span { grid-area: 1 / 1; text-align: center; }
 .kit-btn-hold > span[aria-hidden="true"] { visibility: hidden; }
 
-/* ---------- badge: a word in a box, 16 tall, one hairline, no fill (ConsoleBadge.swift:3-7, 120-126) ---------- */
-.kit-badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 16px; padding: 0 5px;
-  border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); font: 500 10px/1 var(--font-sans); color: var(--jh-titanium-word); white-space: nowrap; flex: none; }
-.kit-badge[data-tone="speaking"] { color: var(--jh-speaking-word); border-color: var(--jh-speaking); }
-
 /* ---------- marks ---------- */
 .kit-mark { display: block; flex: none; image-rendering: pixelated; }
 .kit-agent-mark { display: block; flex: none; }
-
-/* ---------- the live dot: a phase dot, 6 (7 live, with its one ring) ---------- */
-.kit-dot { --kit-phase: var(--jh-titanium); position: relative; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--kit-phase); flex: none; vertical-align: middle; }
-.kit-dot.is-live { width: 7px; height: 7px; }
-.kit-dot.is-live::after { content: ""; position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--kit-phase); opacity: 0; animation: kit-ring var(--jh-pulse) var(--jh-ease-out) infinite; }
-@keyframes kit-ring { 0% { transform: scale(1); opacity: 0.5; } 100% { transform: scale(2.4); opacity: 0; } }
-
-@media (prefers-reduced-motion: reduce) {
-  .kit-dot.is-live::after { display: none; }
-}
 
 /* ---------- the phone: an acting control reaches 40 px ---------- */
 @media (max-width: 720px) {

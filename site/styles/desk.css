@@ -20,18 +20,24 @@
 .desk-fillet-r { left: calc(50% + var(--notch-w) / 2); background: radial-gradient(circle at 100% 0, transparent 13.5px, var(--jh-desk-notch) 14px); }
 
 /* ---- the island: one open shape (design.md §4.3–4.4), its top edge continuous with the notch's shoulders ---- */
-.desk-island { position: absolute; left: calc(50% - 210px); top: 0; width: 420px; height: 184px; background: var(--jh-desk-notch); border-radius: 18px 18px 12px 12px; overflow: hidden; z-index: 4; color: var(--jh-paper); }
+/* it takes the pointer, so a press on it never lands on the page hidden beneath it; only a live Allow or Deny answers */
+.desk-island { position: absolute; left: calc(50% - 210px); top: 0; width: 420px; height: 184px; background: var(--jh-desk-notch); border-radius: 18px 18px 12px 12px; overflow: hidden; z-index: 4; color: var(--jh-paper); transform-origin: 50% 0; pointer-events: auto; cursor: default; }
 .desk-ink { position: absolute; left: 0; top: 0; image-rendering: pixelated; }
 .desk-island > * { position: absolute; }
-.desk-anchor, .desk-display, .desk-foot { left: 0; top: 0; width: 100%; height: 100%; transition: opacity var(--jh-quick) var(--jh-ease-in-out); }
+.desk-anchor, .desk-display, .desk-foot { left: 0; top: 0; width: 100%; height: 100%; transition: opacity var(--jh-quick) var(--jh-ease-in-out); pointer-events: none; }
 .desk-display[data-swap], .desk-foot[data-swap] { opacity: 0; }
 .desk-anchor > *, .desk-display > *, .desk-foot > * { position: absolute; }
 
 /* the anchor: the face at (57, 40), the word, Go · Stop · Mute */
-.desk-eyes { left: 57px; top: 40px; width: 0; height: 0; font: 700 27px/1 var(--font-mono); white-space: nowrap; transition: transform var(--jh-quick) var(--jh-ease-out); }
-.desk-eyes span { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); }
-.desk-eye-under { color: var(--jh-desk-notch); font-size: calc(1.12em + 1.6px); }
-.desk-eye-top { color: var(--desk-eye-ink); transition: color var(--jh-drift) var(--jh-ease-in-out); }
+.desk-eyes { left: 57px; top: 40px; width: 0; height: 0; transition: transform var(--jh-quick) var(--jh-ease-out); }
+/* the face: the blob's own eyes as SVG (Island.tsx islandFace), ink pupils and lines rimmed in the phase-tinted paper */
+.desk-face { position: absolute; left: -40px; top: -28px; overflow: visible; color: var(--desk-eye-ink); transition: color var(--jh-drift) var(--jh-ease-in-out); }
+.desk-face path { stroke-linecap: round; stroke-linejoin: round; }
+.desk-face .rim { fill: currentColor; stroke: currentColor; }
+.desk-face .ink { fill: var(--jh-desk-notch); }
+.desk-face .ink.line { stroke: var(--jh-desk-notch); }
+.desk-face .glint { fill: var(--jh-paper); }
+.desk-face .line { fill: none; }
 .desk-word { left: 6px; top: 60px; width: 102px; height: 16px; font-size: max(12px, var(--isl-min)); font-weight: 500; line-height: 16px; text-align: center; color: var(--desk-white-92); white-space: nowrap; }
 .desk-word-x { position: relative; display: block; }
 .desk-word-x > span { position: absolute; left: 0; right: 0; top: 0; }
@@ -51,11 +57,12 @@
 .desk-meter-head { width: 100px; height: 6px; }
 .desk-head-work, .desk-head-ask, .desk-head-alarm, .desk-head-asleep { display: inline-flex; align-items: center; gap: 6px; }
 .desk-head-ask { color: var(--jh-speaking); }
-.desk-head-alarm .kit-glyph { color: var(--jh-mark); width: 10px; height: 10px; }
-.desk-head-asleep .jh-icon { width: 11px; height: 11px; }
+.desk-dot { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--jh-mark); flex: none; }
 .desk-glyphs { color: var(--desk-white-48); letter-spacing: .02em; white-space: pre; }
 .desk-hero { left: 114px; top: 30px; width: 292px; max-height: 66px; font-size: max(18px, var(--isl-min)); line-height: 22px; font-weight: 400; letter-spacing: -.012em; color: var(--desk-white-92); text-shadow: 0 1px 0 var(--jh-desk-notch); overflow: hidden; }
 .desk-hero.is-question { color: var(--jh-paper); }
+/* acting with thread tiles: the line holds two lines above them */
+.desk-hero.is-short { max-height: 44px; }
 .desk-hero.is-mono { font-family: var(--font-mono); font-size: max(17px, var(--isl-min)); letter-spacing: 0; font-variant-numeric: tabular-nums; }
 /* asleep: the clock the app's foot carries, set as the island's one big line in the quiet white */
 .desk-hero.is-clock { top: 28px; max-height: none; font: 500 44px/52px var(--font-mono); letter-spacing: -0.02em; color: var(--desk-white-72); font-variant-numeric: tabular-nums; }
@@ -64,6 +71,9 @@
 .desk-tile { position: absolute; top: 80px; width: 140px; min-height: 32px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 3px 8px; font-size: max(11px, var(--isl-min)); line-height: 1.2; }
 .desk-tile-name { display: flex; align-items: center; gap: 5px; font-weight: 500; color: var(--jh-paper); }
 .desk-tile-name i { width: 6px; height: 6px; background: var(--jh-acting); border-radius: 1px; }
+.desk-tile[data-state="asks"] .desk-tile-name i { background: var(--jh-speaking); }
+.desk-tile[data-state="done"] .desk-tile-name i { background: var(--jh-listening); }
+.desk-tile[data-state="stopped"] { opacity: .45; }
 .desk-tile-s { display: block; font: 500 max(10px, var(--isl-min))/1.2 var(--font-mono); color: var(--desk-white-72); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: clip; }
 /* docked, a tile keeps its name and its Stop: the clock line would not fit at the legible size */
 .top[data-docked] .desk-tile-s { display: none; }
@@ -71,6 +81,9 @@
 .desk-tile-stop { position: absolute; right: 8px; top: 10px; width: 8px; height: 8px; background: var(--desk-white-92); border-radius: 1px; }
 .desk-btn { height: 28px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; font-size: max(12px, var(--isl-min)); font-weight: 500; letter-spacing: -0.01em; white-space: nowrap; color: var(--desk-white-92); }
 .desk-btn.is-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* live: the demo that asks put its answer on the island (Threads' Slack question), so its Allow and Deny decide it too */
+.desk-btn[data-live] { pointer-events: auto; cursor: pointer; transition: opacity var(--jh-instant) var(--jh-ease-out); }
+.desk-btn[data-live]:active { opacity: .8; }
 
 /* the control row: the Say box and the strip */
 .desk-say { left: 114px; top: 122px; width: 176px; height: 24px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 0 8px; display: flex; align-items: center; overflow: hidden; font-size: max(11.5px, var(--isl-min)); color: var(--jh-paper); white-space: nowrap; }
@@ -89,13 +102,15 @@
 .desk-meter-foot { width: 64px; height: 6px; flex: none; }
 .desk-foot-r { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .desk-island[data-kind="asleep"] .desk-foot-r, .desk-island[data-kind="alarm"] .desk-foot-r { margin-left: auto; }
+/* docked, the asleep foot keeps its word: the next thing armed would not fit at the legible size */
+.top[data-docked] .desk-island[data-kind="asleep"] .desk-foot-r, .top[data-docked] .desk-island[data-kind="alarm"] .desk-foot-r { display: none; }
 .desk-hair { left: 0; right: 0; bottom: 0; height: 1px; background: var(--desk-phase); transition: background-color var(--jh-drift) var(--jh-ease-in-out); }
 .desk-island[data-kind="asleep"] .desk-hair { animation: desk-breathe 4s ease-in-out infinite; }
 .desk[data-still] .desk-hair { animation: none; }
 @keyframes desk-breathe { 0%, 100% { opacity: .35; } 50% { opacity: .9; } }
 
-/* ---- the picture's own glyphs ---- */
-.jh-icon { fill: currentColor; flex: none; pointer-events: none; }
+/* ---- the icons (Phosphor Fill, components/icons/Icon.tsx) ---- */
+.desk .jh-ico { display: block; flex: none; pointer-events: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .desk-caret, .desk-hair, .desk-word-in, .desk-word-out { animation: none; }

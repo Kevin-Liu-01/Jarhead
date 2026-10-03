@@ -1,25 +1,38 @@
 /**
  * The live blob: the icon's dithered material (ORB_STOPS, five bands, rim, gleam) on the desktop
- * blob's live harmonic outline, with its ASCII face and its dithered halo in the phase colour.
+ * blob's live harmonic outline, with its drawn face (lib/eyes.ts: ink ovals with a catchlight, and the
+ * lines that close them) and its dithered halo in the phase colour.
  * Sim from UI/Orb/BlobField.swift through facts-orb.md §1.6, §2, §3, §5, §6; design.md §5.
  *
  * Two canvases in the host: the field (one buffer pixel per 1.5 CSS px cell, image-rendering:
- * pixelated) and the face (full DPR, type stays crisp). The sim steps every rAF tick; the raster
- * runs at the phase's fps (60 through a blink, 24 while anything is live). Per-cell caches carry
- * the geometry whenever the body is not stretched. The loop is paused offscreen, on a hidden tab and
- * after 20 s of static sleep; `destroy()` releases all.
+ * pixelated) and the face (full DPR, the eyes stay crisp). The sim steps every rAF tick; the raster
+ * runs at the phase's fps (60 through a blink and its reopening, 24 while anything is live).
+ * Per-cell caches carry the geometry whenever the body is not stretched. The loop is paused
+ * offscreen, on a hidden tab and after 20 s of static sleep; `destroy()` releases all.
  *
  * The body is blue in every awake phase (ORB_STOPS) and titanium asleep / paused / muted
  * (QUIET_STOPS); the phase colour lives on the halo, read from `--jh-<phase>` once per change
  * (thinking wears the accent blue: no violet anywhere on the orb).
  */
-import { BAYER8, ORB_STOPS, QUIET_STOPS, cellCss, clamp01, lut, mix3, parseColor, smoothstep, type RGB, type Stops } from "@/lib/dither";
+import { BAYER8, ORB_STOPS, QUIET_STOPS, cellCss, clamp01, lut, mix3, parseColor, smoothstep, watchDpr, type RGB } from "@/lib/dither";
+import { EYES, drawFace } from "@/lib/eyes";
 import { cssVar, type Theme } from "@/lib/theme";
 import type { Phase } from "@/lib/phase";
 
 export interface BlobHandle {
   setPhase(p: Phase): void;
   setTheme(t: Theme): void;
+  /** A face the demo asks for (`> <` denied, `^ ^` granted) over the phase's own; null gives the phase back its face. */
+  setFace(pair: string | null): void;
+  /** A shiver and a hop: the blob reacts (a press, a word heard). */
+  nudge(): void;
+  /**
+   * Something the blob loves, at a point on the screen (client px), or null: its eyes turn to it whatever the pointer does,
+   * its halo brightens and its eyes light up. The hero's blob attends to the Install button while it is hovered or focused.
+   */
+  attend(at: readonly [number, number] | null): void;
+  /** A happy squint (`^^`) for `seconds` (0.75 by default) and a hop. */
+  cheer(seconds?: number): void;
   destroy(): void;
 }
 
@@ -32,20 +45,8 @@ interface BlobOptions {
   still?: boolean;
   /** Where the pointer is watched (the whole desk); default the host. */
   pointerRoot?: HTMLElement | null;
-}
-
-/** The eyes' recipe, shared with the island's anchor: bold ui-monospace, lifted 0.85 toward white, over a ground under-copy. */
-const EYE = {
-  font: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-  weight: 700,
-  underScale: 1.12,
-  underAdd: 1.6,
-  lift: 0.85,
-  /** The `o`'s box centre sits 0.27 em above the baseline (BlobField.swift:2017). */
-  baseline: 0.27,
-};
-function eyeInk(phase: RGB): RGB {
-  return mix3(phase, [255, 255, 255], EYE.lift);
+  /** Keep 1.5 px cells as laid out, ignoring a transform on the host at mount (the hero's blob mounts while it is a dot). */
+  ignoreScale?: boolean;
 }
 
 interface Personality { amp: number; speed: number; churn: number; squash: number; spin: number; glow: number; fps: number; face: string; quiet: boolean; rest: readonly [number, number]; blinks: boolean }
@@ -70,6 +71,11 @@ const LOW = new Set(["-", "~", "_", "."]);
  */
 const AMP_CAP = 0.75;
 const AMP_SCALE = 1.8;
+/**
+ * The lids are a spring: a blink shuts in about 45 ms and reopens past round (the eye stretches a touch taller, then
+ * settles), and the whole body dips with it by `dip` (squash and stretch, so the whole character blinks).
+ */
+const LID = { k: 1500, zeta: 0.55, dip: 0.04 };
 const INK: RGB = [7, 7, 7];
 const TAU = Math.PI * 2;
 
@@ -103,7 +109,7 @@ function phaseColor(p: Phase): RGB {
 }
 
 export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
-  const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+  let dpr = 1;
   const stillMode = !!o.still || (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
   let size = o.size;
   let cell = cellCss(1.5);
@@ -135,8 +141,10 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
 
   function alloc(sz: number): void {
     size = sz;
+    // Read here, not once: a new display or a browser zoom re-allocs at the new ratio (watchDpr below).
+    dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
     const rect = host.getBoundingClientRect();
-    const scale = rect.width > 0 && host.clientWidth > 0 ? rect.width / host.clientWidth : 1;
+    const scale = !o.ignoreScale && rect.width > 0 && host.clientWidth > 0 ? rect.width / host.clientWidth : 1;
     cell = cellCss(1.5) / (scale > 0 ? scale : 1);
     n = Math.max(4, Math.ceil(size / cell));
     c = n / 2;
@@ -188,6 +196,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let theme: Theme = o.theme;
   let backing: RGB | null = null;
   let under: RGB = [11, 12, 16];
+  let eyeInk = "rgb(11 12 16)";
+  let eyeLight = "rgb(255 255 255)";
   let Lfrom: RGB[] = lut(P.quiet ? QUIET_STOPS : ORB_STOPS, 5);
   let Lto: RGB[] = Lfrom;
   let L: RGB[] = Lfrom;
@@ -206,9 +216,17 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let glance: [number, number] = [0, -0.2];
   let nextGlance = 0.8;
   let open = 1;
+  let openV = 0;
   let blinkUntil = -1;
   let nextBlink = 3 + Math.random() * 3;
   let lastPair = P.face;
+  let faceOverride: string | null = null;
+  // The happy squint: now and then while listening, and on a cheer.
+  let squintUntil = -1;
+  let nextSquint = 8 + Math.random() * 6;
+  // What the blob attends to (a vector from its centre, in its own px), and how lit it is by it (eased 0 to 1).
+  let attention: [number, number] | null = null;
+  let lit = 0;
   let activeAt = 0;
   let visible = true;
   let raf = 0;
@@ -220,6 +238,11 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const ground = cssVar("--jh-blob-ground");
     under = ground ? parseColor(ground) : [11, 12, 16];
     backing = theme === "dark" ? under : null;
+    // The eyes: the blob's own ink with a paper catchlight, the same in both themes (they sit on the body, not the page).
+    const paperCss = cssVar("--jh-paper");
+    const paper: RGB = paperCss ? parseColor(paperCss) : [255, 255, 255];
+    eyeInk = `rgb(${under[0] | 0} ${under[1] | 0} ${under[2] | 0})`;
+    eyeLight = `rgb(${paper[0] | 0} ${paper[1] | 0} ${paper[2] | 0})`;
   }
   resolveTheme();
   haloTo = phaseColor(phase);
@@ -301,6 +324,13 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         dy = pointer[1] / l;
       }
     }
+    if (attention && want < 0.13 && !stillMode) {
+      // it leans toward what it loves
+      const l = Math.hypot(attention[0], attention[1]) || 1;
+      want = 0.13;
+      dx = attention[0] / l;
+      dy = attention[1] / l;
+    }
     const ks = 1 - Math.exp(-dt / 0.07);
     sx += (dx - sx) * ks;
     sy += (dy - sy) * ks;
@@ -322,7 +352,12 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       wx = glance[0];
       wy = glance[1];
     }
-    if (pointer && !stillMode) {
+    if (attention) {
+      // What it loves wins over the pointer: a full turn toward it.
+      const al = Math.hypot(attention[0], attention[1]) || 1;
+      wx = attention[0] / al;
+      wy = Math.max(-1, Math.min(1, (attention[1] / al) * 1.6));
+    } else if (pointer && !stillMode) {
       const pl = Math.hypot(pointer[0], pointer[1]);
       // The look follows the pointer across the page: within 300 px, or two and a half bodies of a big blob.
       if (pl < Math.max(300, size * 2.5) && pl > 1) {
@@ -331,16 +366,37 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         wy = (pointer[1] / pl) * m;
       }
     }
+    lit += ((attention ? 1 : 0) - lit) * (1 - Math.exp(-dt / 0.22));
     const lk = Math.min(1, dt * 9);
     look[0] += (wx - look[0]) * lk;
     look[1] += (wy - look[1]) * lk;
-    // Blinks: 120 ms every 3–6 s on the round eyes, one in ten doubled; never on ^ ^; lids ease τ 38 ms.
+    // Blinks: 120 ms every 3 to 6 s on the round eyes, one in ten doubled; never on ^ ^. The lids are a spring (LID).
     if (P.blinks && !stillMode && t >= nextBlink && t >= blinkUntil) {
       blinkUntil = t + 0.12;
       nextBlink = Math.random() < 0.1 ? t + 0.22 : t + 3 + Math.random() * 3;
     }
+    // Now and then, while listening, a happy squint; its start and its end each close the lids for a moment.
+    if (P.face === "OO" && !faceOverride && !stillMode && t >= nextSquint) {
+      squintUntil = t + 0.8;
+      nextSquint = t + 8 + Math.random() * 7;
+      blinkUntil = Math.max(blinkUntil, t + 0.06);
+    }
+    if (squintUntil > 0 && t >= squintUntil) {
+      squintUntil = -1;
+      blinkUntil = Math.max(blinkUntil, t + 0.06);
+    }
     const target = t < blinkUntil ? 0 : 1;
-    open += (target - open) * (1 - Math.exp(-dt / 0.038));
+    if (stillMode) {
+      open = target;
+      openV = 0;
+    } else {
+      const damp = 2 * LID.zeta * Math.sqrt(LID.k);
+      for (let left = dt; left > 0; left -= 1 / 240) {
+        const h = Math.min(left, 1 / 240);
+        openV += (LID.k * (target - open) - damp * openV) * h;
+        open += openV * h;
+      }
+    }
     if (phase === "error" && !stillMode && t - activeAt > 1.1) {
       shiver += 1.2;
       activeAt = t;
@@ -348,15 +404,16 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   }
 
   function pairNow(): string {
-    let base = P.face;
-    if (phase === "asleep" && !stillMode) {
+    let base = faceOverride ?? P.face;
+    if (faceOverride) {
+      // the demo's face holds; it still blinks shut on a round pair
+    } else if (phase === "asleep" && !stillMode) {
       const b = t % 8;
       if (b > 3.2 && b < 4.8) base = "~~";
     } else if (phase === "thinking" && !stillMode) {
       if (t % 1.7 < 0.567) base = "~~";
-    } else if (P.face === "oo" && Math.abs(look[0]) > 0.45) {
-      base = look[0] > 0 ? ">>" : "<<";
     }
+    if (!faceOverride && t < squintUntil) base = "^^";
     if (open < 0.3 && !LOW.has(base[0] ?? "")) return "--";
     return base;
   }
@@ -364,7 +421,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   function draw(): void {
     const breath = stillMode ? 1 : 1 + Math.sin(t * (1.1 + cur.speed * 1.6)) * (0.03 + cur.speed * 0.016);
     const ear = phase === "asleep" && !stillMode ? 1 + 0.18 * Math.sin((TAU * t) / 4) : 1;
-    const sq = cur.squash;
+    // A blink dips the body a little (and the reopening's overshoot lifts it as much).
+    const sq = cur.squash * (1 - LID.dip * (1 - Math.max(0, Math.min(1.15, open))));
     const Rb = (R * breath) / (1 + (0.3 + 0.4 * sy * sy) * str);
     const ampScale = cur.amp * AMP_SCALE * (1 - 0.4 * str) * ear;
     polar(sq);
@@ -385,7 +443,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const hr = halo[0];
     const hg = halo[1];
     const hb = halo[2];
-    const ga = 0.16 + 0.34 * cur.glow;
+    const ga = 0.16 + 0.34 * Math.min(1.25, cur.glow + 0.45 * lit);
     const ba = backing ? 0.14 + 0.18 * cur.glow : 0;
     const bkr = backing ? backing[0] : 0;
     const bkg = backing ? backing[1] : 0;
@@ -438,14 +496,14 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
           const ex = nx + 0.36;
           const ey = ny + 0.76;
           const eu = ((ex * ex + ey * ey) / (2 * 0.17 * 0.17)) * 16;
-          const gl = eu >= 256 ? 0 : 0.85 * EXP[eu | 0]!;
+          const gl = eu >= 256 ? 0 : (0.85 + 0.12 * lit) * EXP[eu | 0]!;
           const glq = Math.min(8, (gl * 8 + th) | 0) / 8;
           const r = (col[0] + (rimR - col[0]) * rim) * (1 - glq) + 255 * glq;
           const gg = (col[1] + (rimG - col[1]) * rim) * (1 - glq) + 255 * glq;
           const b = (col[2] + (rimB - col[2]) * rim) * (1 - glq) + 255 * glq;
           px[i] = (255 << 24) | ((b & 255) << 16) | ((gg & 255) << 8) | (r & 255);
         } else {
-          let gq = (1.28 * mul - d) / (0.85 * mul);
+          let gq = ((1.28 + 0.08 * lit) * mul - d) / (0.85 * mul);
           if (gq <= 0) continue;
           if (gq > 1) gq = 1;
           gq = gq * gq * (3 - 2 * gq);
@@ -462,35 +520,19 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       }
     }
     g!.putImageData(img, 0, 0);
-    // The face.
+    // The face (lib/eyes.ts): it turns with the look and leans into a stretch.
     fg!.setTransform(dpr, 0, 0, dpr, 0, 0);
     fg!.clearRect(0, 0, size, size);
     const pair = pairNow();
-    const fs = R * 0.5 * (phase === "muted" ? 0.8 : 1);
-    const cx = size / 2 + look[0] * 0.147 * R + sx * str * 0.39 * R;
-    const cy = size / 2 - 0.307 * Rb * sq + look[1] * 0.123 * R + sy * str * 0.39 * R;
-    const ink = eyeInk(halo);
-    fg!.textAlign = "center";
-    fg!.textBaseline = "alphabetic";
-    const underCss = `rgb(${under[0] | 0} ${under[1] | 0} ${under[2] | 0})`;
-    const inkCss = `rgb(${ink[0] | 0} ${ink[1] | 0} ${ink[2] | 0})`;
-    for (let e = 0; e < 2; e++) {
-      const ch = pair[e] ?? "-";
-      const ex = cx + (e ? 1 : -1) * 0.461 * Rb;
-      const ey = cy + EYE.baseline * fs;
-      fg!.font = `${EYE.weight} ${fs * EYE.underScale + EYE.underAdd}px ${EYE.font}`;
-      fg!.fillStyle = underCss;
-      fg!.fillText(ch, ex, ey);
-      fg!.font = `${EYE.weight} ${fs}px ${EYE.font}`;
-      fg!.fillStyle = inkCss;
-      fg!.fillText(ch, ex, ey);
-    }
+    const cx = size / 2 + look[0] * EYES.look[0] * R + sx * str * 0.39 * R;
+    const cy = size / 2 + EYES.row * Rb * sq + look[1] * EYES.look[1] * R + sy * str * 0.39 * R;
+    drawFace(fg!, pair, cx, cy, Rb * (phase === "muted" ? 0.9 : 1), { open, sparkle: lit, turn: look[0] }, { ink: eyeInk, light: eyeLight });
     if (!host.dataset["live"]) host.dataset["live"] = "1";
   }
 
   function shouldRun(): boolean {
     if (destroyed || stillMode || !visible || document.hidden) return false;
-    if (P.quiet && !pointer && t - activeAt > 20 && shiver < 0.02 && str < 0.005) return false;
+    if (P.quiet && !pointer && !attention && t - activeAt > 20 && shiver < 0.02 && str < 0.005 && lit < 0.01) return false;
     return true;
   }
   function frame(now: number): void {
@@ -498,7 +540,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const dt = Math.min(0.1, (now - (last || now)) / 1000);
     last = now;
     step(dt);
-    const live = t < blinkUntil + 0.1 ? 60 : shiver > 0.03 || str > 0.01 || t - fadeAt < 0.6 || pointer ? 24 : P.fps;
+    const live = t < blinkUntil + 0.28 ? 60 : shiver > 0.03 || str > 0.01 || t - fadeAt < 0.6 || pointer ? 24 : P.fps;
     if (now - lastDraw >= 1000 / live - 2) {
       draw();
       lastDraw = now;
@@ -532,17 +574,23 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     cur.squash = P.squash;
     cur.spin = P.spin;
     cur.glow = P.glow;
-    look[0] = P.rest[0];
-    look[1] = P.rest[1];
     open = 1;
+    openV = 0;
     step(0.016);
+    // The pose: the phase's rest, or turned full toward what it attends to, lit.
+    const al = attention ? Math.hypot(attention[0], attention[1]) || 1 : 1;
+    look[0] = attention ? attention[0] / al : P.rest[0];
+    look[1] = attention ? attention[1] / al : P.rest[1];
+    lit = attention ? 1 : 0;
+    open = 1;
     draw();
   }
 
   // Pointer over the desk reaches the blob; a press advances the phase.
   const root = o.pointerRoot ?? host;
   const onMove = (e: PointerEvent): void => {
-    if (stillMode) return;
+    // Off screen the eyes have nothing to follow: no layout read for a blob nobody sees.
+    if (stillMode || !visible) return;
     const rect = host.getBoundingClientRect();
     const scale = rect.width / (size || 1) || 1;
     pointer = [(e.clientX - (rect.left + rect.width / 2)) / scale, (e.clientY - (rect.top + rect.height / 2)) / scale];
@@ -569,6 +617,12 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     else halt();
   });
   io.observe(host);
+  // A new pixel ratio: the face and the cells re-alloc at it and the pose is drawn again at once (alloc clears both).
+  const unwatchDpr = watchDpr(() => {
+    if (destroyed) return;
+    alloc(size);
+    draw();
+  });
 
   alloc(size);
   if (stillMode) stillFrame();
@@ -576,6 +630,40 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
 
   const handle: BlobHandle = {
     setPhase,
+    setFace(pair) {
+      if (pair === faceOverride) return;
+      faceOverride = pair;
+      blinkUntil = t + 0.09;
+      activeAt = t;
+      if (stillMode) stillFrame();
+      else wake();
+    },
+    nudge() {
+      kick();
+      activeAt = t;
+      wake();
+    },
+    attend(at) {
+      if (!at) {
+        attention = null;
+      } else {
+        // One layout read per change: the vector from the blob's centre, in its own px.
+        const rect = host.getBoundingClientRect();
+        const scale = rect.width / (size || 1) || 1;
+        attention = [(at[0] - (rect.left + rect.width / 2)) / scale, (at[1] - (rect.top + rect.height / 2)) / scale];
+      }
+      activeAt = t;
+      if (stillMode) stillFrame();
+      else wake();
+    },
+    cheer(seconds = 0.75) {
+      if (stillMode) return;
+      squintUntil = t + seconds;
+      blinkUntil = Math.max(blinkUntil, t + 0.06);
+      kick();
+      activeAt = t;
+      wake();
+    },
     setTheme(th) {
       theme = th;
       resolveTheme();
@@ -586,6 +674,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       destroyed = true;
       halt();
       io.disconnect();
+      unwatchDpr();
       root.removeEventListener("pointermove", onMove);
       root.removeEventListener("pointerleave", onLeave);
       host.removeEventListener("click", onClick);

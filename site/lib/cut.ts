@@ -68,3 +68,21 @@ export function nth(text: string, index: number): string {
   if (s === undefined) throw new Error(`no sentence ${index}: ${text}`);
   return s;
 }
+
+/**
+ * A spoken line the deck quotes: `"Click Save"` inside `"Click Save" runs. ...`. Returns the words inside the deck's
+ * quotes; the page sets them in a <q>, which draws the quotes, so the bytes stay the deck's.
+ */
+export function quoted(text: string, inner: string): string {
+  if (!text.includes(`"${inner}"`)) throw new Error(`not a quoted line of the deck string: ${inner}`);
+  return inner;
+}
+
+/**
+ * A deck sentence around its quoted line, `[before, inner, after]`: the page sets `inner` in a <q> between the two, so the
+ * quotes it draws match the chips' and every other byte stays the deck's.
+ */
+export function aroundQuote(text: string, inner: string): readonly [string, string, string] {
+  const q = `"${quoted(text, inner)}"`;
+  return [upTo(text, q), inner, after(text, q)];
+}

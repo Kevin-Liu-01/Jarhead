@@ -1,18 +1,18 @@
 "use client";
 import { useEffect, useRef, type ReactElement } from "react";
-import { parseColor } from "@/lib/dither";
+import { cellCss, parseColor } from "@/lib/dither";
 import { renderToneField } from "@/lib/field";
 import { cssVar, useTheme } from "@/lib/theme";
 
 /**
  * A section's full-bleed ground (lib/field.ts): its tone dithered over the page ground, rising behind the picture. The tone
- * is a token; the peak, floor, radius, cell and bands are the section's CSS custom properties (styles/site.css sets them per
- * theme, so light is drawn as its own poster and dark keeps a whisper), read once per paint. `band` names an element inside
- * the section (the hero's calls) that a second, wide light pools behind, measured at paint. Painted lazily when the
- * section nears the viewport, again on a theme flip and across a 64 px resize boundary. Before the paint, and without JS,
- * the section shows the flat ground. Decorative.
+ * is a token; the peak, floor, radius, cell, bands and foot are the section's CSS custom properties (styles/site.css sets
+ * them per theme, so light is drawn as its own poster and dark keeps a whisper), read once per paint. `band` names an
+ * element inside the section (the hero's calls) that a second, wide light pools behind, measured at paint. Painted lazily
+ * when the section nears the viewport, again on a theme flip and across a 64 px resize boundary. Before the paint, and
+ * without JS, the section shows the flat ground. Decorative.
  */
-export function Field({ tone, ax, ay, band }: { readonly tone: `--jh-${string}`; readonly ax: number; readonly ay: number; readonly band?: string }): ReactElement {
+export function Field({ tone, ax, ay, band, ground = "--jh-ground" }: { readonly tone: `--jh-${string}`; readonly ax: number; readonly ay: number; readonly band?: string; readonly ground?: `--jh-${string}` }): ReactElement {
   const ref = useRef<HTMLCanvasElement>(null);
   const theme = useTheme();
   useEffect(() => {
@@ -40,8 +40,8 @@ export function Field({ tone, ax, ay, band }: { readonly tone: `--jh-${string}`;
       renderToneField(cv, {
         width: w,
         height: h,
-        cell: num("--field-cell", 3),
-        ground: parseColor(cssVar("--jh-ground")),
+        cell: cellCss(num("--field-cell", 3)),
+        ground: parseColor(cssVar(ground)),
         tone: parseColor(cssVar(tone)),
         peak: num("--field-peak", 0.2),
         floor: num("--field-floor", 0.12),
@@ -50,6 +50,7 @@ export function Field({ tone, ax, ay, band }: { readonly tone: `--jh-${string}`;
         r: num("--field-r", 0.7),
         bands: num("--field-bands", 4),
         band: bandAt ? { ...bandAt, strength: num("--field-band", 0.8) } : undefined,
+        foot: num("--field-foot", 0),
       });
     };
     const io = new IntersectionObserver(
@@ -68,7 +69,7 @@ export function Field({ tone, ax, ay, band }: { readonly tone: `--jh-${string}`;
       io.disconnect();
       ro.disconnect();
     };
-  }, [tone, ax, ay, band, theme]);
+  }, [tone, ax, ay, band, ground, theme]);
   return (
     <div className="field" aria-hidden="true">
       <canvas ref={ref} width={1} height={1} />

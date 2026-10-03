@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ImageResponse } from "next/og";
+import { FOOTER, HERO } from "@/content/deck";
+import { parts } from "@/lib/cut";
+import { token } from "@/lib/tokens";
 
 /**
  * /og.png, 1200 × 630, dark only, rendered once at build (`force-static`).
@@ -12,8 +15,8 @@ import { ImageResponse } from "next/og";
  * the licence at `app/fonts/LICENSE-Inter.txt`). The field is read at build and inlined
  * as a data URI, so the route needs no request of its own.
  *
- * Colours are literal here: an image has no `--jh-*` to read. They mirror the tokens:
- * `--jh-ink` under the field, `--jh-fg` / `--jh-fg-2` / `--jh-fg-3` in dark for the words.
+ * An image has no `--jh-*` to read, so the colours are read from the token sheet (lib/tokens.ts): `--jh-ink` under the
+ * field, paper and the screen's two quieter steps for the words.
  */
 
 export const dynamic = "force-static";
@@ -21,14 +24,15 @@ export const dynamic = "force-static";
 const W = 1200;
 const H = 630;
 
-const INK = "#070707";
-const FG = "#ffffff";
-const FG_2 = "rgba(255,255,255,0.72)";
-const FG_3 = "rgba(255,255,255,0.48)";
+const INK = token("--jh-ink");
+const FG = token("--jh-paper");
+const FG_2 = token("--jh-screen-fg-2");
+const FG_3 = token("--jh-screen-fg-3");
 
-const WORDMARK = "Jarhead";
-const LEAD = "A voice-first Mac assistant that uses the computer for you.";
-const FOOT = "v2.0.0 · MIT · macOS 14+ · Apple silicon";
+// The deck's words: the brand, the footer line, and the figures line up to the platform.
+const WORDMARK = FOOTER.brand;
+const LEAD = FOOTER.line1;
+const FOOT = parts(HERO.figures).slice(0, 4).join(" · ");
 
 /** A Buffer's bytes as a standalone ArrayBuffer (satori's font type). */
 function bytes(buf: Buffer): ArrayBuffer {

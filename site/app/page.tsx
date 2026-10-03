@@ -1,33 +1,34 @@
-import { ArtCosts } from "@/components/art/Costs";
-import { ArtHands } from "@/components/art/Hands";
-import { ArtNumbers } from "@/components/art/Numbers";
-import { ArtSay } from "@/components/art/Say";
-import { ArtSleep } from "@/components/art/Sleep";
-import { ArtWake } from "@/components/art/Wake";
-import { ConsoleWindow } from "@/components/site/ConsoleWindow";
+import { Costs } from "@/components/play/Costs";
+import { Hands } from "@/components/play/Hands";
+import { Numbers } from "@/components/play/Numbers";
+import { Rails } from "@/components/play/Rails";
+import { Say } from "@/components/play/Say";
+import { Sleep } from "@/components/play/Sleep";
+import { Threads } from "@/components/play/Threads";
+import { Wake } from "@/components/play/Wake";
 import { Footer } from "@/components/site/Footer";
 import { Hero } from "@/components/site/Hero";
 import { Install } from "@/components/site/Install";
-import { RailsPicture } from "@/components/site/RailsPicture";
-import { Lines, Pic, Section } from "@/components/site/Section";
+import { Notes, Section } from "@/components/site/Section";
 import { SectionSpy } from "@/components/site/SectionSpy";
 import { section } from "@/components/site/sections";
 import { Top } from "@/components/site/Top";
 import { COSTS, HANDS, NAV, NUMBERS, RAILS, SAY, SLEEP, THREADS, WAKE } from "@/content/deck";
-import { first, from, nth } from "@/lib/cut";
+import { from, nth } from "@/lib/cut";
 import { fetchStars } from "@/lib/stars";
 
+/** Hands' h2, its three sentences set apart so each lights as the hands reach its step. */
+const HANDS_STEPS = [nth(HANDS.h2[0], 0), nth(HANDS.h2[0], 1), HANDS.h2[1]] as const;
+
 /**
- * The page (docs/DESIGN.md): the Mac's top edge fixed over everything, the island hanging from the notch and wearing the
- * kind of the section in view; the hero with the real blob huge beside the h1 on one line; then one section per question,
- * each on its own full-bleed ground of its tone dithered over the page ground at low intensity, the words beside one big
- * drawing; Install with the terminal; the foot. Each idea is said once: the cost lives in Costs, the spoken step in the
- * Install h2.
+ * The page: paper, the Mac's top edge fixed over everything (the island wears what the visitor is doing), the hero where
+ * the h1's full stop is the blob, then one idea per screen: a Newsreader h2, one short line, and a plate where the idea is
+ * played, each a small vignette the blob takes part in. Install, then the foot.
  */
 export default async function Page() {
   const stars = await fetchStars();
   return (
-    <div className="page" data-desk-stage="">
+    <div className="page">
       <a href="#main" className="jh-skip">
         {NAV.skip}
       </a>
@@ -35,128 +36,79 @@ export default async function Page() {
       <main id="main">
         <Hero stars={stars} />
 
-        <Section
-          meta={section("wake")}
-          h2={WAKE.h2}
-          lead={`${nth(WAKE.lead, 0)} ${nth(WAKE.lead, 2)}`}
-          pic={
-            <Pic>
-              <ArtWake />
-            </Pic>
-          }
-        >
-          <Lines
-            items={[
-              { glyph: "lock", text: WAKE.lines[0] },
-              { glyph: "voice", text: WAKE.lines[1] },
-            ]}
-          />
+        <Section meta={section("wake")} h2={WAKE.h2} lead={nth(WAKE.lead, 0)} notes={<Notes items={[{ icon: "userSound", text: WAKE.lines[1] }]} />}>
+          <Wake />
         </Section>
 
-        <Section
-          meta={section("say")}
-          h2={SAY.h2}
-          lead={SAY.lead}
-          pic={
-            <Pic>
-              <ArtSay />
-            </Pic>
-          }
-        >
-          <Lines
-            items={[
-              { glyph: "live", text: SAY.lines[0] },
-              { glyph: "ask", text: SAY.lines[1] },
-            ]}
-          />
+        <Section meta={section("say")} layout="stack" h2={SAY.h2} lead={nth(SAY.lead, 2)} notes={<Notes items={[{ icon: "toolbox", text: SAY.lines[1] }]} />}>
+          <Say />
         </Section>
 
-        <Section meta={section("threads")} h2={THREADS.h2} lead={`${nth(THREADS.lead, 0)} ${nth(THREADS.lead, 2)}`} pic={<ConsoleWindow />}>
-          <Lines
-            items={[
-              { glyph: "handRaised", text: THREADS.lines[0] },
-              { glyph: "terminal", text: HANDS.lines[2] },
-            ]}
-          />
+        <Section meta={section("threads")} side="left" h2={THREADS.h2} lead={nth(THREADS.lead, 2)}>
+          <Threads />
         </Section>
 
         <Section
           meta={section("hands")}
-          h2={HANDS.h2}
+          layout="stack"
+          h2={
+            <>
+              <span className="sec-h2-1">
+                <span className="h2-step" data-n="label">
+                  {HANDS_STEPS[0]}
+                </span>{" "}
+                <span className="h2-step" data-n="click">
+                  {HANDS_STEPS[1]}
+                </span>
+              </span>{" "}
+              <span className="sec-h2-2">
+                <span className="h2-step" data-n="shot">
+                  {HANDS_STEPS[2]}
+                </span>
+              </span>
+            </>
+          }
           lead={nth(HANDS.lead, 0)}
-          pic={
-            <Pic>
-              <ArtHands />
-            </Pic>
+          notes={
+            <Notes
+              items={[
+                { icon: "crosshair", text: HANDS.lines[1] },
+                { icon: "scribbleLoop", text: HANDS.lines[0] },
+              ]}
+            />
           }
         >
-          <Lines
-            items={[
-              { glyph: "circle", text: HANDS.lines[0] },
-              { glyph: "scopeMark", text: HANDS.lines[1] },
-            ]}
-          />
+          <Hands />
         </Section>
 
-        <Section meta={section("rails")} h2={RAILS.h2} lead={nth(RAILS.lead, 2)} pic={<RailsPicture />}>
-          <Lines
-            items={[
-              { glyph: "handRaised", text: first(RAILS.never.line, 1) },
-              { glyph: "voice", text: RAILS.lines[0] },
-            ]}
-          />
+        <Section meta={section("rails")} h2={RAILS.h2} lead={from(RAILS.lead, 1)} notes={<Notes items={[{ icon: "monitor", text: RAILS.lines[2] }]} />}>
+          <Rails />
         </Section>
 
-        <Section
-          meta={section("sleep")}
-          h2={SLEEP.h2}
-          lead={`${nth(SLEEP.lead, 0)} ${nth(SLEEP.lead, 2)}`}
-          pic={
-            <Pic>
-              <ArtSleep />
-            </Pic>
-          }
-        >
-          <Lines
-            items={[
-              { glyph: "handRaised", text: SLEEP.lines[1] },
-              { glyph: "quit", text: SLEEP.lines[2] },
-            ]}
-          />
+        <Section meta={section("sleep")} side="left" h2={SLEEP.h2} lead={nth(SLEEP.lead, 2)} notes={<Notes items={[{ icon: "power", text: SLEEP.lines[2] }]} />}>
+          <Sleep />
         </Section>
 
         <Section
           meta={section("numbers")}
+          layout="center"
           h2={NUMBERS.h2}
-          pic={
-            <Pic>
-              <ArtNumbers />
-            </Pic>
+          lead={nth(NUMBERS.lead, 1)}
+          notes={
+            <Notes
+              items={[
+                { icon: "lightning", text: NUMBERS.lines[0] },
+                { icon: "speakerHigh", text: NUMBERS.lines[2] },
+                { icon: "brain", text: NUMBERS.lines[1] },
+              ]}
+            />
           }
         >
-          <p className="big-fig">
-            <span className="big-fig-v">{NUMBERS.display.value}</span>
-            <span className="big-fig-l">{NUMBERS.display.label}</span>
-          </p>
-          <p className="sec-lead">{nth(NUMBERS.lead, 1)}</p>
+          <Numbers />
         </Section>
 
-        <Section
-          meta={section("costs")}
-          h2={COSTS.h2}
-          lead={from(COSTS.lead, 1)}
-          pic={
-            <Pic>
-              <ArtCosts />
-            </Pic>
-          }
-        >
-          <Lines
-            items={[
-              { glyph: "terminal", text: COSTS.lines[0] },
-              { glyph: "slashCircle", text: COSTS.lines[1] },
-            ]}
-          />
+        <Section meta={section("costs")} h2={COSTS.h2} lead={from(COSTS.lead, 1)} notes={<Notes items={[{ icon: "coins", text: COSTS.lines[0] }, { icon: "laptop", text: COSTS.lines[1] }]} />}>
+          <Costs />
         </Section>
 
         <Install />

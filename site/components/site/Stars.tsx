@@ -1,11 +1,11 @@
 "use client";
 import { useEffect, useState, type ReactElement } from "react";
-import { Glyph } from "@/components/kit/Glyph";
+import { Icon } from "@/components/icons/Icon";
 import { STARS_KEY, formatStars, refreshStars } from "@/lib/stars";
 
 /**
- * The star glyph and the live count (ITERATE.md §2): the server's figure first, then one refresh from the same endpoint
- * on mount, cached per tab in sessionStorage; a failure leaves what was there, or the glyph alone.
+ * The star and the live count (ITERATE.md §2): the server's figure first, then one refresh from the same endpoint
+ * on mount, cached per tab in sessionStorage; a failure leaves what was there, or the star alone.
  */
 export function Stars({ initial }: { readonly initial: number | null }): ReactElement {
   const [n, setN] = useState<number | null>(initial);
@@ -36,10 +36,10 @@ export function Stars({ initial }: { readonly initial: number | null }): ReactEl
       live = false;
     };
   }, []);
-  // The glyph is decoration and no word is added: a link reads the deck's name plus the count, "Read the source, 6".
+  // The icon is decoration and no word is added: a link reads the deck's name plus the count, "Read the source, 6".
   return (
     <span className="stars">
-      <Glyph name="star" size={14} />
+      <Icon name="star" size={14} />
       {n !== null ? (
         <span className="stars-n">
           <span className="stars-sr">, </span>

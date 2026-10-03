@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 import { DESCRIPTION, SITE_NAME } from "@/lib/metadata";
-import { THEME_COLOR } from "@/lib/theme";
+import { token } from "@/lib/tokens";
 
 /**
  * /manifest.webmanifest. The four large icons are `scripts/make-icons.mts`'s output: the
@@ -14,8 +14,8 @@ export default function manifest(): MetadataRoute.Manifest {
     description: DESCRIPTION,
     start_url: "/",
     display: "browser",
-    theme_color: THEME_COLOR.dark,
-    background_color: THEME_COLOR.dark,
+    theme_color: token("--jh-ground", "dark"),
+    background_color: token("--jh-ground", "dark"),
     icons: [
       { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
       { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },

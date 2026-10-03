@@ -1,7 +1,7 @@
 /**
  * The island's own rendered text (README:39, README:45, README:117-119, README:274-281, docs/DEMO.md:21; notch-island*.png),
  * byte for byte: the app's strings over the harness's fixed data, nothing here is a claim. A plain module (no "use client"),
- * so the server drawings (components/art/Sleep.tsx) read the same strings the client island draws.
+ * so the demos (components/play/*) and the client island read the same strings.
  */
 export const ISLAND = {
   word: { listening: "Listening", thinking: "Thinking", acting: "Acting", speaking: "Speaking", asleep: "Asleep", alarm: "Alarm" } as const,

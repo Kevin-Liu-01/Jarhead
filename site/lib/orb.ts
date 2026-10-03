@@ -1,14 +1,15 @@
 /**
  * The still ramp orb: the disc on the diagonal ORB ramp in five dithered bands, the rim shade,
- * the glassy gleam, the three-level glow spilling onto a ground, and the face (`^ ^` from the
- * icon's chevron SDF, `O O` as a ring) as flat paper glyphs boxed in flat ink. Threshold per
- * CELL, geometry per PIXEL, so the disc's edge stays crisp while the pattern stays chunky.
+ * the glassy gleam, the three-level glow spilling onto a ground, and the face the live blob draws
+ * (lib/eyes.ts: `O O` ink ovals with a paper catchlight, `^ ^` ink arcs, `- -` closed lids), antialiased per pixel.
+ * Threshold per CELL, geometry per PIXEL, so the disc's edge stays crisp while the pattern stays chunky.
  * Sources: facts-orb.md §1.4–1.5, §1.9 (scripts/dither.ts:107-346, UI/Console/BrandMarks.swift:446-466).
- * Used by Mark, OrbField, the blob-still PNG and b5's OG field. Pure: no DOM, runs in Node.
+ * Used by Mark, the blob's stills (lib/still.ts) and the OG field. Pure: no DOM, runs in Node.
  */
 import { BAYER8, ORB_STOPS, clamp01, lut, quantise, rampAt, smoothstep, mix3, type RGB, type Stops } from "./dither";
+import { faceField } from "./eyes";
 
-export type Face = "^^" | "OO" | null;
+export type Face = "^^" | "OO" | "--" | null;
 
 const PAPER: RGB = [255, 255, 255];
 const INK: RGB = [7, 7, 7];
@@ -28,91 +29,13 @@ const ORB = {
   glowLevels: 3,
 };
 
-/** The face, in R units (dither.ts:189-224): the icon's proportions, what the banner shows. */
-const FACE = {
-  row: -0.307,
-  spread: 0.461,
-  w: 0.307,
-  h: 0.246,
-  stroke: 0.08,
-  outline: 0.06,
-  gleam: { x: -0.36, y: -0.76, sigma: 0.17, amp: 0.85 } as Gleam,
-  /** The `O`: SF Mono Bold's O at fs = 0.5 R is about 0.28 R wide and 0.38 R tall; a ring with the chevron's stroke. */
-  ring: { rx: 0.14, ry: 0.19 },
-};
+/** The gleam when the orb wears a face: higher and tighter, as the live blob's (lib/blob.ts). */
+const FACE_GLEAM: Gleam = { x: -0.36, y: -0.76, sigma: 0.17, amp: 0.85 };
 
 function gleamLift(g: Gleam, nx: number, ny: number): number {
   const hx = nx - g.x;
   const hy = ny - g.y;
   return g.amp * Math.exp(-(hx * hx + hy * hy) / (2 * g.sigma * g.sigma));
-}
-
-function capsule(px: number, py: number, ax: number, ay: number, bx: number, by: number, r: number): number {
-  const abx = bx - ax;
-  const aby = by - ay;
-  const t = clamp01(((px - ax) * abx + (py - ay) * aby) / (abx * abx + aby * aby));
-  return Math.hypot(ax + abx * t - px, ay + aby * t - py) - r;
-}
-
-/** Signed distance (R units) to the nearer eye glyph; ≤ 0 inside a stroke. */
-function faceSdf(nx: number, ny: number, pair: "^^" | "OO"): number {
-  const sw = FACE.stroke / 2;
-  let best = Infinity;
-  for (const side of [-1, 1]) {
-    const ex = side * FACE.spread;
-    const ey = FACE.row;
-    if (pair === "^^") {
-      const ay = ey - FACE.h / 2 + sw;
-      const fy = ey + FACE.h / 2 - sw;
-      const dx = FACE.w / 2 - sw;
-      best = Math.min(best, capsule(nx, ny, ex, ay, ex - dx, fy, sw), capsule(nx, ny, ex, ay, ex + dx, fy, sw));
-    } else {
-      const a = FACE.ring.rx - sw;
-      const b = FACE.ring.ry - sw;
-      const px = nx - ex;
-      const py = ny - ey;
-      const r = Math.hypot(px / a, py / b);
-      best = Math.min(best, Math.abs((r - 1) * Math.min(a, b)) - sw);
-    }
-  }
-  return best;
-}
-
-/** The face on a cols × rows cell grid: 0 orb, 1 glyph (paper), 2 box (ink); box = Chebyshev dilation by max(1, round(outline · R / cell)) cells. */
-function faceMask(cols: number, rows: number, cell: number, cx: number, cy: number, R: number, pair: "^^" | "OO"): Uint8Array {
-  const m = new Uint8Array(cols * rows);
-  const rad = Math.max(1, Math.round((FACE.outline * R) / cell));
-  // Only the eye region: |nx| ≤ 0.75, ny in [−0.6, 0].
-  const c0 = Math.max(0, Math.floor((cx - 0.75 * R) / cell) - rad - 1);
-  const c1 = Math.min(cols, Math.ceil((cx + 0.75 * R) / cell) + rad + 1);
-  const r0 = Math.max(0, Math.floor((cy - 0.6 * R) / cell) - rad - 1);
-  const r1 = Math.min(rows, Math.ceil(cy / cell) + rad + 1);
-  for (let r = r0; r < r1; r++) {
-    for (let c = c0; c < c1; c++) {
-      const nx = ((c + 0.5) * cell - cx) / R;
-      const ny = ((r + 0.5) * cell - cy) / R;
-      if (faceSdf(nx, ny, pair) <= 0) m[r * cols + c] = 1;
-    }
-  }
-  const out = m.slice();
-  for (let r = r0; r < r1; r++) {
-    for (let c = c0; c < c1; c++) {
-      if (m[r * cols + c]) continue;
-      let near = false;
-      for (let dy = -rad; dy <= rad && !near; dy++) {
-        for (let dx = -rad; dx <= rad; dx++) {
-          const rr = r + dy;
-          const cc = c + dx;
-          if (rr >= 0 && rr < rows && cc >= 0 && cc < cols && m[rr * cols + cc] === 1) {
-            near = true;
-            break;
-          }
-        }
-      }
-      if (near) out[r * cols + c] = 2;
-    }
-  }
-  return out;
 }
 
 /** An RGBA buffer; structurally an ImageData, also in Node where ImageData does not exist. */
@@ -148,10 +71,7 @@ function paintOrb(img: OrbImage, o: PaintOrbOptions): void {
   const bands = o.bands ?? 5;
   const L = lut(o.stops ?? ORB_STOPS, bands);
   const stops = o.stops ?? ORB_STOPS;
-  const cols = Math.ceil(W / cell);
-  const rows = Math.ceil(H / cell);
-  const mask = face ? faceMask(cols, rows, cell, cx, cy, R, face) : null;
-  const gleam = face ? FACE.gleam : ORB.highlight;
+  const gleam = face ? FACE_GLEAM : ORB.highlight;
   const halo = o.halo ?? null;
   const ground = o.ground ?? null;
   const reach = halo ? 1.28 * R + cell : 1.9 * R;
@@ -175,10 +95,13 @@ function paintOrb(img: OrbImage, o: PaintOrbOptions): void {
         const rim = smoothstep(0.55, 1, d) * clamp01(0.5 + (nx + ny) / 2) * ORB.rimDarken;
         col = mix3(col, ORB.rimTone, quantise(rim, ORB.rimLevels, t));
         col = mix3(col, PAPER, quantise(gleamLift(gleam, nx, ny), ORB.highlightLevels, t));
-        if (mask) {
-          const mm = mask[((y / cell) | 0) * cols + ((x / cell) | 0)];
-          if (mm === 1) col = PAPER;
-          else if (mm === 2) col = INK;
+        // The face, only near the eyes: ink, then the catchlight, each covering by its distance (one pixel of antialias).
+        if (face && nx > -0.62 && nx < 0.62 && ny > -0.42 && ny < 0.2) {
+          const f = faceField(nx, ny, face);
+          const ink = clamp01(0.5 - f.ink * R);
+          if (ink > 0) col = mix3(col, INK, ink);
+          const glint = clamp01(0.5 - f.glint * R);
+          if (glint > 0) col = mix3(col, PAPER, glint);
         }
         data[i] = col[0];
         data[i + 1] = col[1];
@@ -345,7 +268,7 @@ type Zlib = (raw: Uint8Array) => Uint8Array;
  * RGBA → PNG bytes. With no compressor the IDAT is stored deflate (small images only: a mark, a favicon); a server caller
  * passes a real compressor (`node:zlib` deflateSync) so a 128 px orb inlined in a picture is a few KB, not sixty.
  */
-function encodePng(img: OrbImage, zlib?: Zlib): Uint8Array {
+export function encodePng(img: OrbImage, zlib?: Zlib): Uint8Array {
   const raw = scanlines(img);
   const idat = zlib ? zlib(raw) : storedZlib(raw);
   const ihdr = [...u32(img.width), ...u32(img.height), 8, 6, 0, 0, 0];

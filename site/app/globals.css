@@ -1,69 +1,78 @@
 /*
- * jarhead.kevinliu.studio · the token sheet (facts-canon.md §1) and the reset. Four colours, one accent, every
- * line drawn once by one owner, no shadows. Light on :root; dark is a token remap under html[data-theme="dark"], stamped
- * before paint by lib/theme.ts. No raw hex outside this sheet. The page's own classes are in styles/site.css.
+ * jarhead.kevinliu.studio · the token sheet and the reset. Paper first: a warm near-white ground, ink type, white sheets
+ * on it; dark is warm ink with the same restraint, a token remap under html[data-theme="dark"] (stamped before paint by
+ * lib/theme.ts). Four colours and one accent; the phase tones are the colour, and they arrive as dithered fields. No raw
+ * hex outside this sheet and styles/kit.css. The page's own classes are in styles/site.css and styles/play.css.
  */
 :root {
   color-scheme: light;
-  /* the four colours (PT/DESIGN.md §1; ConsoleTheme.swift:14-19) */
+  /* the four colours (Prototemplate DESIGN.md §1) */
   --jh-ink: #070707; --jh-titanium: #8a8f98; --jh-paper: #ffffff;
-  /* surfaces (ConsoleTheme.swift:14-15) */
-  --jh-ground: #ffffff; --jh-raised: #f6f6f6;
+  /* surfaces: the warm paper ground, the white sheet that sits on it, the raised step */
+  --jh-ground: #fbfaf7; --jh-sheet: #ffffff; --jh-raised: #f2f0eb;
   /* ink steps 1 / .72 / .48 */
   --jh-fg: #070707; --jh-fg-2: rgba(7, 7, 7, 0.72); --jh-fg-3: rgba(7, 7, 7, 0.48);
   /* lines: structural / row / frame, 1px each, drawn once by one owner */
-  --jh-hair: rgba(7, 7, 7, 0.18); --jh-hair-row: rgba(7, 7, 7, 0.09); --jh-hair-frame: rgba(7, 7, 7, 0.62);
+  --jh-hair: rgba(7, 7, 7, 0.16); --jh-hair-row: rgba(7, 7, 7, 0.08); --jh-hair-frame: rgba(7, 7, 7, 0.62);
   /* states */
-  --jh-hover: rgba(7, 7, 7, 0.04); --jh-active: rgba(7, 7, 7, 0.07); --jh-lift: rgba(7, 7, 7, 0.08);
-  --jh-lift-raised: rgba(7, 7, 7, 0.12); --jh-thumb: rgba(7, 7, 7, 0.32);
-  /* words in the quiet step, titanium and the speaking tone, light only (kit/README Contrast) */
+  --jh-hover: rgba(7, 7, 7, 0.04); --jh-active: rgba(7, 7, 7, 0.07); --jh-lift: rgba(7, 7, 7, 0.06);
+  --jh-lift-raised: rgba(7, 7, 7, 0.09); --jh-thumb: rgba(7, 7, 7, 0.28);
+  /* words in the quiet step, titanium and the speaking tone, light only (AA on paper) */
   --jh-fg-3-word: rgba(7, 7, 7, 0.6); --jh-titanium-word: #585c64; --jh-speaking-word: #915608;
-  /* the one accent: the primary fill, the keyboard ring, the selection bar; the word on it follows the fill */
+  /* the one accent: the primary fill, the keyboard ring, the selection; the word on it follows the fill */
   --jh-accent: #2f5ce0; --jh-on-accent: #ffffff;
-  /* phases: dots, halos, rings, hairlines, the blob's halo; never a wash; same in both themes */
+  /* phases: dots, halos, rings, the fields' colour; never a word's ink; the same in both themes */
   --jh-listening: #5ad7ff; --jh-speaking: #ffb454; --jh-thinking: #b48cff; --jh-acting: #6ee7a0;
   --jh-error: #ff5d6c; --jh-asleep: #7a6a5a; --jh-muted: #6b7280; --jh-connecting: #9fb4c8;
   --jh-mark: #ffb454;
+  /* a phase tone drawn as a line, a ring or a lit edge on paper: its own deeper step, so a 1.5 line holds against white */
+  --jh-listening-line: #0b9ccc; --jh-thinking-line: #8355ee; --jh-speaking-line: #c97800; --jh-acting-line: #12a35a;
+  --jh-mark-line: #c97800; --jh-accent-line: var(--jh-accent); --jh-asleep-line: #7a6a5a; --jh-connecting-line: #5f7a94;
   /* screens: the terminal and the island are ink in both themes, their words composed from paper */
   --jh-screen-ink: #070707;
   --jh-screen-fg-2: rgba(255, 255, 255, 0.72); --jh-screen-fg-3: rgba(255, 255, 255, 0.48); --jh-screen-hover: rgba(255, 255, 255, 0.05); --jh-screen-active: rgba(255, 255, 255, 0.08);
   --jh-accent-dark: #5b82ff; --jh-plate-hair: rgba(255, 255, 255, 0.22);
   --jh-blob-ground: #0b0c10;
-  /* the drawn Mac: the notch's black, the traffic lights */
-  --jh-desk-notch: #000000; --jh-light-red: #ff5f57; --jh-light-yellow: #febc2e; --jh-light-green: #28c840;
-  /* the menu bar's grey in dark and the island's ground: the render's own, as a browser paints the PNG's gAMA chunk */
-  --jh-island-bar: #25272c; --jh-island-ground: #030407;
+  /* the drawn Mac: the notch's black, the island's ground */
+  --jh-desk-notch: #000000; --jh-island-ground: #030407;
+  /* the menu bar: the paper itself in light, the render's grey in dark */
+  --jh-bar: #fbfaf7;
   /* agent marks (BrandMarks.swift:15-38) */
-  --jh-mark-claude: #d97757;
-  /* the kit: the Codex chip (BrandMarks.swift:22) */
-  --jh-mark-chip: #070707;
-  /* the one glass surface (ITERATE.md §1, Kevin's ask over facts-canon §8.5): the hero's install button alone. The fill, its hover lift and its press, the hairline, the inner top highlight.
-     On paper the frost is dense, the hairline dark and the highlight paper, so the glass outweighs the raised source tile beside it */
-  --jh-glass-fill: rgba(255, 255, 255, 0.72); --jh-glass-hover: rgba(255, 255, 255, 0.76); --jh-glass-press: rgba(255, 255, 255, 0.68);
-  --jh-glass-hair: rgba(7, 7, 7, 0.28); --jh-glass-top: var(--jh-paper);
-  /* geometry: the one control corner */
-  --jh-radius: 6px;
-  /* type */
+  --jh-mark-claude: #d97757; --jh-mark-chip: #070707;
+  /* the one glass surface: the hero's Install alone (fill, hover, press, hairline, inner top highlight); thin enough on
+     paper that the horizon's dots read through the frost, so it is glass, not a white keycap */
+  --jh-glass-fill: rgba(255, 255, 255, 0.58); --jh-glass-hover: rgba(255, 255, 255, 0.64); --jh-glass-press: rgba(255, 255, 255, 0.5);
+  --jh-glass-hair: rgba(7, 7, 7, 0.22); --jh-glass-top: var(--jh-paper);
+  /* the one shadow: the soft depth a sheet needs to sit on a field, used sparingly */
+  --jh-shadow: 0 1px 1px rgba(7, 7, 7, 0.04), 0 10px 28px -14px rgba(7, 7, 7, 0.22);
+  /* geometry: the control corner, the sheet corner, the plate corner */
+  --jh-radius: 6px; --jh-r-sheet: 10px; --jh-r-plate: 14px;
+  /* type: Inter for every word, Newsreader for the display and for what is spoken, JetBrains Mono for values */
   --font-sans: var(--font-inter), "Inter", "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  /* motion (Motion.swift:22-64) */
-  --jh-instant: 80ms; --jh-quick: 160ms; --jh-base: 240ms; --jh-drift: 600ms; --jh-pulse: 1.6s;
+  --font-serif: var(--font-news), "Newsreader", Georgia, "Times New Roman", serif;
+  --font-voice: var(--font-news-i), "Newsreader", Georgia, "Times New Roman", serif;
+  --font-mono: var(--font-jbm), "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* motion (lib/motion.ts mirrors these): durations 80 to 600 ms, one ease out and one ease in-out */
+  --jh-instant: 80ms; --jh-quick: 160ms; --jh-base: 240ms; --jh-slow: 400ms; --jh-drift: 600ms; --jh-pulse: 1.6s;
   --jh-ease-out: cubic-bezier(0.16, 1, 0.3, 1); --jh-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 html[data-theme="dark"] {
   color-scheme: dark;
-  --jh-ground: #070707; --jh-raised: #101010;
-  --jh-fg: #ffffff; --jh-fg-2: rgba(255, 255, 255, 0.72); --jh-fg-3: rgba(255, 255, 255, 0.48);
-  --jh-hair: rgba(255, 255, 255, 0.22); --jh-hair-row: rgba(255, 255, 255, 0.10); --jh-hair-frame: rgba(255, 255, 255, 0.55);
-  --jh-hover: rgba(255, 255, 255, 0.05); --jh-active: rgba(255, 255, 255, 0.08); --jh-lift: rgba(255, 255, 255, 0.10);
-  --jh-lift-raised: rgba(255, 255, 255, 0.16); --jh-thumb: rgba(242, 242, 240, 0.32);
+  --jh-ground: #0c0b0a; --jh-sheet: #161513; --jh-raised: #1b1a18;
+  --jh-fg: #f7f5f0; --jh-fg-2: rgba(247, 245, 240, 0.72); --jh-fg-3: rgba(247, 245, 240, 0.48);
+  --jh-hair: rgba(247, 245, 240, 0.18); --jh-hair-row: rgba(247, 245, 240, 0.09); --jh-hair-frame: rgba(247, 245, 240, 0.55);
+  --jh-hover: rgba(247, 245, 240, 0.05); --jh-active: rgba(247, 245, 240, 0.08); --jh-lift: rgba(247, 245, 240, 0.07);
+  --jh-lift-raised: rgba(247, 245, 240, 0.12); --jh-thumb: rgba(247, 245, 240, 0.3);
   --jh-accent: #5b82ff; --jh-on-accent: var(--jh-ink);
-  --jh-mark-chip: #101010;
-  --jh-glass-fill: rgba(255, 255, 255, 0.10); --jh-glass-hover: rgba(255, 255, 255, 0.14); --jh-glass-press: rgba(255, 255, 255, 0.06);
-  --jh-glass-hair: rgba(255, 255, 255, 0.18); --jh-glass-top: rgba(255, 255, 255, 0.22);
+  --jh-mark-chip: #161513;
+  --jh-bar: #141311;
+  --jh-glass-fill: rgba(255, 255, 255, 0.08); --jh-glass-hover: rgba(255, 255, 255, 0.12); --jh-glass-press: rgba(255, 255, 255, 0.05);
+  --jh-glass-hair: rgba(255, 255, 255, 0.18); --jh-glass-top: rgba(255, 255, 255, 0.2);
+  --jh-shadow: 0 1px 1px rgba(0, 0, 0, 0.4), 0 12px 28px -14px rgba(0, 0, 0, 0.8);
+  --jh-listening-line: var(--jh-listening); --jh-thinking-line: var(--jh-thinking); --jh-speaking-line: var(--jh-speaking);
+  --jh-acting-line: var(--jh-acting); --jh-mark-line: var(--jh-mark); --jh-asleep-line: #a8957f; --jh-connecting-line: var(--jh-connecting);
   /* dark passes AA at the canon values, so the word aliases are the canon */
   --jh-fg-3-word: var(--jh-fg-3); --jh-titanium-word: var(--jh-titanium); --jh-speaking-word: var(--jh-speaking);
-  /* phases, screens, marks, lights do not remap */
 }
 
 /* ---------- reset ---------- */
@@ -78,35 +87,35 @@ html {
   overflow-x: clip;
   scrollbar-width: thin;
   scrollbar-color: var(--jh-thumb) transparent;
-
 }
 html, body { background: var(--jh-ground); }
 body {
   color: var(--jh-fg);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.5;
   font-feature-settings: "cv11", "ss01", "ss03";
   font-optical-sizing: auto;
 }
-h1, h2, h3, h4 { font-weight: 500; line-height: 1.06; letter-spacing: -0.028em; font-feature-settings: "cv11", "ss01"; }
+h1, h2, h3, h4 { font-weight: 400; line-height: 1.05; }
 b, strong { font-weight: 500; }
 a { color: inherit; text-decoration: none; }
 img, canvas, svg { display: block; }
-/* a decorative svg is never the hit target: a brand mark from @thesvg/react ships its own <title> */
 svg[aria-hidden="true"] { pointer-events: none; }
 img { max-width: 100%; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 ul, ol { list-style: none; padding: 0; }
 figure { margin: 0; }
+q { quotes: "\201C" "\201D"; }
 code, kbd, pre, samp { font-family: var(--font-mono); }
 ::selection { background: var(--jh-accent); color: var(--jh-on-accent); }
 :focus-visible { outline: 2px solid var(--jh-accent); outline-offset: 2px; }
-/* the skip link: visible on focus only, moves by transform and opacity; a 40 px tile just under the menu bar (site.css) */
-.jh-skip { position: absolute; left: 12px; top: 2px; z-index: 40; display: inline-flex; align-items: center; height: 40px; padding: 0 12px;
-  border-radius: var(--jh-radius); background: var(--jh-accent); color: var(--jh-on-accent); font-size: 12px; font-weight: 500; opacity: 0; transform: translateY(-64px); pointer-events: none; }
+.jh-skip { position: absolute; left: 12px; top: 46px; z-index: 60; display: inline-flex; align-items: center; height: 40px; padding: 0 12px;
+  border-radius: var(--jh-radius); background: var(--jh-accent); color: var(--jh-on-accent); font-size: 13px; font-weight: 500; opacity: 0; transform: translateY(-96px); pointer-events: none; }
 .jh-skip:focus-visible { opacity: 1; transform: none; pointer-events: auto; outline: 0; }
-/* ---------- reduced motion: the only !important on the site ---------- */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* ---------- reduced motion and #still (html[data-still], lib/motion.ts): every animation a calm cut (the only !important on the site) ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
+html[data-still] *, html[data-still] *::before, html[data-still] *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

@@ -29,10 +29,12 @@ const LOGOS: Record<Exclude<AgentTool, "codex">, { readonly box: string; readonl
   cursor: { box: "0 0 466.73 532.09", path: CURSOR, color: "var(--jh-fg)" },
 };
 
-export function AgentMark({ tool, size = 14, quiet, className }: { readonly tool: AgentTool; readonly size?: 14 | 24; readonly quiet?: boolean; readonly className?: string }): ReactElement {
+export function AgentMark({ tool, size = 14, quiet, decorative, className }: { readonly tool: AgentTool; readonly size?: 14 | 24; readonly quiet?: boolean; readonly decorative?: boolean; readonly className?: string }): ReactElement {
   const cls = `kit-agent-mark${className ? ` ${className}` : ""}`;
   const label = quiet ? `${AGENT_LABELS[tool]}, over` : AGENT_LABELS[tool];
-  const common = { className: cls, width: size, height: size, role: "img", "aria-label": label, preserveAspectRatio: "xMidYMid meet" } as const;
+  // Beside its own visible word the mark is decoration; alone it names the agent.
+  const a11y = decorative ? { "aria-hidden": true as const, focusable: "false" as const } : { role: "img", "aria-label": label };
+  const common = { className: cls, width: size, height: size, ...a11y, preserveAspectRatio: "xMidYMid meet" } as const;
   if (tool === "codex") {
     const r = 24 * 0.22;
     const pad = 24 * 0.1;
