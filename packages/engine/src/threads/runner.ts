@@ -9,9 +9,13 @@ import { ACTING_TOOLS, FOCUS_APPLESCRIPT } from "@jarhead/brain";
  * engine's `runner`) subclass ToolRunner through `LeasedRunner`, what the two share,
  * and re-record the step the base records; they never edit it.
  *
- * `background` never touches the pointer, keyboard or front app — Apple events,
- * browser_*, files, shell, web — and is refused the rest HERE, not in policy.ts
- * (a rail). `screen` waits its turn for the one FocusLease, ranked by admission
+ * `background` never touches the pointer, the keyboard, the front app or the front
+ * browser tab. It has Apple events, the browser reads (browser_read, browser_find,
+ * browser_tabs), web_fetch and web_search, the file tools and a shell line that fronts
+ * nothing, and is refused the rest HERE, not in policy.ts (a rail): FOCUS_TOOLS (the
+ * pointer and keys, open_url, browser_navigate/click/type, the clipboard), a focusing
+ * applescript and a shell line that fronts an app or types (`needsFocus`). `screen`
+ * waits its turn for the one FocusLease, ranked by admission
  * (Kevin's hands > the main lane > threads by age; the lease's `rank` is the lease's
  * business — taken here as an option and handed through). Two hooks for the speed
  * pass ride as options: an `observer` that annotates every ACTING tool's result with
@@ -29,8 +33,12 @@ export type SpawnLane = "screen" | "background";
 /** The thread tools: the main brain's four verbs over its spawned threads. */
 export const THREAD_TOOLS: ReadonlySet<string> = new Set(["thread_start", "thread_wait", "thread_read", "thread_stop"]);
 
-/** Tools that need the pointer, keyboard, front app or the system clipboard: the lease's business. */
-export const FOCUS_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "open_url", "browser_click", "browser_type", "clipboard_read", "clipboard_write"]);
+/**
+ * Tools that need the pointer, keyboard, front app, the front browser tab or the system clipboard: the
+ * lease's business. `browser_navigate` sets the URL of the active tab of the front window — what Kevin is
+ * looking at — so it is screen work too (a background thread reads a page with web_fetch instead).
+ */
+export const FOCUS_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "open_url", "browser_click", "browser_type", "browser_navigate", "clipboard_read", "clipboard_write"]);
 
 /**
  * A shell head that brings something to the front (`open` without a background flag,
@@ -43,7 +51,9 @@ export { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, shellSteals } from "@jar
 /** Depth one: a spawned thread never spawns a thread and never edits Jarhead. */
 export const DENIED_FOR_THREADS: ReadonlySet<string> = new Set([...THREAD_TOOLS, "self_edit", "self_check", "self_review", "self_apply", "self_discard", "self_status"]);
 
-export const LANE_REFUSAL = "refused: this hand runs in the background lane — the pointer and keyboard are not its; use applescript (Apple events), browser_*, files, shell or web, or report that the screen is needed";
+/** What the background lane answers a screen tool: what it may use instead, by name. */
+export const LANE_REFUSAL =
+  "refused: this thread runs in the background lane. It never touches the pointer, the keyboard, the front app or the front browser tab. Use applescript (Apple events), browser_read, browser_find or browser_tabs to read the browser, web_fetch or web_search to load a page, the file tools or run_shell. Or report that the screen is needed.";
 
 /**
  * Jarhead's own hands wait this long for a thread's op in flight (never mid-op; a long
@@ -55,8 +65,62 @@ export const MAIN_LEASE_WAIT_MS = 30_000;
 export function needsFocus(name: string, args: Record<string, unknown>): boolean {
   if (FOCUS_TOOLS.has(name)) return true;
   if (name === "applescript") return FOCUS_APPLESCRIPT.test(String(args["script"] ?? ""));
-  if (name === "run_shell") return shellSteals(String(args["command"] ?? ""));
+  if (name === "run_shell") return shellNeedsFocus(String(args["command"] ?? ""));
   return false;
+}
+
+/** osascript sending keystrokes, wherever each sits in the line: they land in whatever is in front. Two linear scans. */
+const OSASCRIPT = /\bosascript\b/i;
+const KEYSTROKE = /\b(?:keystroke|key code)\b/i;
+
+/** A shell line is judged over its first this many characters; a longer one is screen work (fails closed, and the scan stays bounded). */
+export const SHELL_SCAN_CHARS = 16_384;
+
+/** A shell by name: sh, bash, zsh, ksh, dash, fish, csh, tcsh, under any directory (path segments, so a long word is scanned once). */
+const SHELL_NAME = String.raw`(?:[\w.~-]*\/)*(?:ba|z|k|da|fi|c|tc)?sh\b`;
+
+/**
+ * A shell fed its commands on stdin (`… | sh`, `… | bash -s`, `bash <<< '…'`, `zsh <<EOF`): what it
+ * runs is not written out where it can be judged, so it is screen work. A piped `sh -c '…'` is not this
+ * (its command is written out and judged as an inner shell).
+ */
+const SHELL_ON_STDIN = new RegExp(String.raw`\|\s*(?:(?:sudo|env|exec|command|nohup)\s+)*${SHELL_NAME}(?!\s+-\w*c)|(?:^|[\s;&|(\`])${SHELL_NAME}[^;&|\n]{0,120}?<<`);
+
+/**
+ * A shell line fronts an app or types: core's `shellSteals` on the line, on every inner command
+ * it writes out (`bash -c '…'`, `sh -c`, `zsh -lc`, `eval "…"`, `su kevin -c '…'`) and on every
+ * group or substitution (`( … )`, `{ …; }`, `$( … )`, backticks), a few levels deep; an osascript
+ * keystroke however it is wrapped; and a shell fed its commands on stdin. Fails closed: a false
+ * positive costs a background thread one refusal, a miss types behind Kevin's back. A line past
+ * SHELL_SCAN_CHARS is screen work unread.
+ */
+function shellNeedsFocus(command: string): boolean {
+  if (command.length > SHELL_SCAN_CHARS) return true;
+  if ((OSASCRIPT.test(command) && KEYSTROKE.test(command)) || SHELL_ON_STDIN.test(command)) return true;
+  return [command, ...innerCommands(command)].some((c) => shellSteals(c));
+}
+
+/**
+ * An inner shell or eval that carries its command written out, anywhere in the line. The stretch
+ * between the shell's name and its `-c` is bounded (and never crosses a line), so the scan is
+ * linear in the line, never quadratic.
+ */
+const INNER_SHELL = new RegExp(String.raw`(?:^|[\s;&|(\`])(?:${SHELL_NAME}[^;&|'"\n]{0,120}?\s-\w*c\w*|eval|su\b[^;&|'"\n]{0,120}?\s-c)\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+))`, "g");
+
+/** A group or a substitution, innermost first: `$( … )`, backticks, `( … )`, `{ …; }`. */
+const GROUPED = /\$\(([^()]*)\)|`([^`]*)`|\(([^()]*)\)|\{\s([^{}]*)\}/g;
+
+/** The commands this line runs written out inside it (inner shells, evals, groups, substitutions), up to three levels deep. */
+function innerCommands(command: string, depth = 0): string[] {
+  if (depth >= 3) return [];
+  const out: string[] = [];
+  const add = (inner: string | undefined): void => {
+    const c = inner?.trim();
+    if (c) out.push(c, ...innerCommands(c, depth + 1));
+  };
+  for (const m of command.matchAll(INNER_SHELL)) add(m[1] ?? m[2]?.replace(/\\(.)/g, "$1") ?? m[3]);
+  for (const m of command.matchAll(GROUPED)) add(m[1] ?? m[2] ?? m[3] ?? m[4]);
+  return out;
 }
 
 // ------------------------------------------------------- step recording
@@ -256,12 +320,18 @@ type RankedAcquire = AcquireOptions & { readonly rank?: number | undefined };
  * screen lane takes the lease around every screen tool (waiting at most WAIT_MAX_MS,
  * then answering "waiting for the screen"). A queued confirmation's text says whose
  * question it waits behind. `attach(undefined)` — the thread's turn ended — releases
- * the lease.
+ * the lease. A turn's step budget is counted here, before dispatch: call N+1 of a
+ * budget of N is refused and never reaches the hands (the scheduler's sink then ends
+ * the thread with its line).
  */
 export class LaneRunner extends LeasedRunner {
   private lane: SpawnLane;
   private rank: number | undefined;
   private readonly laneOpts: LaneRunnerOptions;
+  /** Tool calls allowed per turn (the thread's step budget); undefined = no cap (a spare, the automations' cold lane). */
+  private stepBudget: number | undefined;
+  /** Tool calls this turn so far. */
+  private calls = 0;
 
   constructor(opts: LaneRunnerOptions) {
     super(opts, opts.lease, opts.laneId);
@@ -288,9 +358,22 @@ export class LaneRunner extends LeasedRunner {
     this.rank = rank;
   }
 
+  /** The thread's step budget (tool calls per turn), set at admission. */
+  setStepBudget(steps: number | undefined): void {
+    this.stepBudget = steps;
+  }
+
+  /** A new turn of the thread's brain: its tool calls count from zero (the eyes' pre-warm shot before it is not one of them). */
+  beginTurn(): void {
+    this.calls = 0;
+  }
+
   override async run(name: string, input: unknown): Promise<RunOutcome> {
     const started = this.clock();
     const args = argsOf(input);
+    // Counted on entry, before any await: calls a brain issues together are judged in the order they arrived.
+    if (this.stepBudget !== undefined && this.calls >= this.stepBudget) return this.answer(name, args, { kind: "error", message: `refused: this turn's ${this.stepBudget} tool calls are spent; end your turn with one sentence of what you did` }, started);
+    this.calls++;
     if (DENIED_FOR_THREADS.has(name)) return this.answer(name, args, { kind: "error", message: `refused: ${name} is not a spawned thread's (depth one: a thread never spawns or edits Jarhead)` }, started);
     // design11: a headless `wake-brain` turn runs on this lane; a briefing never arms more automations or edits the recipes.
     if (this.lane === "background" && /^(automation|recipe)_/.test(name)) return this.answer(name, args, { kind: "error", message: `refused: ${name} is not a background lane's (an automation is set in the conversation, never by a headless turn)` }, started);
@@ -422,6 +505,14 @@ export class ThreadAwareRunner extends LeasedRunner {
     }
     if (!needsFocus(name, args)) return this.rendered(await this.runBase(name, input));
     const got = await this.takeScreen();
+    if (!got.ok && got.reason === "cancelled") {
+      // The task was stopped while its brain still had this call in flight: nothing acts.
+      const result: ToolResult = { kind: "error", message: `cancelled: the task was stopped before ${name} ran; nothing was done` };
+      const ms = this.clock() - started;
+      recordStep(this.sinkRef, name, args, result, ms);
+      log.info(`main lane ${name}: the task was stopped; not run`);
+      return { result, ms };
+    }
     if (got.ok && got.refocused) this.sinkRef?.step({ kind: "note", text: `brought ${got.refocused} back to the front` });
     const out = await this.actUnderLease(name, args, () => this.runBase(name, input));
     if ((name === "open_app" || name === "focus_app") && out.result.kind === "text") this.lease.rememberFront(ThreadAwareRunner.ACTOR, String(args["name"] ?? args["app"] ?? ""));
@@ -443,17 +534,24 @@ export class ThreadAwareRunner extends LeasedRunner {
    * Jarhead's hands win — but never mid-op: a thread's op in flight (a long `type`)
    * finishes first, bounded by the helper's own timeout, then Jarhead's lands next.
    * Past MAIN_LEASE_WAIT_MS the lease is cut and taken, so the thread's next tool
-   * waits on Jarhead instead of landing between its keystrokes. A stop or a cut
-   * meanwhile is left to the base (the toolset refuses after a stop).
+   * waits on Jarhead instead of landing between its keystrokes. A stop meanwhile (the
+   * task's signal) answers `cancelled`, and `run` acts on nothing. A cut of the lease is
+   * a stop only when that signal says so: otherwise another of Jarhead's own calls took
+   * the screen by force, and the screen is asked for once more, as the force-take does.
    */
   private async takeScreen(): Promise<LeaseOutcome> {
     const signal = this.taskRef?.signal;
-    const got = await this.lease.acquire(ThreadAwareRunner.ACTOR, { priority: true, signal, timeoutMs: MAIN_LEASE_WAIT_MS });
-    if (got.ok || got.reason === "cancelled" || got.reason === "cut") return got;
+    const take = async (timeoutMs: number): Promise<LeaseOutcome> => {
+      const got = await this.lease.acquire(ThreadAwareRunner.ACTOR, { priority: true, signal, timeoutMs });
+      return !got.ok && got.reason === "cut" && signal?.aborted ? { ok: false, reason: "cancelled" } : got;
+    };
+    const got = await take(MAIN_LEASE_WAIT_MS);
+    if (got.ok || got.reason === "cancelled") return got;
+    if (got.reason === "cut") return take(WAIT_MAX_MS);
     const holder = this.lease.holder;
     log.warn(`main lane: ${got.reason} for ${MAIN_LEASE_WAIT_MS} ms; taking the screen`);
     this.lease.cancelAll("Jarhead's hands took the screen");
     this.sinkRef?.step({ kind: "note", text: `took the screen${holder ? ` from ${holder}` : ""} (${got.reason})` });
-    return this.lease.acquire(ThreadAwareRunner.ACTOR, { priority: true, signal, timeoutMs: WAIT_MAX_MS });
+    return take(WAIT_MAX_MS);
   }
 }
