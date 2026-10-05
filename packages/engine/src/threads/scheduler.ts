@@ -4,7 +4,7 @@ import { ComputerToolset, ConfirmationState, HOLD_ID, Screen, spokenQuestion, ty
 import { screenNote, type Brain, type BrainAttachment, type BrainResult, type BrainSink, type BrainTask, type RunOutcome, type RunnerOptions, type ThreadFloor, type ToolRunner } from "@jarhead/brain";
 import { MAIN_THREAD_ID, THREAD_MAX_LIVE, THREAD_NAME_CHARS, THREAD_SECONDS_DEFAULT, THREAD_SECONDS_MAX, THREAD_SPAWN_DEPTH, THREAD_STEPS_DEFAULT, THREAD_STEPS_MAX, type LedgerRow, type OverlayCommand, type Thread, type ThreadEvent, type ThreadStatus, type TranscriptItem } from "@jarhead/protocol";
 import { BrainPool, type PoolLane, type Ready } from "./brain-pool.ts";
-import { confirmationResume, cutLine, phraseForLine, phraseForTool, resumeText, threadBrief } from "./lines.ts";
+import { confirmationResume, cutLine, noAnswerLine, phraseForLine, phraseForTool, resumeText, stillAsksLine, threadBrief } from "./lines.ts";
 import { LaneRunner, ThreadAwareRunner, type ActionObserverLike, type ActingSerializerLike, type SpawnLane } from "./runner.ts";
 import { ThreadEventCoalescer, ThreadTable, THREAD_EVENT_COALESCE_MS } from "./table.ts";
 import { ThreadLog, ThreadTurns, type ThreadTurn } from "./turns.ts";
@@ -29,8 +29,14 @@ const log = logger("engine.threads");
 
 /** Three consecutive "waiting for the screen" answers fail the thread. */
 export const THREAD_WAITS_MAX = 3;
-/** A paused thread, or one waiting on a yes nobody gives, ends `done "idle"` after this and its lane returns to the pool. */
+/** A paused thread, or one waiting on a yes nobody gives, ends `stopped "idle"` after this (never `done`: it did not do the thing) and its lane returns to the pool. */
 export const THREAD_IDLE_END_MS = 10 * 60_000;
+/** A thread's question still on the floor this long is asked again before the root's 3 min TTL lapses: a late yes never meets an expired question. */
+export const THREAD_QUESTION_REASK_MS = 3 * 60_000 - 10_000;
+/** A thread's lost or lapsed question is asked again at most this many times; the next loss ends the thread `stopped` with a line. */
+export const THREAD_REASKS_MAX = 2;
+/** A next turn whose brain refused it because the last turn's `handle` is still in flight waits this long for the brain to let go. */
+export const LET_GO_WAIT_MS = 5_000;
 /** speak_progress on a thread speaks this many times per turn, with its name. */
 export const THREAD_PROGRESS_PER_TURN = 1;
 /** …and never within this of the thread's last spoken line. */
@@ -238,6 +244,14 @@ interface TurnSpec {
   readonly marks?: readonly BrainAttachment[] | undefined;
 }
 
+/** A thread's question as the desk holds it: enough to ask it again with the same tool call. */
+interface ThreadAsk {
+  readonly description: string;
+  readonly member: string;
+  readonly input: Record<string, unknown>;
+  readonly grantable?: Grantable | undefined;
+}
+
 interface Job {
   readonly id: string;
   readonly name: string;
@@ -260,6 +274,19 @@ interface Job {
   spoken: string | undefined;
   /** The question the last turn ended on (a `confirm` step), while it awaits a yes. */
   question: string | undefined;
+  /** That question's tool call as the desk held it, for a re-ask. */
+  ask: ThreadAsk | undefined;
+  /** When the question last reached the floor or the queue (the scheduler's clock). */
+  askedAt: number;
+  /** Times the question was asked again since its turn ended (THREAD_REASKS_MAX). */
+  reasks: number;
+  /** The conversation (the root's chain id) it started in: a finished thread is found by name within it. */
+  readonly conversation: string;
+  /** The verbs on this thread (a follow-up, a pause, a resume) run one at a time, in order. */
+  verbs: Promise<void>;
+  /** Its brain's `handle` calls in flight, and the newest one's return. */
+  handling: number;
+  handled: Promise<void>;
   /** The last turn ended on a presence hold: not a question, the thread fails with its line. */
   hold: boolean;
   waits: number;
@@ -311,7 +338,12 @@ export class ThreadScheduler {
 
   // --------------------------------------------------------- the tools
 
-  /** `thread_*` from the main lane's runner. */
+  /**
+   * `thread_*` from the main lane's runner. Every request Kevin makes is a delegation of its own, so a
+   * name reaches every live thread of the conversation, whichever request started it ("actually, don't
+   * message Ben" stops the Slack thread an earlier request split off); a finished one is read by name
+   * within the conversation.
+   */
   async tool(name: string, args: Record<string, unknown>, ctx: { readonly task: BrainTask | undefined }): Promise<ToolResult> {
     const parent = this.opts.parentFor(ctx.task);
     if (!parent) return { kind: "error", message: `${name}: no task is running to own a thread` };
@@ -324,10 +356,10 @@ export class ThreadScheduler {
         return this.wait(parent.id, who || "all", seconds * 1000);
       }
       case "thread_read":
-        return this.read(parent.id, who);
+        return this.read(who);
       case "thread_stop": {
-        const job = this.jobNamed(who, parent.id);
-        if (!job) return { kind: "error", message: `no thread named "${who}" in this task` };
+        const job = this.jobNamed(who);
+        if (!job) return { kind: "error", message: `no thread named "${who}" is running` };
         await this.stopJob(job, "brain", "stopped by the main brain");
         const t = this.table.get(job.id);
         return { kind: "text", text: `${job.name} stopped (${t?.steps ?? 0} steps). ${this.userName} was told: "${job.name} stopped."` };
@@ -363,6 +395,7 @@ export class ThreadScheduler {
     const rank = this.admitted++;
     lane.runner.setLane(spec.lane);
     lane.runner.setRank(rank);
+    lane.runner.setStepBudget(steps);
     lane.hands.target = spec.lane === "screen" ? this.opts.hands.focus : this.opts.hands.background;
     // Named now: the desk's lane carries the name Kevin hears ("Spotify asks: …", "Queued behind Slack's question").
     lane.confirmations.bind(this.opts.desk.lane(lane.id, name));
@@ -406,6 +439,13 @@ export class ThreadScheduler {
       pendingTurn: undefined,
       spoken: undefined,
       question: undefined,
+      ask: undefined,
+      askedAt: 0,
+      reasks: 0,
+      conversation: this.opts.desk.root.conversationId,
+      verbs: Promise.resolve(),
+      handling: 0,
+      handled: Promise.resolve(),
       hold: false,
       waits: 0,
       timer: undefined,
@@ -427,13 +467,19 @@ export class ThreadScheduler {
     return { kind: "text", text: `started thread ${name} (${lane.id}) on the ${spec.lane} lane: ${task}. It works on its own; Jarhead speaks its finish line for you. thread_wait {name:"${name}"} collects its result when your part is done.` };
   }
 
-  /** Wait until the named thread (or every thread of this parent) has settled, waits on a yes or is paused, or the timeout. */
+  /**
+   * Wait until the named thread (or every live thread) has settled, waits on a yes or is paused, or the
+   * timeout. "all" also reports this parent's threads that already finished: the answer covers every
+   * thread the brain started, not only the ones still running.
+   */
   async wait(parentId: string, name: string, timeoutMs: number): Promise<ToolResult> {
-    const targets = name === "all" ? this.jobsOf(parentId) : [this.jobNamed(name, parentId)].filter((j): j is Job => j !== undefined);
+    const all = name === "all";
+    const targets = all ? [...this.jobs.values()] : [this.jobNamed(name)].filter((j): j is Job => j !== undefined);
+    const siblings = (): Job[] => (all ? this.finished.filter((j) => j.parent.id === parentId && !targets.includes(j)) : []);
     if (targets.length === 0) {
-      const lingering = this.finished.filter((j) => j.parent.id === parentId && (name === "all" || j.name.toLowerCase() === name.toLowerCase()));
+      const lingering = all ? siblings() : [this.finishedNamed(name)].filter((j): j is Job => j !== undefined);
       if (lingering.length > 0) return { kind: "text", text: lingering.map((j) => this.describe(j)).join("\n") };
-      return { kind: "error", message: name === "all" ? "no threads in this task" : `no thread named "${name}" in this task` };
+      return { kind: "error", message: all ? "no threads are running" : `no thread named "${name}" is running` };
     }
     const settledOrWaiting = (j: Job): boolean => {
       const s = this.table.get(j.id)?.status;
@@ -459,14 +505,14 @@ export class ThreadScheduler {
         setTimeout(() => this.listeners.delete(check), timeoutMs + 1).unref?.();
       });
     }
-    return { kind: "text", text: targets.map((j) => this.describe(j)).join("\n") };
+    return { kind: "text", text: [...siblings(), ...targets].map((j) => this.describe(j)).join("\n") };
   }
 
-  /** A thread's state right now, without waiting. */
-  read(parentId: string, name: string): ToolResult {
-    const job = this.jobNamed(name, parentId) ?? this.finished.find((j) => j.parent.id === parentId && j.name.toLowerCase() === name.toLowerCase());
+  /** A thread's state right now, without waiting: the live one by that name, else the newest finished one of the conversation. */
+  read(name: string): ToolResult {
+    const job = this.jobNamed(name) ?? this.finishedNamed(name);
     if (job) return { kind: "text", text: this.describe(job) };
-    return { kind: "error", message: `no thread named "${name}" in this task` };
+    return { kind: "error", message: `no thread named "${name}" is running` };
   }
 
   private describe(job: Job): string {
@@ -540,6 +586,8 @@ export class ThreadScheduler {
     const turn = job.turns.open(spec.request, job.parent.liveId, job.parent.offsetMs);
     job.turn = turn;
     job.question = undefined;
+    job.ask = undefined;
+    job.reasks = 0;
     job.hold = false;
     job.progressSpoken = 0;
     this.publish(this.table.turn(job.id, turn.delegation.id, spec.request));
@@ -569,12 +617,9 @@ export class ThreadScheduler {
       // Never inside kevinDialogue: the gates must not read a remembered line as his words today.
       ...(memory ? { memory } : {}),
     };
-    let result: BrainResult;
-    try {
-      result = await lane.brain.handle(task, sink);
-    } catch (e) {
-      result = { status: "failed", error: (e as Error).message };
-    }
+    // The step budget counts this turn's own calls (the eyes' shot above is not one).
+    lane.runner.beginTurn();
+    const result = await this.callBrain(job, task, sink);
     // This turn's cap timer only: a brain that let go late (after a bounded supersede) must not clear the next turn's.
     if (job.turn === turn) this.clearTimer(job);
     if (job.settled) {
@@ -608,6 +653,8 @@ export class ThreadScheduler {
       const queued = this.opts.desk.queued.find((x) => x.laneId === job.id);
       const q = queued ? spokenQuestion(queued.description) : job.question;
       job.question = q;
+      job.ask ??= this.deskQuestion(job.id);
+      job.askedAt = this.now();
       job.turns.close(turn, { status: "awaiting-confirmation", summary: q });
       job.turn = undefined;
       this.publish(this.table.question(job.id, q));
@@ -626,6 +673,43 @@ export class ThreadScheduler {
     if (!turn.closed) job.turns.close(turn, { status: "cancelled", summary: turn.superseded ?? "superseded" });
     if (job.turn === turn) job.turn = undefined;
     turn.settle();
+  }
+
+  /**
+   * The turn's `handle`, one at a time on one brain. Every real brain refuses a second task while
+   * one runs ("already handling a task"), and after a supersede that ran out its bound the last
+   * turn's `handle` may still be in flight. Then the refusal is not the thread's failure: the turn
+   * waits for the brain to let go (LET_GO_WAIT_MS at most; a stop ends the wait) and asks once
+   * more. A brain that never lets go fails the thread with that reason, not with its refusal.
+   */
+  private async callBrain(job: Job, task: BrainTask, sink: BrainSink): Promise<BrainResult> {
+    const prior = job.handling > 0 ? job.handled : undefined;
+    const result = await this.handleOnce(job, task, sink);
+    if (!prior || result.status !== "failed" || task.signal.aborted || job.settled) return result;
+    log.info(`thread ${job.name}: its brain refused the next turn while the last one let go (${result.error ?? "failed"}); waiting for it`);
+    const letGo = await settledWithin(prior, LET_GO_WAIT_MS, task.signal);
+    if (task.signal.aborted || job.settled) return { status: "cancelled" };
+    if (!letGo) {
+      log.warn(`thread ${job.name}: its brain did not let go of the last turn within ${LET_GO_WAIT_MS} ms`);
+      return { status: "failed", error: "its brain did not let go of the last turn" };
+    }
+    return this.handleOnce(job, task, sink);
+  }
+
+  /** One `handle` call, counted while in flight; never throws. */
+  private handleOnce(job: Job, task: BrainTask, sink: BrainSink): Promise<BrainResult> {
+    job.handling++;
+    const call = (async (): Promise<BrainResult> => {
+      try {
+        return await job.laneRef.brain.handle(task, sink);
+      } catch (e) {
+        return { status: "failed", error: (e as Error).message };
+      } finally {
+        job.handling--;
+      }
+    })();
+    job.handled = call.then(() => undefined);
+    return call;
   }
 
   /** The eyes' pre-warm shot: the display under the cursor at the quick budget, through the thread's own runner on the reading helper. */
@@ -788,6 +872,8 @@ export class ThreadScheduler {
     if (result.kind === "needs-confirmation") {
       job.question = result.question;
       job.hold = result.pendingId === HOLD_ID;
+      // The question's own tool call, as the desk holds it (on the floor or queued): what a re-ask asks again.
+      if (!job.hold) job.ask = this.deskQuestion(job.id) ?? job.ask;
       return;
     }
     if (result.kind !== "error") {
@@ -939,11 +1025,18 @@ export class ThreadScheduler {
    * superseded — its signal aborted, `brain.cancel()` awaited, its record closed
    * `cancelled` — and the next turn runs on the same brain with Kevin's words and his
    * circled marks. A paused thread resumes with the words. False for a thread that is
-   * not live.
+   * not live. A second follow-up a beat later waits for this one (`serially`): one turn
+   * at a time on one brain.
    */
   async followUp(threadId: string, request: string, opts: { readonly items?: readonly TranscriptItem[] | undefined; readonly marks?: readonly BrainAttachment[] | undefined } = {}): Promise<boolean> {
     const job = this.jobs.get(threadId);
     if (!job || job.settled) return false;
+    return this.serially(job, () => this.followUpNow(job, request, opts));
+  }
+
+  private async followUpNow(job: Job, request: string, opts: { readonly items?: readonly TranscriptItem[] | undefined; readonly marks?: readonly BrainAttachment[] | undefined }): Promise<boolean> {
+    if (job.settled) return false;
+    const threadId = job.id;
     const words = request.replace(/\s+/g, " ").trim();
     if (!words) return false;
     for (const item of opts.items ?? []) job.turns.utterance(item);
@@ -972,6 +1065,22 @@ export class ThreadScheduler {
   }
 
   /**
+   * The verbs that end or start a turn — a follow-up, a pause, a resume — run one at a time on
+   * a thread, in the order they came: two quick follow-ups never start two turns on one brain
+   * (every real brain refuses the second), and "carry on" a beat after "pause" finds it paused.
+   * Each verb is bounded (the supersede wait), so the line never stalls. A stop is not a verb
+   * here: it cuts at once, and the verbs behind it find the thread gone.
+   */
+  private serially<T>(job: Job, verb: () => Promise<T>): Promise<T> {
+    const run = job.verbs.then(verb);
+    job.verbs = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
    * End the turn in flight without ending the job; resolves once the brain has let go —
    * or, after `supersedeWaitMs`, without it: the record closes `cancelled` and the next
    * turn goes ahead (a brain whose `handle` never returns after `cancel()` must not hang
@@ -991,19 +1100,29 @@ export class ThreadScheduler {
 
   /**
    * Kevin's yes reached the thread's question: its brain re-calls the same tool on a
-   * new turn of its own thread (`confirmation: true`). A paused thread resumes with a
-   * continuation turn instead. The Delegator calls this after arming the root; the
-   * Console's Allow goes through `answerYes`, which checks the floor first.
+   * new turn of its own thread (`confirmation: true`). `words` is his answer as he said
+   * or typed it: the turn quotes it, never "Kevin said yes", and his words join
+   * `kevinDialogue` for the gates. A paused thread resumes with a continuation turn
+   * instead. The Delegator calls this after arming the root; the Console's Allow goes
+   * through `answerYes`, which checks the floor first.
    */
-  async resume(threadId: string): Promise<void> {
+  async resume(threadId: string, opts: { readonly words?: string | undefined } = {}): Promise<void> {
     const job = this.jobs.get(threadId);
     if (!job || job.settled) return;
+    return this.serially(job, async () => this.resumeNow(job, opts.words));
+  }
+
+  private resumeNow(job: Job, answer: string | undefined): void {
+    if (job.settled) return;
+    const threadId = job.id;
     const t = this.table.get(threadId);
     if (!t) return;
     if (t.status === "waiting-kevin") {
       this.setStatus(job, "thinking");
       job.question = undefined;
-      void this.runTurn(job, { request: job.parent.request, dialogue: `${job.brief}${confirmationResume(this.userName)}`, kevinDialogue: job.parent.kevinDialogue, confirmation: true });
+      const words = answer?.replace(/\s+/g, " ").trim();
+      const kevinDialogue = words ? [job.parent.kevinDialogue, words].filter((s): s is string => Boolean(s)).join("\n") : job.parent.kevinDialogue;
+      void this.runTurn(job, { request: job.parent.request, dialogue: `${job.brief}${confirmationResume(this.userName, words)}`, kevinDialogue, confirmation: true });
       return;
     }
     if (t.status === "paused") {
@@ -1026,7 +1145,7 @@ export class ThreadScheduler {
    * the grant row iff grantable, and runs the confirmation turn. "main" is the engine's
    * to arm (its turn is the Delegator's).
    */
-  async answerYes(threadId: string): Promise<{ readonly ok: boolean; readonly reason?: string }> {
+  async answerYes(threadId: string, opts: { readonly words?: string | undefined } = {}): Promise<{ readonly ok: boolean; readonly reason?: string }> {
     const floor = this.opts.desk.floor;
     if (!floor) return { ok: false, reason: "no question is waiting" };
     const laneId = threadId === MAIN_THREAD_ID ? ThreadAwareRunner.ACTOR : threadId;
@@ -1035,7 +1154,7 @@ export class ThreadScheduler {
     const job = this.jobs.get(threadId);
     if (!job || job.settled) return { ok: false, reason: "that thread is gone" };
     if (!this.opts.desk.root.arm(this.grantRecord())) return { ok: false, reason: "the question has expired" };
-    await this.resume(threadId);
+    await this.resume(threadId, opts);
     return { ok: true };
   }
 
@@ -1075,6 +1194,12 @@ export class ThreadScheduler {
   async pause(threadId: string, by: "kevin" | "cut" = "kevin"): Promise<boolean> {
     const job = this.jobs.get(threadId);
     if (!job || job.settled) return false;
+    return this.serially(job, () => this.pauseNow(job, by));
+  }
+
+  private async pauseNow(job: Job, by: "kevin" | "cut"): Promise<boolean> {
+    if (job.settled) return false;
+    const threadId = job.id;
     const t = this.table.get(threadId);
     if (!t || t.status === "paused") return false;
     const reason = by === "kevin" ? `${this.userName} paused it` : "paused";
@@ -1176,6 +1301,8 @@ export class ThreadScheduler {
     // status change, so a promotion writes none; the table appends events only when the words changed.
     const already = this.table.get(job.id)?.status === "waiting-kevin";
     job.question = question;
+    job.ask = this.deskQuestion(job.id) ?? job.ask;
+    job.askedAt = this.now();
     this.publish(this.table.question(job.id, question));
     if (!already) this.row({ at: this.now(), type: "thread.status", threadId: job.id, status: "waiting-kevin", threadStatus: "waiting-kevin", detail: cutLine(question, 200) });
     this.say(job, `${job.name} asks: ${cutLine(question, 160)}`);
@@ -1235,8 +1362,9 @@ export class ThreadScheduler {
   /**
    * The engine's tick: the acting→thinking flip after ACTING_HOLD_MS without a step,
    * a spare top-up when a retry window passed (never while the pool is closed for a
-   * sleep), and the idle end — a paused thread or one waiting on a yes for
-   * THREAD_IDLE_END_MS ends `done "idle"` and its lane returns.
+   * sleep), the idle end — a paused thread or one waiting on a yes for
+   * THREAD_IDLE_END_MS ends `stopped "idle"` and its lane returns — and a waiting
+   * thread's question kept in front of Kevin (`keepAsking`).
    */
   tick(now = this.now()): void {
     for (const e of this.table.tick(now)) this.publish(e);
@@ -1246,9 +1374,52 @@ export class ThreadScheduler {
       if (!t) continue;
       if ((t.status === "paused" || t.status === "waiting-kevin") && now - t.updatedAt >= THREAD_IDLE_END_MS) {
         this.opts.desk.forget(job.id);
-        this.endJob(job, "done", "idle", undefined);
+        this.endJob(job, "stopped", "idle", undefined);
+        continue;
       }
+      if (t.status === "waiting-kevin" && job.booted && job.turn === undefined) this.keepAsking(job, now);
     }
+  }
+
+  /**
+   * A thread waiting on Kevin's yes keeps its question where he can answer it. When the
+   * question left the desk unanswered (he asked for something else and it was dropped; a
+   * queued one went stale) or has sat on the floor until the root's TTL is nearly spent,
+   * it is asked again with its own tool call: "<Name> still asks: …" when it lands on the
+   * floor; queued behind another, the desk speaks it when promoted. After
+   * THREAD_REASKS_MAX re-asks the next loss ends the thread `stopped`, with a line saying
+   * how to ask again — never `done`, and never left waiting on a question nobody can answer.
+   */
+  private keepAsking(job: Job, now: number): void {
+    const desk = this.opts.desk;
+    const onFloor = desk.floor?.laneId === job.id;
+    if (!onFloor && desk.queued.some((q) => q.laneId === job.id)) return;
+    if (onFloor && now - job.askedAt < THREAD_QUESTION_REASK_MS) return;
+    const ask = job.ask;
+    if (!ask || job.reasks >= THREAD_REASKS_MAX) {
+      log.info(`thread ${job.name}: its question went unanswered${ask ? ` after ${job.reasks} re-asks` : ""}; stopping it`);
+      this.endJob(job, "stopped", "no answer to its question", noAnswerLine(job.name));
+      return;
+    }
+    job.reasks++;
+    // On the floor but nearly stale: the old ask goes first, so the fresh one restarts the root's TTL.
+    if (onFloor) desk.drop(job.id);
+    job.laneRef.confirmations.ask(ask.description, ask.member, ask.input, ask.grantable);
+    job.askedAt = now;
+    const q = spokenQuestion(ask.description);
+    job.question = q;
+    this.publish(this.table.question(job.id, q));
+    log.info(`thread ${job.name}: its question was ${onFloor ? "about to lapse" : "dropped"}; asked again (${job.reasks}/${THREAD_REASKS_MAX})`);
+    if (desk.floor?.laneId === job.id) this.say(job, stillAsksLine(job.name, q));
+    this.notify();
+  }
+
+  /** The question a lane has on the desk right now, as asked: the root's pending when it holds the floor, its queued entry otherwise. */
+  private deskQuestion(laneId: string): ThreadAsk | undefined {
+    const desk = this.opts.desk;
+    const p = desk.floor?.laneId === laneId ? desk.root.pending : undefined;
+    const q = p ?? desk.queued.find((x) => x.laneId === laneId);
+    return q ? { description: q.description, member: q.member, input: q.input, ...(q.grantable ? { grantable: q.grantable } : {}) } : undefined;
   }
 
   /** Events from outside the scheduler (the engine's main-thread writes) through the same coalescer. */
@@ -1316,16 +1487,20 @@ export class ThreadScheduler {
     base?.(cmd);
   }
 
-  private jobsOf(parentId: string): Job[] {
-    return [...this.jobs.values()].filter((j) => j.parent.id === parentId);
+  /** A live thread by name (case-insensitive) or id, whichever request started it. */
+  private jobNamed(name: string): Job | undefined {
+    const key = name.trim().toLowerCase();
+    for (const j of this.jobs.values()) if (j.name.toLowerCase() === key || j.id === name) return j;
+    return undefined;
   }
 
-  /** By live name (case-insensitive) or id; `parentId` narrows to that parent's threads when given. */
-  private jobNamed(name: string, parentId?: string): Job | undefined {
+  /** The newest finished thread by that name (or id) in the conversation under way. */
+  private finishedNamed(name: string): Job | undefined {
     const key = name.trim().toLowerCase();
-    for (const j of this.jobs.values()) {
-      if (parentId !== undefined && j.parent.id !== parentId) continue;
-      if (j.name.toLowerCase() === key || j.id === name) return j;
+    const chain = this.opts.desk.root.conversationId;
+    for (let i = this.finished.length - 1; i >= 0; i--) {
+      const j = this.finished[i]!;
+      if (j.conversation === chain && (j.name.toLowerCase() === key || j.id === name)) return j;
     }
     return undefined;
   }
@@ -1343,15 +1518,23 @@ export class ThreadScheduler {
   }
 }
 
-/** True when `p` settles within `ms` (real time: a brain's `handle` is real I/O). */
-function settledWithin(p: Promise<void>, ms: number): Promise<boolean> {
+/** True when `p` settles within `ms` (real time: a brain's `handle` is real I/O); false at once when `signal` aborts. */
+function settledWithin(p: Promise<void>, ms: number, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(false), ms);
-    timer.unref?.();
-    void p.then(() => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    const finish = (settled: boolean): void => {
       clearTimeout(timer);
-      resolve(true);
-    });
+      signal?.removeEventListener("abort", onAbort);
+      resolve(settled);
+    };
+    const onAbort = (): void => finish(false);
+    const timer = setTimeout(() => finish(false), ms);
+    timer.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    void p.then(() => finish(true));
   });
 }
 

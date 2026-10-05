@@ -362,9 +362,9 @@ test("tool table: the four thread specs follow the agents (71 with the automatio
   assert.match(start.description, /in the SAME turn as your own first action/);
   assert.match(start.description, /Keep the part that needs the screen yourself/);
   assert.match(start.description, /split off only work that does not depend on yours/);
-  assert.match(start.description, /never touches the pointer, keyboard or front app/);
+  assert.match(start.description, /never touches the pointer, keyboard, front app or front browser tab/);
   assert.match(start.description, /applescript \(Apple events/);
-  assert.match(start.description, /browser_\* tools, files, run_shell and the web/);
+  assert.match(start.description, /browser_read, browser_find and browser_tabs to read the browser, web_fetch and web_search to load a page, files and run_shell/);
   assert.match(start.description, /lane 'screen' waits its turn for the pointer and keyboard/);
   assert.match(start.description, /At most 3 alongside you/);
   assert.match(start.description, /Jarhead tells Kevin the split in one line, so do not announce it/);

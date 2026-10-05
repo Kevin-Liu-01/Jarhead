@@ -777,7 +777,7 @@ test("the task carries the memory block (bounded at 250 ms: a hanging hook leave
   blind.scheduler.dispose();
 });
 
-test("idle end: a thread waiting on a yes nobody gives, or paused, for THREAD_IDLE_END_MS ends done 'idle' at the tick and its lane returns; drain resolves when the parent's threads end; running(parentId) counts one parent's", async () => {
+test("idle end: a thread paused for THREAD_IDLE_END_MS (here after its question) ends stopped 'idle', never done, at the tick and its lane returns; drain resolves when the parent's threads end; running(parentId) counts one parent's (a question nobody answers is re-asked first: threads-launch.test.ts)", async () => {
   const h = harness();
   h.script = async (job) => {
     const r = (await job.runner.run("click_element", { name: "Send" })).result;
@@ -785,6 +785,7 @@ test("idle end: a thread waiting on a yes nobody gives, or paused, for THREAD_ID
   };
   h.start("Slack", "send it", "screen");
   await until(() => h.spawned()[0]?.status === "waiting-kevin");
+  assert.equal(await h.scheduler.pause(h.spawned()[0]!.id), true);
   const other: ThreadParent = { ...h.parent, id: "dlg_other" };
   h.script = async () => undefined;
   h.scheduler.start(other, { name: "Mail", task: "read the inbox", lane: "background" });
@@ -797,10 +798,10 @@ test("idle end: a thread waiting on a yes nobody gives, or paused, for THREAD_ID
   const slack = (): Thread => h.spawned().find((t) => t.name === "Slack")!;
   h.clock.t += THREAD_IDLE_END_MS - 1;
   h.scheduler.tick();
-  assert.equal(slack().status, "waiting-kevin", "not yet");
+  assert.equal(slack().status, "paused", "not yet");
   h.clock.t += 1;
   h.scheduler.tick();
-  assert.equal(slack().status, "done");
+  assert.equal(slack().status, "stopped");
   assert.equal(slack().detail, "idle");
   assert.equal(h.byName("Slack")!.stops, 1, "its lane returned");
   assert.equal(h.desk.floor, undefined, "its question went with it");

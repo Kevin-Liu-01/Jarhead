@@ -29,14 +29,34 @@ export function cutLine(text: string | undefined, max = THREAD_LINE_CHARS): stri
 export function threadBrief(name: string, task: string, lane: ThreadLane, parentRequest: string, userName = "Kevin"): string {
   const laneText =
     lane === "background"
-      ? "Lane: background — you have no pointer, keyboard or front app. Act through applescript (Apple events: Spotify, Music, Finder, Notes, Calendar…), the browser_* tools, the file tools, run_shell (never `open` an app or `osascript`) and the web. A tool that needs the screen is refused: do the rest and report that the screen is needed."
+      ? "Lane: background. You have no pointer, keyboard, front app or front browser tab. Act through applescript (Apple events: Spotify, Music, Finder, Notes, Calendar…), browser_read, browser_find and browser_tabs to read the browser, web_fetch and web_search to load a page, the file tools and run_shell (never `open` an app or `osascript`). A tool that needs the screen is refused: do the rest and report that the screen is needed."
       : 'Lane: screen — you may click and type once the screen is yours; a tool that answers "waiting for the screen" means do the rest first, or call it again.';
   return `Jarhead (to its thread ${name}): You are one of Jarhead's threads, named ${name}. Your one job: ${task.trim()} ${laneText} speak_progress speaks once per turn, as "${name}: …" — use it for one thing worth hearing, otherwise work in silence and end with one sentence of what you did; Jarhead speaks it for you. Never call thread_* or self_*. ${userName}'s own words, for names and gates: "${parentRequest.replace(/\s+/g, " ").trim().slice(0, 400)}".`;
 }
 
-/** "<Name> said yes": the resume text a confirmation turn appends to the brief. */
-export function confirmationResume(userName = "Kevin"): string {
-  return `\n\nJarhead (to its thread): ${userName} said yes. Call the same tool again with exactly the same arguments, then finish your job.`;
+/** Kevin's answer as the confirmation turn quotes it: one line, at most this long. */
+export const ANSWER_CHARS = 200;
+
+/**
+ * The resume text a confirmation turn appends to the brief. With his words (the spoken or
+ * typed answer) the thread reads exactly what he said, never a paraphrase, and is told to
+ * act only on a yes: "yeah, no, don't send it" must not re-send. Without words (the Console's
+ * Allow, a click) it is the plain yes.
+ */
+export function confirmationResume(userName = "Kevin", words?: string): string {
+  const said = (words ?? "").replace(/\s+/g, " ").trim().slice(0, ANSWER_CHARS);
+  if (!said) return `\n\nJarhead (to its thread): ${userName} said yes. Call the same tool again with exactly the same arguments, then finish your job.`;
+  return `\n\nJarhead (to its thread): ${userName} answered your question: "${said}". If that is a yes, call the same tool again with exactly the same arguments, then finish your job. If it is not a yes, do not call it; end your turn with one sentence.`;
+}
+
+/** The re-ask when a thread's question left the floor unanswered (Kevin moved on, or it went stale): spoken once per re-ask. */
+export function stillAsksLine(name: string, question: string): string {
+  return `${name} still asks: ${cutLine(question, 160)}`;
+}
+
+/** The end after the re-asks ran out: what happened and how to ask again. */
+export function noAnswerLine(name: string): string {
+  return `${name} stopped with no answer. Ask me again to retry.`;
 }
 
 /** The default's text, for the pins. */
