@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { APPEND_CHAR_BUDGET, LiveSession, estimateTokens, type SessionConfig, type WebSocketLike } from "@jarhead/live";
 import type { Brain } from "@jarhead/brain";
 import type { EngineEvent } from "@jarhead/protocol";
-import { Engine } from "../engine.ts";
+import { Engine, splitTyped, typedTokens } from "../engine.ts";
 import { FakeLive, current, delegate, rows, settle, until, world } from "./world.ts";
 
 const tick = (engine: Engine): void => (engine as unknown as { tick(): void }).tick();
@@ -127,6 +127,49 @@ test("V3: a session whose server keeps sending (silence frames, once a second) i
   }
 });
 
+test("V3 (review): a tick that runs late after the event loop stalled starts the watch over; the frames queued meanwhile are read on the next tick, and a socket that stays silent is still dropped", async () => {
+  const { w, socks } = socketWorld();
+  const { engine, clock } = w;
+  // A stalled loop, simulated on the process's own clock: the stall moves performance.now(), not the session's frames.
+  const realNow = performance.now.bind(performance);
+  let stall = 0;
+  performance.now = () => realNow() + stall;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    const waking = engine.wake("test");
+    await settle();
+    socks[0]!.open();
+    socks[0]!.receive({ type: "session.started", event_id: "e1", session: resource("live_1") });
+    await waking;
+    socks[0]!.receive({ type: "session.output_audio.delta", delta: silence });
+    tick(engine);
+    // A 6 s synchronous block (a long search): the timer fires before the socket messages that queued meanwhile.
+    stall += 6000;
+    clock.t += 6000;
+    tick(engine);
+    assert.equal(socks[0]!.closed, false, "a stalled loop read as a dead socket");
+    // The queued frames are read, and the next tick is on time.
+    for (let i = 0; i < 5; i++) socks[0]!.receive({ type: "session.output_audio.delta", delta: silence });
+    clock.t += 1000;
+    tick(engine);
+    assert.equal(socks[0]!.closed, false);
+    // Then the socket really goes silent: on-time ticks still notice it within LIVE_SILENCE_MS.
+    let droppedAfter = 0;
+    for (let s = 1; s <= 30 && !socks[0]!.closed; s++) {
+      clock.t += 1000;
+      tick(engine);
+      droppedAfter = s;
+    }
+    assert.ok(socks[0]!.closed, "a silent socket was never noticed after the stall");
+    assert.ok(droppedAfter <= Math.ceil(Engine.LIVE_SILENCE_MS / 1000) + 1, `dropped after ${droppedAfter} s`);
+  } finally {
+    performance.now = realNow;
+    await engine.stop();
+  }
+});
+
 test("V5 (audit repro): a long typed line reaches Live in parts that each fit the 500-token cap, then one short line that says to answer", async () => {
   const w = world();
   const { engine } = w;
@@ -152,6 +195,69 @@ test("V5 (audit repro): a long typed line reaches Live in parts that each fit th
   } finally {
     await engine.stop();
   }
+});
+
+test("V5 (review): a long paste keeps its line breaks; a CJK paste is split by what its script costs; text that fits one part is not 'part 1 of 1'", async () => {
+  const w = world();
+  const { engine } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    // A list and a code block: every line arrives as typed, on its own line.
+    const lines = Array.from({ length: 119 }, (_, i) => (i % 10 === 9 ? "" : `${i + 1}. buy item number ${i + 1} from the list`));
+    const list = lines.join("\n");
+    await engine.sayText(list);
+    const appended = current(w).instructions.filter((i) => i.includes("just typed"));
+    assert.ok(appended.length >= 3, `${appended.length} appends`);
+    const parts = appended.slice(0, -1).map((a) => /: "([\s\S]*)"$/.exec(a)?.[1] ?? "");
+    assert.ok(parts.every((p) => p.includes("\n")), "a part lost its line breaks");
+    assert.equal(parts.join("\n").replace(/\n+/g, "\n"), list.replace(/\n+/g, "\n"), "every line arrives, in order");
+    for (const a of appended) assert.ok(typedTokens(a) <= Engine.APPEND_TOKENS, `an append of ~${typedTokens(a)} tokens`);
+    // A CJK paste: about 2.4k characters, which the old character budget sent as two ~1.4k-token appends.
+    const cjk = "这是我想让你帮我总结的文档中的一段话。".repeat(130);
+    const before = current(w).instructions.length;
+    await engine.sayText(cjk);
+    const cjkAppends = current(w).instructions.slice(before);
+    assert.ok(cjkAppends.length >= 8, `${cjkAppends.length} appends`);
+    for (const a of cjkAppends) {
+      const cjkChars = [...a].filter((c) => c.codePointAt(0)! >= 0x3000).length;
+      assert.ok(cjkChars <= 320, `an append with ${cjkChars} CJK characters`);
+      assert.ok(typedTokens(a) <= Engine.APPEND_TOKENS, `an append of ~${typedTokens(a)} tokens`);
+    }
+    assert.equal(cjkAppends.slice(0, -1).map((a) => /: "([\s\S]*)"$/.exec(a)?.[1] ?? "").join(""), cjk);
+  } finally {
+    await engine.stop();
+  }
+  // Long only because of what Jarhead answered: one part, said without "part 1 of 1" or "in 1 parts".
+  const answer = `Here is the status: ${"thread one is still working on the slides. ".repeat(60)}`;
+  const respond = `Jarhead already answered it: "${answer}" Say that to Kevin, in these words, and wait.`;
+  const one = Engine.typedAppends("Kevin", "how is everything going", respond);
+  assert.equal(one.length, 2);
+  assert.equal(one[0], 'Kevin just typed a long message. Read it and do not answer yet: "how is everything going"');
+  assert.match(one[1]!, /^That was all of what Kevin just typed\. Treat it exactly like speech\. Jarhead already answered it/);
+  assert.ok(!one.some((a) => /part 1 of 1|in 1 parts/.test(a)));
+  // A short line is still one append.
+  assert.deepEqual(Engine.typedAppends("Kevin", "hi", "Respond to it now."), ['Kevin just typed (treat it exactly like speech): "hi". Respond to it now.']);
+});
+
+test("V5: splitTyped keeps every character in order and cuts at paragraphs, then lines, then sentences, then characters", () => {
+  const para = (n: number) => Array.from({ length: n }, (_, i) => `Line ${i + 1} of a paragraph.`).join("\n");
+  const text = [para(20), para(20), para(20)].join("\n\n");
+  const parts = splitTyped(text, 200);
+  assert.ok(parts.length >= 3);
+  for (const p of parts) assert.ok(typedTokens(p) <= 200, `a part of ${typedTokens(p)} tokens`);
+  assert.equal(parts.join("\n").replace(/\n+/g, "\n"), text.replace(/\n+/g, "\n"));
+  assert.ok(!parts[0]!.startsWith("\n") && !parts.some((p) => /\s$/.test(p)), "no part starts or ends on whitespace");
+  // One huge line with no punctuation is cut between characters, never lost.
+  const run = "x".repeat(5000);
+  const cut = splitTyped(run, 100);
+  assert.equal(cut.join(""), run);
+  for (const p of cut) assert.ok(typedTokens(p) <= 100);
+  // Emoji are never split in half.
+  const emoji = "🙂".repeat(400);
+  assert.equal(splitTyped(emoji, 50).join(""), emoji);
 });
 
 test("V6 (audit repro): typed while paused and the resume fails: 'not sent · could not resume, still paused', and the conversation is still held", async () => {

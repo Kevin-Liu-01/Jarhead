@@ -120,6 +120,36 @@ test("APP-8: a settings.json that will not parse is moved to settings.json.bad w
   }
 });
 
+test("APP-8 (review repro): a second unreadable settings.json never overwrites the first one kept aside; each is kept whole and the row names its own file", async () => {
+  const dir = tempDir("jh-w21-settings-twice-");
+  const config = testConfig(dir);
+  mkdirSync(config.stateDir, { recursive: true });
+  const path = join(config.stateDir, "settings.json");
+  const first = '{"voice": "marin", "userName": "Kev';
+  const second = '{"voice": "cedar", "brain": "co';
+  const third = "[1, 2";
+  const kept: string[] = [];
+  for (const torn of [first, second, third]) {
+    writeFileSync(path, torn);
+    const w = world({ config }, { dir });
+    try {
+      await w.engine.start();
+      const row = w.engine.typedProblems().find((p) => p.text.startsWith("settings.json could not be read"));
+      assert.ok(row?.remedy && "open" in row.remedy, JSON.stringify(w.engine.typedProblems()));
+      const open = (row.remedy as { open: string }).open;
+      assert.equal(readFileSync(open, "utf8"), torn, "the row's Reveal opens the file it names");
+      assert.ok(row.text.includes(`It is kept as ${open.slice(config.stateDir.length + 1)}.`), row.text);
+      kept.push(open.slice(config.stateDir.length + 1));
+    } finally {
+      await w.engine.stop();
+    }
+  }
+  assert.deepEqual(kept, ["settings.json.bad", "settings.json.bad-2", "settings.json.bad-3"]);
+  assert.equal(readFileSync(`${path}.bad`, "utf8"), first, "the first file, with Kevin's settings, is still there");
+  assert.equal(readFileSync(`${path}.bad-2`, "utf8"), second);
+  assert.equal(readFileSync(`${path}.bad-3`, "utf8"), third);
+});
+
 test("APP-8: a settings.json that parses to something other than an object is moved aside too", async () => {
   const dir = tempDir("jh-w21-settings-null-");
   const config = testConfig(dir);

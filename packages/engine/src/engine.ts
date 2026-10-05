@@ -1,9 +1,9 @@
 import { EventEmitter } from "node:events";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { HANDS_OFF_APPS, PRESENCE_WINDOW_MS, REPO_ROOT, accountFullName, classifyAction, dataPaths, effectiveUserName, noLiveModelLine, isLoopbackHost, presenceGated, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
-import { APPEND_CHAR_BUDGET, LiveSession, Transcript, buildLiveInstructions, chunkForAppend, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
+import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type UserIdle, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
 import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, addressesJarhead, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainResult, type BrainSink, type BrainTask, type CodexProbe, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
@@ -103,6 +103,18 @@ const SIGN_IN_HINTS: Readonly<Record<SelectableBrain, string>> = {
   "openai-responses": "Check OPENAI_API_KEY in Setup, then press Retry.",
 };
 
+/** The brains a key lets in: a 401 from one of them is a refused key, never a lost login. */
+const KEY_BRAINS: ReadonlySet<SelectableBrain> = new Set(["anthropic-api", "openai-compatible", "local", "openai-responses"]);
+
+/**
+ * What a refused login or key is called, after the brain's name: "Codex is signed out", "Anthropic API brain's key
+ * was refused". `brain`: the row's own wording, "Codex brain is signed out".
+ */
+function lostWords(kind: SelectableBrain | undefined, label: string, o: { readonly brain?: boolean } = {}): string {
+  if (kind && KEY_BRAINS.has(kind)) return `${label} brain's key was refused`;
+  return `${label}${o.brain ? " brain" : ""} is signed out`;
+}
+
 /**
  * Why a brain failed a task, when the cause is the brain itself and not the task (E-SIGNEDOUT). `quota`: a usage
  * limit or a quota that lasts hours or needs billing (Codex's "try again in 2 hours", OpenAI's insufficient_quota).
@@ -129,6 +141,81 @@ export function classifyBrainFailure(error: string | undefined): BrainFailure | 
   if (RATE_FAILURE.test(text)) return "rate";
   if (UNREACHABLE_FAILURE.test(text)) return "unreachable";
   return undefined;
+}
+
+/**
+ * What a run of typed text costs on an append, judged by its script (V5): ASCII at 3.2 characters a token (the
+ * appender's rate), any other character at half its UTF-8 bytes: one token for Cyrillic or Greek, 1.5 for CJK, two
+ * for an emoji. Conservative on purpose: an append over the 500-token cap is refused and Kevin hears nothing.
+ */
+function typedCost(text: string): number {
+  let ascii = 0;
+  let other = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp < 0x80) ascii++;
+    else other += cp < 0x800 ? 1 : cp < 0x10000 ? 1.5 : 2;
+  }
+  return ascii / 3.2 + other;
+}
+
+/** `typedCost` in whole tokens. */
+export function typedTokens(text: string): number {
+  return Math.ceil(typedCost(text));
+}
+
+/**
+ * A long typed text in parts of at most `budget` tokens (V5), its line breaks kept: whole paragraphs where they fit,
+ * else whole lines, else sentences, else a cut between characters. Every character arrives, in order; only the
+ * whitespace at a cut is dropped.
+ */
+export function splitTyped(text: string, budget: number): string[] {
+  const levels: readonly ((s: string) => string[])[] = [
+    (s) => s.split(/(?<=\n[ \t]*\n)/),
+    (s) => s.split(/(?<=\n)/),
+    (s) => s.split(/(?<=[.!?]["'”’)\]]*\s+)|(?<=[。！？])/),
+    (s) => Array.from(s),
+  ];
+  const parts: string[] = [];
+  let current = "";
+  let cost = 0;
+  const cut = (): void => {
+    const part = current.replace(/^[\r\n]+/, "").replace(/\s+$/, "");
+    if (part.trim()) parts.push(part);
+    current = "";
+    cost = 0;
+  };
+  const add = (unit: string, level: number): void => {
+    const c = typedCost(unit);
+    if (cost + c <= budget) {
+      current += unit;
+      cost += c;
+      return;
+    }
+    if (c <= budget || level >= levels.length) {
+      cut();
+      current = unit;
+      cost = c;
+      return;
+    }
+    for (const smaller of levels[level]!(unit)) add(smaller, level + 1);
+  };
+  for (const unit of levels[0]!(text)) add(unit, 1);
+  cut();
+  return parts;
+}
+
+/** The longest prefix of `text` within `budget` tokens, with an ellipsis when it was cut. */
+function cutToTokens(text: string, budget: number): string {
+  if (typedCost(text) <= budget) return text;
+  let out = "";
+  let cost = typedCost("…");
+  for (const ch of text) {
+    cost += typedCost(ch);
+    if (cost > budget) break;
+    out += ch;
+  }
+  return `${out.trimEnd()}…`;
 }
 
 /** What the selection knows about this Mac before it starts anything: enough to say which backends Kevin set up. */
@@ -192,6 +279,17 @@ interface BrainSkip {
   readonly failure: "auth" | "quota";
   /** The brain's own words, trimmed. */
   readonly why: string;
+}
+
+/**
+ * A line just queued to the open session, watched until the voice has said it (E-SIGNEDOUT's "Switching to the next
+ * brain"): `settled` resolves at its first output-transcript delta plus LINE_QUIET_MS with no delta and no audible
+ * frame, once the session is gone, after LINE_CAP_MS, or when `now()` is called.
+ */
+interface LineWatch {
+  readonly live: LiveSession;
+  readonly settled: Promise<void>;
+  now(): void;
 }
 
 /** A promise that resolves undefined once `ms` pass; `clear` disarms it. */
@@ -459,6 +557,14 @@ export class Engine extends EventEmitter<EngineEvents> {
   private settingsBad: { readonly text: string; readonly path: string } | undefined;
   /** V3: the open session's server-frame count as last seen, and when it last moved (the engine's clock). */
   private framesSeen: { live: LiveSession; frames: number; at: number } | undefined;
+  /** V3: when the frame watch last ran, on the process's own clock (`performance.now()`): a late tick is a stalled loop, not a quiet socket. */
+  private framesWatchedAt: number | undefined;
+  /** The line that tells Kevin his brain failed and the walk moves on (E-SIGNEDOUT): a reopen waits until it is said. */
+  private failureLine: LineWatch | undefined;
+  /** A selection pass waiting on `failureLine` before it reopens the session across the Responses line. */
+  private acrossWait: LineWatch | undefined;
+  /** stop() has begun: a restart a failed task scheduled does not start brains into a gone engine. */
+  private stopping = false;
   /** The local model server as last seen (`lookLocal`): on the snapshot whatever the brain kind is. */
   private localStatus: LocalServerStatus = LOCAL_NONE;
   /** The local heal timer: when the next look falls due while `brain === "local"` and no local brain is ready; 0 = disarmed. */
@@ -955,8 +1061,6 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** How long the voice stays muted locally after a stop when Kevin says nothing. */
   static readonly OUTPUT_GATE_MS = 2500;
-  /** Room left in each part of a long typed line for the words around it (the name, "part 2 of 3"). */
-  static readonly TYPED_PART_HEADROOM = 200;
   /** "Mid-exchange": Jarhead spoke or was delegated to this recently, so a bare reflex without the wake word may fire ahead of the delegation. */
   static readonly EXCHANGE_WINDOW_MS = 8000;
   /** A reflex the ear fired is "already done" for Live's delegation of the same words within this long. */
@@ -1011,6 +1115,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     return join(this.config.stateDir, SETTINGS_FILE);
   }
 
+  /** Where an unreadable file is kept aside: `<path>.bad`, or the first free `<path>.bad-<n>` (APP-8). */
+  static keptAsidePath(path: string): string {
+    if (!existsSync(`${path}.bad`)) return `${path}.bad`;
+    for (let n = 2; ; n++) if (!existsSync(`${path}.bad-${n}`)) return `${path}.bad-${n}`;
+  }
+
   private loadSettings(): Settings {
     const base: Settings = {
       ...DEFAULT_SETTINGS,
@@ -1028,11 +1138,12 @@ export class Engine extends EventEmitter<EngineEvents> {
       saved = parsed as Record<string, unknown>;
     } catch (e) {
       // A torn or hand-broken file is moved aside whole, never written over with the defaults (APP-8): what Kevin set
-      // is still in settings.json.bad, and the next save starts a clean settings.json beside it.
-      const bad = `${this.settingsPath()}.bad`;
+      // is still in settings.json.bad, and the next save starts a clean settings.json beside it. A file already kept
+      // aside is never written over either: the next one is settings.json.bad-2, -3 and so on.
+      const bad = Engine.keptAsidePath(this.settingsPath());
       try {
         renameSync(this.settingsPath(), bad);
-        this.settingsBad = { text: `settings.json could not be read (${(e as Error).message}). It is kept as settings.json.bad. Jarhead runs on the defaults.`, path: bad };
+        this.settingsBad = { text: `settings.json could not be read (${(e as Error).message}). It is kept as ${basename(bad)}. Jarhead runs on the defaults.`, path: bad };
         log.warn(`settings unreadable: ${(e as Error).message}; moved to ${bad}`);
       } catch (moveError) {
         log.warn(`settings unreadable: ${(e as Error).message}; could not move it aside (${(moveError as Error).message})`);
@@ -1701,20 +1812,93 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.armLocalHeal();
     if (this.live && this.brain) {
       // Live fixes the delegation target (client vs Responses) when the session
-      // starts, so a swap across that line needs a fresh session; within a kind the
-      // proxy carries on and a Responses brain is simply re-bound.
+      // starts, so a swap across that line needs a new session, which carries the
+      // conversation on; within a kind the proxy carries on and a Responses brain is
+      // simply re-bound.
       const isResponses = (this.brain as Brain | undefined) instanceof ResponsesBrain;
       if (isResponses !== wasResponses) {
-        this.toast("brain changed; reconnecting the voice session", "info");
-        await this.fallAsleep("brain-changed");
-        void this.wake("brain changed");
+        // The reopen flushes the speaker: the line that says why the brain changed (E-SIGNEDOUT) is heard out first.
+        const line = this.failureLine;
+        if (line && line.live === this.live) {
+          this.acrossWait = line;
+          await line.settled;
+          this.acrossWait = undefined;
+        }
+        await this.reopenAcross(reason);
       } else {
         this.rebindBrain();
       }
     }
+    this.failureLine?.now();
+    this.failureLine = undefined;
     this.scheduleSnapshot();
     // The brain setting may have moved memory's providers (local ↔ OpenAI ↔ keywords).
     await this.memory.relink();
+  }
+
+  /**
+   * The brain in use moved across the client / Responses line while a session is open. Live fixes the delegation when
+   * a session starts, so the open one is paused and reopened at once with the conversation carried on, as a reconnect
+   * carries it: the same chain on the ledger, silent unless Kevin was mid-request. Never a sleep and a fresh wake,
+   * which drops the conversation. A handshake still in flight was set up for the old delegation: it finishes first.
+   * The new session's connect is not awaited: a selection pass calls this from inside the restart that connect()
+   * waits for.
+   */
+  private async reopenAcross(why: string): Promise<void> {
+    const live = this.live;
+    if (!live || this.stopping) return;
+    // A connect makes its session only after the restart it waits for, so one with `live` made is past that wait.
+    if (this.connecting && this.connectDone) await this.connectDone;
+    // Nothing open (asleep, paused, a handshake that failed): the next session opens on the brain in use.
+    if (this.live !== live || !live.session || this.connecting || this.pauseInfo || this.sleeping) return;
+    this.toast("brain changed; reconnecting the voice session", "info");
+    await this.pause({ quiet: true });
+    const pause = this.pauseInfo;
+    if (!pause) return; // a sleep raced the pause: nothing is held
+    log.info(`${why}: the delegation moved to ${this.brain instanceof ResponsesBrain ? "Responses" : "the client"}; reopening the session with the conversation`);
+    void this.connect(`reconnect (${why})`, { pause, continuity: this.continuityFor(pause, "reconnected"), how: "reconnected" });
+  }
+
+  /** How long the voice may pause inside a line before it counts as said (`watchLine`). */
+  static readonly LINE_QUIET_MS = 700;
+  /** The longest a reopen waits on a line (`watchLine`): the voice may never say it. */
+  static readonly LINE_CAP_MS = 8000;
+
+  /**
+   * Watch `live` for the line just queued to it: said once its first output-transcript delta has come and then
+   * LINE_QUIET_MS pass with no delta and no audible frame. Settled early when the session goes, and at LINE_CAP_MS.
+   * Real timers, like the farewell's: they pace the voice, not the session clock.
+   */
+  private watchLine(live: LiveSession): LineWatch {
+    const t0 = performance.now();
+    let lastAt: number | undefined;
+    let done = false;
+    let resolve!: () => void;
+    const settled = new Promise<void>((r) => (resolve = r));
+    const onDelta = (): void => {
+      lastAt = performance.now();
+    };
+    // Audible frames stretch the line once it has begun; the API's silence frames do not.
+    const onAudio = (): void => {
+      if (lastAt !== undefined && this.outputLevel >= Engine.AUDIBLE_OUTPUT_LEVEL) lastAt = performance.now();
+    };
+    const end = (): void => {
+      if (done) return;
+      done = true;
+      clearInterval(poll);
+      live.off("outputTranscript", onDelta);
+      this.off("audio", onAudio);
+      resolve();
+    };
+    const poll = setInterval(() => {
+      const now = performance.now();
+      const gone = this.live !== live || live.currentState !== "started" || this.pauseInfo !== undefined || this.sleeping !== undefined;
+      if (gone || (lastAt !== undefined && now - lastAt >= Engine.LINE_QUIET_MS) || now - t0 >= Engine.LINE_CAP_MS) end();
+    }, 50);
+    poll.unref?.();
+    live.on("outputTranscript", onDelta);
+    this.on("audio", onAudio);
+    return { live, settled, now: end };
   }
 
   /** Secrets go to ~/.jarhead/env; the config is re-read and the brain restarted. */
@@ -1940,8 +2124,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     // F-AUTO-PROBE: a start that takes longer than this goes on in the background while the walk starts the next
     // client brain. Every start still running races the one the walk waits on, so whichever proves itself first takes
     // the Go: the one that outranks the others at once, a lower one until a better one proves itself and takes over
-    // at the next quiet moment. Responses is started only when every client start has failed: Live fixes the
-    // delegation when the session starts, so a later swap away from it would cost a reconnect.
+    // at the next quiet moment. No start is waited on past its patience, the last client brain's included: when no
+    // client brain is left to start, the walk lands on Responses at once. A start that proves itself after that takes
+    // over at the next quiet moment; with a session open that is a reconnect (Live fixes the delegation when the
+    // session starts), which carries the conversation on (`trySwap`).
     const patience = this.opts.brainPatienceMs ?? Engine.BRAIN_PATIENCE_MS;
     const slow: SlowStart[] = [];
     const tried: string[] = []; // for the log: every kind passed over, and why
@@ -1995,17 +2181,6 @@ export class Engine extends EventEmitter<EngineEvents> {
       refused(x.kind, x.label, r.detail);
       return false;
     };
-    /** No client brain is left to start: the first slow start that proves itself takes the Go; false when all failed. */
-    const drainSlow = async (): Promise<boolean> => {
-      while (slow.length) {
-        const { x, r } = (await landed(undefined, undefined))!;
-        if (await slowLanded(x, r)) {
-          adopt(x.rank, x.kind, x.brain, r.detail);
-          return true;
-        }
-      }
-      return false;
-    };
     walk: for (const [rank, kind] of order.entries()) {
       // The kind Kevin asked for is always tried; the rest only when configured.
       const skip = configured(kind);
@@ -2019,11 +2194,13 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (lost) {
         // Its row names the fix and the brain used meanwhile (`raisePassedRows`, once the walk lands).
         this.brainPassed = [...this.brainPassed, [kind, lost]];
-        tried.push(`${BRAIN_LABELS[kind]}: ${lost.failure === "auth" ? "signed out" : "usage limit"}: ${lost.why}`);
-        passed.push(`${BRAIN_LABELS[kind]} ${lost.failure === "auth" ? "signed out" : "at its usage limit"}`);
+        const keyed = KEY_BRAINS.has(kind);
+        tried.push(`${BRAIN_LABELS[kind]}: ${lost.failure === "auth" ? (keyed ? "key refused" : "signed out") : "usage limit"}: ${lost.why}`);
+        passed.push(`${BRAIN_LABELS[kind]} ${lost.failure === "auth" ? (keyed ? "key refused" : "signed out") : "at its usage limit"}`);
         continue;
       }
-      if (kind === "openai-responses" && slow.length && (await drainSlow())) return;
+      // Responses races the starts still running like any candidate; it is ready at once, so it takes the Go and they
+      // take over when they prove themselves (`adopt`).
       const candidate = make(kind);
       if (!candidate) continue;
       if (candidate.warning) this.problemOf("brain.probe", candidate.warning, Engine.BRAIN_REMEDY);
@@ -2061,10 +2238,14 @@ export class Engine extends EventEmitter<EngineEvents> {
         timer?.clear();
       }
     }
-    if (slow.length && (await drainSlow())) return;
-    // An explicit choice that could not start: the Live session's own Responses delegation always can.
+    // An explicit choice that could not start (or a walk with no Responses step, the test seam's): the Live session's
+    // own Responses delegation always can. A start still running past its patience takes over when it proves itself.
     const responses = new ResponsesBrain({ runner: this.runner, userName: this.userName, effort: "low" });
     const r = await responses.start();
+    if (slow.length) {
+      adopt(order.length, "openai-responses", responses, r.detail);
+      return;
+    }
     this.brain = responses;
     this.brainRank = order.length;
     this.threadFactoryOfKind = undefined;
@@ -2090,7 +2271,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const meanwhile = using ? ` Using ${using} meanwhile.` : "";
     for (const [skipped, s] of this.brainPassed) {
       const label = BRAIN_LABELS[skipped];
-      const text = s.failure === "auth" ? `${label} is signed out (${s.why}). ${SIGN_IN_HINTS[skipped]}${meanwhile}` : `${label} hit its usage limit (${s.why}). Press Retry once it resets.${meanwhile}`;
+      const text = s.failure === "auth" ? `${lostWords(skipped, label)} (${s.why}). ${SIGN_IN_HINTS[skipped]}${meanwhile}` : `${label} hit its usage limit (${s.why}). Press Retry once it resets.${meanwhile}`;
       this.passedRows.push(text);
       this.problemOf("brain.unavailable", text, Engine.BRAIN_REMEDY);
     }
@@ -2121,7 +2302,9 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /**
    * The queued slow start takes over, once nothing runs on the brain in use (a turn, a thread, a restart, a
-   * handshake): from the swap on, the proxy hands it every task. Called when it is queued and from tick().
+   * handshake): from the swap on, the proxy hands it every task. Called when it is queued and from tick(). A swap
+   * from Responses with a session open reopens the session (`reopenAcross`), so it also waits until nobody is in an
+   * exchange with the voice and no sleep is due: the reconnect then cuts nothing anyone is saying or hearing.
    */
   private trySwap(): void {
     const next = this.pendingSwap;
@@ -2131,6 +2314,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       return;
     }
     if (this.brainRestart || this.connecting || this.delegator?.active !== undefined || this.threads.running() > 0) return;
+    const across = next.brain instanceof ResponsesBrain !== this.brain instanceof ResponsesBrain;
+    const open = this.live?.session !== undefined;
+    if (across && open && (this.sleeping !== undefined || this.sleepDeadlineAt !== undefined || this.inExchange())) return;
     this.pendingSwap = undefined;
     const old = this.brain;
     this.brain = next.brain;
@@ -2143,6 +2329,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     // The rows about the brains the walk passed over name the one in use meanwhile.
     this.raisePassedRows();
     this.scheduleSnapshot();
+    if (across && open) void this.reopenAcross(`${next.label} took over`);
+    else this.rebindBrain();
     // The spares were the old kind's; they go with it. Memory follows the brain in use.
     void (async () => {
       await this.bounded(this.threads.stopAll());
@@ -2246,14 +2434,19 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.setupProbe = { ...this.setupProbe, brain: "unavailable" };
       }
       const walks = !this.opts.brain && (this.settings.brain === "auto" || this.settings.brain === "codex") && kind !== undefined && kind !== "openai-responses";
-      const what = failure === "auth" ? "is signed out" : "hit its usage limit";
+      const lost = failure === "auth" ? lostWords(kind, label) : `${label} hit its usage limit`;
       if (walks) {
         // The walk passes this kind over, with every other it passed over since the last Retry, and raises its row
         // (the fix, and the brain used meanwhile) once it lands. The restart waits for this turn to end: it cancels
-        // whatever runs, and this turn's failure must still be said.
-        log.warn(`${label} ${what} mid-run (${why}); selecting the next backend`);
-        setTimeout(() => void this.restartBrain(`${label} ${what}`, { skip: { kind, failure, why } }), 0);
-        return `${label} ${what}. Switching to the next brain. Ask again.`;
+        // whatever runs, and this turn's failure must still be said. A walk that lands across the Responses line
+        // reopens the session, which flushes the speaker: it waits until the voice has said this line (`watchLine`).
+        log.warn(`${lost} mid-run (${why}); selecting the next backend`);
+        this.failureLine?.now();
+        this.failureLine = this.live ? this.watchLine(this.live) : undefined;
+        setTimeout(() => {
+          if (!this.stopping) void this.restartBrain(lost, { skip: { kind, failure, why } });
+        }, 0);
+        return `${lost}. Switching to the next brain. Ask again.`;
       }
       if (failure === "quota") {
         // A usage limit or a quota lasts hours or needs billing: a minute does not clear it. The server's own words
@@ -2261,9 +2454,10 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.raiseBrainRow(`${label} brain hit its usage limit (${why}). Try again later.`);
         return undefined;
       }
-      this.raiseBrainRow(`${label} brain is signed out (${why}). ${kind ? SIGN_IN_HINTS[kind] : "Sign it in, then press Retry."}`);
+      const hint = kind ? SIGN_IN_HINTS[kind] : "Sign it in, then press Retry.";
+      this.raiseBrainRow(`${lostWords(kind, label, { brain: true })} (${why}). ${hint}`);
       this.scheduleSnapshot();
-      return `${label} is signed out. ${kind ? SIGN_IN_HINTS[kind] : "Sign it in, then press Retry."}`;
+      return `${lostWords(kind, label)}. ${hint}`;
     }
     this.raiseBrainRow(failure === "rate" ? `${label} brain is rate limited (${why}). Try again in a minute.` : `${label} brain could not reach its server (${why}).`);
     return undefined;
@@ -2606,6 +2800,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     },
     start: async () => ({ ready: this.brainReady, detail: this.brainDetail }),
     handle: async (task, sink) => {
+      // Kevin asked again while the voice still said why the brain changed (E-SIGNEDOUT): the session is reopened for
+      // the new brain now, and his words ride into it with the conversation (the reconnect answers a request it cut).
+      if (this.acrossWait) {
+        this.acrossWait.now();
+        return { status: "cancelled" };
+      }
       const b = this.brain;
       // `error`, not `summary`: the Delegator speaks a failure's error (F-PROXY-RESTARTING).
       if (!b) return { status: "failed", error: "the brain is restarting; ask again in a moment" };
@@ -3102,24 +3302,39 @@ export class Engine extends EventEmitter<EngineEvents> {
       log.info(`say-text: ${t.length} chars → the session was reopened by the reflex (${(did || "handled").slice(0, 60)}) in ${Math.round(performance.now() - t0)} ms`);
       return;
     }
-    const typed = `${this.userName} just typed (treat it exactly like speech): "${t}".`;
+    // A reflex's answer is Jarhead's own words; a long one (a status table) is cut to what the answer line holds.
+    const said = did === undefined ? undefined : cutToTokens(did, Engine.TYPED_ANSWER_TOKENS);
     const respond =
-      did === undefined
+      said === undefined
         ? "Respond to it now; delegate if it asks for anything the backend does."
         : meta
-          ? did
-            ? `Jarhead already answered it: "${did}" Say that to ${this.userName}, in these words, and wait.`
+          ? said
+            ? `Jarhead already answered it: "${said}" Say that to ${this.userName}, in these words, and wait.`
             : "Jarhead already handled it. Say one word and wait."
-          : `Jarhead already did it: ${did} Say one word, or the answer, and wait.`;
-    const whole = `${typed} ${respond}`;
+          : `Jarhead already did it: ${said} Say one word, or the answer, and wait.`;
     // Every append is capped at 500 tokens (V5): a long paste goes over as parts to read, then one short line to answer.
-    const parts = whole.length <= APPEND_CHAR_BUDGET ? [] : chunkForAppend(t, APPEND_CHAR_BUDGET - Engine.TYPED_PART_HEADROOM);
-    if (parts.length === 0) live.appendInstructions(null, whole);
-    else {
-      parts.forEach((part, i) => live.appendInstructions(null, `${this.userName} just typed a long message, part ${i + 1} of ${parts.length}. Read it and do not answer yet: "${part}"`));
-      live.appendInstructions(null, `That was all of what ${this.userName} just typed, in ${parts.length} parts. Treat it exactly like speech. ${respond}`);
-    }
-    log.info(`say-text: ${t.length} chars → ${live.session?.id ?? "(connecting)"}${parts.length ? ` in ${parts.length} parts` : ""} in ${Math.round(performance.now() - t0)} ms${did !== undefined ? ` (reflex: ${(did || "handled").slice(0, 60)})` : ""}`);
+    const appends = Engine.typedAppends(this.userName, t, respond);
+    for (const text of appends) live.appendInstructions(null, text);
+    log.info(`say-text: ${t.length} chars → ${live.session?.id ?? "(connecting)"}${appends.length > 1 ? ` in ${appends.length - 1} part${appends.length > 2 ? "s" : ""}` : ""} in ${Math.round(performance.now() - t0)} ms${did !== undefined ? ` (reflex: ${(did || "handled").slice(0, 60)})` : ""}`);
+  }
+
+  /** Tokens one append may carry: nine tenths of Live's 500-token cap, so no estimate sits on the cap. */
+  static readonly APPEND_TOKENS = 450;
+  /** Tokens a reflex's answer may take on the line that asks Live to say it (`sayText`). */
+  static readonly TYPED_ANSWER_TOKENS = 300;
+
+  /**
+   * The appends a typed line goes to Live as (V5). One, when the line and what to do with it fit an append.
+   * Otherwise the text in parts to read, its line breaks kept, each within APPEND_TOKENS with the words around it,
+   * then one short line that says to answer. A text that fits one part is not "part 1 of 1".
+   */
+  static typedAppends(userName: string, text: string, respond: string): string[] {
+    const whole = `${userName} just typed (treat it exactly like speech): "${text}". ${respond}`;
+    if (typedTokens(whole) <= Engine.APPEND_TOKENS) return [whole];
+    const head = (i: number, n: number): string => (n === 1 ? `${userName} just typed a long message. Read it and do not answer yet: "` : `${userName} just typed a long message, part ${i + 1} of ${n}. Read it and do not answer yet: "`);
+    const parts = splitTyped(text, Engine.APPEND_TOKENS - typedTokens(`${head(998, 999)}"`));
+    const n = parts.length;
+    return [...parts.map((part, i) => `${head(i, n)}${part}"`), `That was all of what ${userName} just typed${n === 1 ? "" : `, in ${n} parts`}. Treat it exactly like speech. ${respond}`];
   }
 
   /**
@@ -5251,6 +5466,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    this.failureLine?.now();
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
     this.localHealAt = 0;
@@ -5464,13 +5681,24 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   static readonly LIVE_SILENCE_MS = 5000;
 
+  /** tick() runs every second; one this long after the last ran late (V3's frame watch starts over). */
+  static readonly TICK_LATE_MS = 2000;
+
   /**
    * From tick(): the open session's frame count (`LiveSession.serverFrames`) on the engine's own clock. A count that
    * has not moved for LIVE_SILENCE_MS drops the socket as `connection_lost`, so the drop takes the path a real one
    * takes: the turn is cut, the row counts the reconnect, one new session carries the conversation on. A session
    * with no count (a test's stand-in) is not watched.
+   *
+   * A tick that runs late (TICK_LATE_MS on the process's own clock since the last) follows a stalled event loop: a
+   * long synchronous read, or the Mac asleep. Its timer runs before the socket messages queued meanwhile are read, so
+   * an unmoved count then proves nothing: the watch starts over from this tick.
    */
   private watchLiveFrames(now: number): void {
+    const real = performance.now();
+    const gap = this.framesWatchedAt === undefined ? 0 : real - this.framesWatchedAt;
+    const late = gap > Engine.TICK_LATE_MS;
+    this.framesWatchedAt = real;
     const live = this.live;
     const frames = live?.serverFrames;
     if (!live || this.connecting || live.currentState !== "started" || typeof frames !== "number") {
@@ -5478,7 +5706,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       return;
     }
     const seen = this.framesSeen;
-    if (!seen || seen.live !== live || seen.frames !== frames) {
+    if (!seen || seen.live !== live || seen.frames !== frames || late) {
+      if (late && seen?.live === live && seen.frames === frames) log.info(`session ${live.session?.id ?? "?"}: the tick ran ${Math.round(gap)} ms after the last; the frame watch starts over`);
       this.framesSeen = { live, frames, at: now };
       return;
     }

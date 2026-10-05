@@ -18,11 +18,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Brain, BrainResult } from "@jarhead/brain";
 import { Engine, brainNotConfigured, classifyBrainFailure, type BrainFacts, type SelectableBrain } from "../engine.ts";
-import { delegate, nextUtterance, settle, testConfig, tempDir, until, world, type World } from "./world.ts";
+import { delegate, nextUtterance, rows, settle, testConfig, tempDir, until, world, type World } from "./world.ts";
 
 const said = (w: World): string[] => w.lives.flatMap((l) => [...l.instructions, ...l.commentary]);
 const brainRows = (engine: Engine) => engine.typedProblems().filter((p) => p.kind === "brain.unavailable");
 const resolved = (engine: Engine): string | undefined => engine.snapshot().setup.brainResolved;
+const tick = (engine: Engine): void => (engine as unknown as { tick(): void }).tick();
 
 /** A fake brain of a real kind: `start` and `handle` scripted, every stop counted. */
 interface Fake {
@@ -225,6 +226,118 @@ test("a usage limit says to come back later, in the server's own words, never 'i
   }
 });
 
+/** The speaker flushes the engine asked for, each with when it came (real time). */
+function flushes(engine: Engine): number[] {
+  const at: number[] = [];
+  engine.on("event", (e: { type: string }) => {
+    if (e.type === "speaker-flush") at.push(Date.now());
+  });
+  return at;
+}
+const startedRows = (w: World) => rows<{ type: string; sessionId: string; resumedFrom?: string }>(w, "session.started");
+
+test("E-SIGNEDOUT (review repro): Codex alone under auto signs out mid-conversation; the walk lands on Responses, the failure line is heard out, and the session reopens with the conversation", async () => {
+  const codex = fake("codex", { handle: async () => ({ status: "failed", error: EXPIRED }) });
+  const w = selecting({ codex: () => codex.brain });
+  const { engine } = w;
+  const flushed = flushes(engine);
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    nextUtterance(w);
+    delegate(w, "jarhead summarize my last email from Ben", "item_1");
+    assert.ok(await until(() => resolved(engine) === "openai-responses"), `still on ${String(resolved(engine))}`);
+    const first = w.lives[0]!;
+    assert.ok(said(w).some((s) => s.includes("Codex is signed out. Switching to the next brain. Ask again.")), JSON.stringify(said(w)));
+    // The voice has not said the line yet: nothing is flushed and the session is still the one Kevin is listening to.
+    await settle(300);
+    assert.deepEqual(flushed, [], "the speaker was flushed before the line was said");
+    assert.equal(w.lives.length, 1);
+    // The voice says it.
+    first.emit("outputTranscript", "Codex is signed out.", 5000, 6200);
+    first.emit("outputTranscript", " Switching to the next brain. Ask again.", 6200, 8100);
+    const saidAt = Date.now();
+    assert.ok(await until(() => w.lives.length === 2 && engine.transportState === "awake", 4000), `sessions ${w.lives.length}, transport ${engine.transportState}`);
+    assert.ok(flushed.length > 0 && flushed[0]! - saidAt >= Engine.LINE_QUIET_MS - 50, `flushed ${flushed.map((t) => t - saidAt).join(", ")} ms after the line`);
+    // The new session carries the conversation on: resumed from the first, its continuity holding what was said.
+    assert.equal(startedRows(w).at(-1)?.resumedFrom, "sess_1");
+    const instructions = String(w.lives[1]!.config?.instructions);
+    assert.match(instructions, /# Continuity/);
+    assert.match(instructions, /summarize my last email from Ben/);
+    assert.equal(w.lives[1]!.config?.delegation?.type, "responses");
+    const rowsNow = brainRows(engine).map((p) => p.text);
+    assert.ok(rowsNow.some((t) => /^Codex is signed out \(unexpected status 401.*\)\. Run codex login, then press Retry\. Using OpenAI Responses meanwhile\.$/.test(t)), JSON.stringify(rowsNow));
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("E-SIGNEDOUT: Kevin asks again while the failure line is still being said; the wait ends, his words are not sent to the signed-out brain, and the reopened session carries them", async () => {
+  const codex = fake("codex", { handle: async () => ({ status: "failed", error: EXPIRED }) });
+  const w = selecting({ codex: () => codex.brain });
+  const { engine } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    nextUtterance(w);
+    delegate(w, "jarhead summarize my last email from Ben", "item_1");
+    assert.ok(await until(() => resolved(engine) === "openai-responses"));
+    await settle(100);
+    assert.equal(w.lives.length, 1, "the reopen waits for the line");
+    const t0 = Date.now();
+    nextUtterance(w);
+    delegate(w, "jarhead what is on my calendar today", "item_2");
+    assert.ok(await until(() => w.lives.length === 2 && engine.transportState === "awake", 3000), `sessions ${w.lives.length}`);
+    assert.ok(Date.now() - t0 < Engine.LINE_CAP_MS - 2000, "the wait ended when Kevin spoke");
+    assert.equal(codex.tasks.length, 1, "the second request never reached the signed-out brain");
+    assert.equal(said(w).filter((s) => s.includes("Switching to the next brain")).length, 1, JSON.stringify(said(w)));
+    assert.equal(startedRows(w).at(-1)?.resumedFrom, "sess_1");
+    assert.match(String(w.lives[1]!.config?.instructions), /what is on my calendar today/);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("E-SIGNEDOUT: a refused key is called a refused key, never 'signed out'; the row and the line say where to fix it", async () => {
+  const REFUSED = "ANTHROPIC_API_KEY is rejected by the API (401)";
+  const explicit = world({ brain: fake("anthropic-api", { handle: async () => ({ status: "failed", error: REFUSED }) }).brain });
+  try {
+    await explicit.engine.start();
+    await explicit.engine.ready();
+    explicit.engine.updateSettings({ idleSleepMinutes: 0 });
+    await explicit.engine.wake("test");
+    delegate(explicit, "jarhead summarize my last email", "item_1");
+    assert.ok(await until(() => brainRows(explicit.engine).length === 1));
+    assert.equal(brainRows(explicit.engine)[0]!.text, `Anthropic API brain's key was refused (${REFUSED}). Check ANTHROPIC_API_KEY in Setup, then press Retry.`);
+    assert.ok(said(explicit).some((s) => s.includes("Anthropic API brain's key was refused. Check ANTHROPIC_API_KEY in Setup, then press Retry.")), JSON.stringify(said(explicit)));
+    assert.ok(!said(explicit).some((s) => s.includes("signed out")));
+  } finally {
+    await explicit.engine.stop();
+  }
+  const api = fake("anthropic-api", { handle: async () => ({ status: "failed", error: REFUSED }) });
+  const compatible = fake("openai-compatible");
+  const auto = selecting({ "anthropic-api": () => api.brain, "openai-compatible": () => compatible.brain });
+  try {
+    await auto.engine.start();
+    await auto.engine.ready();
+    auto.engine.updateSettings({ idleSleepMinutes: 0 });
+    await auto.engine.wake("test");
+    delegate(auto, "jarhead summarize my last email", "item_1");
+    assert.ok(await until(() => resolved(auto.engine) === "openai-compatible"), `still on ${String(resolved(auto.engine))}`);
+    assert.ok(said(auto).some((s) => s.includes("Anthropic API brain's key was refused. Switching to the next brain. Ask again.")), JSON.stringify(said(auto)));
+    assert.deepEqual(
+      brainRows(auto.engine).map((p) => p.text),
+      [`Anthropic API brain's key was refused (${REFUSED}). Check ANTHROPIC_API_KEY in Setup, then press Retry. Using OpenAI-compatible meanwhile.`],
+    );
+  } finally {
+    await auto.engine.stop();
+  }
+});
+
 test("classifyBrainFailure: the brains' own lines for a lost login, a rate limit and a dead line; a task that failed on its own terms is none", () => {
   const cases: [string | undefined, ReturnType<typeof classifyBrainFailure>][] = [
     [EXPIRED, "auth"],
@@ -358,9 +471,9 @@ test("F-AUTO-PROBE: a slow start that fails is stopped with the walk's line; a n
   }
 });
 
-test("F-AUTO-PROBE: a slow start that proves itself while the walk waits on the next one takes the Go at once; the last client brain is not waited out", async () => {
-  // Codex passes the patience and is ready at 300 ms; Claude Code, the last client brain in the walk, never answers.
-  const codex = fake("codex", { start: () => new Promise((resolve) => setTimeout(() => resolve({ ready: true, detail: "codex (fake, slow)" }), 300)) });
+test("F-AUTO-PROBE: a slow start that proves itself while the walk waits on the next one takes the Go at once", async () => {
+  // Codex passes the patience and is ready at 150 ms, while the walk waits on Claude Code, which never answers.
+  const codex = fake("codex", { start: () => new Promise((resolve) => setTimeout(() => resolve({ ready: true, detail: "codex (fake, slow)" }), 150)) });
   const claude = fake("claude-code", { start: () => new Promise(() => undefined) });
   const w = selecting({ codex: () => codex.brain, "claude-code": () => claude.brain }, { brainPatienceMs: 100 });
   const { engine } = w;
@@ -369,13 +482,33 @@ test("F-AUTO-PROBE: a slow start that proves itself while the walk waits on the 
     await engine.start();
     await engine.wake("test");
     const ms = Date.now() - t0;
-    assert.ok(ms < 1500, `Go took ${ms} ms although Codex was ready at 300 ms`);
+    assert.ok(ms < 1500, `Go took ${ms} ms although Codex was ready at 150 ms`);
     assert.equal(engine.transportState, "awake");
     assert.equal(resolved(engine), "codex", "auto's first choice took the Go");
     assert.equal(engine.snapshot().setup.brainDetail, "codex (fake, slow)");
     assert.equal(brainRows(engine).length, 0);
   } finally {
     await engine.stop();
+  }
+});
+
+test("F-AUTO-PROBE (review repro): the only client start never settles; the Go lands on Responses within the patience plus a margin, never waiting it out", async () => {
+  const claude = fake("claude-code", { start: () => new Promise(() => undefined) });
+  const w = selecting({ "claude-code": () => claude.brain }, { brainPatienceMs: 100 });
+  const { engine } = w;
+  try {
+    await engine.start();
+    const t0 = Date.now();
+    const woke = engine.wake("test").then(() => "woke");
+    const r = await Promise.race([woke, settle(4000).then(() => "still connecting")]);
+    const ms = Date.now() - t0;
+    assert.equal(r, "woke", `Go still connecting after 4 s with a 100 ms patience (transport=${engine.transportState})`);
+    assert.ok(ms < 100 + 1000, `Go took ${ms} ms with a 100 ms patience`);
+    assert.equal(engine.transportState, "awake");
+    assert.equal(resolved(engine), "openai-responses");
+    assert.match(engine.snapshot().setup.brainDetail, /\(auto: Claude Code still starting\)$/);
+  } finally {
+    await Promise.race([engine.stop(), settle(500)]);
   }
 });
 
@@ -398,7 +531,7 @@ test("F-AUTO-PROBE: a start outranked by the brain in use goes quietly when it l
   }
 });
 
-test("F-AUTO-PROBE: when every client start is past the patience, the first to prove itself takes the Go and a better one takes over later; Responses only when all fail", async () => {
+test("F-AUTO-PROBE: when every client start is past the patience, the Go lands on Responses at once; the best start to prove itself takes over at a quiet moment, the session reopened with the conversation; Responses alone when all fail", async () => {
   let codexUp!: () => void;
   const codex = fake("codex", { start: () => new Promise((resolve) => (codexUp = () => resolve({ ready: true, detail: "codex (fake, late)" }))) });
   const claude = fake("claude-code", { start: () => new Promise((resolve) => setTimeout(() => resolve({ ready: true, detail: "claude (fake, slow)" }), 300)) });
@@ -407,14 +540,31 @@ test("F-AUTO-PROBE: when every client start is past the patience, the first to p
   try {
     const t0 = Date.now();
     await engine.start();
+    engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
     const ms = Date.now() - t0;
     assert.ok(ms < 1500, `Go took ${ms} ms`);
-    assert.equal(resolved(engine), "claude-code", "the first start to prove itself took the Go");
-    assert.equal(engine.snapshot().setup.brainDetail, "claude (fake, slow) (auto: Codex still starting)");
+    assert.equal(resolved(engine), "openai-responses", "no start was waited on past its patience");
+    assert.match(engine.snapshot().setup.brainDetail, /\(auto: Codex, Claude Code still starting\)$/);
+    assert.equal(w.lives[0]!.config?.delegation?.type, "responses");
+    // Claude Code proves itself (at about 400 ms), then Codex, while the voice is in an exchange: neither reopens the
+    // session yet. Codex outranks Claude Code, so Claude Code's queued swap is dropped.
+    await settle(400);
+    assert.equal(resolved(engine), "openai-responses", "never mid-exchange");
     codexUp();
-    assert.ok(await until(() => resolved(engine) === "codex"), `still on ${String(resolved(engine))}`);
-    assert.ok(await until(() => claude.stops === 1));
+    await settle(50);
+    tick(engine);
+    assert.equal(resolved(engine), "openai-responses", "never mid-exchange");
+    assert.equal(w.lives.length, 1);
+    assert.ok(await until(() => claude.stops === 1), "the start Codex outranks stopped");
+    // The exchange is over: the next tick swaps, and the session reopens on a client delegation with the conversation.
+    w.clock.t += Engine.EXCHANGE_WINDOW_MS + 1000;
+    tick(engine);
+    assert.ok(await until(() => w.lives.length === 2 && engine.transportState === "awake"), `sessions ${w.lives.length}, transport ${engine.transportState}`);
+    assert.equal(resolved(engine), "codex");
+    assert.equal(w.lives[1]!.config?.delegation?.type ?? "client", "client");
+    assert.match(String(w.lives[1]!.config?.instructions), /# Continuity/);
+    assert.equal(rows<{ type: string; resumedFrom?: string }>(w, "session.started").at(-1)?.resumedFrom, "sess_1");
   } finally {
     await engine.stop();
   }
@@ -424,9 +574,9 @@ test("F-AUTO-PROBE: when every client start is past the patience, the first to p
     await none.engine.start();
     await none.engine.ready();
     assert.equal(resolved(none.engine), "openai-responses");
-    const texts = brainRows(none.engine).map((p) => p.text);
-    assert.ok(texts.some((t) => t.startsWith("Codex brain unavailable (codex would not start)")), JSON.stringify(texts));
-    assert.ok(texts.some((t) => t.startsWith("Claude Code brain unavailable (claude-code would not start)")), JSON.stringify(texts));
+    const texts = () => brainRows(none.engine).map((p) => p.text);
+    assert.ok(await until(() => texts().some((t) => t.startsWith("Codex brain unavailable (codex would not start)")) && texts().some((t) => t.startsWith("Claude Code brain unavailable (claude-code would not start)"))), JSON.stringify(texts()));
+    assert.equal(resolved(none.engine), "openai-responses");
   } finally {
     await none.engine.stop();
   }
