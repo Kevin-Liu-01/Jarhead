@@ -14,7 +14,9 @@ import Foundation
 //   paced     40 ms speaker frames in real time, 283 KB snapshots at 3.8/s, SNAPSHOT_PROBE_SECONDS
 //             (default 20): each frame's lateness against its ideal time
 //   decoded   a snapshot carrying the playback telemetry (audioState.playout/duck/output, liveAudio)
-//             reaches AppState through the new path; a malformed snapshot is dropped and the next applies
+//             reaches AppState through the new path; a malformed snapshot is dropped and the next applies;
+//             a liveAudio with only its counts decodes (W2-5's optional figures); a malformed snapshot on
+//             handleMessage's fallback path is dropped too
 //
 // Gates: order exact; behind adds ≤ 2 ms at p50; paced p99 ≤ 35 ms; decoded fields equal. SNAPSHOT_PROBE_NO_GATES=1
 // prints the figures without judging them (to run the same probe against another EngineClient.swift).
@@ -316,8 +318,8 @@ struct SnapshotProbeMain {
             let audio: [String: Any] = [
                 "running": true, "voiceProcessing": true, "rung": 2, "wiring": "input-rate", "tapFormat": "48000 Hz ×1 Float32", "recording": false,
                 "fallback": false, "guardOn": false, "guardTailMs": 0, "gated": 0, "chunks": 0, "breakthroughs": 0, "inputMuted": false, "aggregatePresent": true,
-                "playout": ["chunks": 412, "underruns": 0, "underrunMs": 0, "longestUnderrunMs": 0, "wouldBeUnderruns": 4, "resets": 3, "targetMs": 120, "queuedMs": 121, "queuedMinMs": 96, "lateMaxMs": 7, "droppedChunks": 0, "droppedMs": 0],
-                "duck": ["ducks": 2, "gate": 2, "confirmed": 2, "unconfirmed": 0, "held": 0, "refusedWords": 0, "wordOnsetsSkipped": 1, "duckedMs": 900, "deepMs": 400, "residualP50Dbfs": -61, "residualP99Dbfs": -49.5,
+                "playout": ["chunks": 412, "underruns": 0, "underrunMs": 0, "longestUnderrunMs": 0, "wouldBeUnderruns": 4, "resets": 3, "targetMs": 120, "queuedMs": 121, "queuedMinMs": 96, "lateMaxMs": 7, "lateMaxGraphMs": 31, "droppedChunks": 0, "droppedMs": 0],
+                "duck": ["ducks": 2, "gate": 2, "confirmed": 2, "unconfirmed": 0, "held": 0, "refusedWords": 0, "refusedLive": 1, "wordOnsetsSkipped": 1, "duckedMs": 900, "deepMs": 400, "residualP50Dbfs": -61, "residualP99Dbfs": -49.5,
                          "last": ["source": "gate", "confirmed": true, "depthDb": -20, "runDbfs": -31.5, "thresholdDbfs": -42, "releasedAfterMs": 640, "reason": "quiet after ear words"]],
                 "output": ["rmsDbfs": -21.8, "peakDbfs": -4.1, "heardRmsDbfs": -22, "audibleMs": 61000, "mixFormat": "48000 Hz ×2", "volume": 0.62],
             ]
@@ -329,8 +331,9 @@ struct SnapshotProbeMain {
             spin(0.5)
             let s = state.snapshot
             let a = s.audioState
-            check(s.phase == .listening && a?.playout?.wouldBeUnderruns == 4 && a?.playout?.queuedMinMs == 96 && a?.duck?.last?.reason == "quiet after ear words"
-                  && a?.duck?.residualP99Dbfs == -49.5 && a?.output?.volume == 0.62 && a?.output?.mixFormat == "48000 Hz ×2" && s.liveAudio?.formatRate == 24000 && s.liveAudio?.deltas == 900,
+            check(s.phase == .listening && a?.playout?.wouldBeUnderruns == 4 && a?.playout?.queuedMinMs == 96 && a?.playout?.lateMaxGraphMs == 31 && a?.duck?.last?.reason == "quiet after ear words"
+                  && a?.duck?.refusedLive == 1 && a?.duck?.residualP99Dbfs == -49.5 && a?.output?.volume == 0.62 && a?.output?.mixFormat == "48000 Hz ×2" && a?.output?.audibleMs == 61000
+                  && s.liveAudio?.formatRate == 24000 && s.liveAudio?.deltas == 900,
                   "decoded: audioState.playout/duck/output and liveAudio reach AppState; the malformed snapshot before it was dropped")
             // The frame the app sends back carries the same objects, by the protocol's names.
             if let a {
@@ -340,6 +343,22 @@ struct SnapshotProbeMain {
                 check(playout?["wouldBeUnderruns"] as? Int == 4 && (duck?["last"] as? [String: Any])?["source"] as? String == "gate" && (json["output"] as? [String: Any])?["volume"] as? Double == 0.62,
                       "encoded: AudioStateInfo.json carries playout, duck (with last) and output under the protocol's names")
             }
+            // partial: W2-5's contract makes every figure but the counts optional, so a session that heard nothing yet
+            // (liveAudio with only deltas and gatedFrames) and an app before audibleMs still decode, whole snapshot and all.
+            var older = audio
+            older["output"] = ["mixFormat": "48000 Hz ×2"]
+            daemon.send(SnapshotProbe.snapshot(base, bytes: 0, phase: "thinking", extra: ["audioState": older, "liveAudio": ["deltas": 0, "gatedFrames": 0]]))
+            spin(0.5)
+            let partial = state.snapshot
+            check(partial.phase == .thinking && partial.liveAudio?.deltas == 0 && partial.liveAudio?.deltaMsP50 == nil && partial.audioState?.output?.audibleMs == nil
+                  && partial.audioState?.playout?.wouldBeUnderruns == 4,
+                  "partial: liveAudio with only its counts and an output without audibleMs decode; the snapshot applies")
+            // fallback: a snapshot frame that does not open with its type takes handleMessage's path; malformed, it is dropped there too.
+            daemon.send(SnapshotProbe.frame(.json, Data(#"{"snapshot":{"phase":7},"type":"snapshot"}"#.utf8)))
+            daemon.send(SnapshotProbe.snapshot(base, bytes: 0, phase: "listening", extra: ["liveAudio": ["deltas": 7, "gatedFrames": 0]]))
+            spin(0.5)
+            check(state.snapshot.phase == .listening && state.snapshot.liveAudio?.deltas == 7,
+                  "fallback: a malformed snapshot on handleMessage's path is dropped and the next one applies")
             client.stop()
             daemon.dropClient()
             spin(0.2)

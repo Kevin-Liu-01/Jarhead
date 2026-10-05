@@ -716,7 +716,7 @@ final class EngineClient: @unchecked Sendable {
         case "snapshot":
             // A snapshot frame that does not start with its type (`isSnapshotFrame`), decoded here as before.
             guard let sub = obj["snapshot"], let snap: Snapshot = decode(sub) else {
-                log("undecodable snapshot")
+                snapshotUndecodable()
                 return
             }
             applySnapshot(snap)
@@ -823,12 +823,19 @@ final class EngineClient: @unchecked Sendable {
             self.net.async {
                 guard epoch == self.connectionEpoch else { return }
                 guard let snap else {
-                    self.log("undecodable snapshot")
+                    self.snapshotUndecodable()
                     return
                 }
                 self.applySnapshot(snap)
             }
         }
+    }
+
+    /// On `net`: a snapshot frame that did not decode, from either path (the prefix path off `net`, which every
+    /// daemon snapshot takes, or `handleMessage`'s fallback). It is logged and dropped. The one place to react to it:
+    /// W3-3 (APP-3) raises `app.version` here, so both paths raise it.
+    private func snapshotUndecodable() {
+        log("undecodable snapshot")
     }
 
     /// On `net`: the snapshot for the auto-resume, then the ≤ 30 Hz publish.
