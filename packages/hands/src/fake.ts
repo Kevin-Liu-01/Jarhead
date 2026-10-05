@@ -60,11 +60,19 @@ export function fakeHandsSpawn(hands: NativeHands): typeof spawn {
 export const FAKE_ACTING_OPS: ReadonlySet<string> = new Set(["click", "mouse_down", "mouse_up", "drag", "scroll", "type", "key", "hold_key"]);
 
 /**
+ * Ops the helper also holds while Kevin's hands are on the machine, though they post no key or
+ * click (Input.swift opMove, Windows.swift opFocusApp, and opOpenApp when it activates): the
+ * pointer jumping, or an app pulled over the one he is typing in, is stepping on him too.
+ */
+export const FAKE_HELD_OPS: ReadonlySet<string> = new Set(["move", "focus_app", "open_app"]);
+
+/**
  * The helper in process, with knobs, behaving as the Swift one does where the lease
  * and the lanes care: `user_idle` reads from `kevinActed(at)`; an acting op answers
  * `busy` while Kevin's last input is within KEVIN_QUIET_MS (unless `ownDriver`), and
  * `focus_moved` when `expectFront.pid` is not the front app's — in both cases nothing
- * is recorded in `posted`. `focus_app` / `open_app` bring the named app to the front.
+ * is recorded in `posted`. `focus_app` / `open_app` bring the named app to the front, and
+ * they and `move` answer `busy` like an acting op (FAKE_HELD_OPS; a background open does not).
  * Every request is in `calls` (with the clock's time); a `hold` keeps one op in flight
  * until `release()`, so a test can prove nobody takes the lease mid-op.
  */
@@ -123,6 +131,7 @@ export class FakeHands implements NativeHands {
     this.calls.push({ op, params, at });
     if (this.hold === op && this.release_ === undefined) await new Promise<void>((r) => (this.release_ = r));
     if (FAKE_ACTING_OPS.has(op)) this.guardActing(op, params);
+    else if (FAKE_HELD_OPS.has(op) && !(op === "open_app" && params["activate"] === false)) this.guardActing(op, params);
     switch (op) {
       case "hello":
         return { version: "fake", pid: 1, permissions: { accessibility: true, screenRecording: true } } as T;

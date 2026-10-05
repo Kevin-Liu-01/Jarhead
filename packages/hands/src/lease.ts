@@ -16,9 +16,14 @@ import type { ToolResult } from "./toolset.ts";
  * switched to (STALE_FOCUS: the front app is one no lane activated and not the
  * thread's own — he is using it; the thread waits and says so). Jarhead's own hands
  * (the main brain, dictation) acquire with priority: they never wait on a thread's
- * idle or on Kevin's typing beyond the helper's own `busy` refusal, but they take the
- * lease from a thread only after MIN_HOLD_MS and never in the middle of one of its
- * ops (a held `type` finishes first).
+ * idle or on Kevin's typing beyond the helper's own `busy` refusal and the re-front's
+ * wait below, but they take the lease from a thread only after MIN_HOLD_MS and never
+ * in the middle of one of its ops (a held `type` finishes first). The one thing the
+ * lease itself does to the screen, the re-front, is a `focus_app`: it reads
+ * `user_idle` first for every taker, priority too, and waits out his quiet window, so
+ * no app is pulled over the one he is typing in. Past the taker's deadline it
+ * re-fronts nothing; the lease is still the taker's, and its own ops meet the
+ * helper's `busy` refusal.
  *
  * Nothing decided before an await stands after it. The thread's gate and the re-front
  * are helper round trips; a priority taker, a waking holder or a cut can land in the
@@ -93,6 +98,12 @@ export interface FocusLeaseOptions {
   readonly sleep?: ((ms: number) => Promise<void>) | undefined;
   /** The poll interval (default USER_IDLE_POLL_MS). */
   readonly pollMs?: number | undefined;
+}
+
+/** What the re-front needs from its acquisition: when the taker gives up waiting, and its stop. */
+interface RefrontOptions {
+  readonly deadline: number;
+  readonly signal?: AbortSignal | undefined;
 }
 
 interface Holder {
@@ -246,7 +257,7 @@ export class FocusLease {
             if (prev) log.debug(`${prev.actor} → ${actor}`);
             // Out of the line before the settle: the next in rank may judge the lease free once this one lets go.
             this.waiters.delete(actor);
-            return this.settle(actor, gen);
+            return this.settle(actor, gen, { deadline, signal: o.signal });
           }
         }
         reason = blocked;
@@ -301,30 +312,54 @@ export class FocusLease {
    * matches again. Over an app Kevin switched to himself (no lane fronted it): nothing;
    * his window stays where it is. The re-front counts as an op in flight, so nobody
    * takes the lease in the middle of it; a cut meanwhile makes the outcome `cut`.
+   * While Kevin's hands are on the machine the re-front waits, up to the taker's
+   * deadline; a stop meanwhile answers `cancelled` and leaves the lease empty.
    */
-  private async settle(actor: string, gen: number): Promise<LeaseOutcome> {
+  private async settle(actor: string, gen: number, o: RefrontOptions): Promise<LeaseOutcome> {
     const want = this.appOf(actor);
     if (!want) return { ok: true };
     this.inFlight += 1;
     try {
-      return await this.refront(actor, want, gen);
+      return await this.refront(actor, want, gen, o);
     } finally {
       // A cut or a forget emptied the count with the lease; only a hold still ours is ours to give back.
       if (this.generation === gen && this.held?.actor === actor) this.inFlight = Math.max(0, this.inFlight - 1);
     }
   }
 
-  private async refront(actor: string, want: string, gen: number): Promise<LeaseOutcome> {
-    const front = await this.front();
-    const lost = this.lostSince(actor, gen);
-    if (lost) return lost;
-    if (!front || sameApp(front.app, want)) return { ok: true };
-    if (!this.isActivated(front.app)) return { ok: true };
-    try {
-      await this.opts.hands.request("focus_app", { name: want }, 3000);
-    } catch (e) {
-      log.debug(`re-front ${want}: ${(e as Error).message}`);
-      return this.lostSince(actor, gen) ?? { ok: true };
+  private async refront(actor: string, want: string, gen: number, o: RefrontOptions): Promise<LeaseOutcome> {
+    // Judged again after every wait: the app in front may be one Kevin switched to while he typed.
+    for (;;) {
+      const front = await this.front();
+      const lost = this.lostSince(actor, gen);
+      if (lost) return lost;
+      if (!front || sameApp(front.app, want)) return { ok: true };
+      if (!this.isActivated(front.app)) return { ok: true };
+      // A focus_app pulls `want` over whatever Kevin is typing into: his quiet window first, for every taker.
+      const idle = await this.idleHands.request<UserIdle>("user_idle", {}, 1500).catch(() => undefined);
+      const lostIdle = this.lostSince(actor, gen);
+      if (lostIdle) return lostIdle;
+      if (idle === undefined || idle.foreignMs >= KEVIN_QUIET_MS) {
+        try {
+          await this.opts.hands.request("focus_app", { name: want }, 3000);
+          break;
+        } catch (e) {
+          // The helper refuses busy too (he typed between the read and the activation): that waits like the read.
+          if (!isBusyResult(e)) {
+            log.debug(`re-front ${want}: ${(e as Error).message}`);
+            return this.lostSince(actor, gen) ?? { ok: true };
+          }
+        }
+      }
+      if (o.signal?.aborted) return this.stopped(actor);
+      if (this.now() >= o.deadline) {
+        log.debug(`re-front ${want}: ${this.opts.userName?.() || "Kevin"} is still using the keyboard or mouse; not re-fronted`);
+        return this.lostSince(actor, gen) ?? { ok: true };
+      }
+      await this.sleep(this.opts.pollMs ?? USER_IDLE_POLL_MS);
+      if (o.signal?.aborted) return this.stopped(actor);
+      const lostWait = this.lostSince(actor, gen);
+      if (lostWait) return lostWait;
     }
     const lostAfter = this.lostSince(actor, gen);
     if (lostAfter) return lostAfter;
@@ -338,6 +373,12 @@ export class FocusLease {
       if (f && sameApp(f.app, want)) break;
     }
     return { ok: true, refocused: want };
+  }
+
+  /** The taker was stopped while its re-front waited for Kevin: nothing is re-fronted, and the screen is nobody's. */
+  private stopped(actor: string): LeaseOutcome {
+    this.release(actor, "cut");
+    return { ok: false, reason: "cancelled" };
   }
 
   /** After an await inside an acquisition: is the lease still this actor's? A cut → "cut"; otherwise whoever has it now. */

@@ -108,35 +108,44 @@ func postUnicode(_ units: [UInt16], flags: CGEventFlags = []) -> Bool {
 
 // MARK: - Kevin's hands win
 //
-// Every event this process posts is stamped by kind. Before an acting op's first post, the
-// session's last key press, click and scroll are read (`CGEventSource.secondsSinceLastEventType`
-// on the combined session state, which counts our own posts too); one that is not within
-// `ownPostSlackSec` of our last post of that kind is Kevin's, and when it is younger than
-// `kevinQuietMs` the op answers `busy` with nothing posted. Pointer moves are not counted: a
-// resting hand jitters. Dictation passes `ownDriver: true` — Kevin is the one typing there.
-// The check lives here, not in the client, because only this process knows the time of every
-// event it posted; an engine-side subtraction guesses.
+// Every event this process posts is noted by kind in `handsLedger`. Before an acting op's first
+// post, and before every grapheme of a `type`, the session is read (CGEventSource on the combined
+// session state, which counts our own posts too): the newest key press, click and scroll by time,
+// and how many of each the session counted. A newest event that is not within `ownPostSlackSec`
+// of our last post of the kind is someone else's; so is every event the session counted beyond
+// our own posts, however many of ours came after it (HandsWin.swift). One younger than
+// `kevinQuietMs` is Kevin's hands on the machine: the op answers `busy` with nothing posted, and a
+// type stops there and says how many characters landed. Pointer moves are not counted: a resting
+// hand jitters. Dictation passes `ownDriver: true`: Kevin is the one typing there. The check lives
+// here, not in the client, because only this process knows every event it posted; an engine-side
+// subtraction guesses.
 
-let kevinQuietMs: Double = 1500
-let ownPostSlackSec: TimeInterval = 0.030
 /// What `user_idle` reports for a kind of event the session has never seen (JSON has no Infinity).
 let userIdleNoneMs: Double = 1.0e12
 
-private var lastOwnKeyAt: TimeInterval = -1
-private var lastOwnClickAt: TimeInterval = -1
-private var lastOwnScrollAt: TimeInterval = -1
+/// Our own posts and the foreign events the session counted beyond them. Worker queue only.
+private var handsLedger = HandsLedger()
 
 /// A monotonic clock on the same base as the session's event timestamps (mach absolute time).
 func uptimeNow() -> TimeInterval {
     return ProcessInfo.processInfo.systemUptime
 }
 
+/// The session's event types for each kind the ledger counts.
+private func eventTypes(_ kind: InputKind) -> [CGEventType] {
+    switch kind {
+    case .key: return [.keyDown]
+    case .click: return [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+    case .scroll: return [.scrollWheel]
+    }
+}
+
 /// Called immediately before each post, on the worker queue.
 func noteOwnPost(_ type: CGEventType) {
     switch type {
-    case .keyDown: lastOwnKeyAt = uptimeNow()
-    case .leftMouseDown, .rightMouseDown, .otherMouseDown: lastOwnClickAt = uptimeNow()
-    case .scrollWheel: lastOwnScrollAt = uptimeNow()
+    case .keyDown: handsLedger.noteOwnPost(.key, at: uptimeNow())
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown: handsLedger.noteOwnPost(.click, at: uptimeNow())
+    case .scrollWheel: handsLedger.noteOwnPost(.scroll, at: uptimeNow())
     default: break
     }
 }
@@ -148,59 +157,40 @@ private func msSinceLast(_ type: CGEventType) -> Double? {
     return seconds * 1000
 }
 
-/// Is the session's last event of a kind (`msAgo`) one this process posted (within the slack of our last post of that kind)?
-private func isOwn(msAgo: Double, lastOwnAt: TimeInterval) -> Bool {
-    guard lastOwnAt >= 0 else { return false }
-    let eventAt = uptimeNow() - msAgo / 1000
-    return abs(eventAt - lastOwnAt) <= ownPostSlackSec
+/// One kind as the session reports it: the count from every source, and the age of each type's newest event.
+private func readSessionKind(_ kind: InputKind) -> KindReading {
+    var count: Int64 = 0
+    var ages: [Double] = []
+    for type in eventTypes(kind) {
+        count += Int64(CGEventSource.counterForEventType(.combinedSessionState, eventType: type))
+        if let ms = msSinceLast(type) { ages.append(ms) }
+    }
+    return KindReading(count: count, msAgo: ages)
 }
 
-struct SessionIdle {
-    var keyMs: Double?
-    var clickMs: Double?
-    var scrollMs: Double?
-    var moveMs: Double?
-    /// ms since the newest key press, click or scroll this process did NOT post; nil when there was none.
-    var foreignMs: Double?
-}
+/// The window server as the ledger reads it.
+private let sessionClock = EventClock(now: uptimeNow, read: readSessionKind)
 
-func sessionIdle() -> SessionIdle {
-    var out = SessionIdle()
-    var foreign: [Double] = []
-    if let key = msSinceLast(.keyDown) {
-        out.keyMs = key
-        if !isOwn(msAgo: key, lastOwnAt: lastOwnKeyAt) { foreign.append(key) }
-    }
-    for type in [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown] {
-        guard let click = msSinceLast(type) else { continue }
-        out.clickMs = min(out.clickMs ?? click, click)
-        if !isOwn(msAgo: click, lastOwnAt: lastOwnClickAt) { foreign.append(click) }
-    }
-    if let scroll = msSinceLast(.scrollWheel) {
-        out.scrollMs = scroll
-        if !isOwn(msAgo: scroll, lastOwnAt: lastOwnScrollAt) { foreign.append(scroll) }
-    }
-    out.moveMs = msSinceLast(.mouseMoved)
-    out.foreignMs = foreign.min()
-    return out
+/// The newest event of any of `types`, in ms; nil when there was none.
+private func newestMs(_ types: [CGEventType]) -> Double? {
+    return types.compactMap { msSinceLast($0) }.min()
 }
 
 /// `user_idle {}`: how long since Kevin (or anyone) last touched the machine, by kind, and since the last input that was not ours.
 func opUserIdle() -> JSONObject {
-    let idle = sessionIdle()
+    let foreign = handsLedger.foreignMs(sessionClock)
     return [
-        "keyMs": idle.keyMs ?? userIdleNoneMs,
-        "clickMs": idle.clickMs ?? userIdleNoneMs,
-        "scrollMs": idle.scrollMs ?? userIdleNoneMs,
-        "moveMs": idle.moveMs ?? userIdleNoneMs,
-        "foreignMs": idle.foreignMs ?? userIdleNoneMs,
+        "keyMs": newestMs(eventTypes(.key)) ?? userIdleNoneMs,
+        "clickMs": newestMs(eventTypes(.click)) ?? userIdleNoneMs,
+        "scrollMs": newestMs(eventTypes(.scroll)) ?? userIdleNoneMs,
+        "moveMs": msSinceLast(.mouseMoved) ?? userIdleNoneMs,
+        "foreignMs": foreign ?? userIdleNoneMs,
     ]
 }
 
 /// Kevin's last key/click/scroll in ms when it is inside the quiet window; nil when the machine is free to act on.
 func kevinBusyMs() -> Int? {
-    guard let foreign = sessionIdle().foreignMs, foreign < kevinQuietMs else { return nil }
-    return Int(foreign.rounded())
+    return handsLedger.busyMs(sessionClock)
 }
 
 /// The two refusals every acting op makes before its first post: Kevin's hands (unless `ownDriver`), then the front app (`expectFront`).
@@ -228,6 +218,8 @@ func opCursor() -> JSONObject {
 
 func opMove(_ params: Params) throws -> JSONObject {
     let point = try params.requireXY()
+    // The pointer is Kevin's too: it does not jump out from under his hand while he is using it.
+    try guardActing(params)
     postMouseMove(to: point)
     return pointJSON(point)
 }
@@ -372,12 +364,6 @@ enum TypeStrategy: String {
     case ax, keystrokes, paste
 }
 
-/// Why a `type` stopped part way: the client's stop, or the front app changed under the keystrokes.
-enum TypeCancelReason: String {
-    case stop
-    case focusMoved = "focus_moved"
-}
-
 enum Delivery {
     /// The text landed. `verified` is true when the field read it back, false when it could not be checked.
     case done(verified: Bool, note: String?)
@@ -385,45 +371,45 @@ enum Delivery {
     case failed(String)
     /// Not applicable here (no text field under focus, no permission); not counted as an attempt.
     case skipped(String)
-    /// Stopped between two graphemes: Kevin's stop, or the focus moved.
+    /// Stopped between two graphemes: the client's stop, Kevin's hands, or the focus moved.
     case cancelled(TypeCancelReason)
 }
 
-/// The front app during a `type`, re-read at most every 50 ms between clusters on the worker
-/// queue (a switch mid-word lands the rest of the text nowhere, not in the new window).
-struct FrontWatch {
-    let pid: pid_t?
-    private var lastCheckAt: TimeInterval = -1
-    private(set) var moved = false
+/// Whether an element with this role takes typed text (FocusedTarget.isTextField's rule).
+private func takesText(role: String?, subrole: String?) -> Bool {
+    guard let role else { return false }
+    return textRoles.contains(role) || subrole == "AXSearchField"
+}
 
-    init(pid: pid_t?) {
-        self.pid = pid
+/// The app's own focused element as a FocusMark (the place its keystrokes land), read with the
+/// app element's short timeout so a busy app slows the watch, never hangs it; nil when AX cannot say.
+private func focusMark(inApp app: AXUIElement) -> FocusMark? {
+    var focusedRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+          let focused = focusedRef, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+    let element = focused as! AXUIElement
+    AXUIElementSetMessagingTimeout(element, 0.25)
+    var window: AnyHashable? = nil
+    var windowRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &windowRef) == .success,
+       let value = windowRef, CFGetTypeID(value) == AXUIElementGetTypeID() {
+        window = AnyHashable(value as! AXUIElement)
     }
-
-    mutating func check() -> Bool {
-        guard let pid, !moved else { return moved }
-        let now = uptimeNow()
-        if lastCheckAt >= 0, now - lastCheckAt < 0.050 { return false }
-        lastCheckAt = now
-        if let front = frontmostNow(), front.pid == pid { return false }
-        moved = true
-        return true
-    }
+    let text = takesText(role: axString(element, kAXRoleAttribute), subrole: axString(element, kAXSubroleAttribute))
+    return FocusMark(element: AnyHashable(element), window: window, takesText: text)
 }
 
 /// One `type` op's running state.
 struct TypeSession {
     let generation: sig_atomic_t
     let delayMs: Int
-    var front: FrontWatch
+    var watch: TypeWatch
     var events = 0
     /// Characters delivered so far (for a cancelled result).
     var typed = 0
-    /// Why to stop now, if at all: the stop signal first, then the front app.
+    /// Why to stop now, if at all: the stop signal, Kevin's hands, then where the keystrokes land.
     mutating func cancelReason() -> TypeCancelReason? {
-        if typeCancelGeneration != generation { return .stop }
-        if front.check() { return .focusMoved }
-        return nil
+        return watch.cancelReason(stopped: typeCancelGeneration != generation, ledger: &handsLedger, clock: sessionClock)
     }
 }
 
@@ -501,20 +487,27 @@ private func deliverAX(_ cell: String, target: FocusedTarget?, session: inout Ty
 
 private func deliverKeystrokes(_ cell: String, target: FocusedTarget?, session: inout TypeSession) -> Delivery {
     let before = readBack(target)
-    var posted = 0
-    for cluster in cell {
-        if let why = session.cancelReason() { return .cancelled(why) }
+    // Kevin's key, click or scroll, the client's stop and a moved focus are all judged before each grapheme.
+    let run = runGraphemes(cell, cancel: { session.cancelReason() }, post: { cluster in
         let units = Array(String(cluster).utf16)
         let chunks = units.count <= 20 ? [units] : utf16Chunks(Substring(String(cluster)), maxUnits: 20)
         for chunk in chunks {
-            guard postUnicode(chunk) else {
-                return posted == 0 ? .failed("keyboard events could not be created") : .done(verified: false, note: "keyboard events stopped being created part way")
-            }
+            guard postUnicode(chunk) else { return false }
             session.events += 1
         }
-        posted += 1
         session.typed += 1
         sleepMs(session.delayMs)
+        return true
+    })
+    let posted: Int
+    switch run {
+    case .cancelled(_, let why):
+        return .cancelled(why)
+    case .postFailed(let typed):
+        if typed == 0 { return .failed("keyboard events could not be created") }
+        return .done(verified: false, note: "keyboard events stopped being created part way")
+    case .done(let typed):
+        posted = typed
     }
     // The events were posted at the HID tap: they land wherever focus is, on the app's own clock —
     // a main thread busy for a quarter second (Mail syncing, Xcode indexing) shows nothing yet. So
@@ -572,14 +565,28 @@ func opType(_ params: Params) throws -> JSONObject {
     // Kevin's hands, then the front app — before anything is posted (a mismatch here is an error,
     // like a click's; one that appears mid-text is a cancelled result that says how far it got).
     try guardActing(params)
+    // A stop from here on is this op's, even one that lands while the focus is being resolved.
+    let generation = typeCancelGeneration
     let expectPid: pid_t? = try params.object("expectFront").map { pid_t(truncatingIfNeeded: try $0.requireInt("pid")) }
-    var session = TypeSession(generation: typeCancelGeneration, delayMs: delay, front: FrontWatch(pid: expectPid))
+    let ownDriver = try params.bool("ownDriver") == true
     let trusted = AXIsProcessTrusted()
     // Where the text lands. Refused for a password field here too — the gate said no already;
     // this is the hands' own no, so no caller can reach one by another road.
     var target = trusted ? resolveFocused().target : nil
     let passwordRefusal = HandsError.badRequest("the focused field is a password field; Kevin types secrets himself")
     if let t = target, t.secure { throw passwordRefusal }
+    // Between graphemes the type watches where its keystrokes land: the app the caller judged it
+    // against, and that app's focused element, read through the app's own element (the way the
+    // Chromium retry above reads it) with a short timeout.
+    let watchPid: pid_t? = trusted ? (expectPid ?? frontmostNow()?.pid) : nil
+    let watchApp: AXUIElement? = watchPid.map { pid in
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        return app
+    }
+    let readFocus: () -> FocusMark? = { watchApp.flatMap { focusMark(inApp: $0) } }
+    let front = FrontWatch(pid: expectPid, focus: readFocus(), readPid: { frontmostNow()?.pid }, readFocus: readFocus)
+    var session = TypeSession(generation: generation, delayMs: delay, watch: TypeWatch(busyCheck: !ownDriver, front: front))
     var field = target?.describedField
     var via: TypeStrategy = .keystrokes
     var attempts = 0
@@ -600,6 +607,8 @@ func opType(_ params: Params) throws -> JSONObject {
             target = resolveFocused().target
             if let t = target, t.secure { throw passwordRefusal }
             if let t = target { field = t.describedField }
+            // The separator moved the focus on purpose: where it landed is the place to watch now.
+            session.watch.front.rebase(readFocus())
         }
         return nil
     }
