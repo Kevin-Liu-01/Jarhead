@@ -1853,7 +1853,7 @@ public struct SettingsPatch: Equatable {
     public var warmThreads: Int?
     /// Replaces the whole automations block (Settings › Automations writes it via `set-settings`).
     public var automations: AutomationSettings?
-    /// Replaces the whole audio block (Settings › Audio › Recording, the status menu, ⌥⇧R — `set-settings` only).
+    /// Replaces the whole audio block (Settings › Audio › Recording, the status menu, ⌃⌥R — `set-settings` only).
     public var audio: AudioSettings?
     /// The user's name; "" clears it (the engine falls back to the account's full name).
     public var userName: String?

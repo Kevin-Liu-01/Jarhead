@@ -4353,7 +4353,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   // --------------------------------------------------------------- marks
-  // Kevin circles a region on screen (⌥⇧C, then a stroke): the engine records it
+  // Kevin circles a region on screen (⌃⌥C, then a stroke): the engine records it
   // as a pending mark at once, tells Live, screenshots it through the hands, and
   // the next delegation carries it (waiting for the capture if it is still going).
 
