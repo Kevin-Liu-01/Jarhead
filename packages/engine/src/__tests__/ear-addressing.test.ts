@@ -283,12 +283,11 @@ test("addressing: an unaddressed partial left to Live does not fire when the rec
 });
 
 /**
- * Pinned for W1-1 (engine.ts is its file): the ear gates a bare "start dictating" outside the exchange, and
- * Live's delegation of it reaches the Delegator's runReflex, which cannot start dictation, so the brain gets a
- * task. The fix is the engine's: runReflex handles dictate_start and dictate_stop through startDictation and
- * stopDictation, as runEarReflex does. Drop the todo once that lands.
+ * The ear gates a bare "start dictating" outside the exchange, and Live's delegation of it reaches the
+ * Delegator's runReflex, which starts and stops dictation through startDictation and stopDictation, as
+ * runEarReflex does (W1-1), so the brain never gets a task.
  */
-test("addressing: a bare 'start dictating' a minute after the last exchange, which Live delegates, starts dictation", { todo: "W1-1: the engine's Delegator-side runReflex must start and stop dictation" }, async () => {
+test("addressing: a bare 'start dictating' a minute after the last exchange, which Live delegates, starts dictation", async () => {
   const w = world();
   const { engine, brain } = w;
   try {
