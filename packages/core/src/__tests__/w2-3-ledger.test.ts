@@ -178,6 +178,82 @@ test("LM-5: the trashed sessions memory hides include every member and the root 
   assert.deepEqual([...ledger.trashedSessionIds()], []);
 });
 
+// ------------------------------------------------------------------------- D5 lineage
+
+test("D5: a conversation Kevin restored stays visible to memory after its remaining days move to the Trash", () => {
+  // The review's repro: R ← M, trashed; R's day moves (M carries the trash); Kevin restores M; M's day moves.
+  const { dir, ledger } = fresh("jh-w23-d5a-");
+  session(ledger, "R", NOW - 8 * DAY);
+  session(ledger, "M", NOW - 7 * DAY, { resumedFrom: "R" });
+  session(ledger, "x", NOW - 6 * DAY);
+  ledger.append({ at: NOW - 6 * DAY + 3_600_000, type: "conversation.trashed", chainId: "R", by: "kevin" });
+  let t = NOW - 5 * DAY;
+  const trash = new Trash(dir, ledger, { now: () => t });
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 8 * DAY), "ledger", "kevin").ok, true);
+  assert.deepEqual([...ledger.trashedSessionIds()].sort(), ["M", "R"]);
+  t = NOW - 4 * DAY;
+  ledger.append({ at: t, type: "conversation.restored", chainId: "M" });
+  assert.deepEqual([...ledger.trashedSessionIds()], [], "restored: what memory learned from R is back");
+  t = NOW - 3 * DAY;
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 7 * DAY), "ledger", "kevin").ok, true);
+  assert.deepEqual([...ledger.trashedSessionIds()], [], "moving M's day too hides nothing again");
+  // The first move's own row (and the carried trash) sit on D-5; that day can move as well.
+  t = NOW - 2 * DAY;
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 5 * DAY), "ledger", "kevin").ok, true);
+  assert.deepEqual([...ledger.trashedSessionIds()], []);
+});
+
+test("D5: a chain whose root and link leave on one day keeps its lineage on the move's row; Trash and Restore of what stays reach the root, across later moves", () => {
+  const { dir, ledger } = fresh("jh-w23-d5b-");
+  session(ledger, "R", NOW - 9 * DAY);
+  session(ledger, "A", NOW - 9 * DAY + 3_600_000, { resumedFrom: "R" });
+  session(ledger, "M", NOW - 6 * DAY, { resumedFrom: "A" });
+  let t = NOW - 5 * DAY;
+  const trash = new Trash(dir, ledger, { now: () => t });
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 9 * DAY), "ledger", "kevin").ok, true);
+  const moved = ledger.read(t).find((r) => r.type === "ledger.moved") as { lineage?: Record<string, string[]> } | undefined;
+  assert.deepEqual(moved?.lineage, { M: ["A", "R"] }, "the move says M continues A and R; no decision was carried");
+  assert.equal(ledger.chainRootOf("M"), "M");
+  t = NOW - 4 * DAY;
+  ledger.append({ at: t, type: "conversation.trashed", chainId: "M", by: "kevin" });
+  assert.deepEqual([...ledger.trashedSessionIds()].sort(), ["A", "M", "R"], "R named what memory learned; it follows M");
+  ledger.append({ at: t + 1000, type: "conversation.restored", chainId: "M" });
+  assert.deepEqual([...ledger.trashedSessionIds()], []);
+  ledger.append({ at: t + 2000, type: "conversation.trashed", chainId: "M", by: "kevin" });
+  // M's day moves, then the day of the first move's row: the lineage is said again each time.
+  t = NOW - 3 * DAY;
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 6 * DAY), "ledger", "kevin").ok, true);
+  assert.deepEqual([...ledger.trashedSessionIds()].sort(), ["A", "M", "R"]);
+  t = NOW - 2 * DAY;
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 5 * DAY), "ledger", "kevin").ok, true);
+  const again = ledger.read(t).find((r) => r.type === "ledger.moved") as { lineage?: Record<string, string[]> } | undefined;
+  assert.deepEqual(again?.lineage, { M: ["A", "R"] }, "the lineage only that day held is on the new move's row");
+  assert.deepEqual([...ledger.trashedSessionIds()].sort(), ["A", "M", "R"]);
+});
+
+test("D5: a carried copy of an old decision never outranks a newer one on the conversation that continues it", () => {
+  const { dir, ledger } = fresh("jh-w23-d5c-");
+  session(ledger, "R", NOW - 9 * DAY);
+  session(ledger, "x", NOW - 8 * DAY);
+  ledger.append({ at: NOW - 8 * DAY + 3_600_000, type: "conversation.trashed", chainId: "R", by: "kevin" });
+  session(ledger, "M", NOW - 6 * DAY, { resumedFrom: "R" });
+  let t = NOW - 5 * DAY;
+  const trash = new Trash(dir, ledger, { now: () => t });
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 9 * DAY), "ledger", "kevin").ok, true);
+  t = NOW - 4 * DAY;
+  ledger.append({ at: t, type: "conversation.restored", chainId: "M" });
+  assert.deepEqual([...ledger.trashedSessionIds()], []);
+  // The day of R's own trash row moves: that row is still R's last, so it is carried, stamped now.
+  t = NOW - 3 * DAY;
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 8 * DAY), "ledger", "kevin").ok, true);
+  assert.ok(ledger.read(t).some((r) => r.type === "conversation.trashed" && (r as { carried?: unknown }).carried === true && r.chainId === "R"));
+  assert.deepEqual([...ledger.trashedSessionIds()], [], "Kevin's restore of M is newer than the trash it restates");
+  // M's day goes as well: R's own last row is that carried trash, and M's restore still outranks it.
+  t = NOW - 2 * DAY;
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 6 * DAY), "ledger", "kevin").ok, true);
+  assert.deepEqual([...ledger.trashedSessionIds()], []);
+});
+
 // ------------------------------------------------------------------------------- LM-9
 
 test("LM-9: a search reads a bounded slice of the history, newest first, and says where to go on; the continuation finds the older hits", () => {

@@ -103,8 +103,18 @@ const META_TYPES: ReadonlySet<string> = new Set([
   "automation.set", "automation.fired", "automation.state", "automation.missed", "recipe.set", "recipe.trashed", "recipe.restored",
 ]);
 
+/**
+ * The record's rows the walk reads: Kevin's decisions and the moves (a move's `lineage`).
+ * The memory and automation rows are the record of other modules; the walk never reads
+ * them, so a day file's digest does not keep them.
+ */
+const WALK_META_TYPES: ReadonlySet<string> = new Set([
+  "conversation.trashed", "conversation.restored", "conversation.archived", "conversation.renamed", "conversation.pinned",
+  "now.cleared", "now.restored", "ledger.moved", "agent.hidden", "grant",
+]);
+
 /** The rows the walk reads whole; every other row is counted (heard, said, a delegation) or only takes its place. */
-const WHOLE_TYPES: ReadonlySet<string> = new Set(["session.started", "session.closed", "pause", "resume", "stop", "sleep", ...META_TYPES]);
+const WHOLE_TYPES: ReadonlySet<string> = new Set(["session.started", "session.closed", "pause", "resume", "stop", "sleep", ...WALK_META_TYPES]);
 const COUNTED_TYPES: ReadonlySet<string> = new Set(["heard", "said", "delegation.created"]);
 
 /** A row's type from the line itself (`{"at":…,"type":"…"` — how every row is written), so most lines are never parsed. */
@@ -207,6 +217,26 @@ interface Decided {
 /** The three things a conversation's tombstones decide, each by its own last row. */
 type ConversationAttr = "state" | "name" | "pinned";
 
+/**
+ * A conversation's state decision in force: when Kevin made it (a carried row keeps that
+ * instant), then its place in the walk's order, which breaks a tie (higher is newer).
+ */
+interface StateMark {
+  readonly state: ConversationState;
+  readonly decidedAt: number;
+  readonly rank: number;
+}
+
+/**
+ * What a ledger day's move keeps: how many decisions were carried into today's file, and the
+ * lineage the move's own `ledger.moved` row records — per id that continues a conversation,
+ * the session ids that leave (or left earlier) whose conversation it continues.
+ */
+export interface CarryResult {
+  readonly rows: number;
+  readonly lineage?: Readonly<Record<string, readonly string[]>>;
+}
+
 /** One pass over the ledger, valid while no day file changed. */
 interface Walk {
   /** Every (file, mtime, size) the walk read, in order — the cache key. */
@@ -245,10 +275,23 @@ interface Walk {
     readonly hidden: ReadonlyMap<string, Decided>;
     readonly now: ReadonlyMap<string, Decided>;
   };
-  /** Unresolved chainIds whose last state row says trashed (a conversation whose sessions' days are all in the Trash). */
-  readonly unresolvedTrashed: ReadonlySet<string>;
+  /** The state decision in force per chain root, and per unresolved chainId (its own rows). */
+  readonly stateOf: ReadonlyMap<string, StateMark>;
+  /**
+   * Lineage: a session id no live day file holds → the ids that continue its conversation
+   * (a session that resumed from it, a part of its chain that stayed when its day moved) →
+   * the day files that say so. Its verdict follows theirs (`trashedSessionIds`).
+   */
+  readonly heirs: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
   /** `trashedSessionIds()`, computed once per walk. */
   trashed?: ReadonlySet<string>;
+}
+
+/** A lineage entry of a `ledger.moved` row, waiting for the walk to know which ids are gone. */
+interface PendingLineage {
+  readonly from: string;
+  readonly heir: string;
+  readonly file: string;
 }
 
 /** A tombstone row waiting for the chain roots to be known. */
@@ -463,26 +506,40 @@ export class Ledger {
   }
 
   /**
-   * The session ids whose conversation is in the Trash: every member of a trashed chain,
-   * the sessions its members resumed from whose days are gone (a moved day took the root
-   * away; memory learned there carries that id), and the chainId of a trashed conversation
-   * no live day file holds a session of any more. What memory hides (decision D5); a
-   * Restore takes the chain out of this set and nothing else changes.
+   * The session ids whose conversation is in the Trash: what memory hides (decision D5;
+   * memory names what it learned by the chain's root). Every member of a trashed chain; and
+   * every id no live day file holds a session of any more (a moved day took it away) whose
+   * newest state decision says trashed — its own rows, or the newest of the conversations
+   * that continue it (`heirs`: a session that resumed from it, a part of its chain that
+   * stayed). So a Restore of what continues a conversation brings back what was learned
+   * from it, whichever days moved before or after; moving a day changes nothing here.
    */
   trashedSessionIds(): ReadonlySet<string> {
     const walk = this.walk();
     if (walk.trashed) return walk.trashed;
     const out = new Set<string>();
-    const claimed = new Set<string>(walk.byId.keys());
-    for (const b of walk.sessions) if (b.resumedFrom && !walk.byId.has(b.resumedFrom)) claimed.add(b.resumedFrom);
     for (const [root, conv] of walk.conversations) {
       if (conv.state !== "trashed") continue;
-      for (const b of walk.members.get(root) ?? []) {
-        out.add(b.id);
-        if (b.resumedFrom && !walk.byId.has(b.resumedFrom)) out.add(b.resumedFrom);
-      }
+      for (const b of walk.members.get(root) ?? []) out.add(b.id);
     }
-    for (const chainId of walk.unresolvedTrashed) if (!claimed.has(chainId)) out.add(chainId);
+    const memo = new Map<string, StateMark | null>();
+    const newest = (id: string, visiting: Set<string>): StateMark | undefined => {
+      const known = memo.get(id);
+      if (known !== undefined) return known ?? undefined;
+      let top = walk.stateOf.get(id);
+      if (visiting.has(id)) return top;
+      visiting.add(id);
+      for (const heir of walk.heirs.get(id)?.keys() ?? []) {
+        const root = walk.roots.get(heir);
+        const mark = root !== undefined ? walk.stateOf.get(root) : newest(heir, visiting);
+        if (mark && (!top || Ledger.newer(mark, top))) top = mark;
+      }
+      visiting.delete(id);
+      memo.set(id, top ?? null);
+      return top;
+    };
+    const gone = new Set<string>([...walk.heirs.keys(), ...walk.stateOf.keys()].filter((id) => !walk.byId.has(id)));
+    for (const id of gone) if (newest(id, new Set())?.state === "trashed") out.add(id);
     walk.trashed = out;
     return out;
   }
@@ -516,12 +573,25 @@ export class Ledger {
    * force is the last row for its key — a conversation's state, name or pin; an agent's
    * hide; a session's Now clear. A conversation whose root (or a link) sits on that day
    * splits there: each part that stays gets the conversation's decisions under its own
-   * root, unless a row that stays already reaches it. Returns how many rows were carried.
+   * root, unless a row that stays already reaches it.
+   *
+   * The move also keeps the lineage memory reads by (`trashedSessionIds`), returned for the
+   * move's own `ledger.moved` row: each part that stays continues the sessions above it that
+   * leave; a session that leaves with nothing of its own after it follows its chain's root;
+   * and a lineage only that day said is said again. Nothing is written for it unless the
+   * move happens.
    */
-  carry(day: string, at: number): number {
+  carry(day: string, at: number): CarryResult {
     const walk = this.walk();
     const file = `${day}.jsonl`;
     const out: LedgerRow[] = [];
+    const lineage = new Map<string, Set<string>>();
+    const link = (from: string, heir: string): void => {
+      if (from === heir) return;
+      const set = lineage.get(heir) ?? new Set<string>();
+      set.add(from);
+      lineage.set(heir, set);
+    };
     // The copy is the row as written plus `carried` and `decidedAt`, which the protocol's row types do not
     // name (readers that do not know them read the decision as it was; this walk reads `decidedAt`).
     const stamp = (row: LedgerRow, chainId?: string): LedgerRow => {
@@ -529,8 +599,10 @@ export class Ledger {
       if (chainId !== undefined) copy["chainId"] = chainId;
       return copy as unknown as LedgerRow;
     };
-    for (const [root, attrs] of walk.force.chains) {
-      const members = walk.members.get(root) ?? [];
+    const none: ReadonlyMap<ConversationAttr, Decided> = new Map();
+    for (const [root, members] of walk.members) {
+      const attrs = walk.force.chains.get(root) ?? none;
+      if (attrs.size === 0 && !members.some((b) => b.start.file === file)) continue;
       const alive = new Set(members.filter((b) => b.start.file !== file).map((b) => b.id));
       const partRoot = (id: string): string => {
         let cur = walk.byId.get(id);
@@ -542,22 +614,47 @@ export class Ledger {
         return cur?.id ?? id;
       };
       const parts = [...new Set(members.filter((b) => alive.has(b.id)).map((b) => partRoot(b.id)))];
+      // Lineage: a part continues every session that leaves between it and the next session that
+      // stays (its chain's root among them); a session that leaves with no part after it follows the root.
+      const continued = new Set<string>();
+      for (const part of parts) {
+        let cur = walk.byId.get(part);
+        const seen = new Set<string>([part]);
+        while (cur?.resumedFrom && !alive.has(cur.resumedFrom) && !seen.has(cur.resumedFrom)) {
+          const up = walk.byId.get(cur.resumedFrom);
+          if (!up) break;
+          seen.add(up.id);
+          continued.add(up.id);
+          link(up.id, part);
+          cur = up;
+        }
+      }
+      for (const b of members) if (!alive.has(b.id) && !continued.has(b.id)) link(b.id, root);
       for (const d of attrs.values()) {
+        const chainId = (d.row as { chainId?: unknown }).chainId;
         if (parts.length === 0) {
-          // Every session of the chain is on that day: the decision moves with them and comes back with them; a copy keeps it for what reads by id (memory).
-          if (d.at.file === file) out.push(stamp(d.row, root));
+          // Every session of the chain is on that day: the decision moves with them and comes back with them; a copy
+          // under the root keeps it for what reads by id (memory) — also one that named another of its sessions.
+          if (d.at.file === file || chainId !== root) out.push(stamp(d.row, root));
           continue;
         }
-        const chainId = (d.row as { chainId?: unknown }).chainId;
         const reached = d.at.file !== file && typeof chainId === "string" && alive.has(chainId) ? partRoot(chainId) : undefined;
         for (const part of parts) if (part !== reached) out.push(stamp(d.row, part));
       }
+    }
+    // A lineage only that day said (the started row of a session that resumed from a gone one, an
+    // earlier move's row) is said again by this move's row.
+    for (const [from, heirs] of walk.heirs) {
+      for (const [heir, files] of heirs) if (files.size === 1 && files.has(file)) link(from, heir);
     }
     for (const attrs of walk.force.unresolved.values()) for (const d of attrs.values()) if (d.at.file === file) out.push(stamp(d.row));
     for (const d of walk.force.hidden.values()) if (d.at.file === file) out.push(stamp(d.row));
     for (const d of walk.force.now.values()) if (d.at.file === file) out.push(stamp(d.row));
     for (const row of out) this.append(row);
-    return out.length;
+    if (lineage.size === 0) return { rows: out.length };
+    const record: Record<string, string[]> = {};
+    for (const heir of [...lineage.keys()].sort()) record[heir] = [...(lineage.get(heir) as Set<string>)].sort();
+    return { rows: out.length, lineage: record };
   }
 
   /**
@@ -804,6 +901,11 @@ export class Ledger {
     return typeof d === "number" && Number.isFinite(d) ? d : row.at;
   }
 
+  /** Whether decision `a` was made after `b`: by the instant Kevin decided, a carried copy of an old decision never outranking a newer one. */
+  private static newer(a: StateMark, b: StateMark): boolean {
+    return a.decidedAt !== b.decidedAt ? a.decidedAt > b.decidedAt : a.rank > b.rank;
+  }
+
   private static key(p: Position): string {
     return `${p.file}:${p.index}`;
   }
@@ -893,6 +995,7 @@ export class Ledger {
     const owners = new Map<string, Owners>();
     const pendingChain: PendingChainRow[] = [];
     const pendingNow: PendingChainRow[] = [];
+    const pendingLineage: PendingLineage[] = [];
     const nowRows = new Map<string, Position[]>();
     const hidden = new Map<string, { hidden: boolean; at: number }>();
     const hiddenForce = new Map<string, Decided>();
@@ -951,6 +1054,16 @@ export class Ledger {
               if (!last || row.at >= last.at) {
                 hidden.set(row.agentId, { hidden: row.hidden === true, at: row.at });
                 hiddenForce.set(row.agentId, { row, at: position });
+              }
+              break;
+            }
+            case "ledger.moved": {
+              // A move's lineage (`carry`): heir → the ids whose conversation it continues. Not in the protocol's row type.
+              const said = (row as { lineage?: unknown }).lineage;
+              if (!said || typeof said !== "object" || Array.isArray(said)) break;
+              for (const [heir, froms] of Object.entries(said as Record<string, unknown>)) {
+                if (!Array.isArray(froms)) continue;
+                for (const from of froms) if (typeof from === "string" && from !== heir) pendingLineage.push({ from, heir, file });
               }
               break;
             }
@@ -1070,10 +1183,12 @@ export class Ledger {
     const chainRows = new Map<string, Position[]>();
     const chainForce = new Map<string, Map<ConversationAttr, Decided>>();
     const unresolvedForce = new Map<string, Map<ConversationAttr, Decided>>();
-    const unresolvedState = new Map<string, ConversationState>();
+    // The state in force per root and per unresolved chainId, and when it was decided (this order breaks a tie).
+    const stateOf = new Map<string, StateMark>();
+    const stateOfRow = (row: LedgerRow): ConversationState => (row.type === "conversation.trashed" ? "trashed" : row.type === "conversation.archived" ? "archived" : "active");
     let unresolved = 0;
     pendingChain.sort((a, b) => a.row.at - b.row.at || a.order - b.order);
-    for (const { row, at } of pendingChain) {
+    for (const [rank, { row, at }] of pendingChain.entries()) {
       const chainId = (row as { chainId?: unknown }).chainId;
       const root = typeof chainId === "string" ? roots.get(chainId) : undefined;
       const attr = Ledger.attrOf(row);
@@ -1083,7 +1198,7 @@ export class Ledger {
           const force = unresolvedForce.get(chainId) ?? new Map<ConversationAttr, Decided>();
           force.set(attr, { row, at });
           unresolvedForce.set(chainId, force);
-          if (attr === "state") unresolvedState.set(chainId, row.type === "conversation.trashed" ? "trashed" : row.type === "conversation.archived" ? "archived" : "active");
+          if (attr === "state") stateOf.set(chainId, { state: stateOfRow(row), decidedAt: Ledger.decidedAt(row), rank });
         }
         continue;
       }
@@ -1094,6 +1209,7 @@ export class Ledger {
         const force = chainForce.get(root) ?? new Map<ConversationAttr, Decided>();
         force.set(attr, { row, at });
         chainForce.set(root, force);
+        if (attr === "state") stateOf.set(root, { state: stateOfRow(row), decidedAt: Ledger.decidedAt(row), rank });
       }
       const when = Ledger.decidedAt(row);
       const prev = conversations.get(root) ?? { state: "active" as ConversationState, name: "", pinned: false, updatedAt: when };
@@ -1123,8 +1239,20 @@ export class Ledger {
       }
     }
     for (const list of chainRows.values()) list.sort(Ledger.byPosition);
-    const unresolvedTrashed = new Set<string>();
-    for (const [chainId, state] of unresolvedState) if (state === "trashed") unresolvedTrashed.add(chainId);
+
+    // Lineage of the ids no live day file holds: a session that resumed from one continues it (its
+    // started row says so), and a move's row says which parts continue what it took away.
+    const heirs = new Map<string, Map<string, Set<string>>>();
+    const inherit = (from: string, heir: string, file: string): void => {
+      if (from === heir || byId.has(from)) return;
+      const byHeir = heirs.get(from) ?? new Map<string, Set<string>>();
+      const files = byHeir.get(heir) ?? new Set<string>();
+      files.add(file);
+      byHeir.set(heir, files);
+      heirs.set(from, byHeir);
+    };
+    for (const b of sessions) if (b.resumedFrom) inherit(b.resumedFrom, b.id, b.start.file);
+    for (const l of pendingLineage) inherit(l.from, l.heir, l.file);
 
     // The Now stream's clear per session: the last of cleared / restored by `at` decides.
     const nowCleared = new Map<string, number>();
@@ -1159,7 +1287,8 @@ export class Ledger {
       owners,
       unresolved,
       force: { chains: chainForce, unresolved: unresolvedForce, hidden: hiddenForce, now: nowForce },
-      unresolvedTrashed,
+      stateOf,
+      heirs,
     };
     return this.walked;
   }

@@ -118,8 +118,9 @@ const byRecent = (a: MemoryItem, b: MemoryItem): number => b.lastSeenAt - a.last
  * decider, so a concurrent add would land as a twin it never saw. The sync
  * verbs (forget, restore, edit, forgetRecent) apply at once; a merge in flight
  * reads the pool again once the decider answers, and a target that is no longer
- * live becomes a plain add (`mergeCandidates`), so a forget between its awaits
- * is not undone — and the store never merges an item that is not live.
+ * live, or whose words Kevin edited, becomes a plain add (`mergeCandidates`), so
+ * a Forget or an Edit between its awaits is not undone — and the store never
+ * merges an item that is not live.
  */
 export class MemoryService {
   readonly store: MemoryStore;

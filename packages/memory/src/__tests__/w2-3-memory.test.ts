@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { MemoryItem } from "@jarhead/protocol";
+import { Ledger, Trash } from "@jarhead/core";
+import type { LedgerRow, MemoryItem } from "@jarhead/protocol";
 import { KeywordEmbedder } from "../embed/keyword.ts";
+import { buildExtractInput } from "../extract/input.ts";
 import { FakeEmbedder } from "../embed/embedder.ts";
 import { RulesExtractor } from "../extract/rules.ts";
 import { MemoryService } from "../service.ts";
@@ -11,9 +13,10 @@ import type { Decision } from "../types.ts";
 import { clock, fresh, ids, item, redactFake } from "./helpers.ts";
 
 /**
- * W2-3: a Forget pressed while a merge waits on the decider stays a Forget (LM-7), a search can
- * rank by words with no embedding call (LM-3), and the sessions in the Trash hide what was
- * learned only from them, nothing deleted (D5).
+ * W2-3: a Forget (or an Edit) pressed while a merge waits on the decider stays what Kevin made
+ * it (LM-7), a search can rank by words with no embedding call (LM-3), the sessions in the Trash
+ * hide what was learned only from them, nothing deleted (D5), and a Now clear the ledger carried
+ * out of a moved day hides what it hid, no more (LM-5).
  */
 
 const quiet = { info: () => undefined, warn: () => undefined };
@@ -68,6 +71,31 @@ for (const [label, decision] of [
     assert.equal(r?.item.supersedes, undefined, "a plain add: it supersedes nothing");
     assert.equal(svc.restore(id), true, "Restore brings it back");
     assert.equal(svc.store.get(id)?.state, "live");
+  });
+}
+
+for (const [label, decision] of [
+  ["an update", (target: string): Decision => ({ op: "UPDATE", target, text: "Kevin prefers light mode in every code editor" })],
+  ["a contradiction", (target: string): Decision => ({ op: "ADD", contradicts: true, target })],
+] as const) {
+  test(`LM-7: an Edit pressed while ${label} waits on the decider keeps Kevin's words; the candidate lands as a plain add`, async () => {
+    const held = heldDecider();
+    const c = clock();
+    const svc = new MemoryService({ dir: fresh(), now: () => (c.tick(1000), c.now()), embedder: new KeywordEmbedder(), extractor: new RulesExtractor(), decider: held.decider, redact: (s) => s, newId: ids(), log: quiet });
+    const first = await svc.remember("Kevin prefers dark mode in every code editor", "preference");
+    assert.ok(first);
+    const id = first.item.id;
+    const pending = svc.remember("Kevin prefers light mode in every code editor", "preference");
+    await until(() => held.asked() > 0);
+    assert.equal(svc.edit(id, "Kevin prefers dark mode in Xcode only"), true);
+    held.release(decision(id));
+    const r = await pending;
+    const mine = svc.store.get(id)!;
+    assert.equal(mine.state, "live");
+    assert.equal(mine.text, "Kevin prefers dark mode in Xcode only", "the decision judged the old words; it does not land on the new ones");
+    assert.equal(r?.op, "added");
+    assert.notEqual(r?.item.id, id);
+    assert.equal(r?.item.supersedes, undefined);
   });
 }
 
@@ -139,4 +167,50 @@ test("D5: items learned only from sessions in the Trash leave every read; one al
   assert.ok((await svc.retrieveForBrain("how should you answer me", { hidden: none })).ids.includes(only.id));
   assert.ok(svc.retrieveForVoice({ hidden: none }).ids.includes(only.id));
   assert.equal(svc.store.get(only.id)?.state, "live");
+});
+
+// ------------------------------------------------------------------- LM-5, carried Now rows
+
+const DAY = 86_400_000;
+const NOW = new Date(2026, 9, 4, 12).getTime();
+const noRefusal = { redact: (t: string) => t, refuse: (): undefined => undefined };
+const kevin = (at: number, text: string): LedgerRow => ({ at, type: "heard", item: { id: `h${at}`, speaker: "kevin", text, startMs: 0, endMs: 900, at, final: true } });
+function sessionRows(ledger: Ledger, id: string, at: number, lines: readonly string[], resumedFrom?: string): void {
+  ledger.append({ at, type: "session.started", sessionId: id, voice: "ballad", ...(resumedFrom ? { resumedFrom } : {}) } as LedgerRow);
+  lines.forEach((text, i) => ledger.append(kevin(at + 1000 + i, text)));
+  ledger.append({ at: at + 60_000, type: "session.closed", sessionId: id, reason: "close_requested", usageSeconds: 60 });
+}
+
+test("LM-5: a carried Now clear hides what the clear hid, not what Kevin said after it (memory reads the decision's time)", () => {
+  // The review's repro: S1 cleared on D-4, S2 resumes S1 on D-3 with four lines, D-4 moves.
+  const dir = fresh();
+  const ledger = new Ledger(dir);
+  sessionRows(ledger, "S1", NOW - 5 * DAY, ["an old line before the clear"]);
+  sessionRows(ledger, "X", NOW - 4 * DAY, []);
+  const clearedAt = NOW - 4 * DAY + 3_600_000;
+  ledger.append({ at: clearedAt, type: "now.cleared", sessionId: "S1" });
+  sessionRows(ledger, "S2", NOW - 3 * DAY, [0, 1, 2, 3].map((i) => `I prefer green tea in the morning ${i}`), "S1");
+  const lines = (): string[] => buildExtractInput(ledger.readChain("S1").rows, noRefusal).lines.map((l) => l.text);
+  assert.equal(lines().length, 4, "before the move: S2's four lines; the clear hides S1's");
+  assert.equal(new Trash(dir, ledger, { now: () => NOW }).moveDay(Ledger.dayFor(clearedAt), "ledger", "kevin").ok, true);
+  assert.equal(ledger.nowClearedAt("S1"), clearedAt);
+  assert.deepEqual(lines(), [0, 1, 2, 3].map((i) => `I prefer green tea in the morning ${i}`), "after: the same four, and S1's line stays hidden");
+});
+
+test("LM-5: a carried Now restore does not undo a later clear in the same conversation", () => {
+  const dir = fresh();
+  const ledger = new Ledger(dir);
+  sessionRows(ledger, "S1", NOW - 6 * DAY, ["first line"]);
+  sessionRows(ledger, "X", NOW - 5 * DAY, []);
+  ledger.append({ at: NOW - 5 * DAY + 3_600_000, type: "now.cleared", sessionId: "S1" });
+  ledger.append({ at: NOW - 5 * DAY + 3_600_001, type: "now.restored", sessionId: "S1" });
+  sessionRows(ledger, "S2", NOW - 3 * DAY, ["a line Kevin cleared"], "S1");
+  ledger.append({ at: NOW - 3 * DAY + 120_000, type: "now.cleared", sessionId: "S2" });
+  sessionRows(ledger, "S3", NOW - 2 * DAY, ["a line after the clear"], "S2");
+  const lines = (): string[] => buildExtractInput(ledger.readChain("S1").rows, noRefusal).lines.map((l) => l.text);
+  assert.deepEqual(lines(), ["a line after the clear"]);
+  // S1's restore is carried (stamped now); it was decided before S2's clear and must not lift it.
+  assert.equal(new Trash(dir, ledger, { now: () => NOW }).moveDay(Ledger.dayFor(NOW - 5 * DAY), "ledger", "kevin").ok, true);
+  assert.ok(ledger.read(NOW).some((r) => r.type === "now.restored" && (r as { carried?: unknown }).carried === true));
+  assert.deepEqual(lines(), ["a line after the clear"]);
 });

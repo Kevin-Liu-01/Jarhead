@@ -48,11 +48,17 @@ export function buildExtractInput(rows: readonly LedgerRow[], opts: BuildExtract
   const sinceAt = opts.sinceAt ?? 0;
   const sorted = [...rows].sort((a, b) => a.at - b.at);
 
-  // The latest clear not undone by a later restore hides everything at or before it.
+  // The latest clear not undone by a later restore hides everything at or before it, by when Kevin
+  // decided: a row the ledger carried out of a day moved to the Trash keeps that instant as `decidedAt`
+  // (its `at` is the move's), so a carried clear never hides what was said after the clear itself.
+  const decided = (r: LedgerRow): number => {
+    const d = (r as { decidedAt?: unknown }).decidedAt;
+    return typeof d === "number" && Number.isFinite(d) ? d : r.at;
+  };
   let clearedUpTo = 0;
-  for (const r of sorted) {
-    if (r.type === "now.cleared") clearedUpTo = Math.max(clearedUpTo, r.at);
-    else if (r.type === "now.restored") clearedUpTo = 0;
+  for (const r of sorted.filter((x) => x.type === "now.cleared" || x.type === "now.restored").sort((a, b) => decided(a) - decided(b))) {
+    if (r.type === "now.cleared") clearedUpTo = Math.max(clearedUpTo, decided(r));
+    else clearedUpTo = 0;
   }
 
   const confirmAts = sorted.filter((r) => r.type === "delegation.step" && r.step.kind === "confirm").map((r) => r.at);

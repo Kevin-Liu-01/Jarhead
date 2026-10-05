@@ -116,8 +116,8 @@ function neighboursOf(pool: ReadonlyMap<string, Pooled>, c: Candidate, cand: Emb
  * touch. Embedding runs first and its failure throws before anything is
  * written — the service defers the run rather than mixing vector spaces. The
  * decider is the one await inside the loop: once it answers, the pool is read
- * again, and a target that is no longer live (Kevin pressed Forget meanwhile)
- * turns the decision into a plain ADD.
+ * again, and a target that is no longer live (Kevin pressed Forget meanwhile) or
+ * whose words he edited turns the decision into a plain ADD.
  */
 export async function mergeCandidates(store: MemoryStore, candidates: readonly Candidate[], embedder: Embedder, decider: Decider, opts: MergeOptions): Promise<MergeResult> {
   const texts = candidates.map((c) => c.text);
@@ -139,9 +139,9 @@ export async function mergeCandidates(store: MemoryStore, candidates: readonly C
     if (it && it.state === "live") pool.set(id, { item: it, vec: store.vectorFor(id, embedder) });
     else pool.delete(id);
   };
-  // The sync verbs (Forget, Edit) apply at once, also while the decider is out: after every
-  // await the pool is read again (an item the store replaced since), so no decision lands
-  // on an item that is not live.
+  // The sync verbs (Forget, Edit) apply at once, also while the decider is out: after the
+  // decider answers, the pool is read again (an item the store replaced since), so no
+  // decision lands on an item that is no longer live, or on words Kevin changed meanwhile.
   const resync = (): void => {
     for (const [id, p] of [...pool]) if (store.get(id) !== p.item) refresh(id);
   };
@@ -188,10 +188,14 @@ export async function mergeCandidates(store: MemoryStore, candidates: readonly C
     if (top && s >= T.band) {
       d = await decider.decide(c, N, { thresholds: T, now: opts.now, ...(opts.signal ? { signal: opts.signal } : {}) });
       // The item the decider meant, as it saw the pool; then the pool as it is now. A target
-      // Kevin forgot meanwhile (or one archived or merged) is gone from it, and the decision
-      // becomes a plain ADD: the forgotten words are neither rewritten, touched nor superseded.
+      // Kevin forgot meanwhile (or one archived or merged) is gone from it, and one he edited
+      // reads other words than the decider judged: either way the decision becomes a plain
+      // ADD, and his words are neither rewritten, touched nor superseded.
       target = d.target && pool.has(d.target) ? d.target : top.item.id;
+      const judged = pool.get(target)?.item;
       resync();
+      const current = pool.get(target)?.item;
+      if (judged && current && normalizeText(current.text) !== normalizeText(judged.text)) target = undefined;
     }
     const targetItem = target ? pool.get(target)?.item : undefined;
 
