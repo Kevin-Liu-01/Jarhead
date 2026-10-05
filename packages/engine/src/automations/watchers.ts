@@ -1,19 +1,23 @@
 import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { readdir } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { expandPath, logger, type ActionContext, type Decision } from "@jarhead/core";
-import type { NativeHands, WindowInfo } from "@jarhead/hands";
 import { AUTOMATION_POLL_MIN_S, recipeNamed, type AgentInfo, type Automation, type Settings, type SystemEvent, type SystemSignal } from "@jarhead/protocol";
-import type { ShellRunner } from "./executor.ts";
+import type { AutomationExec, ShellRunner } from "./executor.ts";
 
 /**
- * The watchers — polling from `tick()`, the house pattern. A folder is `readdirSync` +
- * `statSync` every FOLDER_POLL_MS against a baseline (a new entry whose size and mtime
- * hold for `settleMs` fires once; browser partials and .DS_Store never count; files
- * that were there at arm never fire — a folder is not a queue). An app quitting or
- * launching arrives as the app's `system.signal`; the reading helper's `windows` every
- * APP_POLL_MS is the fallback edge. `recipe.red` runs its recipe every `everySeconds`
- * through the shell gate and fires on the flip to non-zero and once on the flip back.
- * `agent.status` reads the registry the engine already refreshes. Nothing here acts.
+ * The watchers — polling from `tick()`, the house pattern. A folder is listed every
+ * FOLDER_POLL_MS, once however many rows watch it, against a baseline of names: a name the
+ * baseline does not hold is statted and fires once its size and mtime hold for `settleMs`;
+ * a name it holds (there at arm, or already fired) is never a landing, whatever happens to
+ * its contents — Preview saving an annotation is not a download. Browser partials,
+ * .DS_Store and names the glob passes over never count and are never statted. A folder of
+ * LIST_ASYNC_AT entries or more is listed off the event loop. An app quitting or launching
+ * arrives as the app's `system.signal`; while no app client forwards them, the process list
+ * (`ps -axo pid,comm` through the exec seam) every APP_POLL_MS is the fallback edge — a
+ * window leaving the screen is not a quit. `recipe.red` runs its recipe every
+ * `everySeconds` through the shell gate and fires on the flip to non-zero and once on the
+ * flip back. `agent.status` reads the registry the engine already refreshes. Nothing here acts.
  */
 
 const log = logger("engine.automations.watchers");
@@ -23,6 +27,10 @@ export const APP_POLL_MS = 10_000;
 export const SETTLE_DEFAULT_MS = 3_000;
 /** A recipe.red run is cut here whatever its recipe says. */
 export const RECIPE_RED_CAP_MS = 20_000;
+/** A folder that held this many entries at its last listing is listed with fs.promises.readdir; a smaller one inline, as of its tick. */
+export const LIST_ASYNC_AT = 2_000;
+/** The process list's own time limit. */
+const PS_TIMEOUT_MS = 5_000;
 /** Browser partials and the Finder's own file never count as a landing. */
 const IGNORED = /(\.crdownload|\.download|\.part|\.tmp|\.partial)$|^\.DS_Store$|^\.localized$|^~\$/i;
 
@@ -43,10 +51,15 @@ interface FolderState {
   readonly path: string;
   readonly glob: RegExp | undefined;
   readonly settleMs: number;
-  readonly baseline: Map<string, Entry>;
+  /** The names that are never a landing: what the folder held at arm (or at the last resync), and every name that already fired. */
+  baseline: Set<string>;
+  /** False until the folder could be read once: then its listing is the baseline, never a burst of landings. */
+  ready: boolean;
   readonly pending: Map<string, Entry & { readonly since: number }>;
   /** Files that landed while the daemon was down or the folder unreadable: counted, never replayed. */
   unhandled: number;
+  /** Bumped at every baseline: a listing begun before it is stale and is dropped. */
+  gen: number;
 }
 
 interface RecipeState {
@@ -57,13 +70,18 @@ interface RecipeState {
 
 export interface WatchersOptions {
   readonly now: () => number;
-  /** The reading helper (the `windows` fallback poll). */
-  readonly reader: NativeHands;
+  /** The process list for the app fallback (its `output`); without one there is no fallback poll. */
+  readonly exec?: AutomationExec | undefined;
   readonly shell: ShellRunner;
   readonly shellGate: (ctx: ActionContext) => Decision;
   readonly settings: () => Settings;
   readonly home: string;
   readonly repoRoot?: string | undefined;
+}
+
+export interface PollOptions {
+  /** An app client forwards app.launch and app.quit itself: no process list, and the next fallback starts from a fresh baseline. */
+  readonly appSignals?: boolean | undefined;
 }
 
 /** `*.pdf` → a case-insensitive matcher on the file name; `*` any run, `?` one char. */
@@ -79,12 +97,33 @@ export function folderOf(on: SystemEvent, home: string): string | undefined {
   return undefined;
 }
 
+/**
+ * The apps a `ps -axo pid,comm` listing shows running. Each `<Name>.app/Contents/MacOS/<exec>` path
+ * gives its bundle's name and its executable's name, so "Visual Studio Code" and "Code" both read as
+ * running; a helper inside an app is its own name ("Slack Helper (Renderer)") and keeps no "Slack" alive.
+ */
+export function runningApps(stdout: string): Set<string> {
+  const out = new Set<string>();
+  for (const line of stdout.split("\n")) {
+    const m = /\/([^/]+)\.app\/Contents\/MacOS\/([^/]+)$/.exec(line.trim());
+    if (!m) continue;
+    out.add(m[1] ?? "");
+    out.add(m[2] ?? "");
+  }
+  out.delete("");
+  return out;
+}
+
 export class Watchers {
   private readonly folders = new Map<string, FolderState>();
   private readonly recipes = new Map<string, RecipeState>();
+  /** Entries per folder at its last listing: a big one is listed off the loop next time. */
+  private readonly sizes = new Map<string, number>();
   private lastFolderPollAt = 0;
+  /** A listing off the loop is out: the next folder poll waits for it. */
+  private folderPolling = false;
   private lastAppPollAt = 0;
-  /** The app names the reading helper last saw with a window; undefined before the first poll. */
+  /** The apps the last process list showed running; undefined before the fallback's first listing. */
   private knownApps: Set<string> | undefined;
   private readonly agentStatus = new Map<string, string>();
   private agentsSeen = false;
@@ -99,9 +138,9 @@ export class Watchers {
   /**
    * Start watching for a row. A folder is read NOW — while Kevin is at the Mac, so the
    * per-folder TCC prompt shows at set-up, never at 3 a.m. Returns the read error when
-   * the folder cannot be listed (EPERM, ENOENT); the caller raises the problem. `asOf`
-   * (a restart) is the daemon's last heartbeat: files newer than it stay out of the
-   * baseline for the resync to count.
+   * the folder cannot be listed (EPERM, ENOENT); the caller raises the problem, and the
+   * first listing that works becomes the baseline. `asOf` (a restart) is the daemon's last
+   * heartbeat: files newer than it stay out of the baseline for the resync to count.
    */
   watch(a: Automation, asOf?: number): string | undefined {
     if (a.when.kind !== "on") return undefined;
@@ -110,7 +149,7 @@ export class Watchers {
     if (folder !== undefined) {
       const glob = on.kind === "folder.file" || on.kind === "download.done" ? on.glob : undefined;
       const settleMs = on.kind === "folder.file" && on.settleMs !== undefined ? Math.max(500, on.settleMs) : SETTLE_DEFAULT_MS;
-      const state: FolderState = { path: folder, glob: glob ? globToRegExp(glob) : undefined, settleMs, baseline: new Map(), pending: new Map(), unhandled: 0 };
+      const state: FolderState = { path: folder, glob: glob ? globToRegExp(glob) : undefined, settleMs, baseline: new Set(), ready: false, pending: new Map(), unhandled: 0, gen: 0 };
       // At a restart the baseline is the listing AS OF the last heartbeat: what landed since is left out, so the resync that
       // follows counts it ("not watching … · N new files not handled") instead of the fresh listing hiding it. Never replayed.
       const err = this.baseline(state, asOf);
@@ -126,43 +165,62 @@ export class Watchers {
     this.recipes.delete(id);
   }
 
+  /** A landed file left its folder (filed away): its name leaves the folder's baselines, so a new file under that name is a new landing. */
+  forget(file: string): void {
+    const dir = resolve(dirname(file));
+    const name = basename(file);
+    for (const f of this.folders.values()) if (resolve(f.path) === dir) f.baseline.delete(name);
+  }
+
   /** After a gap (the Mac slept, the daemon was down): every folder's listing is the new baseline; what landed meanwhile is counted, not replayed. */
   rebaseline(): Map<string, number> {
     const out = new Map<string, number>();
     for (const [id, f] of this.folders) {
-      const before = new Set(f.baseline.keys());
-      f.pending.clear();
-      const err = this.baseline(f);
-      if (err) continue;
+      const before = f.baseline;
+      const wasReady = f.ready;
+      if (this.baseline(f) || !wasReady) continue;
       let landed = 0;
-      for (const name of f.baseline.keys()) if (!before.has(name)) landed++;
+      for (const name of f.baseline) if (!before.has(name) && this.landable(f, name)) landed++;
       f.unhandled += landed;
       if (landed > 0) out.set(id, landed);
     }
     return out;
   }
 
+  /** A name that could be a landing in this folder: not a partial or the Finder's own, and the glob's. */
+  private landable(f: FolderState, name: string): boolean {
+    return !IGNORED.test(name) && (!f.glob || f.glob.test(name));
+  }
+
   private baseline(f: FolderState, asOf?: number): string | undefined {
+    let names: string[];
     try {
-      f.baseline.clear();
-      for (const name of readdirSync(f.path)) {
-        const e = this.entry(f.path, name);
-        if (!e) continue;
-        if (asOf !== undefined && e.mtime > asOf && !IGNORED.test(name) && (!f.glob || f.glob.test(name))) continue;
-        f.baseline.set(name, e);
-      }
-      return undefined;
+      names = readdirSync(f.path);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       return code === "EPERM" || code === "EACCES" ? `${f.path} cannot be read (macOS asks for the folder)` : `${f.path}: ${(e as Error).message}`;
     }
+    this.sizes.set(f.path, names.length);
+    const base = new Set<string>();
+    for (const name of names) {
+      if (asOf !== undefined && this.landable(f, name)) {
+        const e = this.entry(join(f.path, name));
+        if (e && e.mtime > asOf) continue;
+      }
+      base.add(name);
+    }
+    f.baseline = base;
+    f.ready = true;
+    f.pending.clear();
+    f.gen++;
+    return undefined;
   }
 
-  private entry(dir: string, name: string): Entry | undefined {
+  /** A file's size and mtime; null for a name that is not a file (a folder); undefined when it is gone. */
+  private entry(path: string): Entry | null | undefined {
     try {
-      const s = statSync(join(dir, name));
-      if (!s.isFile()) return undefined;
-      return { size: s.size, mtime: s.mtimeMs };
+      const s = statSync(path);
+      return s.isFile() ? { size: s.size, mtime: s.mtimeMs } : null;
     } catch {
       return undefined;
     }
@@ -170,20 +228,20 @@ export class Watchers {
 
   /**
    * The polls, due by their own clocks: folders every FOLDER_POLL_MS, the app fallback
-   * every APP_POLL_MS (only while a row listens for an app), each recipe.red at its own
-   * `everySeconds`. `rows` are the armed watchers; anything else is ignored.
+   * every APP_POLL_MS (only while a row listens for an app and no app client forwards the
+   * signals), each recipe.red at its own `everySeconds`. `rows` are the watchers to poll.
    */
-  async poll(now: number, rows: readonly Automation[]): Promise<WatcherFire[]> {
+  async poll(now: number, rows: readonly Automation[], o: PollOptions = {}): Promise<WatcherFire[]> {
     const fires: WatcherFire[] = [];
-    if (now - this.lastFolderPollAt >= FOLDER_POLL_MS) {
+    if (now - this.lastFolderPollAt >= FOLDER_POLL_MS && !this.folderPolling) {
       this.lastFolderPollAt = now;
-      for (const a of rows) {
-        const f = this.folders.get(a.id);
-        if (f) for (const file of this.pollFolder(f, now)) fires.push({ id: a.id, file, what: `landed ${file.slice(file.lastIndexOf("/") + 1)}` });
-      }
+      fires.push(...(await this.pollFolders(now, rows)));
     }
     const appRows = rows.filter((a) => a.when.kind === "on" && (a.when.on.kind === "app.quit" || a.when.on.kind === "app.launch"));
-    if (appRows.length > 0 && now - this.lastAppPollAt >= APP_POLL_MS) {
+    if (o.appSignals || appRows.length === 0) {
+      // The app's own signals are the edge (or nobody listens): the fallback's listing lapses, and its next one is a fresh baseline.
+      this.knownApps = undefined;
+    } else if (now - this.lastAppPollAt >= APP_POLL_MS) {
       this.lastAppPollAt = now;
       for (const sig of await this.pollApps()) fires.push(...this.signal(sig, appRows));
     }
@@ -199,35 +257,104 @@ export class Watchers {
     return fires;
   }
 
-  /**
-   * One folder's poll: an entry the baseline does not hold — by name AND by size and mtime,
-   * so a file that replaces one already filed away under the same name is a new landing —
-   * fires once it settled; gone entries leave the maps.
-   */
-  private pollFolder(f: FolderState, now: number): string[] {
-    let names: string[];
+  /** Every watched folder once: one listing per folder, one stat per new name, the big folders' listings awaited off the loop. */
+  private async pollFolders(now: number, rows: readonly Automation[]): Promise<WatcherFire[]> {
+    const fires: WatcherFire[] = [];
+    const watched: (readonly [Automation, FolderState])[] = [];
+    for (const a of rows) {
+      const f = this.folders.get(a.id);
+      if (f) watched.push([a, f]);
+    }
+    const listings = new Map<string, string[] | Promise<string[] | undefined> | undefined>();
+    for (const [, f] of watched) if (!listings.has(f.path)) listings.set(f.path, this.list(f.path));
+    const stats = new Map<string, Entry | null | undefined>();
+    const statOf = (path: string): Entry | null | undefined => {
+      if (!stats.has(path)) stats.set(path, this.entry(path));
+      return stats.get(path);
+    };
+    const take = (a: Automation, f: FolderState, names: readonly string[] | undefined): void => {
+      if (names) for (const file of this.pollFolder(f, names, now, statOf)) fires.push({ id: a.id, file, what: `landed ${file.slice(file.lastIndexOf("/") + 1)}` });
+    };
+    const later: (readonly [Automation, FolderState, number])[] = [];
+    for (const [a, f] of watched) {
+      const l = listings.get(f.path);
+      if (l instanceof Promise) later.push([a, f, f.gen]);
+      else take(a, f, l);
+    }
+    if (later.length === 0) return fires;
+    this.folderPolling = true;
     try {
-      names = readdirSync(f.path);
+      for (const [a, f, gen] of later) {
+        const names = await listings.get(f.path);
+        // A resync read the folder again while this listing was out: its baseline is newer than what came back.
+        if (f.gen === gen) take(a, f, names);
+      }
+    } finally {
+      this.folderPolling = false;
+    }
+    return fires;
+  }
+
+  /** One folder's names: inline below LIST_ASYNC_AT entries, off the loop at or above it; undefined when it cannot be read. */
+  private list(path: string): string[] | Promise<string[] | undefined> | undefined {
+    if ((this.sizes.get(path) ?? 0) >= LIST_ASYNC_AT) {
+      return readdir(path).then(
+        (names) => {
+          this.sizes.set(path, names.length);
+          return names;
+        },
+        (e: unknown) => {
+          log.debug(`folder ${path}: ${(e as Error).message}`);
+          return undefined;
+        },
+      );
+    }
+    try {
+      const names = readdirSync(path);
+      this.sizes.set(path, names.length);
+      return names;
     } catch (e) {
-      log.debug(`folder ${f.path}: ${(e as Error).message}`);
+      log.debug(`folder ${path}: ${(e as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * One folder's poll over its listing: a name the baseline does not hold is statted; it fires
+   * once its size and mtime held for `settleMs`, and joins the baseline. A name the baseline
+   * holds is never a landing. Gone names leave the maps (and `forget` drops a name the fire
+   * filed away), so a file that replaces one under the same name is a new landing.
+   */
+  private pollFolder(f: FolderState, names: readonly string[], now: number, statOf: (path: string) => Entry | null | undefined): string[] {
+    if (!f.ready) {
+      // The folder could not be read at arm: what it holds now is what was there, never a burst of landings.
+      f.baseline = new Set(names);
+      f.ready = true;
       return [];
     }
     const seen = new Set(names);
-    for (const name of [...f.baseline.keys()]) if (!seen.has(name)) f.baseline.delete(name);
-    for (const name of [...f.pending.keys()]) if (!seen.has(name)) f.pending.delete(name);
+    for (const name of f.baseline) if (!seen.has(name)) f.baseline.delete(name);
+    for (const name of f.pending.keys()) if (!seen.has(name)) f.pending.delete(name);
     const fired: string[] = [];
     for (const name of names) {
-      if (IGNORED.test(name)) continue;
-      const e = this.entry(f.path, name);
+      if (f.baseline.has(name)) continue;
+      // A partial, the Finder's own file, a name the glob passes over: never a landing, never statted again.
+      if (!this.landable(f, name)) {
+        f.baseline.add(name);
+        continue;
+      }
+      const e = statOf(join(f.path, name));
+      if (e === null) {
+        f.baseline.add(name);
+        continue;
+      }
       if (!e) continue;
-      const known = f.baseline.get(name);
-      if (known && known.size === e.size && known.mtime === e.mtime) continue;
       const p = f.pending.get(name);
       if (p && p.size === e.size && p.mtime === e.mtime) {
         if (now - p.since >= f.settleMs) {
           f.pending.delete(name);
-          f.baseline.set(name, e);
-          if (!f.glob || f.glob.test(name)) fired.push(join(f.path, name));
+          f.baseline.add(name);
+          fired.push(join(f.path, name));
         }
         continue;
       }
@@ -236,14 +363,20 @@ export class Watchers {
     return fired;
   }
 
-  /** The reading helper's `windows`: the set of apps with a window; a diff is a launch or a quit. */
+  /** The process list: the set of running apps; a diff is a launch or a quit. A failed or cut listing changes nothing. */
   private async pollApps(): Promise<SystemSignal[]> {
+    const exec = this.opts.exec;
+    if (!exec?.output) return [];
     let apps: Set<string>;
     try {
-      const r = await this.opts.reader.request<{ readonly windows?: readonly WindowInfo[] }>("windows", {}, 1500);
-      apps = new Set((r.windows ?? []).map((w) => w.app).filter((s) => typeof s === "string" && s.length > 0));
+      const r = await exec.output("/bin/ps", ["-axo", "pid,comm"], PS_TIMEOUT_MS);
+      if (r.code !== 0 || r.error || /bytes dropped\] …/.test(r.stdout)) {
+        log.debug(`process list: ${r.error ?? `exit ${r.code ?? "?"}`}`);
+        return [];
+      }
+      apps = runningApps(r.stdout);
     } catch (e) {
-      log.debug(`windows poll: ${(e as Error).message}`);
+      log.debug(`process list: ${(e as Error).message}`);
       return [];
     }
     const before = this.knownApps;

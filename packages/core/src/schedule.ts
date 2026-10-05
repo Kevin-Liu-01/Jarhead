@@ -4,8 +4,9 @@ import { AUTOMATION_GRACE_MS, type AutomationClauses, type AutomationKind, type 
  * When an automation fires — the clock arithmetic, pure, so the CLI can parse a phrase
  * without a daemon and the engine's tick() can ask "what is next" without a model.
  *
- *   parseWhen     Kevin's phrase → AutomationWhen (pass 1: a time, tomorrow, in N, weekdays /
- *                 daily / weekends / named days at a time, every N h/min); monthly is refused
+ *   parseWhen     Kevin's phrase → AutomationWhen (pass 1: a time in digits or words, tomorrow, in N,
+ *                 weekdays / daily / nightly / mornings / named days at a time, every N h/min);
+ *                 monthly is refused
  *   nextFire      the next instant a `when` fires after an instant
  *   describe      a `when` in words, the phrase where one was kept
  *   inQuiet       whether an instant is inside quiet hours (wraps midnight)
@@ -85,7 +86,12 @@ export function atClock(day: Date, t: ClockTime): number {
 
 export type ParsedWhen = AutomationWhen | { readonly error: string };
 
-const HOUR_WORDS: Readonly<Record<string, number>> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+/** Number words as digits, so every branch below reads one form: "twelve" → 12, "forty five" → 45, "ninety" → 90. */
+const NUMBER_WORDS: Readonly<Record<string, number>> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
+};
+const TENS_WORDS: Readonly<Record<string, number>> = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
 const DAY_WORDS: Readonly<Record<string, Weekday>> = {
   mon: "mon", monday: "mon", mondays: "mon", tue: "tue", tues: "tue", tuesday: "tue", tuesdays: "tue", wed: "wed", weds: "wed", wednesday: "wed", wednesdays: "wed",
   thu: "thu", thur: "thu", thurs: "thu", thursday: "thu", thursdays: "thu", fri: "fri", friday: "fri", fridays: "fri", sat: "sat", saturday: "sat", saturdays: "sat", sun: "sun", sunday: "sun", sundays: "sun",
@@ -95,7 +101,13 @@ const UNIT_MS: Readonly<Record<string, number>> = {
   m: 60_000, min: 60_000, mins: 60_000, minute: 60_000, minutes: 60_000,
   h: 3_600_000, hr: 3_600_000, hrs: 3_600_000, hour: 3_600_000, hours: 3_600_000,
 };
-const SKIP_WORDS = new Set(["at", "on", "every", "each", "and", "the", "a", "an", "o'clock", "oclock", "please", "alarm", "for", "me", "wake", "up", "this"]);
+const SKIP_WORDS = new Set(["at", "on", "in", "and", "the", "a", "an", "o'clock", "oclock", "please", "alarm", "for", "me", "wake", "up", "this"]);
+/** The part of the day a word names; the plural (and "nightly", and "every" before one) makes it a daily recurrence. */
+const PART_WORDS: Readonly<Record<string, { readonly part: "morning" | "evening"; readonly daily: boolean }>> = {
+  morning: { part: "morning", daily: false }, mornings: { part: "morning", daily: true },
+  evening: { part: "evening", daily: false }, evenings: { part: "evening", daily: true },
+  night: { part: "evening", daily: false }, nights: { part: "evening", daily: true }, nightly: { part: "evening", daily: true },
+};
 const NOT_YET = /\b(monthly|month|months|1st|2nd|3rd|\d+th|first|second|third|fourth|last|year|yearly|annually)\b/;
 const err = (error: string): { readonly error: string } => ({ error });
 
@@ -104,11 +116,39 @@ interface Clock {
   readonly mm: number;
   /** A colon form, an am/pm, noon or midnight: the hour is what it says. Otherwise "seven" may mean 19:00. */
   readonly exact: boolean;
+  /** am/pm, noon or midnight was said: no part of the day moves it. */
+  readonly said: boolean;
 }
 
-/** A duration phrase: "12 minutes", "2 h", "1 h 30 min", "an hour", "half an hour". */
+/** "twelve minutes" → "12 minutes", "seven forty five" → "7 45", "seven oh five" stays "7 oh 5" for the clock to read. */
+function digits(p: string): string {
+  const words = p.split(" ");
+  const out: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] ?? "";
+    const tens = TENS_WORDS[w];
+    if (tens !== undefined) {
+      const unit = NUMBER_WORDS[words[i + 1] ?? ""];
+      if (unit !== undefined && unit >= 1 && unit <= 9) {
+        out.push(String(tens + unit));
+        i++;
+      } else out.push(String(tens));
+      continue;
+    }
+    const n = NUMBER_WORDS[w];
+    out.push(n !== undefined ? String(n) : w);
+  }
+  return out.join(" ");
+}
+
+/** A duration phrase: "12 minutes", "2 h", "1 h 30 min", "an hour", "half an hour", "an hour and a half", "2 and a half hours". */
 function parseDuration(text: string): number | undefined {
-  const t = text.trim().replace(/\ban?\b/g, "1").replace(/\bhalf 1 (hour|hr|h)\b/, "30 min");
+  const t = text
+    .trim()
+    .replace(/\ban?\b/g, "1")
+    .replace(/\bhalf 1 (hour|hr|h)\b/, "30 min")
+    .replace(/(\d+(?:\.\d+)?) and 1 half ([a-z]+)/, (_, n: string, u: string) => `${Number(n) + 0.5} ${u}`)
+    .replace(/(\d+(?:\.\d+)?) ([a-z]+) and 1 half\b/, (_, n: string, u: string) => `${Number(n) + 0.5} ${u}`);
   let total = 0;
   let rest = t;
   for (let guard = 0; guard < 4 && rest; guard++) {
@@ -122,32 +162,74 @@ function parseDuration(text: string): number | undefined {
   return rest ? undefined : total;
 }
 
-/** A time token: "7", "7:10", "07:10", "7am", "7pm", "seven", "noon", "midnight"; `next` may be a trailing am/pm word. */
-function parseClock(tok: string, next: string | undefined): { readonly clock: Clock; readonly used: number } | undefined {
-  if (tok === "noon") return { clock: { hh: 12, mm: 0, exact: true }, used: 1 };
-  if (tok === "midnight") return { clock: { hh: 0, mm: 0, exact: true }, used: 1 };
-  const meridian = (w: string | undefined): "am" | "pm" | undefined => (w === "am" || w === "a.m." ? "am" : w === "pm" || w === "p.m." ? "pm" : undefined);
-  const word = HOUR_WORDS[tok];
-  const m = word !== undefined ? { hh: word, mm: 0, colon: false, ap: undefined as "am" | "pm" | undefined } : (() => {
-    const r = /^(\d{1,2})(?::(\d{2}))?(am|pm|a\.m\.|p\.m\.)?$/.exec(tok);
-    if (!r) return undefined;
-    return { hh: Number(r[1]), mm: r[2] === undefined ? 0 : Number(r[2]), colon: r[2] !== undefined, ap: meridian(r[3]) };
-  })();
-  if (!m) return undefined;
-  let used = 1;
-  let ap = m.ap;
-  if (!ap && meridian(next)) {
-    ap = meridian(next);
-    used = 2;
-  }
-  let hh = m.hh;
-  if (ap === "pm" && hh < 12) hh += 12;
-  if (ap === "am" && hh === 12) hh = 0;
-  if (hh > 23 || m.mm > 59) return undefined;
-  return { clock: { hh, mm: m.mm, exact: m.colon || ap !== undefined }, used };
+const meridian = (w: string | undefined): "am" | "pm" | undefined => (w === "am" || w === "a.m." ? "am" : w === "pm" || w === "p.m." ? "pm" : undefined);
+
+/** An hour and its minutes with an am/pm said or not; undefined past 23:59. */
+function clockOf24(hh: number, mm: number, ap: "am" | "pm" | undefined, exact: boolean): Clock | undefined {
+  let h = hh;
+  if (ap === "pm" && h < 12) h += 12;
+  if (ap === "am" && h === 12) h = 0;
+  if (h > 23 || mm > 59) return undefined;
+  return { hh: h, mm, exact: exact || ap !== undefined, said: ap !== undefined };
 }
 
-function clockTime(c: Clock): ClockTime {
+/** One token: "7", "7:10", "7.10", "07:10", "7am", "7pm", "noon", "midnight"; `next` may be a trailing am/pm word. */
+function parseClock(tok: string, next: string | undefined): { readonly clock: Clock; readonly used: number } | undefined {
+  if (tok === "noon") return { clock: { hh: 12, mm: 0, exact: true, said: true }, used: 1 };
+  if (tok === "midnight") return { clock: { hh: 0, mm: 0, exact: true, said: true }, used: 1 };
+  const r = /^(\d{1,2})(?:[:.](\d{2}))?(am|pm|a\.m\.|p\.m\.)?$/.exec(tok);
+  if (!r) return undefined;
+  const own = meridian(r[3]);
+  const ap = own ?? meridian(next);
+  const clock = clockOf24(Number(r[1]), r[2] === undefined ? 0 : Number(r[2]), ap, r[2] !== undefined);
+  return clock ? { clock, used: !own && ap ? 2 : 1 } : undefined;
+}
+
+/**
+ * A clock at words[i], over one to four words: a token parseClock reads; a bare hour and its minutes
+ * ("7 10" from "seven ten", "7 oh 5", "7 45 pm"); or a relative one ("half past 7", "quarter to 8",
+ * "10 past 7", "20 to 9"). The two-word and relative forms keep the bare hour's 12-hour twin.
+ */
+function readClock(words: readonly string[], i: number): { readonly clock: Clock; readonly used: number } | undefined {
+  const w = words[i] ?? "";
+  const toward = words[i + 1];
+  const rel = w === "half" ? 30 : w === "quarter" ? 15 : /^\d{1,2}$/.test(w) ? Number(w) : undefined;
+  const hour = /^(\d{1,2})(am|pm|a\.m\.|p\.m\.)?$/.exec(words[i + 2] ?? "");
+  if (rel !== undefined && rel >= 1 && rel <= 59 && hour && (toward === "past" || toward === "after" || toward === "to" || toward === "before")) {
+    const own = meridian(hour[2]);
+    const ap = own ?? meridian(words[i + 3]);
+    const back = toward === "to" || toward === "before";
+    const hh = Number(hour[1]);
+    if (back && w === "half") return undefined;
+    const clock = clockOf24(back ? (hh + 23) % 24 : hh, back ? 60 - rel : rel, ap, false);
+    return clock ? { clock, used: 3 + (!own && ap ? 1 : 0) } : undefined;
+  }
+  const one = parseClock(w, toward);
+  if (!one || one.used !== 1 || !/^\d{1,2}$/.test(w)) return one;
+  // "7 10" · "7 oh 5": the bare hour's minutes follow it as their own word.
+  let j = i + 1;
+  let mm: number | undefined;
+  if (words[j] === "oh" && /^\d$/.test(words[j + 1] ?? "")) {
+    mm = Number(words[j + 1]);
+    j += 2;
+  } else if (/^\d{2}$/.test(words[j] ?? "")) {
+    mm = Number(words[j]);
+    j += 1;
+  }
+  if (mm === undefined || mm > 59) return one;
+  const ap = meridian(words[j]);
+  const clock = clockOf24(Number(w), mm, ap, false);
+  return clock ? { clock, used: j - i + (ap ? 1 : 0) } : one;
+}
+
+/** A part of the day settles a clock no am/pm was said for: the morning's 12 is midnight's hour, the evening's 1–11 are 13–23, its 12 is midnight. */
+function inPart(c: Clock, part: "morning" | "evening" | undefined): Clock {
+  if (!part || c.said) return c;
+  if (part === "morning") return { ...c, hh: c.hh === 12 ? 0 : c.hh, exact: true };
+  return { ...c, hh: c.hh === 12 ? 0 : c.hh < 12 ? c.hh + 12 : c.hh, exact: true };
+}
+
+function clockTime(c: Pick<Clock, "hh" | "mm">): ClockTime {
   return `${pad2(c.hh)}:${pad2(c.mm)}` as ClockTime;
 }
 
@@ -178,15 +260,31 @@ function durationWords(ms: number): string {
   return parts.length ? parts.join(" ") : "0 s";
 }
 
+/** A timer of `ms`, or why not. */
+function timer(ms: number): ParsedWhen {
+  return ms < 1_000 ? err("a timer needs at least a second") : { kind: "in", ms: Math.round(ms) };
+}
+
 /**
- * Kevin's phrase → when it fires. Pass 1: "7:10" · "at seven" · "tomorrow 07:10" · "in 12 minutes" ·
- * "weekdays 09:00" · "daily 18:00" · "weekends 10:30" · "mon,wed 07:10" · "every 2 h" · "every 45 min".
- * A bare hour with no am/pm ("at seven") is the next 07:00 or 19:00 at least PARSE_LEAD_MS away; a
- * colon form is the hour it says, today if still ahead, else tomorrow. Monthly phrases are pass 2:
- * "not yet — say the date". Words it does not know are named in the error, never guessed.
+ * Kevin's phrase → when it fires: "7:10" · "at seven" · "seven ten" · "7.10" · "half past seven" ·
+ * "quarter to eight" · "tomorrow 07:10" · "tomorrow morning at 7" · "in 12 minutes" · "twelve minutes" ·
+ * "in an hour and a half" · "weekdays 09:00" · "daily 18:00" · "nightly 23:00" · "every night at
+ * eleven" · "mornings at 7" · "weekends 10:30" · "mon,wed 07:10" · "every 2 h" · "every 45 min".
+ * Number words are read as digits. A bare hour with no am/pm ("at seven") is the next 07:00 or 19:00
+ * at least PARSE_LEAD_MS away; a morning or an evening word settles it; a colon form is the hour it
+ * says, today if still ahead, else tomorrow. Monthly phrases are pass 2: "not yet — say the date".
+ * Words it does not know are named in the error, never guessed.
  */
 export function parseWhen(phrase: string, now: number): ParsedWhen {
-  const p = phrase.trim().toLowerCase().replace(/[,;]+/g, " ").replace(/&/g, " and ").replace(/\s+/g, " ");
+  const p = digits(
+    phrase
+      .trim()
+      .toLowerCase()
+      .replace(/[,;]+/g, " ")
+      .replace(/&/g, " and ")
+      .replace(/(?<=[a-z])-(?=[a-z])/g, " ")
+      .replace(/\s+/g, " "),
+  );
   if (!p) return err("say when: a time, 'in 12 minutes', 'weekdays 09:00' or 'every 2 h'");
   if (NOT_YET.test(p)) return err("not yet — say the date");
 
@@ -194,8 +292,7 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
   if (inM) {
     const ms = parseDuration(inM[1] ?? "");
     if (ms === undefined) return err(`didn't catch the duration in "${phrase.trim()}"; say "in 12 minutes" or "in 2 hours"`);
-    if (ms < 1_000) return err("a timer needs at least a second");
-    return { kind: "in", ms: Math.round(ms) };
+    return timer(ms);
   }
 
   const everyM = /^every (\d+(?:\.\d+)?|an?|half an?) ?([a-z]+)(.*)$/.exec(p);
@@ -206,12 +303,23 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
     return { kind: "every", every: { kind: "interval", everyMs: Math.round(ms), anchorAt: now }, phrase: intervalPhrase(Math.round(ms)) };
   }
 
+  // A duration said on its own ("twelve minutes", "an hour and a half") is a timer.
+  const bare = parseDuration(p);
+  if (bare !== undefined) return timer(bare);
+
   const words = p.split(" ");
   const days = new Set<Weekday>();
   let clock: Clock | undefined;
   let date: "today" | "tonight" | "tomorrow" | undefined;
+  let part: "morning" | "evening" | undefined;
+  let every = false;
+  let daily = false;
   for (let i = 0; i < words.length; i++) {
     const w = words[i] ?? "";
+    if (w === "every" || w === "each") {
+      every = true;
+      continue;
+    }
     if (SKIP_WORDS.has(w)) continue;
     if (w === "tomorrow") {
       date = "tomorrow";
@@ -221,8 +329,14 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
       date = "today";
       continue;
     }
-    if (w === "tonight" || w === "evening") {
+    if (w === "tonight") {
       date = "tonight";
+      continue;
+    }
+    const named = PART_WORDS[w];
+    if (named) {
+      part = named.part;
+      if (named.daily || every) daily = true;
       continue;
     }
     if (w === "weekdays" || w === "weekday") {
@@ -242,7 +356,7 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
       days.add(day);
       continue;
     }
-    const c = parseClock(w, words[i + 1]);
+    const c = readClock(words, i);
     if (c) {
       if (clock) return err(`two times in "${phrase.trim()}"; say one`);
       clock = c.clock;
@@ -251,7 +365,9 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
     }
     return err(`didn't catch "${w}" in "${phrase.trim()}"`);
   }
+  if (daily && days.size === 0) for (const d of WEEKDAY_ALL) days.add(d);
   if (!clock) return err(days.size ? "say a time too: 'weekdays 09:00'" : `didn't catch a time in "${phrase.trim()}"`);
+  clock = inPart(clock, part);
 
   if (days.size) {
     if (date) return err("a day of the week and 'tomorrow' don't go together; say one");

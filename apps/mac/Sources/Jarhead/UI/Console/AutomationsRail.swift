@@ -435,7 +435,7 @@ struct AutomationsSection: View {
             VStack(alignment: .leading, spacing: 0) {
                 head
                 if adding {
-                    AutomationAddForm(settings: settings, asking: state.snapshot.recipesAsking ?? [], localBrain: state.snapshot.settings.brain == .local,
+                    AutomationAddForm(settings: settings, asking: state.snapshot.recipesAsking ?? [], brain: AutomationForm.billedBrain(state.snapshot),
                                       close: { adding = false })
                         .transition(Motion.appear)
                 }
@@ -671,7 +671,8 @@ enum AutomationForm {
 
     /// The draft `automation.set` sends: Kevin's phrase as `whenPhrase` (no `when`), one action of `kind`
     /// carrying the name — a chime's line, a banner's title, an app to open, a recipe's name, a wake-brain's
-    /// prompt — and quiet hours respected unless it is an alarm (a chime on a clock).
+    /// prompt — and no quiet clause: the engine sets it from the kind its parse gives (an alarm rings through
+    /// quiet hours, a timer does not), which the form cannot know before parseWhen runs.
     static func draft(name: String, phrase: String, kind: String) -> AutomationDraft {
         let clean = String(name.prefix(24))
         // Named lets, one switch — not six inline ternaries in one init (CI's older Swift).
@@ -694,16 +695,27 @@ enum AutomationForm {
         }
         let action = AutomationAction(kind: kind, line: line, sound: nil, title: title, body: nil, open: nil, app: app, url: nil, path: nil, into: nil,
                                       recipe: recipe, key: nil, prompt: prompt, budget: budget, speak: speak)
-        let clauses = AutomationClauses(window: nil, days: nil, once: nil, cooldown: nil, until: nil, quiet: kind == "chime" ? "override" : "respect")
+        let clauses = AutomationClauses(window: nil, days: nil, once: nil, cooldown: nil, until: nil, quiet: nil)
         return AutomationDraft(name: clean, whenPhrase: phrase, then: [action], clauses: clauses, echo: echo(name: clean, phrase: phrase, kind: kind))
+    }
+
+    /// The brain a wake-brain fire runs on: what `auto` resolved to when the setup says, else Settings' choice.
+    static func billedBrain(_ snapshot: Snapshot) -> BrainKind {
+        snapshot.setup.brainResolved ?? snapshot.settings.brain
+    }
+
+    /// The brains billed per token on an API key (core's API_BRAINS): the cost line says so instead of the plan.
+    static func billedPerToken(_ brain: BrainKind) -> Bool {
+        brain == .anthropicApi || brain == .openaiResponses || brain == .openaiCompatible
     }
 
     /// core's `costLine`, word for word — what the engine records as `confirmed.heard` for a wake-brain row,
     /// so what Kevin read is what the ledger says he heard. N = ⌈seconds / 60⌉, M = Brain minutes a day.
-    static func costLine(_ budget: AutomationBudget, cap: Int, local: Bool) -> String {
+    static func costLine(_ budget: AutomationBudget, cap: Int, local: Bool, api: Bool = false) -> String {
         let n = max(1, Int((budget.seconds / 60).rounded(.up)))
         let minutes = n == 1 ? "brain minute" : "brain minutes"
-        let whereWord = local ? "a model warm-up on this Mac" : "on your plan"
+        let paid = api ? "billed as API tokens on your key" : "on your plan"
+        let whereWord = local ? "a model warm-up on this Mac" : paid
         return "this wakes the brain — not the voice — while Jarhead is asleep: about \(n) \(minutes) per fire \(whereWord), up to \(cap) a day; its one-line answer is spoken by the local speaker / shown as a banner"
     }
 
@@ -721,9 +733,9 @@ enum AutomationForm {
 
     /// The question the engine will ask for this draft — shown before the second press — or nil for a free kind
     /// (and for a recipe the form may not name: then there is nothing to arm).
-    static func question(kind: String, name: String, recipes: [ShellRecipe], asking: [String], cap: Int, local: Bool) -> String? {
+    static func question(kind: String, name: String, recipes: [ShellRecipe], asking: [String], cap: Int, local: Bool, api: Bool = false) -> String? {
         switch kind {
-        case "wake-brain": return costLine(wakeBudget, cap: cap, local: local)
+        case "wake-brain": return costLine(wakeBudget, cap: cap, local: local, api: api)
         case "run-recipe":
             let wanted = name.lowercased()
             return pickable(recipes, asking: asking).first { $0.name.lowercased() == wanted }.map(recipeLine)
@@ -746,7 +758,8 @@ struct AutomationAddForm: View {
     let settings: AutomationSettings
     /// `snapshot.recipesAsking`: the recipes the gate would question — never named here.
     let asking: [String]
-    let localBrain: Bool
+    /// The brain a wake-brain fire would run on: the cost line says a warm-up, API tokens or the plan.
+    let brain: BrainKind
     let close: () -> Void
 
     @Environment(\.consoleActions) private var actions
@@ -759,7 +772,8 @@ struct AutomationAddForm: View {
     private var phrase: String { when.trimmingCharacters(in: .whitespaces) }
     private var needsYes: Bool { AutomationForm.confirmKinds.contains(kind) }
     private var question: String? {
-        AutomationForm.question(kind: kind, name: cleanName, recipes: settings.recipes, asking: asking, cap: settings.wakeBudgetMinutesPerDay, local: localBrain)
+        AutomationForm.question(kind: kind, name: cleanName, recipes: settings.recipes, asking: asking, cap: settings.wakeBudgetMinutesPerDay,
+                                local: brain == .local, api: AutomationForm.billedPerToken(brain))
     }
     /// A name and a phrase; a confirm-tier kind also needs the question it will show (a recipe the form may name).
     private var valid: Bool { !cleanName.isEmpty && !phrase.isEmpty && (!needsYes || question != nil) }

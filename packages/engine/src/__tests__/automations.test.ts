@@ -754,7 +754,7 @@ test("rebuild-idempotent: a second engine over the same state dir rebuilds the s
 });
 
 // (16) timer-ticks-and-caffeinate
-test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `caffeinate -t 720` through the injected exec (a fixed argv, never a shell line); a viewer sees remainingMs ticks and nobody looking sees none; at 12:00 it rings 'pasta · 12:00 is up' with Snooze 5 · Done and the hold is killed; Snooze holds again for 5 min and Done kills that; a 90-minute timer holds nothing", async () => {
+test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `caffeinate -t 720` through the injected exec (a fixed argv, never a shell line); a viewer sees remainingMs ticks and nobody looking sees none; at 12:00 it rings 'pasta · 12:00 is up' with Snooze 5 · Done and the hold is killed; Snooze holds again for 5 min and Done kills that; a 90-minute timer is held an hour at a time", async () => {
   const { exec, holds, runs } = fakeExec();
   const w = world({ automations: { exec } });
   const { engine, clock, events } = w;
@@ -813,9 +813,9 @@ test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `ca
     assert.equal(holds[1]!.killed, true, "Done kills the hold");
     assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.state, "done");
 
-    // Over an hour: nothing keeps the Mac awake (and nothing wakes it).
+    // Over an hour: the first hour is held (the tick takes the next stretch), and nothing wakes it.
     armed(w, engine.automations.arm({ name: "long bake", when: { kind: "in", ms: 90 * M }, then: [{ kind: "chime", line: "bake is up" }], echo: "In 90 minutes, chime." }, "brain"));
-    assert.equal(holds.length, 2, "over an hour: no hold");
+    assert.deepEqual(holds[2]?.argv, ["/usr/bin/caffeinate", "-t", "3600"], "over an hour: held an hour at a time");
     assert.equal(runs.length, 0);
     assert.equal(rows(w, "session.started").length, 0);
   } finally {

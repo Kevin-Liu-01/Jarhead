@@ -1780,6 +1780,8 @@ export interface AutomationContext {
   readonly fromThread?: boolean | undefined;
   /** The brain is a local model (the cost line says warm-up, not plan). */
   readonly localBrain?: boolean | undefined;
+  /** The brain is billed per token on an API key (anthropic-api, openai-responses, openai-compatible): the cost line says so, not plan. */
+  readonly apiBrain?: boolean | undefined;
   /** Kevin's own words for the row, when known; a folder he named is one `file` may move into. */
   readonly request?: string | undefined;
   readonly home?: string | undefined;
@@ -1931,12 +1933,13 @@ function clobberReason(command: string): string | undefined {
 /**
  * The cost line for `wake-brain`, said word for word before the yes and recorded as
  * `confirmed.heard`: N = ceil(budget.seconds / 60), M = Settings.wakeBudgetMinutesPerDay;
- * a local brain warms a model on this Mac instead of spending Kevin's plan.
+ * a local brain warms a model on this Mac, an API brain is billed as tokens on Kevin's key,
+ * and the rest spend his plan.
  */
-export function costLine(budget: { readonly steps: number; readonly seconds: number }, cap: number, local: boolean): string {
+export function costLine(budget: { readonly steps: number; readonly seconds: number }, cap: number, local: boolean, api = false): string {
   const n = Math.max(1, Math.ceil(budget.seconds / 60));
   const minutes = n === 1 ? "brain minute" : "brain minutes";
-  const where = local ? "a model warm-up on this Mac" : "on your plan";
+  const where = local ? "a model warm-up on this Mac" : api ? "billed as API tokens on your key" : "on your plan";
   return `this wakes the brain — not the voice — while Jarhead is asleep: about ${n} ${minutes} per fire ${where}, up to ${cap} a day; its one-line answer is spoken by the local speaker / shown as a banner`;
 }
 
@@ -2137,7 +2140,7 @@ export function actionReason(action: AutomationAction, ctx: AutomationContext): 
       if (!prompt) return refuse("wake-brain needs a prompt");
       if (prompt.length > WAKE_PROMPT_CHARS) return refuse(`the prompt is ${prompt.length} chars; ${WAKE_PROMPT_CHARS} at most`);
       if (ctx.fromThread) return refuse("a spawned thread cannot arm a brain wake (depth one); the main conversation can");
-      return confirm(costLine(action.budget, ctx.settings.wakeBudgetMinutesPerDay, ctx.localBrain === true));
+      return confirm(costLine(action.budget, ctx.settings.wakeBudgetMinutesPerDay, ctx.localBrain === true, ctx.apiBrain === true));
     }
     default:
       return refuse(`unknown action kind "${kind}"; not armed`);

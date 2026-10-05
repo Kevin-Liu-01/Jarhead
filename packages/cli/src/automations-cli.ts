@@ -189,8 +189,8 @@ function tokens(text: string): string[] {
  * The row `jarhead automations add` created, found in one post-command snapshot — or undefined.
  * The `landedAfter` idiom: the row must be the CLI's, live (armed, or already snoozed) and
  * stamped at or after `sentAt` (a `Date.now()` taken before the send). A `done` row from an
- * earlier `add` — which also makes the engine refuse the new one, since done rows keep their
- * name — or a trashed row in the snapshot's tail never passes for the one this command set.
+ * earlier `add` (the engine renames it "pasta · 5 Oct" when the new one arms: only live rows
+ * keep a name) or a trashed row in the snapshot's tail never passes for the one this command set.
  */
 export function landedAutomation(rows: readonly Automation[], name: string, sentAt: number): Automation | undefined {
   const wanted = name.toLowerCase();
@@ -201,7 +201,8 @@ const USAGE = "say when, then what: chime 'Wake up' · say 'call mum' · notify 
 
 /**
  * `jarhead automations add "<words>"`: `<when> <chime|say|notify|open> <what>`, the when
- * parsed by core's `parseWhen` (the same ladder the voice's tool uses; no brain). Free kinds
+ * parsed by core's `parseWhen` (the same ladder the voice's tool uses, number words and
+ * "seven ten" included; no brain). Free kinds
  * only — a `run`, `press`, `file` or `wake` word is refused here with where the yes is heard.
  * The draft's `echo` is the one line the voice would have read back; the engine fills id,
  * state, the stamps and `createdBy { by: "cli" }`, and judges the draft with
