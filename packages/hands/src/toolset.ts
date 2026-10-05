@@ -602,7 +602,7 @@ export class ComputerToolset {
         const ownDriver = input["ownDriver"] === true ? { ownDriver: true } : {};
         try {
           const r = await hands.request<TypeResult>("type", { text, ...strategy, ...ownDriver, ...frontOf(gate.probes.front) }, 6000 + text.length * 15);
-          return { kind: "text", text: describeTyped(r, text, f) };
+          return { kind: "text", text: describeTyped(r, text, f, this.who()) };
         } catch (e) {
           // The helper's own words name the field and say where the text is; the code adds nothing.
           // `busy` keeps its code in front (run() renders it) so a runner can retry it silently.
@@ -937,18 +937,29 @@ function question(description: string, decision: Decision, app: string, who = "K
 }
 
 /** What the helper did to deliver the text, in the words the model reads: where, how, and whether it was checked. */
-function describeTyped(r: TypeResult, text: string, f: FocusedText | undefined): string {
+function describeTyped(r: TypeResult, text: string, f: FocusedText | undefined, who = "Kevin"): string {
   const field = r.field ?? fieldName(f);
   const how = r.via === "ax" ? "by accessibility insertion" : r.via === "paste" ? "by paste (clipboard restored)" : "by keystrokes";
   const checked = r.verified === true ? "verified" : r.verified === false ? "not verifiable in this field" : "";
   const tries = r.attempts && r.attempts > 1 ? `, ${r.attempts} attempts` : "";
+  // Characters as the helper counts them (grapheme clusters), not UTF-16 units: an emoji is one.
+  const total = r.total ?? graphemeCount(text);
   if (r.cancelled) {
-    const got = `stopped after ${r.characters ?? 0} of ${text.length} characters${field ? ` in ${field}` : ""}`;
-    // The helper stopped itself: the app in front changed under the keystrokes, so the rest was not typed anywhere.
-    if (r.reason === "focus_moved") return `${got}: the front app changed, so the rest was not typed; look at the screen before typing again`;
+    const got = `stopped after ${r.characters ?? 0} of ${total} characters${field ? ` in ${field}` : ""}`;
+    // The helper stopped itself: the app in front changed, or the focus went to another window or out of text entry.
+    if (r.reason === "focus_moved") return `${got}. The focus moved, so the rest was not typed. Look at the screen before typing again.`;
+    // His own key, click or scroll stopped it: the focus may be anywhere now, and part of the text is already in.
+    if (r.reason === "busy") return `${got}. ${who} used the keyboard or mouse, so the rest was not typed. Look at the screen before typing again.`;
     return got;
   }
-  return `typed ${text.length} characters ${how}${field ? ` into ${field}` : ""}${checked ? ` (${checked}${tries})` : tries ? ` (${tries.slice(2)})` : ""}`;
+  return `typed ${total} characters ${how}${field ? ` into ${field}` : ""}${checked ? ` (${checked}${tries})` : tries ? ` (${tries.slice(2)})` : ""}`;
+}
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** `text`'s length in grapheme clusters, the helper's count (Swift's `String.count`); CR LF is one, as the helper reads it. */
+function graphemeCount(text: string): number {
+  return [...graphemes.segment(text)].length;
 }
 
 /** "the Subject field in Mail", from a focused_text probe; empty when nothing is known. */

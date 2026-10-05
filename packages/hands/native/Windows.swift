@@ -243,6 +243,9 @@ func opOpenApp(_ params: Params) throws -> JSONObject {
     guard let url = resolveApplicationURL(name: name, bundleId: bundleId, path: path) else {
         throw HandsError.notFound("could not find application \(name ?? bundleId ?? path ?? "")")
     }
+    // Bringing an app to the front moves Kevin's keystrokes into it: held like a click while his
+    // hands are on the machine. A launch in the background moves nothing of his.
+    if activate { try guardActing(params) }
     let app = try launchApplication(at: url, activate: activate)
     var result = appJSON(app)
     result["path"] = url.path
@@ -265,6 +268,8 @@ func opFocusApp(_ params: Params) throws -> JSONObject {
         guard target != nil else { throw HandsError.notFound("no running application named \(name)") }
     }
     guard let app = target else { throw HandsError.notFound("application not found") }
+    // A switch under Kevin's typing sends the rest of his words to this app: held like a click.
+    try guardActing(params)
 
     var activated = onMain { app.activate(options: [.activateAllWindows]) }
     if !activated, let url = app.bundleURL {

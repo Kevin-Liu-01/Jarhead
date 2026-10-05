@@ -501,7 +501,7 @@ test("expectFront: every gated acting op carries the pid the gate's own frontmos
   assert.deepEqual(sent("click")?.["expectFront"], { pid: 42 });
 });
 
-test("focus_moved: the helper's refusal before the first post is an error result (no click, no type result); a type stopped part way says the front app changed", async () => {
+test("focus_moved: the helper's refusal before the first post is an error result (no click, no type result); a type stopped part way says the focus moved", async () => {
   const hands = new FakeHands();
   const ts = new ComputerToolset({ hands });
   await ts.run("screenshot", {});
@@ -530,7 +530,7 @@ test("focus_moved: the helper's refusal before the first post is an error result
   hands.typeResult = { characters: 3, events: 3, via: "keystrokes", attempts: 1, cancelled: true, reason: "focus_moved", field: "the note in Notes" };
   const part = await ts.run("type", { text: "hello" });
   assert.equal(part.kind, "text");
-  assert.equal((part as { text: string }).text, "stopped after 3 of 5 characters in the note in Notes: the front app changed, so the rest was not typed; look at the screen before typing again");
+  assert.equal((part as { text: string }).text, "stopped after 3 of 5 characters in the note in Notes. The focus moved, so the rest was not typed. Look at the screen before typing again.");
   // A plain stop (Kevin's) reads as before.
   hands.typeResult = { characters: 2, events: 2, via: "keystrokes", attempts: 1, cancelled: true, reason: "stop", field: "the note in Notes" };
   assert.equal(((await ts.run("type", { text: "hello" })) as { text: string }).text, "stopped after 2 of 5 characters in the note in Notes");

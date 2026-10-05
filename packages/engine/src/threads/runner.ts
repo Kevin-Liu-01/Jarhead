@@ -293,6 +293,12 @@ export abstract class LeasedRunner extends ToolRunner {
     else this.sinkRef?.step({ kind: "note", text: `waited ${this.clock() - t0} ms for ${this.userName}'s hands` });
     return out;
   }
+
+  /** What the lease did before the tool runs, as notes: how long its re-front waited for Kevin's hands, and the app it brought back. */
+  protected noteSettle(got: { readonly refocused?: string; readonly waitedMs?: number }): void {
+    if (got.waitedMs) this.sinkRef?.step({ kind: "note", text: `waited ${got.waitedMs} ms for ${this.userName}'s hands` });
+    if (got.refocused) this.sinkRef?.step({ kind: "note", text: `brought ${got.refocused} back to the front` });
+  }
 }
 
 // ------------------------------------------------------------ LaneRunner
@@ -382,7 +388,7 @@ export class LaneRunner extends LeasedRunner {
     if (!focus) return this.finish(name, await this.runBase(name, input));
     const got = await this.acquireOrWait();
     if (!got.ok) return this.answer(name, args, { kind: "error", message: `waiting for the screen: ${got.reason}; do the rest first, or call it again` }, started);
-    if (got.refocused) this.sinkRef?.step({ kind: "note", text: `brought ${got.refocused} back to the front` });
+    this.noteSettle(got);
     const out = await this.actUnderLease(name, args, () => this.runBase(name, input));
     // The app this lane works in, for the re-front on a later hand-over.
     if ((name === "open_app" || name === "focus_app") && out.result.kind === "text") this.lease.rememberFront(this.actor, String(args["name"] ?? args["app"] ?? ""));
@@ -513,7 +519,15 @@ export class ThreadAwareRunner extends LeasedRunner {
       log.info(`main lane ${name}: the task was stopped; not run`);
       return { result, ms };
     }
-    if (got.ok && got.refocused) this.sinkRef?.step({ kind: "note", text: `brought ${got.refocused} back to the front` });
+    if (!got.ok && got.busy) {
+      // Kevin kept typing through the re-front's whole wait: his app is still in front, so nothing acts in it.
+      const result: ToolResult = { kind: "error", message: `waiting for the screen: ${got.reason}; do the rest first, or call it again` };
+      const ms = this.clock() - started;
+      recordStep(this.sinkRef, name, args, result, ms);
+      log.info(`main lane ${name}: ${got.reason}; not run`);
+      return { result, ms };
+    }
+    if (got.ok) this.noteSettle(got);
     const out = await this.actUnderLease(name, args, () => this.runBase(name, input));
     if ((name === "open_app" || name === "focus_app") && out.result.kind === "text") this.lease.rememberFront(ThreadAwareRunner.ACTOR, String(args["name"] ?? args["app"] ?? ""));
     if (out.result.kind === "needs-confirmation") this.lease.release(ThreadAwareRunner.ACTOR, "question");
@@ -546,7 +560,8 @@ export class ThreadAwareRunner extends LeasedRunner {
       return !got.ok && got.reason === "cut" && signal?.aborted ? { ok: false, reason: "cancelled" } : got;
     };
     const got = await take(MAIN_LEASE_WAIT_MS);
-    if (got.ok || got.reason === "cancelled") return got;
+    // Kevin's hands are not a holder to take the screen from: the lease is not held, and `run` acts on nothing.
+    if (got.ok || got.reason === "cancelled" || got.busy) return got;
     if (got.reason === "cut") return take(WAIT_MAX_MS);
     const holder = this.lease.holder;
     log.warn(`main lane: ${got.reason} for ${MAIN_LEASE_WAIT_MS} ms; taking the screen`);

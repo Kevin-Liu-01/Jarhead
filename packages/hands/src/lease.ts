@@ -16,9 +16,18 @@ import type { ToolResult } from "./toolset.ts";
  * switched to (STALE_FOCUS: the front app is one no lane activated and not the
  * thread's own — he is using it; the thread waits and says so). Jarhead's own hands
  * (the main brain, dictation) acquire with priority: they never wait on a thread's
- * idle or on Kevin's typing beyond the helper's own `busy` refusal, but they take the
- * lease from a thread only after MIN_HOLD_MS and never in the middle of one of its
- * ops (a held `type` finishes first).
+ * idle or on Kevin's typing beyond the helper's own `busy` refusal and the re-front's
+ * wait below, but they take the lease from a thread only after MIN_HOLD_MS and never
+ * in the middle of one of its ops (a held `type` finishes first). The one thing the
+ * lease itself does to the screen, the re-front, is a `focus_app`: it reads
+ * `user_idle` first for every taker, priority too, and waits out his quiet window, so
+ * no app is pulled over the one he is typing in. A thread waits only what is left of
+ * its acquire, so its tool still waits at most WAIT_MAX_MS in all; Jarhead's own hands
+ * wait their patience afresh from the moment they got the lease, capped at WAIT_MAX_MS
+ * (the main lane's 30 s acquire is spent on the holder, not on Kevin). If he is still
+ * typing when the wait runs out, nothing is re-fronted and the lease is let go: the
+ * taker hears `<name> is using the keyboard or mouse` (`busy`), never `ok` with his
+ * app in front, where its next `type` or `key` would land once he paused.
  *
  * Nothing decided before an await stands after it. The thread's gate and the re-front
  * are helper round trips; a priority taker, a waking holder or a cut can land in the
@@ -49,9 +58,17 @@ export const USER_IDLE_POLL_MS = 250;
  */
 export const ACTIVATED_TTL_MS = 5 * 60_000;
 
-export type LeaseRelease = "turn-end" | "question" | "idle" | "done" | "cut";
+/** Why a holder let go. `cut` and `busy` (its re-front waited out Kevin's hands and gave up) learn nothing from the screen. */
+export type LeaseRelease = "turn-end" | "question" | "idle" | "done" | "cut" | "busy";
 
-export type LeaseOutcome = { readonly ok: true; readonly refocused?: string } | { readonly ok: false; readonly reason: string };
+/**
+ * `refocused`: the taker's remembered app was brought back to the front. `waitedMs`: the
+ * re-front first waited that long for Kevin's hands (the caller notes it). `busy`: the
+ * screen was not taken because Kevin kept typing or clicking; the lease is not held.
+ */
+export type LeaseOutcome =
+  | { readonly ok: true; readonly refocused?: string; readonly waitedMs?: number }
+  | { readonly ok: false; readonly reason: string; readonly busy?: true };
 
 /** `undefined` is accepted for every optional (callers pass a maybe-signal straight through). */
 export interface AcquireOptions {
@@ -93,6 +110,26 @@ export interface FocusLeaseOptions {
   readonly sleep?: ((ms: number) => Promise<void>) | undefined;
   /** The poll interval (default USER_IDLE_POLL_MS). */
   readonly pollMs?: number | undefined;
+}
+
+/** What the re-front needs from its acquisition: how long the taker waits for Kevin's hands, and its stop. */
+interface RefrontOptions {
+  /** How long the re-front may wait for Kevin's hands, from the start of the settle (`quietWaitMs`). */
+  readonly waitMs: number;
+  readonly signal?: AbortSignal | undefined;
+}
+
+/**
+ * How long a taker's re-front waits out Kevin's quiet window, given what is left of its
+ * acquire. A thread (not priority): only what is left, so its tool waits at most its
+ * timeout (WAIT_MAX_MS) in all, the bound README and AGENTS state; with nothing left it
+ * reads `user_idle` once and answers `busy` if his hands are on the machine. Jarhead's
+ * own hands: their patience afresh, capped at WAIT_MAX_MS, since their acquire waited on
+ * the holder (MIN_HOLD_MS, never mid-op), not on him.
+ */
+function quietWaitMs(o: AcquireOptions, leftMs: number): number {
+  if (o.priority) return Math.min(o.timeoutMs ?? WAIT_MAX_MS, WAIT_MAX_MS);
+  return Math.max(0, Math.min(leftMs, WAIT_MAX_MS));
 }
 
 interface Holder {
@@ -210,8 +247,10 @@ export class FocusLease {
 
   /**
    * Take the screen, or wait for it. Resolves `ok` with the lease held (and `refocused`
-   * when the taker's remembered app was re-fronted), or `ok: false` with the reason the
-   * screen is not to be had — the caller renders "waiting for the screen: <reason>".
+   * when the taker's remembered app was re-fronted, `waitedMs` when that waited for
+   * Kevin's hands), or `ok: false` with the reason the screen is not to be had — the
+   * caller renders "waiting for the screen: <reason>". `busy` on a failure means Kevin's
+   * hands stayed on the machine through the re-front's whole wait: the lease is not held.
    */
   async acquire(actor: string, o: AcquireOptions): Promise<LeaseOutcome> {
     if (o.app) this.intended.set(actor, o.app);
@@ -246,7 +285,7 @@ export class FocusLease {
             if (prev) log.debug(`${prev.actor} → ${actor}`);
             // Out of the line before the settle: the next in rank may judge the lease free once this one lets go.
             this.waiters.delete(actor);
-            return this.settle(actor, gen);
+            return this.settle(actor, gen, { waitMs: quietWaitMs(o, deadline - now), signal: o.signal });
           }
         }
         reason = blocked;
@@ -301,43 +340,90 @@ export class FocusLease {
    * matches again. Over an app Kevin switched to himself (no lane fronted it): nothing;
    * his window stays where it is. The re-front counts as an op in flight, so nobody
    * takes the lease in the middle of it; a cut meanwhile makes the outcome `cut`.
+   * While Kevin's hands are on the machine the re-front waits, up to `waitMs` from here.
+   * A stop meanwhile answers `cancelled`, and his hands still on the machine at the end
+   * answer `busy`; either way nothing is re-fronted and the lease is empty.
    */
-  private async settle(actor: string, gen: number): Promise<LeaseOutcome> {
+  private async settle(actor: string, gen: number, o: RefrontOptions): Promise<LeaseOutcome> {
     const want = this.appOf(actor);
     if (!want) return { ok: true };
     this.inFlight += 1;
     try {
-      return await this.refront(actor, want, gen);
+      return await this.refront(actor, want, gen, o);
     } finally {
       // A cut or a forget emptied the count with the lease; only a hold still ours is ours to give back.
       if (this.generation === gen && this.held?.actor === actor) this.inFlight = Math.max(0, this.inFlight - 1);
     }
   }
 
-  private async refront(actor: string, want: string, gen: number): Promise<LeaseOutcome> {
-    const front = await this.front();
-    const lost = this.lostSince(actor, gen);
-    if (lost) return lost;
-    if (!front || sameApp(front.app, want)) return { ok: true };
-    if (!this.isActivated(front.app)) return { ok: true };
-    try {
-      await this.opts.hands.request("focus_app", { name: want }, 3000);
-    } catch (e) {
-      log.debug(`re-front ${want}: ${(e as Error).message}`);
-      return this.lostSince(actor, gen) ?? { ok: true };
+  private async refront(actor: string, want: string, gen: number, o: RefrontOptions): Promise<LeaseOutcome> {
+    const t0 = this.now();
+    const until = t0 + o.waitMs;
+    /** How long the re-front has waited for Kevin's hands so far (0 when it never had to). */
+    let waitedMs = 0;
+    // Judged again after every wait: the app in front may be one Kevin switched to while he typed.
+    for (;;) {
+      const front = await this.front();
+      const lost = this.lostSince(actor, gen);
+      if (lost) return lost;
+      if (!front || sameApp(front.app, want) || !this.isActivated(front.app)) return waitedMs > 0 ? { ok: true, waitedMs } : { ok: true };
+      // A focus_app pulls `want` over whatever Kevin is typing into: his quiet window first, for every taker.
+      const idle = await this.idleHands.request<UserIdle>("user_idle", {}, 1500).catch(() => undefined);
+      const lostIdle = this.lostSince(actor, gen);
+      if (lostIdle) return lostIdle;
+      if (idle === undefined || idle.foreignMs >= KEVIN_QUIET_MS) {
+        // The taker may have been stopped during the reads: a stopped lane pulls nothing forward.
+        if (o.signal?.aborted) return this.stopped(actor);
+        try {
+          await this.opts.hands.request("focus_app", { name: want }, 3000);
+          break;
+        } catch (e) {
+          // The helper refuses busy too (he typed between the read and the activation): that waits like the read.
+          if (!isBusyResult(e)) {
+            log.debug(`re-front ${want}: ${(e as Error).message}`);
+            return this.lostSince(actor, gen) ?? { ok: true };
+          }
+        }
+      }
+      if (o.signal?.aborted) return this.stopped(actor);
+      // Out of patience with his hands still on the machine: his app stays in front, and the screen is not the taker's.
+      if (this.now() >= until) return this.lostSince(actor, gen) ?? this.busy(actor, want);
+      await this.sleep(this.opts.pollMs ?? USER_IDLE_POLL_MS);
+      waitedMs = this.now() - t0;
+      if (o.signal?.aborted) return this.stopped(actor);
+      const lostWait = this.lostSince(actor, gen);
+      if (lostWait) return lostWait;
     }
     const lostAfter = this.lostSince(actor, gen);
     if (lostAfter) return lostAfter;
     this.activate(want, actor);
-    const until = this.now() + SETTLE_MS;
-    while (this.now() < until) {
+    const settleUntil = this.now() + SETTLE_MS;
+    while (this.now() < settleUntil) {
       await this.sleep(Math.min(50, SETTLE_MS));
       const f = await this.front();
       const lostMid = this.lostSince(actor, gen);
       if (lostMid) return lostMid;
       if (f && sameApp(f.app, want)) break;
     }
-    return { ok: true, refocused: want };
+    return waitedMs > 0 ? { ok: true, refocused: want, waitedMs } : { ok: true, refocused: want };
+  }
+
+  /** The taker was stopped while its re-front waited for Kevin: nothing is re-fronted, and the screen is nobody's. */
+  private stopped(actor: string): LeaseOutcome {
+    this.release(actor, "cut");
+    return { ok: false, reason: "cancelled" };
+  }
+
+  /**
+   * Kevin kept typing or clicking for the taker's whole quiet wait: nothing is re-fronted, and
+   * the lease is let go without learning from the app in front (it is his, not the taker's).
+   * The taker answers "waiting for the screen", never acts with his app in front.
+   */
+  private busy(actor: string, want: string): LeaseOutcome {
+    const who = this.opts.userName?.() || "Kevin";
+    log.debug(`re-front ${want}: ${who} is still using the keyboard or mouse; not re-fronted, ${actor} lets go`);
+    this.release(actor, "busy");
+    return { ok: false, reason: `${who} is using the keyboard or mouse`, busy: true };
   }
 
   /** After an await inside an acquisition: is the lease still this actor's? A cut → "cut"; otherwise whoever has it now. */
@@ -401,15 +487,15 @@ export class FocusLease {
    * — remembered for its re-front, and refreshed as a lane's app — but ONLY when it was
    * already the lane's (its intended or remembered app, or one some lane fronted):
    * anything else in front is what Kevin brought forward while the lane held the
-   * lease, and it is not the lane's to cover later. Not on a cut: nothing about that
-   * screen is the lane's.
+   * lease, and it is not the lane's to cover later. Not on a cut, and not on `busy` (its
+   * re-front gave up over Kevin's typing): nothing about that screen is the lane's.
    */
   release(actor: string, why: LeaseRelease): void {
     if (this.held?.actor !== actor) return;
     log.debug(`${actor} released (${why})`);
     this.held = undefined;
     this.inFlight = 0;
-    if (why === "cut") return;
+    if (why === "cut" || why === "busy") return;
     const gen = this.generation;
     void this.front().then((f) => {
       if (!f?.app || this.generation !== gen) return;

@@ -5,7 +5,7 @@ export type { ShotBudget } from "./screen.ts";
 export { ComputerToolset, ConfirmationState, COMPUTER_MEMBERS, DESKTOP_TOOLS, ACTING_MEMBERS, READ_ONLY_TOOLS, YES_PATTERN, isAffirmative, GRANT_TTL_MS, HOLD_ID, STALE_FRAME } from "./toolset.ts";
 export type { ToolResult, ActionEvent, PendingConfirmation, Grantable, ConfirmationGrant, ArmedConfirmation, ToolsetOptions } from "./toolset.ts";
 export { screencaptureFallback } from "./fallback.ts";
-export { fakeHandsSpawn, FakeHands, FAKE_ACTING_OPS } from "./fake.ts";
+export { fakeHandsSpawn, FakeHands, FAKE_ACTING_OPS, FAKE_HELD_OPS } from "./fake.ts";
 export { HandsPool, SplitHands, ACTING_OPS, READ_OPS, defaultRoute } from "./pool.ts";
 export { ScreenStateCache, renderObservation, renderCompositeLook, axLabels, OBSERVATION_MAX_CHARS, LABELS_MAX } from "./state.ts";
 export type { ScreenState } from "./state.ts";
