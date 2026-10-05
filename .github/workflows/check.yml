@@ -27,7 +27,11 @@ jobs:
       - run: pnpm run typecheck
       # Includes the real ad-hoc install (packages/install adhoc-install.test.ts: codesign into a
       # temp Applications folder, never /Applications) and install.sh against stubs.
+      # Strict: a fetch off the runner throws and fails the test that made it, by name
+      # (scripts/test-preload.mjs), instead of being answered with a 401.
       - run: pnpm test
+        env:
+          JARHEAD_TEST_NET: strict
       # The one-line installer: syntax, a dry run with its four commands (README's, the site's dependencies left out), what it never does.
       - run: sh site/scripts/check-install.sh
 
