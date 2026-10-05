@@ -68,7 +68,7 @@
 .desk-hero.is-mono { font-family: var(--font-mono); font-size: max(17px, var(--isl-min)); letter-spacing: 0; font-variant-numeric: tabular-nums; }
 /* asleep: the clock the app's foot carries, set as the island's one big line in the quiet white */
 .desk-hero.is-clock { top: 28px; max-height: none; font: 500 44px/52px var(--font-mono); letter-spacing: -0.02em; color: var(--desk-white-72); font-variant-numeric: tabular-nums; }
-.desk-hero-dim { display: block; color: var(--desk-white-72); font-family: var(--font-sans); font-size: max(13px, var(--isl-min)); letter-spacing: -.005em; }
+.desk-hero-dim { display: block; color: var(--desk-white-48); font-family: var(--font-sans); font-size: max(13px, var(--isl-min)); letter-spacing: -.005em; }
 .desk-tiles { left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
 .desk-tile { position: absolute; top: 80px; width: 140px; min-height: 32px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 3px 8px; font-size: max(11px, var(--isl-min)); line-height: 1.2; }
 .desk-tile-name { display: flex; align-items: center; gap: 5px; font-weight: 500; color: var(--jh-paper); }
