@@ -2,11 +2,11 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
-import { HANDS_OFF_APPS, PRESENCE_WINDOW_MS, REPO_ROOT, accountFullName, classifyAction, dataPaths, effectiveUserName, noLiveModelLine, isLoopbackHost, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
+import { HANDS_OFF_APPS, PRESENCE_WINDOW_MS, REPO_ROOT, accountFullName, classifyAction, dataPaths, effectiveUserName, noLiveModelLine, isLoopbackHost, presenceGated, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type UserIdle, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
-import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
+import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, addressesJarhead, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
 import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, describeHelperTiles, readDock, readRunning, repairDock, restartDock, type DockAudit, type Exec, type RunningApp } from "@jarhead/install";
 import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
@@ -343,9 +343,11 @@ export class Engine extends EventEmitter<EngineEvents> {
   private readonly problemMeta = new Map<string, ProblemMeta>();
   /** The disk preflight's last verdict (`checkDisk`): shots are skipped while true. */
   private diskLow = false;
-  /** Wall clock of Kevin's last own input (wake, ear, Live transcript, typed line, dictation) — never Jarhead's speech or the model's actions: the presence gate reads it. */
+  /** Wall clock of Kevin's last own input (wake, ear, Live transcript, typed line, dictation) — never Jarhead's speech, the model's actions or Live's delegation (RAIL-14): the presence gate reads it. */
   private lastKevinAt = 0;
-  /** When the announced idle sleep falls due: fixed once announced, so the announcement itself cannot push it. */
+  /** Wall clock of the last Live input-transcript delta: whatever the microphone heard, the room included. Never attention. */
+  private lastHeardAt = 0;
+  /** When the announced idle sleep falls due: fixed once announced; the clause itself and the room cannot push it, only an addressed turn (`addressed()`). */
   private sleepDeadlineAt: number | undefined;
   private diskCheckedAt = 0;
   /** While the voice reconnects after `expired` / `connection_lost`: since when, for the problem line's elapsed figure. 0 otherwise. */
@@ -366,20 +368,36 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   private heldReconnect: PauseInfo | undefined;
   private reconnectTimer: NodeJS.Timeout | undefined;
+  /** Pause pressed during a handshake (V12): connect() closes the session the moment it starts and holds the pause. */
+  private pauseAtStart = false;
   private permissions: Permissions = { all: [] };
   private agentsList: AgentInfo[] = [];
   private connectorHealth: ConnectorHealth[] = [];
   private lastOutputSpeechAt = 0;
   /** The last output audio frame that reached the speaker (not gated): the voice is audible for a moment after it. */
   private lastOutputAudioAt = 0;
+  /**
+   * The attention clock (W1-1): the last ADDRESSED turn — Live's delegation, Jarhead's own speech (not the pre-sleep
+   * clause), a typed line, dictation, an ear reflex that ran, words that name Jarhead, a Go / wake / resume Kevin
+   * pressed. Live's input transcript is whatever the microphone hears (a TV, a call, the room) and never moves it; a
+   * reconnect carries it. The idle sleep, its ceiling and the ear's exchange window read it.
+   */
   private lastAddressedAt = 0;
   /**
    * The output gate: Live has no interrupt, so after a stop the voice's audio is
-   * dropped here (and its transcript deltas do not count as speaking) until Kevin's
-   * next input-transcript delta or OUTPUT_GATE_MS pass. Wall clock of `now()`.
+   * dropped here (and its transcript deltas do not count as speaking) until Kevin
+   * says something new or OUTPUT_GATE_MS pass. Wall clock of `now()`.
    */
   private outputGateUntil = 0;
   private gatedFrames = 0;
+  /**
+   * The spoken stop the gate holds for (V10): when it was heard, the utterance on Live's transcript that carries it
+   * (known at once on Live's path; on the ear's, once Live's own transcript of the words arrives), and Live's words
+   * in that utterance since the stop. Undefined for a pressed stop. Only new speech lifts the gate.
+   */
+  private stopHeard: { readonly at: number; itemId: string | undefined; since: string } | undefined;
+  /** The utterance a spoken stop last came from: one utterance is one stop, however many fragments say it. */
+  private lastStopItemId: string | undefined;
   private readonly reflexRunner: ReflexRunner;
   /** Reflexes the ear fired in the last seconds, so Live's delegation for the same words is finished as done, not redone. */
   private readonly firedReflexes: FiredReflexes;
@@ -661,17 +679,16 @@ export class Engine extends EventEmitter<EngineEvents> {
       onGateSpeech: () => this.gateSpeech(`${this.userName} said stop`),
       // A dismissal ("go to sleep", "goodnight jarhead", "that's all"): the one sleep function, with the farewell.
       onSleep: (phrase) => void this.fallAsleep("said", { phrase, farewell: true }),
-      // Room talk never sleeps it: a bare "goodnight" counts only mid-exchange (Jarhead spoke or was spoken to within
-      // EXCHANGE_WINDOW_MS) — and never when the words are Jarhead's own line back through the microphone.
-      addressed: (phrase) => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS && !this.echoOfJarhead(phrase),
+      // Room talk never sleeps it: a bare "goodnight" counts only mid-exchange (Jarhead spoke or was addressed within
+      // EXCHANGE_WINDOW_MS — never because the microphone heard someone) — and never when the words are Jarhead's own
+      // line back through the microphone.
+      addressed: (phrase) => this.inExchange() && !this.echoOfJarhead(phrase),
       dictation: {
         active: () => this.dictating,
         start: () => this.startDictation(),
         stop: (reason) => this.stopDictation(reason),
         type: (text) => this.dictateText(text),
-        newline: async (count) => {
-          await this.toolset.run("key", { text: "Return", repeat: count });
-        },
+        newline: (count) => this.dictateNewline(count),
         deleteWord: async () => {
           await this.toolset.run("key", { text: "alt+Delete" });
         },
@@ -741,6 +758,15 @@ export class Engine extends EventEmitter<EngineEvents> {
   static readonly RECONCILE_WINDOW_MS = 4000;
   /** The voice counts as speaking for this long after its last transcript delta or audio frame (the phase uses the same figure). */
   static readonly SPEAKING_WINDOW_MS = 1200;
+  /**
+   * D1: whatever is running and whatever the room says, a session with no addressed turn for this long sleeps — and so
+   * does one whose idle setting is not a number. A longer idle setting is honoured as it is; an explicit 0 is off.
+   */
+  static readonly IDLE_CEILING_MS = 30 * 60_000;
+  /** After a spoken stop, Live's own transcript of the stop words arrives up to this late; within it they are not new speech (V10). */
+  static readonly STOP_ECHO_MS = 2000;
+  /** Why a brain turn ended when the server dropped the session under it (V1): the delegation's summary and the continuity's cue. */
+  static readonly CONNECTION_DROPPED = "the voice connection dropped";
   /** How often the frontmost window's accessibility tree is refreshed while awake, so a spoken click finds its control at once. */
   static readonly AX_WARM_MS = 500;
   /** A graceful close() unanswered for this long is terminate()d: the session bills per second while it is open. */
@@ -1843,6 +1869,12 @@ export class Engine extends EventEmitter<EngineEvents> {
    * the session that is about to start is kept instead of closed at once.
    */
   async go(): Promise<void> {
+    if (this.connecting && this.pauseAtStart) {
+      // Pause, then Go, inside one handshake: the session that is about to start is kept.
+      this.pauseAtStart = false;
+      log.info("go: the pause pressed during the handshake is off; the session is kept");
+      return;
+    }
     if (this.pauseInfo) return this.resume();
     if (this.live || this.connecting) {
       if (!this.wantAwake) {
@@ -1884,8 +1916,11 @@ export class Engine extends EventEmitter<EngineEvents> {
       return;
     }
     this.connecting = true;
-    if (!reason.startsWith("reconnect")) this.kevinSpoke();
-    else this.lastAddressedAt = this.now();
+    // A Go, a wake or a resume is Kevin's press: presence, and an addressed turn. A reconnect after the server dropped
+    // the session is not: it carries the idle clock as it stood (WG-8), or a network that drops every few minutes
+    // would hold a silent room's session open for ever.
+    const reconnect = reason.startsWith("reconnect");
+    if (!reconnect) this.kevinSpoke();
     this.setPhase("connecting");
     await this.ready();
     // A brain swap in flight (keys changed, settings changed) leaves `this.brain` undefined for a moment; wire() needs it.
@@ -1916,7 +1951,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       const res = await live.start();
       const at = this.now();
       this.sessionStartedAt = at;
-      this.lastAddressedAt = at;
+      if (!reconnect) this.addressed();
       this.usageSeconds = 0;
       this.contextRatio = undefined;
       this.ledger.append({ at, type: "session.started", sessionId: res.id, voice: this.settings.voice, language: this.settings.language, accent: this.settings.accent, ...(resume ? { resumedFrom: resume.pause.sessionId } : {}) });
@@ -1934,7 +1969,17 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (resume) {
         this.ledger.append({ at, type: "resume", sessionId: res.id, resumedFrom: resume.pause.sessionId, pausedMs: at - resume.pause.at });
         this.pauseInfo = undefined;
-        this.toast(this.resumeToast(resume.how), "info");
+        if (!this.pauseAtStart) this.toast(this.resumeToast(resume.how), "info");
+      }
+      if (this.pauseAtStart) {
+        // Pause landed during the handshake (V12): the session closes the moment it exists and the conversation is
+        // held, as a pause holds one — it billed for the handshake, nothing more. The toast was said at the press.
+        this.pauseAtStart = false;
+        this.endVoiceReconnect();
+        this.clearProblems("voice.connection");
+        log.info(`session ${res.id} started after a pause; closing it at once and holding the pause`);
+        void this.pauseSession(live, { quiet: true });
+        return;
       }
       if (this.muted) live.mute();
       this.setPhase(this.muted ? "muted" : "listening");
@@ -1964,6 +2009,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       }
     } finally {
       this.connecting = false;
+      this.pauseAtStart = false;
     }
   }
 
@@ -2031,6 +2077,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.dictating) this.stopDictation("asleep");
     this.outputGateUntil = 0;
     this.gatedFrames = 0;
+    this.stopHeard = undefined;
     this.stopAxWarm();
     this.earReflexes.forgetAll();
     this.scheduleSnapshot();
@@ -2137,7 +2184,7 @@ export class Engine extends EventEmitter<EngineEvents> {
             reflexes: {
               match: (u) => this.matchReflex(u),
               run: (reflex, sink) => this.runReflex(reflex, sink),
-              inExchange: () => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS,
+              inExchange: () => this.inExchange(),
               // The ear may have done these words already; the delegation then only confirms.
               // The prefire check only peeks: a claim there would hide the reflex from the delegation.
               reconcile: (u) => this.reconcileReflex(u),
@@ -2195,9 +2242,16 @@ export class Engine extends EventEmitter<EngineEvents> {
     });
     live.on("inputTranscript", (delta, s, e) => {
       if (!current()) return;
-      if (this.outputGateUntil) this.liftOutputGate(`${this.userName} spoke`);
-      this.kevinSpoke();
-      this.transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
+      // Whatever the microphone heard — Kevin, a TV, two people talking. Presence (he may be in the room), never
+      // attention: the idle clock moves on an addressed turn, and words that name Jarhead are one (W1-1).
+      this.lastHeardAt = this.now();
+      this.markKevin();
+      const item = this.transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
+      if (addressesJarhead(item.text)) this.addressed();
+      // The output gate holds for a stop until Kevin says something new (V10); a stop said over the voice while
+      // nothing runs is cut here, since the Delegator judges stops only while work runs (V9).
+      if (this.outputGateUntil && (this.now() >= this.outputGateUntil || this.newSpeech(delta, item))) this.liftOutputGate(`${this.userName} spoke`);
+      if (!this.outputGateUntil) this.stopOverVoice(item);
     });
     live.on("outputTranscript", (delta, s, e) => {
       if (!current()) return;
@@ -2205,12 +2259,15 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.transcript.push({ speaker: "jarhead", delta, startMs: s, endMs: e });
       if (this.now() < this.outputGateUntil) return; // muted locally: not "speaking"
       this.lastOutputSpeechAt = this.now();
-      this.lastAddressedAt = this.now();
+      // Jarhead's own speech is an addressed turn — except the pre-sleep clause, said while the announced sleep stands:
+      // counted, it would re-arm the idle clock every idle stretch and the session would never sleep.
+      if (this.sleepDeadlineAt === undefined) this.lastAddressedAt = this.lastOutputSpeechAt;
       this.recomputePhase();
     });
     live.on("delegation", () => {
       if (!current()) return;
-      this.kevinSpoke();
+      // Live judged the words addressed: attention. Not presence (RAIL-14) — the model acting is not Kevin at the Mac.
+      this.addressed();
     });
     live.on("usage", (seconds, ratio) => {
       if (!current()) return;
@@ -2238,7 +2295,11 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.scheduleSnapshot();
         return;
       }
-      // The open session ended under us: expired, the connection dropped, or the server closed it.
+      // The open session ended under us: expired, the connection dropped, or the server closed it. A brain turn still
+      // running belongs to the conversation that just ended (V1): it is cut here, with its delegation, before the
+      // Delegator goes — left running, no Stop, Pause or sleep could reach it (they speak to the next Delegator) and
+      // the daemon would keep taking its tool calls. The reconnect's continuity says it was cut.
+      this.cutBrainTurn(reason === "expired" || reason === "connection_lost" ? Engine.CONNECTION_DROPPED : "the voice session closed");
       this.detachLive(live);
       if (!id) {
         // The socket closed before session.started (refused, network down): start() rejects and connect()'s
@@ -2258,7 +2319,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         // window): the continuity is built when that connect runs, so the gap it names is the real one;
         // it decays as a pause would, and memory does not read the conversation while it is held.
         const at = this.now();
-        this.heldReconnect = { at, sessionId: id, usageSeconds: usage, sleepsAt: at + Math.max(Engine.PAUSE_MIN_MS, this.settings.idleSleepMinutes * 60_000) };
+        this.heldReconnect = { at, sessionId: id, usageSeconds: usage, sleepsAt: at + this.pauseHoldMs() };
         // Re-checked when it fires: a stop or a pause in the meantime wins over the reconnect.
         this.cancelReconnectTimer();
         this.reconnectTimer = setTimeout(() => {
@@ -2312,6 +2373,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       const sessionId = live?.session?.id;
       this.wantAwake = false;
       this.pauseInfo = undefined;
+      this.pauseAtStart = false;
       // The held conversation is let go — a pause's, and the one a pending reconnect was to carry on.
       this.dropHeldReconnect();
       // Only when there is something to put to sleep: asleep already, there is nothing to record.
@@ -2578,14 +2640,41 @@ export class Engine extends EventEmitter<EngineEvents> {
     const threads = this.threads.cancelAll(reason);
     this.serializer.drain(reason);
     const { jobs } = this.runner.abortTask(abortReason);
+    // A brain turn the runner still carries with no delegation behind it (V1: it outlived a session the server
+    // dropped, and ignored its abort) is cut too: the brain's own cancel, and the runner let go, so the daemon's
+    // tool.run guard refuses whatever it still sends.
+    const orphan = this.runningTurn() === undefined && this.runner.attached ? this.brainProxy.cancel() : undefined;
+    if (orphan) this.runner.attach(undefined);
     // The question on the floor and every queued one go; the grants sleep until the same conversation resumes.
     this.confirmations.clear();
     this.desk.clear();
     if (this.dictating) this.stopDictation("said");
     this.earReflexes.quiesce();
     // Quiet: the caller's one instruction (interrupt) or the closing session (stop, pause) speaks for the whole stop.
-    const cancel = Promise.all([this.delegator?.cancel(reason, { quiet: true }) ?? Promise.resolve(), threads]);
+    const cancel = Promise.all([this.delegator?.cancel(reason, { quiet: true }) ?? Promise.resolve(), threads, orphan]);
     return { running, dropped, jobs, cancel };
+  }
+
+  /** The delegation whose brain turn is running now (not one that is only draining its threads). */
+  private runningTurn(): Delegation | undefined {
+    const active = this.delegator?.active;
+    return active !== undefined && active.id !== this.delegator?.draining?.id ? active : undefined;
+  }
+
+  /**
+   * The session ended under a brain turn (V1): the turn is cut with its delegation — finished `cancelled` with `why`,
+   * the brain's own cancel called (capped, never awaited here), the task's background jobs stopped — and the runner
+   * let go before the Delegator is disposed, so nothing it still sends acts. A delegation only draining its threads
+   * is left to them: its brain is done, and the threads are the engine's.
+   */
+  private cutBrainTurn(why: string): void {
+    const turn = this.runningTurn();
+    if (!turn && !this.runner.attached) return;
+    if (turn && this.delegator) void this.bounded(this.delegator.cancel(why, { quiet: true }));
+    else void this.bounded(this.brainProxy.cancel());
+    this.runner.abortTask(why);
+    this.runner.attach(undefined);
+    log.info(`${why}: ${turn ? `cancelled ${turn.id}` : "an orphaned brain turn cancelled"}; the runner is let go`);
   }
 
   /**
@@ -2594,7 +2683,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    * gate set here is not lifted by the words that asked for it) and the
    * `interrupt` command. Work and speech end, the session stays open and
    * listening: the voice is gated locally (Live cannot be interrupted) until Kevin
-   * speaks or OUTPUT_GATE_MS pass, told once to stop speaking and wait, and a toast
+   * says something new or OUTPUT_GATE_MS pass, told once to stop speaking and wait, and a toast
    * says "stopped". A `stop` ledger row (how said/pressed) names the cut delegation.
    */
   async interrupt(source = "interrupt", how: "pressed" | "said" = "said"): Promise<void> {
@@ -2602,8 +2691,74 @@ export class Engine extends EventEmitter<EngineEvents> {
     const reason = `${this.userName} ${how} stop`;
     const open = this.openSession();
     // The gate first, so a frame arriving between here and the flush is dropped too.
-    if (open) this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
+    if (open) {
+      // A stop the gate already holds for (the speech half came first, ≥ 2 threads) stays the one it holds for.
+      const held = this.outputGated ? this.stopHeard : undefined;
+      this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
+      this.stopHeard = how === "said" ? (held ?? this.spokenStop()) : undefined;
+    }
     await this.cutWork(source, how, reason, open, t0);
+  }
+
+  /**
+   * A spoken stop, for the gate (V10): now, and the utterance on Live's transcript that carries it — Kevin's open one.
+   * On Live's path that is the utterance the stop word arrived in (this runs a microtask after its fragment); on the
+   * ear's, Live may not have heard the words yet, and its transcript of them is recognised when it comes.
+   */
+  private spokenStop(): { readonly at: number; itemId: string | undefined; since: string } {
+    const open = this.transcript.last("kevin");
+    const itemId = open && !open.final ? open.id : undefined;
+    if (itemId) this.lastStopItemId = itemId;
+    return { at: this.now(), itemId, since: "" };
+  }
+
+  /**
+   * Whether an input delta lifts the gate a stop set: new speech does; punctuation alone never does; after a spoken
+   * stop, the rest of the stop's own utterance does only once it says more than stop words and "jarhead" ("Stop,
+   * Jarhead." holds; "stop, and open safari" lifts), and Live's own transcript of the stop the ear acted on (a stop
+   * phrase within STOP_ECHO_MS) does not. A pressed stop is lifted by any words, as before.
+   */
+  private newSpeech(delta: string, item: TranscriptItem): boolean {
+    if (!wordsOf(delta)) return false;
+    const stop = this.stopHeard;
+    if (!stop) return true;
+    if (stop.itemId === item.id) {
+      stop.since += delta;
+      return !stopNoise(stop.since);
+    }
+    if (this.now() - stop.at < Engine.STOP_ECHO_MS && stopNoise(item.text)) {
+      // Live's words for the stop the ear already acted on: this utterance is the stop's from now on.
+      stop.itemId = item.id;
+      stop.since = item.text;
+      this.lastStopItemId = item.id;
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * V9: a stop said over Jarhead's voice while nothing runs. The Delegator judges stops only while work runs and the
+   * ear may be down (Speech not granted, the dictation model missing, reflexes off), so Live's transcript is judged
+   * here: the current utterance (the transcript's own merge rule) begins with a stop phrase or ends in "stop" /
+   * "cancel", Jarhead spoke within SPEAKING_WINDOW_MS and the words are not Jarhead's own line back through the microphone.
+   * The speech half of a stop — the voice gated, the speaker flushed — and its row; once per utterance. No instruction:
+   * if it was "stop by the store", the rest of his question lifts the gate and the answer plays.
+   */
+  private stopOverVoice(item: TranscriptItem): void {
+    if (item.id === this.lastStopItemId) return;
+    if (this.delegator?.active !== undefined || this.threads.running() > 0) return;
+    if (this.now() - this.lastOutputSpeechAt >= Engine.SPEAKING_WINDOW_MS) return;
+    const words = normalizeUtterance(item.text);
+    if (!STOP_HEAD.test(words) && !/\b(stop|cancel)\b[\s.!?,]*$/i.test(item.text)) return;
+    if (this.echoOfJarhead(words)) return;
+    const open = this.openSession();
+    if (!open) return;
+    const t0 = this.now();
+    this.gateSpeech(`${this.userName} said stop over the voice`);
+    this.lastStopItemId = item.id;
+    this.stopHeard = { at: t0, itemId: item.id, since: "" };
+    this.ledger.append({ at: t0, type: "stop", how: "said" });
+    this.toast("stopped", "info");
   }
 
   /** Only a session that has started is spoken to: one still opening has no id for the row and would hear "stop speaking" as its first instruction after session.started. */
@@ -2619,6 +2774,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   gateSpeech(reason: string): void {
     const open = this.openSession();
     if (!open) return;
+    // Always a spoken stop word (the ear's or Live's fragments): only new speech lifts it (V10).
+    this.stopHeard = (this.outputGated ? this.stopHeard : undefined) ?? this.spokenStop();
     this.outputGateUntil = this.now() + Engine.OUTPUT_GATE_MS;
     this.gatedFrames = 0;
     this.flushSpeaker();
@@ -2679,12 +2836,13 @@ export class Engine extends EventEmitter<EngineEvents> {
     log.info(`stop (${source}) in ${this.now() - t0}ms: ${live ? `session ${live.session?.id ?? "(connecting)"} closed` : wasPaused ? "pause ended" : "no session"}; ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; ${jobs} background job(s) stopped`);
   }
 
-  /** The gate ends early when Kevin speaks; the clock ends it otherwise. */
+  /** The gate ends early when Kevin says something new; the clock ends it otherwise. */
   private liftOutputGate(why: string): void {
     if (!this.outputGateUntil || this.paused) return;
     if (this.now() < this.outputGateUntil) log.debug(`output gate lifted (${why}) after dropping ${this.gatedFrames} frame(s)`);
     this.outputGateUntil = 0;
     this.gatedFrames = 0;
+    this.stopHeard = undefined;
   }
 
   /** True while the voice is being muted locally after a stop. */
@@ -2814,7 +2972,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       drain: (id, signal) => t.drain(id, signal),
       running: (id) => t.running(id),
       resume: (threadId) => t.resume(threadId),
-      inExchange: () => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS,
+      inExchange: () => this.inExchange(),
       liveNames: () => t.threadNames(),
       recentNames: () =>
         t
@@ -3674,6 +3832,11 @@ export class Engine extends EventEmitter<EngineEvents> {
    * paused: mic PCM is dropped, the ear ignored, reflexes off, levels 0; typing in
    * the Console resumes first. Unresumed, the pause decays to sleep at `sleepsAt`
    * (idleSleepMinutes, at least a minute).
+   *
+   * Pressed while the voice reconnects after the server dropped the session (the 500 ms window,
+   * or a failed reconnect held for Go), the conversation the server cut is what is held — no
+   * session opens behind the press (V12). Pressed during a handshake, the session closes the
+   * moment it starts and the pause holds (`pauseAtStart`).
    */
   async pause(o: { readonly quiet?: boolean } = {}): Promise<void> {
     if (this.sleeping) {
@@ -3685,23 +3848,39 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.toast("asleep already", "info");
       return;
     }
+    if (this.connecting) {
+      // A wake's, a resume's or a reconnect's handshake: it is not cut mid-way (the server would bill the socket
+      // anyway); connect() closes the session at session.started and holds the pause. A Stop meanwhile still wins.
+      if (!this.pauseAtStart) {
+        this.pauseAtStart = true;
+        if (!o.quiet) this.toast("paused · meter stopped", "info");
+        log.info("pause during the handshake: the session closes the moment it starts");
+      }
+      return;
+    }
     if (this.pauseInfo) {
       this.toast("paused already", "info");
       return;
     }
     const live = this.live;
-    if (!live?.session || this.connecting) {
-      this.toast(this.connecting ? "still connecting" : "asleep already", "info");
+    if (!live?.session) {
+      if (this.heldReconnect || this.reconnectTimer || this.voiceReconnectSince) return this.pauseHeldReconnect(o);
+      this.toast("asleep already", "info");
       return;
     }
+    return this.pauseSession(live, o);
+  }
+
+  /** Pause an open session: everything perceptible ends as a stop does, the session closes, the conversation is held. */
+  private async pauseSession(live: LiveSession, o: { readonly quiet?: boolean }): Promise<void> {
     const t0 = this.now();
-    const sessionId = live.session.id;
+    const sessionId = live.session?.id ?? "?";
     // The meter bills per second of open session; `session.usage.updated` arrives late,
     // so the figure at the pause is at least the seconds the session has been open.
     const usageSeconds = Math.max(this.usageSeconds, Math.floor((t0 - this.sessionStartedAt) / 1000));
     const { running, dropped, cancel } = this.cutEverything("paused", "pause");
     this.wantAwake = false;
-    this.pauseInfo = { at: t0, sessionId, usageSeconds, sleepsAt: t0 + Math.max(Engine.PAUSE_MIN_MS, this.settings.idleSleepMinutes * 60_000) };
+    this.pauseInfo = { at: t0, sessionId, usageSeconds, sleepsAt: t0 + this.pauseHoldMs() };
     this.ledger.append({ at: t0, type: "pause", sessionId, usageSeconds });
     this.detachLive(live);
     this.closeWithDeadline(live, "pause");
@@ -3709,6 +3888,34 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (!o.quiet) this.toast("paused · meter stopped", "info");
     await this.bounded(cancel);
     log.info(`paused in ${this.now() - t0}ms: session ${sessionId} closed at ${usageSeconds}s; ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; sleeps at +${Math.round((this.pauseInfo?.sleepsAt ?? t0) - t0) / 60_000} min unless resumed`);
+  }
+
+  /**
+   * Pause while the voice reconnects (V12): the session is already gone, so the conversation the server cut becomes
+   * the paused one — the pending reconnect is cancelled (no session opens behind the press), its counting row ends,
+   * everything else a pause cuts is cut, and Go resumes it with the continuity like any pause.
+   */
+  private async pauseHeldReconnect(o: { readonly quiet?: boolean }): Promise<void> {
+    const t0 = this.now();
+    const held = this.heldReconnect;
+    this.dropHeldReconnect();
+    this.wantAwake = false;
+    this.endVoiceReconnect();
+    const { dropped, cancel } = this.cutEverything("paused", "pause");
+    if (!held) {
+      // Nothing left to carry on (the conversation was trashed, or decayed): the reconnect is simply off.
+      this.setPhase("asleep");
+      this.toast("asleep already", "info");
+      await this.bounded(cancel);
+      log.info("pause during a reconnect with no conversation held: the reconnect is off; asleep");
+      return;
+    }
+    this.pauseInfo = { ...held, sleepsAt: t0 + this.pauseHoldMs() };
+    this.ledger.append({ at: t0, type: "pause", sessionId: held.sessionId, usageSeconds: held.usageSeconds });
+    this.setPhase("paused");
+    if (!o.quiet) this.toast("paused · meter stopped", "info");
+    await this.bounded(cancel);
+    log.info(`paused during the reconnect: the conversation the server cut (${held.sessionId}) is held, no session opened; ${dropped} hands request(s) dropped`);
   }
 
   /**
@@ -3827,12 +4034,16 @@ export class Engine extends EventEmitter<EngineEvents> {
       ].join("\n");
     }
     if (how === "reconnected") {
+      // The drop cut a task that was running (V1): it is not running now, and Kevin hears that once, not silence.
+      const cut = last?.status === "cancelled" && last.summary === Engine.CONNECTION_DROPPED ? last.request.replace(/\s+/g, " ").trim().slice(0, 160) : undefined;
       return [
         "# Continuity",
         `The voice connection dropped ${gap} ago and just came back. This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
         lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
         ...(task ? [task] : []),
-        `Carry on as before; do not recap or apologise. Say nothing now unless ${this.userName} was mid-request — then answer it.`,
+        cut !== undefined
+          ? `Carry on as before; do not recap or apologise. The drop cut the task that was running ("${cut}"). Tell ${this.userName} in one short sentence that it stopped, and ask whether to start it again.`
+          : `Carry on as before; do not recap or apologise. Say nothing now unless ${this.userName} was mid-request — then answer it.`,
       ].join("\n");
     }
     if (how === "restarted") {
@@ -4021,9 +4232,15 @@ export class Engine extends EventEmitter<EngineEvents> {
    * policy wants a question for is dropped — the pending question it left is
    * cleared so a later "yes" cannot arm it — and the model path will ask.
    */
-  private async runEarReflex(reflex: Reflex, _phrase: string, via: "ear" | "typed" = "ear"): Promise<ReflexOutcome & { readonly dropped?: string }> {
+  private async runEarReflex(reflex: Reflex, phrase: string, via: "ear" | "typed" = "ear"): Promise<ReflexOutcome & { readonly dropped?: string }> {
+    const outcome = await this.earReflexOutcome(reflex, phrase, via);
+    // A reflex that ran is an addressed turn (the ear judged the words addressed); one dropped or refused is not.
+    if (outcome.ok) this.addressed();
+    return outcome;
+  }
+
+  private async earReflexOutcome(reflex: Reflex, _phrase: string, via: "ear" | "typed"): Promise<ReflexOutcome & { readonly dropped?: string }> {
     const dispatchedAt = this.now();
-    this.lastAddressedAt = dispatchedAt;
     switch (reflex.kind) {
       case "dictate_start":
       case "dictate_stop":
@@ -4160,6 +4377,30 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     this.kevinSpoke();
     return true;
+  }
+
+  /**
+   * "new line" / "new paragraph" while dictating (RAIL-1, dictation's half). Return sends in Messages, Slack, Mail and
+   * the other presence-gated apps, and in a web app's compose box (the page in a browser may be one; its host is not
+   * known here), so there the newline that never sends is posted: Option-Return in Messages, Shift-Return elsewhere.
+   * Anywhere else it is Return, as before. If the gate still wants a yes, nothing is posted, the question goes (a
+   * later "yes" must not press it) and the toast says how to send.
+   */
+  private async dictateNewline(count: number): Promise<void> {
+    const app = (await this.frontmostAppName()) || this.frontApp;
+    const sends = presenceGated(app, undefined) || BROWSER_APPS.test(app);
+    const combo = !sends ? "Return" : /\bmessages\b/i.test(app) ? "alt+Return" : "shift+Return";
+    const r = await this.toolset.run("key", { text: combo, repeat: count });
+    this.lease.touch("dictation");
+    if (r.kind === "needs-confirmation") {
+      if (this.confirmations.pending?.id === r.pendingId) this.confirmations.dropQuestion();
+      else if (ConfirmationDesk.isQueuedId(r.pendingId)) this.desk.drop(ThreadAwareRunner.ACTOR);
+    } else if (r.kind !== "error" || !/^refused/.test(r.message)) {
+      if (r.kind === "error") log.warn(`dictation newline failed: ${r.message}`);
+      return;
+    }
+    log.info(`dictation: ${combo} in ${app || "the front app"} not posted (${r.kind === "error" ? r.message.slice(0, 80) : "the gate wants a yes"})`);
+    this.toast("new line held · say send if you mean send", "warn");
   }
 
   get isDictating(): boolean {
@@ -4524,16 +4765,41 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   // ----------------------------------------------------------------- state
 
-  /** Kevin's own input landed: presence, attention, and any announced sleep is off. */
-  private kevinSpoke(): void {
+  /** Kevin's own input landed (heard, typed, dictated, a wake he pressed): presence, which the policy's presence gate reads. Not attention by itself. */
+  private markKevin(): void {
     this.lastKevinAt = this.now();
-    this.lastAddressedAt = this.lastKevinAt;
+  }
+
+  /** An addressed turn (`lastAddressedAt` lists them): the idle clock restarts and an announced sleep is off. */
+  private addressed(): void {
+    this.lastAddressedAt = this.now();
     this.sleepDeadlineAt = undefined;
+  }
+
+  /** Kevin spoke TO Jarhead himself — a typed line, dictation, a Go, a wake: presence and attention. */
+  private kevinSpoke(): void {
+    this.markKevin();
+    this.addressed();
+  }
+
+  /** Mid-exchange: Jarhead spoke, or was addressed, within EXCHANGE_WINDOW_MS. Never because the microphone heard someone (RF-2). */
+  private inExchange(): boolean {
+    return this.now() - Math.max(this.lastAddressedAt, this.lastOutputSpeechAt) < Engine.EXCHANGE_WINDOW_MS;
+  }
+
+  /** The idle setting in ms: 0 when it is off, negative or not a number (tick's ceiling holds for the last two). */
+  private idleMs(): number {
+    const minutes = this.settings.idleSleepMinutes;
+    return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 0;
+  }
+
+  /** How long a pause (or a conversation the server cut) is held before it decays to sleep: the idle setting, at least a minute. */
+  private pauseHoldMs(): number {
+    return Math.max(Engine.PAUSE_MIN_MS, this.idleMs());
   }
 
   private onAction(a: ActionEvent): void {
     if (a.member === "mouse_move" && a.points) this.emit("overlay", { cmd: "point", x: a.points.x, y: a.points.y, ttlMs: 3000 });
-    this.lastAddressedAt = this.now();
   }
 
   private tick(): void {
@@ -4556,7 +4822,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     // A question queued behind one Kevin moved on from comes up now (the desk cannot see the root's drop).
     this.desk.promote();
-    const idleMs = this.settings.idleSleepMinutes * 60_000;
+    const idleMs = this.idleMs();
     // Not idle while a task runs — or while a thread still works (Live stays open for its question and
     // for the spoken stop; its caps bound the worst case at about five minutes).
     const busy = this.delegator?.active !== undefined || this.threads.running() > 0;
@@ -4564,16 +4830,21 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.threads.tick(now);
     // The schedule's clock: a tick gap means the Mac slept (resync), due rows fire, rings linger, the watchers poll.
     this.automations.tick(now);
-    // Five seconds before the idle sleep, one clause ("going to sleep") — and the sleep then
-    // falls due on a fixed deadline, so the announcement (Jarhead's own speech moves
-    // lastAddressedAt) cannot postpone it; only Kevin's input does (kevinSpoke).
-    if (this.live && !this.connecting && this.live.currentState === "started" && !busy && idleMs > 5000 && this.sleepDeadlineAt === undefined && now - this.lastAddressedAt > idleMs - 5000 && now - this.lastKevinAt > idleMs - 5000) {
+    // The limit on the addressed clock: Kevin's idle setting while nothing runs; while something runs, or when the
+    // setting is not a number at all, the ceiling (D1) — no turn that never ends and no typo keeps a paid session up
+    // longer with nobody addressing it. Room talk never moves the clock (W1-1). An explicit 0 is idle sleep off.
+    const limitMs = this.settings.idleSleepMinutes === 0 ? 0 : !busy && idleMs > 0 ? idleMs : Math.max(Engine.IDLE_CEILING_MS, idleMs);
+    const open = this.live !== undefined && !this.connecting && this.live.currentState === "started";
+    // Five seconds before the sleep, one clause ("going to sleep") — and the sleep then falls due on a fixed deadline:
+    // the clause is not an addressed turn and the room cannot push it; only an addressed turn does (`addressed()`).
+    if (open && limitMs > 5000 && this.sleepDeadlineAt === undefined && now - this.lastAddressedAt > limitMs - 5000) {
       this.sleepDeadlineAt = now + 5000;
       this.delegator?.announceSleep(5);
     }
-    if (this.live && !this.connecting && this.live.currentState === "started" && !busy && idleMs > 0 && (now - this.lastAddressedAt > idleMs || (this.sleepDeadlineAt !== undefined && now >= this.sleepDeadlineAt))) {
+    if (open && limitMs > 0 && (now - this.lastAddressedAt > limitMs || (this.sleepDeadlineAt !== undefined && now >= this.sleepDeadlineAt))) {
       this.sleepDeadlineAt = undefined;
-      log.info(`idle for ${this.settings.idleSleepMinutes} min; sleeping`);
+      const heard = this.lastHeardAt > this.lastAddressedAt ? `; the room was heard ${Math.round((now - this.lastHeardAt) / 1000)} s ago` : "";
+      log.info(`no addressed turn for ${Math.round(limitMs / 60_000)} min${limitMs === idleMs ? "" : " (the ceiling)"}${heard}; sleeping`);
       this.toast("asleep — tap the orb to wake", "info");
       void this.fallAsleep("idle");
     }
@@ -5251,7 +5522,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const lastAt = inside.reduce((m, r) => Math.max(m, r.at), latest.startedAt);
     const pauseRow = [...inside].reverse().find((r): r is Extract<LedgerRow, { type: "pause" }> => r.type === "pause");
     if (pauseRow) {
-      const sleepsAt = pauseRow.at + Math.max(Engine.PAUSE_MIN_MS, this.settings.idleSleepMinutes * 60_000);
+      const sleepsAt = pauseRow.at + this.pauseHoldMs();
       if (now >= sleepsAt) {
         log.info(`last session ${latest.id} was paused ${Math.round((now - pauseRow.at) / 60_000)} min ago and would have slept by now; asleep`);
         return;
@@ -5699,6 +5970,32 @@ function hostOf(baseUrl: string): string {
 
 function normalizeForLog(s: string): string {
   return s.replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+/** An utterance that begins with a stop (after the wake word and fillers are stripped): the Delegator's own head rule, for `stopOverVoice`. */
+const STOP_HEAD = /^(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/i;
+
+/**
+ * The words a stop is made of, its tail included ("stop it", "stop, jarhead", "no no stop now"). Words of only these
+ * are not new speech for the output gate (V10); a last word may be a fragment of one ("Jar" of "jarhead").
+ */
+const STOP_NOISE_WORDS = ["stop", "it", "that", "cancel", "never", "nevermind", "mind", "forget", "hold", "on", "abort", "that's", "thats", "enough", "quiet", "shush", "shut", "up", "wait", "no", "ok", "okay", "hey", "now", "please", "jarhead", "jar", "head", "jared", "jarred"];
+const STOP_NOISE = new Set(STOP_NOISE_WORDS);
+
+/** The words of a transcript fragment, lowercased, punctuation dropped; "" when it was punctuation alone. */
+function wordsOf(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}']+/gu, " ")
+    .trim();
+}
+
+/** True when the words are a stop and nothing else: every word a stop word or "jarhead", the last possibly cut short. */
+function stopNoise(text: string): boolean {
+  const words = wordsOf(text).split(" ").filter(Boolean);
+  const last = words.pop();
+  if (last === undefined) return true;
+  return words.every((w) => STOP_NOISE.has(w)) && (STOP_NOISE.has(last) || STOP_NOISE_WORDS.some((w) => w.startsWith(last)));
 }
 
 /**
