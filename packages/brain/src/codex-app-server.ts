@@ -24,9 +24,9 @@ import { codexBuiltinsOffArgs, codexDisableUserServersArgs, codexMcpConfigArgs, 
  *   ← server requests (they carry an id and must be answered): item/commandExecution/requestApproval,
  *      item/fileChange/requestApproval, item/permissions/requestApproval, item/tool/requestUserInput,
  *      mcpServer/elicitation/request, item/tool/call — every one is declined here; the only way
- *      Codex acts is the `jarhead` MCP server, which the runner gates. Codex's own shell and
- *      image reader are switched off in the argv (`codexBuiltinsOffArgs`): approval "never"
- *      over a read-only sandbox let them read every secret store.
+ *      Codex acts is the `jarhead` MCP server, which the runner gates. Codex's own shell,
+ *      image reader and connectors are switched off in the argv (`codexBuiltinsOffArgs`):
+ *      approval "never" over a read-only sandbox let the shell read every secret store.
  *   ← thread/closed {threadId}: the thread is gone; a turn on it fails now and a fresh thread
  *      replaces it (a rollover, so the brain carries the recent exchanges over).
  *
@@ -42,8 +42,8 @@ import { codexBuiltinsOffArgs, codexDisableUserServersArgs, codexMcpConfigArgs, 
  * start alongside); `-c mcp_servers.<name>.enabled=false` per server does switch
  * them off. The plugin runtime (`codex_apps`: Kevin's ChatGPT connectors — Drive,
  * Sites, agents; 134 tools, deletes and shares among them) is a *feature*, not a
- * server: `--disable apps` (= `-c features.apps=false`) switches it off, and the
- * argv below always does. His `notify` hook is silenced too (`-c notify=[]`), so
+ * server: `--disable apps` (= `-c features.apps=false`) switches it off, and both
+ * argvs always do (this one twice). His `notify` hook is silenced too (`-c notify=[]`), so
  * Jarhead's turns never fire it. Closing stdin ends the process cleanly.
  *
  * A stop while `turn/start` is still unanswered is remembered (`interruptRequested`)
@@ -503,6 +503,23 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
       .finally(() => {
         this.priming = undefined;
       });
+  }
+
+  /**
+   * Leave the current thread behind for good and open a fresh one in the background
+   * (a rollover, so the brain carries what it kept). For a thread whose history holds
+   * what no later turn may read: Codex's own shell or another MCP server ran on it,
+   * with nothing redacting the output. The id goes at once, so no turn starts on it
+   * again; until the fresh thread is up a task finds no thread and runs on exec. A
+   * replacement already starting is joined: it is a fresh thread either way.
+   */
+  retireThread(why: string): void {
+    const from = this.threadId;
+    if (!from) return;
+    this.threadId = undefined;
+    this.usage = undefined;
+    log.warn(`thread ${from.slice(0, 8)} retired (${why}); a fresh one replaces it`);
+    if (this.running && !this.stopped) void this.rollOver(why);
   }
 
   /**

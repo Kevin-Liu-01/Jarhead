@@ -4,8 +4,8 @@ import { logger } from "@jarhead/core";
 
 /**
  * The `-c key=value` overrides both Codex entry points share: the `jarhead` MCP
- * server (Jarhead's tools over the bridge), Codex's own shell and image reader
- * switched off (`codexBuiltinsOffArgs`), the prompt blocks Codex would add for
+ * server (Jarhead's tools over the bridge), Codex's own shell, image reader and
+ * connectors switched off (`codexBuiltinsOffArgs`), the prompt blocks Codex would add for
  * a coding session and Jarhead does not want (`codexPromptTrimArgs`), and, for
  * the app-server, which of the user's own MCP servers to switch off — `codex
  * app-server` has no `--ignore-user-config`, so the CODEX_HOME config.toml loads
@@ -178,22 +178,31 @@ export function codexPromptTrimArgs(): string[] {
 }
 
 /**
- * Codex's own tools that read this Mac, by feature key: its shell (`shell_tool`)
- * and its image reader (`view_image`). The read-only sandbox stops writes, not
- * reads, and approval "never" asks nobody: a read of ~/.ssh or ~/.jarhead/env
- * through Codex's shell reached the model with no policy, no secret-store refusal
- * and no redactor in between (RAIL-4, launch audit 2026-10-05). With these off,
- * the only way Codex reads or acts is the `jarhead` MCP server, whose calls land
- * in the ToolRunner.
+ * Codex's own tools that reach past Jarhead, by feature key: its shell
+ * (`shell_tool`), its image reader (`view_image`) and the plugin runtime (`apps`:
+ * the user's ChatGPT connectors, Drive, Sites and agents among them, 134 tools
+ * with deletes and shares). The read-only sandbox stops writes, not reads, and
+ * approval "never" asks nobody: a read of ~/.ssh or ~/.jarhead/env through
+ * Codex's shell reached the model with no policy, no secret-store refusal and no
+ * redactor in between (RAIL-4, launch audit 2026-10-05). With these off, the only
+ * way Codex reads or acts is the `jarhead` MCP server, whose calls land in the
+ * ToolRunner.
+ *
+ * `apps` rides both argvs. `--ignore-user-config` skips config.toml, not a
+ * feature's default, and `apps` defaults on, so exec needs it too. The
+ * app-server's own `--disable apps` says the same thing twice.
  *
  * Checked on 0.159.2 with `codex features list -c features.<key>=false` under a
- * temp CODEX_HOME (no login, no network, no model call): both read back false.
- * `unified_exec` reads back true whatever `-c` says, so it is not passed; it only
- * picks which shell tool to build while `shell_tool` is on. The tool list itself
- * is built for a turn, so it was not rendered: a Codex that still runs a command
- * is caught at run time instead, and the turn fails (codex.ts, `ownShell`).
+ * temp HOME and CODEX_HOME (no login, outbound network denied, no turn): all
+ * three read back false. `unified_exec` reads back true whatever `-c` says, so
+ * it is not passed; it only picks which shell tool to build while `shell_tool`
+ * is on. The tool list itself is built for a turn, so it was not rendered here.
+ * The opt-in check in codex-launch.test.ts (JARHEAD_CODEX_TOOLS_CHECK) renders it
+ * with one `codex exec` turn against a localhost stand-in, and RAIL-4 stays
+ * closed pending that run. Meanwhile a Codex that still runs a command is caught
+ * at run time: the turn fails and its thread is retired (codex.ts, `ownShell`).
  */
-export const CODEX_BUILTINS_OFF = ["shell_tool", "view_image"] as const;
+export const CODEX_BUILTINS_OFF = ["shell_tool", "view_image", "apps"] as const;
 
 export function codexBuiltinsOffArgs(): string[] {
   return CODEX_BUILTINS_OFF.flatMap((feature) => ["-c", `features.${feature}=false`]);

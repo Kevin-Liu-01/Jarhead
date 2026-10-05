@@ -3,12 +3,18 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
+import { spawn, type ChildProcess } from "node:child_process";
+import { REPO_ROOT } from "@jarhead/core";
 import { CodexBrain, codexAddendum, codexExecArgs, probeCodex, type CodexProbe } from "../codex.ts";
 import { CodexAppServer, appServerArgs } from "../codex-app-server.ts";
-import { ResponsesBrain } from "../responses.ts";
+import { CODEX_MCP_SERVER, toml } from "../codex-config.ts";
+import { REFUSED_NO_TASK, ResponsesBrain } from "../responses.ts";
 import { runToolOverSocket } from "../mcp-bridge.ts";
 import { resultText } from "../runner.ts";
 import { makeRunner, makeSink, makeTask } from "./fakes.ts";
@@ -18,14 +24,19 @@ import { makeRunner, makeSink, makeTask } from "./fakes.ts";
  * The audit's reproductions (launch/brains/brains-findings.test.ts), adopted:
  *
  * - RAIL-4: Codex's own shell read every secret store. The read-only sandbox stops
- *   writes, not reads, and approval "never" asks nobody. The shell and the image
- *   reader are switched off in both argvs, and a command that runs anyway fails the turn.
+ *   writes, not reads, and approval "never" asks nobody. The shell, the image reader
+ *   and the connectors are switched off in both argvs. A command that runs anyway
+ *   fails the turn: the runner lets go, nothing more of the turn reaches the sink,
+ *   and the warm thread that saw the output is retired. The rendered tool list is an
+ *   opt-in check at the end (one real `codex exec` turn, so only when asked).
  * - F-CODEX-AFTERSTOP: a stop lets go of the runner at once, so a bridge call Codex
  *   already sent is refused instead of acting with no delegation.
  * - F-APPSERVER-ZOMBIE: a turn given up locally never feeds its late items to the next.
  * - F-CODEX-SOCKET: two brains on private sockets keep a socket each.
  * - F-CODEX-CLOSED: a thread the server closed is replaced; tasks do not all fail.
- * - F-RESPONSES-ATTACHED: the Responses brain lets go of the runner when it finishes.
+ * - F-RESPONSES-ATTACHED: the Responses brain lets go of the runner when it finishes,
+ *   carries the delegation still open when one of two ends, and runs no call for a
+ *   delegation that is not open.
  * - E-SIGNEDOUT (codex half): an expired login is "not signed in" with the `codex login` remedy.
  *
  * No real Codex runs: the app-server is an in-process stand-in, `codex exec` a node script.
@@ -127,7 +138,9 @@ class FakeAppServer extends EventEmitter {
 /**
  * A stand-in `codex` for the exec transport (and --version for the probe). FAKE_MODE:
  * slow (turn 1 sits in a tool call until SIGINT, then takes FAKE_LAG_MS to exit),
- * shell (Codex runs its own shell), auth401 (the login was refused), else one answer.
+ * shell (Codex runs its own shell, then answers from its output), shellhang (Codex
+ * starts its own shell and sits there until SIGINT, then takes FAKE_LAG_MS to exit),
+ * auth401 (the login was refused), else one answer.
  */
 function fakeCodexBin(dir: string): string {
   const script = join(dir, "fake-codex.mjs");
@@ -158,9 +171,20 @@ process.stdin.on("end", () => {
     out({ type: "error", message: "unexpected status 401 Unauthorized: Your authentication token has expired. Please try signing in again." });
     process.exit(1);
   }
+  if (mode === "shellhang") {
+    out({ type: "item.started", item: { id: "c1", type: "command_execution", command: "/bin/zsh -lc 'ls ~/.ssh'", status: "in_progress" } });
+    process.on("SIGINT", () => setTimeout(() => process.exit(130), Number(process.env.FAKE_LAG_MS ?? 150)));
+    setInterval(() => undefined, 1000);
+    return;
+  }
   if (mode === "shell") {
     out({ type: "item.started", item: { id: "c1", type: "command_execution", command: "/bin/zsh -lc 'cat ~/.ssh/id_ed25519'", status: "in_progress" } });
     out({ type: "item.completed", item: { id: "c1", type: "command_execution", command: "/bin/zsh -lc 'cat ~/.ssh/id_ed25519'", aggregated_output: "-----BEGIN OPENSSH PRIVATE KEY----- canary", exit_code: 0, status: "completed" } });
+    // The model had already answered from the output before the stop landed.
+    out({ type: "item.completed", item: { id: "r", type: "reasoning", text: "The key reads canary." } });
+    out({ type: "item.completed", item: { id: "m", type: "agent_message", text: "The key is canary." } });
+    out({ type: "turn.completed" });
+    process.exit(0);
   }
   out({ type: "item.completed", item: { id: "m", type: "agent_message", text: "Chrome is open." } });
   out({ type: "turn.completed" });
@@ -224,7 +248,7 @@ function toolSockets(dir: string): string[] {
 
 // ------------------------------------------------------------------ RAIL-4
 
-test("RAIL-4: both Codex argvs switch off Codex's own shell and image reader; the sandbox stays read-only", () => {
+test("RAIL-4: both Codex argvs switch off Codex's own shell, image reader and connectors; the sandbox stays read-only", () => {
   const configsOf = (args: readonly string[]): string[] => args.filter((_, i) => args[i - 1] === "-c");
   const exec = codexExecArgs({ cwd: "/c", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s" });
   const app = appServerArgs({ bin: "codex", cwd: "/c", env: {}, codexHome: "/nowhere", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", developerInstructions: "x", disableUserServers: false });
@@ -232,6 +256,8 @@ test("RAIL-4: both Codex argvs switch off Codex's own shell and image reader; th
     const configs = configsOf(args);
     assert.ok(configs.includes("features.shell_tool=false"), `${name}: Codex's own shell is off (${configs.join(" ")})`);
     assert.ok(configs.includes("features.view_image=false"), `${name}: Codex's own image reader is off`);
+    // --ignore-user-config skips config.toml, not a feature's default, and `apps` defaults on (0.159.2).
+    assert.ok(configs.includes("features.apps=false"), `${name}: the plugin runtime (the ChatGPT connectors) is off`);
   }
   assert.equal(exec[exec.indexOf("-s") + 1], "read-only", "the sandbox stays: a belt under the switch");
   const trimmed = codexExecArgs({ cwd: "/c", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", trimPrompt: false });
@@ -246,17 +272,24 @@ test("RAIL-4: the addendum no longer admits the gap; it says the shell is off an
   assert.match(a, /the same tool and exactly the same arguments/, "the confirmation rule stays");
 });
 
-test("RAIL-4 backstop (warm): a Codex that runs its own shell anyway is stopped, the turn fails, and the command's output never reaches the timeline", { timeout: 15_000 }, async (t) => {
-  const child = new FakeAppServer(10, 10, false);
-  child.onTurn = (turnId, threadId, _n, notif) => {
+test("RAIL-4 backstop (warm): a Codex that runs its own shell anyway is stopped, nothing more of that turn reaches the timeline, and the next task runs on a fresh thread", { timeout: 15_000 }, async (t) => {
+  // The interrupted turn ends 200 ms after the interrupt: room for late items, as on a loaded Mac.
+  const child = new FakeAppServer(200, 10, false);
+  const shell = "/bin/zsh -lc 'cat ~/.ssh/id_ed25519'";
+  child.onTurn = (turnId, threadId, n, notif) => {
     const p = { threadId, turnId };
-    notif("item/started", { ...p, item: { type: "commandExecution", id: "c1", command: "/bin/zsh -lc 'cat ~/.ssh/id_ed25519'", status: "inProgress" } });
+    if (n === 1) {
+      notif("item/started", { ...p, item: { type: "commandExecution", id: "c1", command: shell, status: "inProgress" } });
+      notif("item/completed", { ...p, item: { type: "commandExecution", id: "c1", command: shell, aggregatedOutput: "-----BEGIN OPENSSH PRIVATE KEY----- canary", exitCode: 0, status: "completed" } });
+      // The model had already answered from the output before the interrupt landed.
+      notif("item/completed", { ...p, item: { type: "reasoning", id: "r", summary: ["The key reads canary."], content: [] } });
+      notif("item/completed", { ...p, item: { type: "agentMessage", id: "m", text: "The key is canary.", phase: "final_answer" } });
+      return; // turn/completed follows the interrupt
+    }
     setTimeout(() => {
-      notif("item/completed", { ...p, item: { type: "commandExecution", id: "c1", command: "/bin/zsh -lc 'cat ~/.ssh/id_ed25519'", aggregatedOutput: "-----BEGIN OPENSSH PRIVATE KEY----- canary", exitCode: 0, status: "completed" } });
-      if (child.interrupted.has(turnId)) return;
-      notif("item/completed", { ...p, item: { type: "agentMessage", id: "m", text: "Here is the key.", phase: "final_answer" } });
+      notif("item/completed", { ...p, item: { type: "agentMessage", id: `m${n}`, text: "Chrome is open.", phase: "final_answer" } });
       notif("turn/completed", { ...p, turn: { id: turnId, status: "completed", error: null } });
-    }, 30);
+    }, 10);
   };
   const { brain } = codexBrain(t, { transport: "app-server", spawnImpl: () => child });
   assert.equal((await brain.start()).ready, true);
@@ -265,7 +298,15 @@ test("RAIL-4 backstop (warm): a Codex that runs its own shell anyway is stopped,
   assert.equal(r.status, "failed", `the shell ran and the turn went on: ${JSON.stringify(r)}`);
   assert.match(r.error ?? "", /its own shell/);
   assert.ok(child.requests.some((q) => q.method === "turn/interrupt"), "the turn was interrupted at the command");
-  assert.ok(!JSON.stringify(log).includes("canary"), `the command's output reached the sink: ${JSON.stringify(log.steps)}`);
+  assert.doesNotMatch(JSON.stringify(log), /canary/i, `turn 1 reached the sink after the shell ran: ${JSON.stringify(log)}`);
+  assert.deepEqual(log.thinking, [], "nothing of the turn was shown or spoken");
+
+  const r2 = await brain.handle(makeTask("open chrome"), makeSink().sink);
+  assert.equal(r2.status, "done", JSON.stringify(r2));
+  const turnStarts = child.requests.filter((q) => q.method === "turn/start");
+  assert.equal(turnStarts.length, 2);
+  assert.notEqual(turnStarts[1]!.params["threadId"], turnStarts[0]!.params["threadId"], "the thread whose history holds the shell's output was retired");
+  assert.doesNotMatch(JSON.stringify(turnStarts[1]!.params["input"]), /ssh|canary/i, "the failed exchange is not carried to the fresh thread");
 });
 
 test("RAIL-4 backstop (exec): the same on the exec transport", async (t) => {
@@ -275,7 +316,42 @@ test("RAIL-4 backstop (exec): the same on the exec transport", async (t) => {
   const r = await brain.handle(makeTask("what is in my ssh folder"), log.sink);
   assert.equal(r.status, "failed", `the shell ran and the run went on: ${JSON.stringify(r)}`);
   assert.match(r.error ?? "", /its own shell/);
-  assert.ok(!JSON.stringify(log).includes("canary"), `the command's output reached the sink: ${JSON.stringify(log.steps)}`);
+  assert.doesNotMatch(JSON.stringify(log), /canary/i, `the run reached the sink after the shell ran: ${JSON.stringify(log)}`);
+  assert.deepEqual(log.thinking, [], "nothing of the run was shown or spoken");
+});
+
+test("RAIL-4 backstop (warm): once the brain has failed the turn itself, a bridge call still in flight is refused, before the server ends the turn", { timeout: 15_000 }, async (t) => {
+  const child = new FakeAppServer(600, 10, false); // the server takes 600 ms to end the interrupted turn
+  child.onTurn = (turnId, threadId, _n, notif) => notif("item/started", { threadId, turnId, item: { type: "commandExecution", id: "c1", command: "ls ~/.ssh", status: "inProgress" } });
+  const { brain, runner } = codexBrain(t, { transport: "app-server", spawnImpl: () => child });
+  assert.equal((await brain.start()).ready, true);
+  const sock = brain.toolSocketPath!;
+  let settled = false;
+  const r = brain.handle(makeTask("what is open"), makeSink().sink).finally(() => {
+    settled = true;
+  });
+  assert.ok(await until(() => child.requests.some((q) => q.method === "turn/interrupt")), "the brain failed the turn and interrupted it");
+  assert.equal(runner.attached, false, "the runner let go when the brain failed the turn, not at turn/completed");
+  const late = await runToolOverSocket(sock, "frontmost_app", {}, 3000);
+  assert.equal(settled, false, "the server had not ended the turn yet");
+  assert.equal(late.kind, "error", `a bridge call acted for a turn Jarhead had failed: ${resultText(late)}`);
+  assert.match(resultText(late), /no task is running/);
+  assert.match((await r).error ?? "", /its own shell/);
+});
+
+test("RAIL-4 backstop (exec): the same while the stopped child is still exiting", async (t) => {
+  const { brain, dir, runner } = codexBrain(t, { transport: "exec", env: { FAKE_MODE: "shellhang", FAKE_LAG_MS: "600" } });
+  assert.equal((await brain.start()).ready, true);
+  const [sock] = toolSockets(dir);
+  assert.ok(sock);
+  const sink = makeSink();
+  const r = brain.handle(makeTask("what is open"), sink.sink);
+  assert.ok(await until(() => sink.steps.some((s) => /its own shell/.test(s)), 10_000), "the run reached the command");
+  assert.equal(runner.attached, false, "the runner let go when the brain failed the run, not when the child exited");
+  const late = await runToolOverSocket(sock, "frontmost_app", {}, 3000);
+  assert.equal(late.kind, "error", `a bridge call acted for a run Jarhead had failed: ${resultText(late)}`);
+  assert.match(resultText(late), /no task is running/);
+  assert.equal((await r).status, "failed");
 });
 
 // ------------------------------------------------------------------ F-CODEX-AFTERSTOP
@@ -496,6 +572,78 @@ test("F-RESPONSES-ATTACHED: while another delegation is still open, finishing on
   assert.equal(runner.attached, false);
 });
 
+/** A Live stand-in that records what the brain sends back and how often it continues the backend. */
+function fakeLive(): { live: EventEmitter & { createResponseItem: (i: unknown) => void; createResponse: () => void }; items: Record<string, unknown>[]; continued: () => number } {
+  const items: Record<string, unknown>[] = [];
+  let continued = 0;
+  const live = Object.assign(new EventEmitter(), {
+    createResponseItem: (i: unknown) => void items.push(i as Record<string, unknown>),
+    createResponse: () => void continued++,
+  });
+  return { live, items, continued: () => continued };
+}
+
+test("F-RESPONSES-ATTACHED: tool calls for a delegation that is not open (finished, never opened, or none named) run nothing; each is answered refused and the backend is not continued", async () => {
+  const { runner } = makeRunner();
+  const { live, items, continued } = fakeLive();
+  const brain = new ResponsesBrain({ runner });
+  brain.bind(live as never);
+  const task = makeTask("what time is it");
+  const done = brain.handle(task, makeSink().sink);
+  live.emit("responseEvent", task.delegationId, { type: "response.completed" });
+  assert.equal((await done).status, "done");
+  for (const id of [task.delegationId, null, "item_never"]) {
+    live.emit("responseEvent", id, { type: "response.output_item.done", item: { type: "function_call", call_id: `c-${String(id)}`, name: "frontmost_app", arguments: "{}" } });
+    live.emit("responseEvent", id, { type: "response.completed" });
+  }
+  await sleep(50);
+  assert.doesNotMatch(JSON.stringify(items), /Finder/, `a tool ran with no delegation open: ${JSON.stringify(items)}`);
+  assert.deepEqual(
+    items.map((i) => [i["type"], i["call_id"], i["output"]]),
+    [task.delegationId, null, "item_never"].map((id) => ["function_call_output", `c-${String(id)}`, REFUSED_NO_TASK]),
+    "every call is answered, as refused",
+  );
+  assert.equal(continued(), 0, "the backend is not continued for a delegation that is over");
+  assert.equal(runner.attached, false);
+});
+
+test("F-RESPONSES-ATTACHED: when one of two open delegations finishes, the runner carries the one still open, not the one that ended", async () => {
+  const { runner } = makeRunner();
+  const { live } = fakeLive();
+  const brain = new ResponsesBrain({ runner });
+  brain.bind(live as never);
+  const a = makeSink();
+  const b = makeSink();
+  const ra = brain.handle({ ...makeTask("first"), delegationId: "item_a" }, a.sink);
+  const rb = brain.handle({ ...makeTask("second"), delegationId: "item_b" }, b.sink);
+  live.emit("responseEvent", "item_b", { type: "response.completed" });
+  assert.equal((await rb).status, "done");
+  // A tool the daemon's gate lets through now (a bridge call, the eyes) reports to the delegation still open.
+  await runner.run("frontmost_app", {});
+  assert.ok(a.steps.some((s) => s === "tool:frontmost_app"), `item_a's sink: ${JSON.stringify(a.steps)}`);
+  assert.ok(!b.steps.some((s) => s === "tool:frontmost_app"), "the finished delegation still carried the runner");
+  live.emit("responseEvent", "item_a", { type: "response.completed" });
+  assert.equal((await ra).status, "done");
+  assert.equal(runner.attached, false);
+});
+
+test("F-RESPONSES-ATTACHED: a task stopped before it reached the brain is cancelled at once and never attaches the runner", async () => {
+  const { runner } = makeRunner();
+  const { live, items } = fakeLive();
+  const brain = new ResponsesBrain({ runner });
+  brain.bind(live as never);
+  const stop = new AbortController();
+  stop.abort();
+  const r = brain.handle({ ...makeTask("too late", stop.signal), delegationId: "item_x" }, makeSink().sink);
+  const status = await Promise.race([r.then((x) => x.status), sleep(1000).then(() => "still pending")]);
+  assert.equal(status, "cancelled");
+  assert.equal(runner.attached, false);
+  live.emit("responseEvent", "item_x", { type: "response.output_item.done", item: { type: "function_call", call_id: "cx", name: "key", arguments: '{"text":"Return"}' } });
+  live.emit("responseEvent", "item_x", { type: "response.completed" });
+  await sleep(20);
+  assert.deepEqual(items.map((i) => i["output"]), [REFUSED_NO_TASK], "its late call runs nothing");
+});
+
 // ------------------------------------------------------------------ E-SIGNEDOUT
 
 test("E-SIGNEDOUT: an auth.json whose access token has expired with no refresh token is not signed in, and the detail names `codex login`", async () => {
@@ -543,3 +691,187 @@ test("E-SIGNEDOUT: a login the server refused at run time reads as signed out to
   utimesSync(join(home, "auth.json"), later, later);
   assert.equal((await probeCodex({ bin, codexHome: home, env })).signedIn, true, "a new sign-in clears it");
 });
+
+// ------------------------------------------------------------------ RAIL-4, rendered (opt-in)
+
+/**
+ * Codex builds its tool list per turn, and no `codex debug` command renders it (0.159.2:
+ * `prompt-input` carries no tools), so the argv tests above prove the switches are passed,
+ * not that the model is offered no shell. This renders it: one `codex exec` turn with the
+ * brain's exact argv against a localhost stand-in for the Responses API, whose first
+ * request is captured before Codex is stopped. An empty CODEX_HOME (no login), a provider
+ * that needs no OpenAI auth and never retries, outbound network denied but for localhost
+ * (sandbox-exec), the bridge pointed at a socket nothing serves: no model runs, nothing is
+ * billed, no tool can act. It is still a Codex turn, so it runs only when asked:
+ *
+ *   JARHEAD_CODEX_TOOLS_CHECK=/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex \
+ *     node --import tsx --test packages/brain/src/__tests__/codex-launch.test.ts
+ *
+ * (JARHEAD_CODEX_TOOLS_MODEL picks the model whose tool metadata Codex uses; default gpt-6-astra.)
+ */
+
+/** Codex's own tools that must never reach the model: its shells and its image reader. */
+const CODEX_OWN_TOOLS = new Set(["exec_command", "write_stdin", "shell", "local_shell", "shell_command", "view_image"]);
+
+/** The tool names a Responses request carries: a tool's name, else its built-in type (`local_shell`); a namespace's tools are walked too. */
+function requestToolNames(tools: readonly unknown[]): string[] {
+  return tools.flatMap((t): string[] => {
+    const o = (t ?? {}) as { name?: unknown; type?: unknown; tools?: unknown };
+    const own = typeof o.name === "string" ? o.name : String(o.type ?? "?");
+    return [own, ...(Array.isArray(o.tools) ? requestToolNames(o.tools) : [])];
+  });
+}
+
+/** What RAIL-4 needs of a rendered tool list: none of Codex's own reading tools, and the jarhead tools reachable. Empty when it holds. */
+function rail4Problems(tools: readonly unknown[]): string[] {
+  const names = requestToolNames(tools);
+  const problems = names.filter((n) => CODEX_OWN_TOOLS.has(n)).map((n) => `Codex's own ${n} is offered to the model`);
+  if (!JSON.stringify(tools).includes(`mcp__${CODEX_MCP_SERVER}__`)) problems.push(`no mcp__${CODEX_MCP_SERVER}__ tool reaches the model (tools: ${names.join(", ") || "none"})`);
+  return problems;
+}
+
+/** Outbound network denied except to this Mac itself. */
+const LOCALHOST_ONLY = '(version 1)(allow default)(deny network-outbound (remote ip))(allow network-outbound (remote ip "localhost:*"))';
+
+function decodeBody(buf: Buffer, encoding: string | string[] | undefined): string {
+  switch (String(encoding ?? "").toLowerCase()) {
+    case "gzip":
+      return gunzipSync(buf).toString("utf8");
+    case "br":
+      return brotliDecompressSync(buf).toString("utf8");
+    case "deflate":
+      return inflateSync(buf).toString("utf8");
+    case "zstd":
+      return zstdDecompressSync(buf).toString("utf8");
+    default:
+      return buf.toString("utf8");
+  }
+}
+
+/** One `codex exec` turn with the brain's argv against a localhost provider; resolves with its first request's tools, then stops Codex. */
+async function renderCodexTools(bin: string, o: { dir: string; model?: string; sandbox: boolean; timeoutMs?: number }): Promise<{ tools: unknown[]; names: string[]; argv: string[] }> {
+  let capture!: (body: Record<string, unknown>) => void;
+  const captured = new Promise<Record<string, unknown>>((r) => (capture = r));
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      if (req.method !== "POST" || !/\/responses$/.test(req.url ?? "")) {
+        res.writeHead(404).end();
+        return;
+      }
+      try {
+        capture(JSON.parse(decodeBody(Buffer.concat(chunks), req.headers["content-encoding"])) as Record<string, unknown>);
+      } catch {
+        // not a JSON body: keep waiting for one
+      }
+      const ev = (e: { type: string }): string => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(ev({ type: "response.created", response: { id: "resp_check" } } as never) + ev({ type: "response.completed", response: { id: "resp_check", output: [] } } as never));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as AddressInfo).port;
+  const [home, codexHome, cwd] = ["home", "codex-home", "cwd"].map((d) => join(o.dir, d)) as [string, string, string];
+  for (const d of [home, codexHome, cwd]) mkdirSync(d, { recursive: true });
+  const args = codexExecArgs({
+    cwd,
+    model: o.model,
+    node: process.execPath,
+    tsxCli: join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs"),
+    bridgePath: fileURLToPath(new URL("../mcp-bridge.ts", import.meta.url)),
+    socketPath: join(o.dir, "nobody.sock"),
+  });
+  const provider = `model_providers.jhcheck={name="jarhead-check", base_url=${toml(`http://127.0.0.1:${port}/v1`)}, wire_api="responses", requires_openai_auth=false, supports_websockets=false, request_max_retries=0, stream_max_retries=0}`;
+  args.splice(args.indexOf("-C"), 0, "-c", 'model_provider="jhcheck"', "-c", provider);
+  const [cmd, argv] = o.sandbox ? ["/usr/bin/sandbox-exec", ["-p", LOCALHOST_ONLY, bin, ...args]] : [bin, args];
+  const child = spawn(cmd, argv, { cwd, env: { HOME: home, CODEX_HOME: codexHome, PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (c: Buffer) => (stderr = (stderr + c.toString("utf8")).slice(-2000)));
+  child.stdout.resume();
+  child.stdin.on("error", () => undefined);
+  child.stdin.end("Say ok.");
+  const exited = new Promise<void>((r) => child.once("close", () => r()));
+  try {
+    const timeoutMs = o.timeoutMs ?? 60_000;
+    const body = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no request within ${timeoutMs} ms: ${stderr.trim().slice(-600)}`)), timeoutMs);
+      void captured.then((b) => {
+        clearTimeout(timer);
+        resolve(b);
+      });
+      child.once("error", (e) => reject(e));
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`codex exited ${code} before its first request: ${stderr.trim().slice(-600)}`));
+      });
+    });
+    const tools = Array.isArray(body["tools"]) ? (body["tools"] as unknown[]) : [];
+    return { tools, names: requestToolNames(tools), argv: args };
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGINT");
+      const kill = setTimeout(() => child.kill("SIGKILL"), 3000);
+      await exited;
+      clearTimeout(kill);
+    }
+    server.close();
+  }
+}
+
+/** A `codex` stand-in that does what the real one does first: POST one request, gzipped, to the provider the argv names; then waits for SIGINT. */
+function fakeProviderCodex(dir: string, tools: unknown[]): string {
+  const script = join(dir, "fake-codex-provider.mjs");
+  writeFileSync(
+    script,
+    `import { request } from "node:http";
+import { gzipSync } from "node:zlib";
+const argv = process.argv.slice(2);
+const base = /base_url="([^"]+)"/.exec(argv.find((a) => a.startsWith("model_providers.jhcheck=")) ?? "")?.[1];
+if (!base) { console.error("no provider in the argv"); process.exit(3); }
+const body = gzipSync(JSON.stringify({ model: argv[argv.indexOf("-m") + 1], tools: ${JSON.stringify(tools)}, input: [] }));
+const req = request(base + "/responses", { method: "POST", headers: { "content-type": "application/json", "content-encoding": "gzip" } }, (res) => res.resume());
+req.on("error", (e) => { console.error(e.message); process.exit(4); });
+req.end(body);
+process.on("SIGINT", () => process.exit(130));
+setInterval(() => undefined, 1000);
+`,
+  );
+  const bin = join(dir, "codex");
+  writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
+test("RAIL-4 rendered: the check names Codex's own shells and image reader, and finds the jarhead route in code mode or as plain tools", () => {
+  const codeMode = [{ type: "function", name: "exec", description: "Run JavaScript. Available: tools.mcp__jarhead__screenshot(args), tools.mcp__jarhead__left_click(args)" }];
+  assert.deepEqual(rail4Problems(codeMode), []);
+  assert.deepEqual(rail4Problems([{ type: "function", name: "mcp__jarhead__screenshot" }]), []);
+  const leaky = rail4Problems([{ type: "function", name: "exec_command" }, { type: "function", name: "write_stdin" }, { type: "local_shell" }, { type: "namespace", name: "codex", tools: [{ type: "function", name: "view_image" }] }]);
+  assert.deepEqual(leaky, ["Codex's own exec_command is offered to the model", "Codex's own write_stdin is offered to the model", "Codex's own local_shell is offered to the model", "Codex's own view_image is offered to the model", "no mcp__jarhead__ tool reaches the model (tools: exec_command, write_stdin, local_shell, codex, view_image)"]);
+});
+
+test("RAIL-4 rendered: the harness hands a codex stand-in the brain's argv with the localhost provider, captures its first request, and stops it", { timeout: 30_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-w18p-"));
+  const tools = [{ type: "function", name: "exec", description: "tools.mcp__jarhead__screenshot" }];
+  const r = await renderCodexTools(fakeProviderCodex(dir, tools), { dir, model: "gpt-6-astra", sandbox: false, timeoutMs: 15_000 });
+  assert.deepEqual(r.names, ["exec"]);
+  assert.deepEqual(rail4Problems(r.tools), []);
+  const configs = r.argv.filter((_, i) => r.argv[i - 1] === "-c");
+  for (const c of ["features.shell_tool=false", "features.view_image=false", "features.apps=false", 'model_provider="jhcheck"']) assert.ok(configs.includes(c), `the argv carries ${c}`);
+  assert.ok(r.argv.includes("--ignore-user-config") && r.argv.at(-1) === "-", "the brain's exec argv, the prompt on stdin");
+});
+
+const TOOLS_CHECK_BIN = process.env["JARHEAD_CODEX_TOOLS_CHECK"];
+
+test(
+  "RAIL-4 rendered (opt-in, one codex exec turn): the installed Codex offers the model no shell and no image reader of its own, and the jarhead tools are there",
+  { skip: TOOLS_CHECK_BIN ? false : "set JARHEAD_CODEX_TOOLS_CHECK=<codex binary> to run it: one codex exec turn against a localhost stand-in, no login, no cost; ask Kevin first", timeout: 120_000 },
+  async () => {
+    assert.ok(existsSync("/usr/bin/sandbox-exec"), "the check denies outbound network with sandbox-exec (macOS)");
+    const dir = mkdtempSync(join(tmpdir(), "jh-w18t-"));
+    const r = await renderCodexTools(TOOLS_CHECK_BIN!, { dir, sandbox: true, model: process.env["JARHEAD_CODEX_TOOLS_MODEL"] || "gpt-6-astra" });
+    console.log(`[RAIL-4] tools offered to the model: ${r.names.join(", ")}`);
+    assert.deepEqual(rail4Problems(r.tools), []);
+  },
+);

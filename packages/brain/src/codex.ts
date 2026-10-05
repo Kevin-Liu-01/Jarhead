@@ -39,18 +39,20 @@ export { CODEX_MCP_SERVER } from "./codex-config.ts";
  * that arrives before it is up runs on exec, and a failed start is retried in
  * the background a minute later. `detail` says which transport is live and why.
  *
- * Either way Codex runs in its read-only sandbox with its own shell and image
- * reader switched off (`codexBuiltinsOffArgs`: the sandbox stops writes, not
- * reads) and Kevin's own MCP servers off (`--ignore-user-config` for exec;
- * per-server `enabled=false` plus `--disable apps` for the app-server, which has
- * no such flag) — his config.toml enables Codex's own computer-use, browser and
- * REPL servers, and the plugin runtime binds his ChatGPT connectors, which would
- * let it act on the Mac and on his accounts around Jarhead's policy — so the only
- * way it can read or act is through
+ * Either way Codex runs in its read-only sandbox with its own shell, image reader
+ * and plugin runtime switched off (`codexBuiltinsOffArgs`: the sandbox stops
+ * writes, not reads, and the plugin runtime binds his ChatGPT connectors) and
+ * Kevin's own MCP servers off (`--ignore-user-config` for exec; per-server
+ * `enabled=false` for the app-server, which has no such flag). His config.toml
+ * enables Codex's own computer-use, browser and REPL servers, which would let it
+ * act on the Mac and on his accounts around Jarhead's policy. So the only way it
+ * can read or act is through
  * the `jarhead` MCP server (`mcp-bridge.ts`), whose calls land in the same
  * ToolRunner as every other brain: policy, ledger, screenshot archive,
- * confirmation handshake included. A call to any other MCP server fails the turn
- * outright. The bridge reaches the runner over the daemon socket when the daemon
+ * confirmation handshake included. A call to any other MCP server, or a command
+ * of Codex's own shell, fails the turn outright: the runner lets go at once,
+ * nothing more of that turn reaches the timeline, and the warm thread that saw it
+ * is retired. The bridge reaches the runner over the daemon socket when the daemon
  * is this process; otherwise (`jarhead live` / `probe`, or another Jarhead on the
  * default path) the brain serves a socket of its own. Jarhead's secrets never
  * enter Codex's environment.
@@ -643,7 +645,7 @@ interface RunState {
   readonly sink: BrainSink;
   readonly child: ChildProcess;
   readonly started: number;
-  /** The runner was let go (at the stop, or when the run settled): a late bridge call is refused. */
+  /** The runner was let go (at the stop, when the brain failed the run, or when it settled): a late bridge call is refused. */
   released: boolean;
   /** The most recent agent_message; becomes the summary at turn.completed. */
   candidate: string | undefined;
@@ -670,7 +672,7 @@ interface WarmTurn {
   readonly task: BrainTask;
   readonly sink: BrainSink;
   readonly started: number;
-  /** The runner was let go (at the stop, or when the turn ended): a late bridge call is refused. */
+  /** The runner was let go (at the stop, when the brain failed the turn, or when it ended): a late bridge call is refused. */
   released: boolean;
   candidate: string | undefined;
   /** What Jarhead's tools returned this turn, for the carried history (compacted there). */
@@ -679,7 +681,14 @@ interface WarmTurn {
   /** Set when this brain asked for the interrupt itself (budget), so the result reads as failed, not cancelled. */
   failed: string | undefined;
   cancelled: boolean;
+  /** Codex acted around Jarhead on this turn (its own shell, another MCP server): the thread's history holds what nothing redacted, so the thread is retired when the turn ends. */
+  tainted: boolean;
   timer: NodeJS.Timeout | undefined;
+}
+
+/** The turn is over for Jarhead (a stop, or the brain failed it): nothing more of it reaches the sink. */
+function turnOver(t: { failed: string | undefined; cancelled: boolean }): boolean {
+  return t.failed !== undefined || t.cancelled;
 }
 
 export class CodexBrain implements Brain {
@@ -1028,7 +1037,7 @@ export class CodexBrain implements Brain {
     parts.push(delegationPrompt(task, this.opts.userName, attached));
     const input: UserInput[] = [{ type: "text", text: parts.join("\n\n"), text_elements: [] }, ...attached.map((a): UserInput => ({ type: "localImage", path: a.path, detail: "high" }))];
 
-    const warm: WarmTurn = { task, sink, started: Date.now(), released: false, candidate: undefined, results: [], steps: 0, failed: undefined, cancelled: false, timer: undefined };
+    const warm: WarmTurn = { task, sink, started: Date.now(), released: false, candidate: undefined, results: [], steps: 0, failed: undefined, cancelled: false, tainted: false, timer: undefined };
     this.warm = warm;
     this.opts.runner.attach(sink, task);
     const maxWallMs = this.opts.maxWallMs ?? 5 * 60_000;
@@ -1047,9 +1056,10 @@ export class CodexBrain implements Brain {
         input,
         {
           onItemStarted: (item) => this.onWarmItemStarted(warm, server, item),
-          onItemCompleted: (item) => this.onWarmItemCompleted(warm, item),
+          onItemCompleted: (item) => this.onWarmItemCompleted(warm, server, item),
           onWarning: (m) => log.debug(`codex warning: ${m}`),
           onError: (m, willRetry) => {
+            if (turnOver(warm)) return;
             if (willRetry) sink.step({ kind: "note", text: `codex: ${m.slice(0, 200)} (retrying)` });
             else this.failWarm(warm, server, m);
           },
@@ -1061,6 +1071,10 @@ export class CodexBrain implements Brain {
     } finally {
       task.signal.removeEventListener("abort", onAbort);
       if (warm.timer) clearTimeout(warm.timer);
+      // Codex acted around Jarhead on this thread: its history holds the command and
+      // what it printed, unredacted. No later turn runs on it, and the failed
+      // exchange is never carried (remember() runs on success only).
+      if (warm.tainted) server.retireThread("Codex acted around Jarhead on it");
       if (this.warm === warm) {
         this.warm = undefined;
         this.release(warm);
@@ -1082,9 +1096,9 @@ export class CodexBrain implements Brain {
   }
 
   /**
-   * The runner lets go of this turn's task once: at the stop, or when the turn ends,
-   * whichever is first. A second release (the turn ending after a stop) must not
-   * detach a task attached since.
+   * The runner lets go of this turn's task once: at the stop, when the brain fails the
+   * turn itself, or when the turn ends, whichever is first. A second release (the turn
+   * ending after a stop) must not detach a task attached since.
    */
   private release(owner: WarmTurn | RunState): void {
     if (owner.released) return;
@@ -1100,39 +1114,45 @@ export class CodexBrain implements Brain {
     log.warn(`Codex refused the login (${(out.error ?? "").slice(0, 160)}); sign in to Codex in ChatGPT or run \`codex login\``);
   }
 
+  /**
+   * The brain's own stop (its own shell, around Jarhead, the step budget, the wall
+   * clock, an error): the runner lets go now, as at Kevin's stop, so a bridge call
+   * already in flight is refused instead of acting for a turn Jarhead has ended.
+   */
   private failWarm(warm: WarmTurn, server: CodexAppServer, error: string): void {
-    if (warm.failed || warm.cancelled) return;
+    if (turnOver(warm)) return;
     warm.failed = error;
+    this.release(warm);
     void server.interrupt();
   }
 
-  private onWarmItemStarted(warm: WarmTurn, server: CodexAppServer, item: AppServerItem): void {
-    const { sink } = warm;
-    switch (item.type) {
-      case "mcpToolCall": {
-        if (!this.countWarmStep(warm, server)) return;
-        const tool = item.tool ?? "?";
-        if (item.server === CODEX_MCP_SERVER) {
-          sink.thinking(progressLine(tool, item.arguments));
-          return;
-        }
-        // Every other MCP server is switched off in the argv; a call to one means Codex
-        // found a way around Jarhead's policy, and the turn ends there.
-        sink.step({ kind: "error", text: `codex tried to act around Jarhead through ${item.server ?? "?"}.${tool}; the turn was stopped` });
-        this.failWarm(warm, server, aroundJarhead(item.server, tool));
-        return;
-      }
-      case "commandExecution": {
-        // Codex's own shell is switched off (codexBuiltinsOffArgs). A command here is a
-        // Codex that ignored that, running with no policy and no redactor: the turn ends.
-        const cmd = (item.command ?? "").slice(0, 120);
-        sink.step({ kind: "error", text: `codex ran its own shell (${cmd || "a command"}); the turn was stopped` });
-        this.failWarm(warm, server, ownShell(cmd));
-        return;
-      }
-      default:
-        return;
+  /**
+   * Codex acting around Jarhead: its own shell (switched off in the argv,
+   * codexBuiltinsOffArgs) or an MCP server that is not Jarhead's (switched off too).
+   * Either ran with no policy and no redactor. The turn fails here, the runner lets
+   * go, and the thread is marked for retirement however the turn ends. Seen at the
+   * item's start or, when only its completion is reported, there. Returns whether
+   * the item was one; the command is named, its output never.
+   */
+  private warmActedAround(warm: WarmTurn, server: CodexAppServer, item: AppServerItem): boolean {
+    const shell = item.type === "commandExecution";
+    if (!shell && !(item.type === "mcpToolCall" && item.server !== CODEX_MCP_SERVER)) return false;
+    warm.tainted = true;
+    const what = shell ? `its own shell (${(item.command ?? "").slice(0, 120) || "a command"})` : `${item.server ?? "?"}.${item.tool ?? "?"}`;
+    if (turnOver(warm)) {
+      log.warn(`codex acted around Jarhead after the turn was over (${what}); its thread is retired`);
+      return true;
     }
+    warm.sink.step({ kind: "error", text: shell ? `codex ran ${what}; the turn was stopped` : `codex tried to act around Jarhead through ${what}; the turn was stopped` });
+    this.failWarm(warm, server, shell ? ownShell((item.command ?? "").slice(0, 120)) : aroundJarhead(item.server, item.tool ?? "?"));
+    return true;
+  }
+
+  private onWarmItemStarted(warm: WarmTurn, server: CodexAppServer, item: AppServerItem): void {
+    if (this.warmActedAround(warm, server, item) || turnOver(warm)) return;
+    if (item.type !== "mcpToolCall") return;
+    if (!this.countWarmStep(warm, server)) return;
+    warm.sink.thinking(progressLine(item.tool ?? "?", item.arguments));
   }
 
   private countWarmStep(warm: WarmTurn, server: CodexAppServer): boolean {
@@ -1144,7 +1164,10 @@ export class CodexBrain implements Brain {
     return true;
   }
 
-  private onWarmItemCompleted(warm: WarmTurn, item: AppServerItem): void {
+  private onWarmItemCompleted(warm: WarmTurn, server: CodexAppServer, item: AppServerItem): void {
+    // After a stop or a failure nothing of this turn reaches the sink: an agentMessage
+    // quoting what Codex's own shell printed would otherwise be shown and spoken.
+    if (this.warmActedAround(warm, server, item) || turnOver(warm)) return;
     const { sink } = warm;
     switch (item.type) {
       case "agentMessage": {
@@ -1162,21 +1185,15 @@ export class CodexBrain implements Brain {
         return;
       }
       case "mcpToolCall": {
+        // Jarhead's own tools only: any other server failed the turn above.
         const tool = item.tool ?? "?";
         if (item.status === "failed" || item.error) {
           const why = errorMessage(item.error, "failed");
           sink.step({ kind: "error", text: `${tool}: ${why}` });
           if (/approval/i.test(why)) log.warn(`${tool}: ${why}`);
-        } else if (item.server !== CODEX_MCP_SERVER) {
-          sink.step({ kind: "note", text: `codex finished ${item.server ?? "?"}.${tool}` });
         } else {
           warm.results.push(carriedResult(tool, item.result));
         }
-        return;
-      }
-      case "commandExecution": {
-        // The command, never its output: nothing redacted it, and it may be a secret store's.
-        sink.step({ kind: "note", text: `codex ran ${(item.command ?? "").slice(0, 120)}${item.exitCode !== undefined && item.exitCode !== null ? ` (exit ${item.exitCode})` : ""}` });
         return;
       }
       default:
@@ -1284,7 +1301,7 @@ export class CodexBrain implements Brain {
         this.fail(state, errorMessage(ev.error, ev.message ?? "Codex reported an error"));
         return;
       default:
-        if (ev.type) sink.step({ kind: "note", text: `codex: ${ev.type}` });
+        if (ev.type && !turnOver(state)) sink.step({ kind: "note", text: `codex: ${ev.type}` });
     }
   }
 
@@ -1297,37 +1314,38 @@ export class CodexBrain implements Brain {
     return true;
   }
 
-  private onItemStarted(state: RunState, item: CodexItem): void {
-    const { sink } = state;
-    switch (item.type) {
-      case "mcp_tool_call": {
-        if (!this.countStep(state)) return;
-        const tool = item.tool ?? "?";
-        // Our own tools report through the runner (the bridge lands there); this is the
-        // "about to" line the in-process brains emit before each call.
-        if (item.server === CODEX_MCP_SERVER) {
-          sink.thinking(progressLine(tool, item.arguments));
-          return;
-        }
-        // exec runs with --ignore-user-config, so no other server should exist; one that does is a way around the policy.
-        sink.step({ kind: "error", text: `codex tried to act around Jarhead through ${item.server ?? "?"}.${tool}; the run was stopped` });
-        this.fail(state, aroundJarhead(item.server, tool));
-        return;
-      }
-      case "command_execution": {
-        // Codex's own shell is switched off (codexBuiltinsOffArgs). A command here is a
-        // Codex that ignored that, running with no policy and no redactor: the run ends.
-        const cmd = (Array.isArray(item.command) ? item.command.join(" ") : (item.command ?? "")).slice(0, 120);
-        sink.step({ kind: "error", text: `codex ran its own shell (${cmd || "a command"}); the run was stopped` });
-        this.fail(state, ownShell(cmd));
-        return;
-      }
-      default:
-        return;
+  /**
+   * The exec run's twin of `warmActedAround`: Codex's own shell (switched off in the
+   * argv) or an MCP server that is not Jarhead's (exec runs with --ignore-user-config,
+   * so none should exist). The run fails and the runner lets go; the process is
+   * ephemeral, so there is no thread to retire. Returns whether the item was one.
+   */
+  private execActedAround(state: RunState, item: CodexItem): boolean {
+    const shell = item.type === "command_execution";
+    if (!shell && !(item.type === "mcp_tool_call" && item.server !== CODEX_MCP_SERVER)) return false;
+    const cmd = (Array.isArray(item.command) ? item.command.join(" ") : (item.command ?? "")).slice(0, 120);
+    const what = shell ? `its own shell (${cmd || "a command"})` : `${item.server ?? "?"}.${item.tool ?? "?"}`;
+    if (turnOver(state)) {
+      log.warn(`codex acted around Jarhead after the run was over (${what})`);
+      return true;
     }
+    state.sink.step({ kind: "error", text: shell ? `codex ran ${what}; the run was stopped` : `codex tried to act around Jarhead through ${what}; the run was stopped` });
+    this.fail(state, shell ? ownShell(cmd) : aroundJarhead(item.server, item.tool ?? "?"));
+    return true;
+  }
+
+  private onItemStarted(state: RunState, item: CodexItem): void {
+    if (this.execActedAround(state, item) || turnOver(state)) return;
+    if (item.type !== "mcp_tool_call") return;
+    if (!this.countStep(state)) return;
+    // Our own tools report through the runner (the bridge lands there); this is the
+    // "about to" line the in-process brains emit before each call.
+    state.sink.thinking(progressLine(item.tool ?? "?", item.arguments));
   }
 
   private onItemCompleted(state: RunState, item: CodexItem): void {
+    // After a stop or a failure nothing of this run reaches the sink (see onWarmItemCompleted).
+    if (this.execActedAround(state, item) || turnOver(state)) return;
     const { sink } = state;
     switch (item.type) {
       case "agent_message": {
@@ -1351,22 +1369,15 @@ export class CodexBrain implements Brain {
         return;
       }
       case "mcp_tool_call": {
+        // Jarhead's own tools only: any other server failed the run above.
         const tool = item.tool ?? "?";
         if (item.status === "failed" || item.error) {
           const why = errorMessage(item.error, "failed");
           sink.step({ kind: "error", text: `${tool}: ${why}` });
           if (/approval/i.test(why)) log.warn(`${tool}: ${why}`);
-        } else if (item.server !== CODEX_MCP_SERVER) {
-          sink.step({ kind: "note", text: `codex finished ${item.server ?? "?"}.${tool}` });
         } else {
           state.results.push(carriedResult(tool, item.result));
         }
-        return;
-      }
-      case "command_execution": {
-        // The command, never its output: nothing redacted it, and it may be a secret store's.
-        const cmd = Array.isArray(item.command) ? item.command.join(" ") : (item.command ?? "");
-        sink.step({ kind: "note", text: `codex ran ${cmd.slice(0, 120)}${item.exit_code !== undefined ? ` (exit ${item.exit_code})` : ""}` });
         return;
       }
       case "error":
@@ -1378,9 +1389,11 @@ export class CodexBrain implements Brain {
     }
   }
 
+  /** The brain's own stop on the exec run: as `failWarm`, the runner lets go now, then the child is told to stop. */
   private fail(state: RunState, error: string): void {
-    if (state.failed || state.cancelled) return;
+    if (turnOver(state)) return;
     state.failed = error;
+    this.release(state);
     this.kill(state);
   }
 
