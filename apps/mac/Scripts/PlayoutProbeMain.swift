@@ -347,7 +347,7 @@ struct OfflineProbe {
         func r(_ t: String, _ p: Policy) -> RunResult { results[t]![p]! }
         if let f = r("paced", .cushion).frame {
             let p = f.playout, o = f.output
-            say("frame playout (paced): {\"chunks\":\(p.chunks),\"underruns\":\(p.underruns),\"underrunMs\":\(p.underrunMs),\"longestUnderrunMs\":\(p.longestUnderrunMs),\"wouldBeUnderruns\":\(p.wouldBeUnderruns),\"resets\":\(p.resets),\"targetMs\":\(p.targetMs),\"queuedMs\":\(p.queuedMs),\"queuedMinMs\":\(p.queuedMinMs ?? -1),\"lateMaxMs\":\(p.lateMaxMs),\"droppedChunks\":\(p.droppedChunks),\"droppedMs\":\(p.droppedMs)} output: {\"rmsDbfs\":\(o.rmsDbfs ?? 0),\"peakDbfs\":\(o.peakDbfs ?? 0),\"heardRmsDbfs\":\(o.heardRmsDbfs ?? 0),\"audibleMs\":\(o.audibleMs),\"mixFormat\":\"\(o.mixFormat)\"}")
+            say("frame playout (paced): {\"chunks\":\(p.chunks),\"underruns\":\(p.underruns),\"underrunMs\":\(p.underrunMs),\"longestUnderrunMs\":\(p.longestUnderrunMs),\"wouldBeUnderruns\":\(p.wouldBeUnderruns),\"resets\":\(p.resets),\"targetMs\":\(p.targetMs),\"queuedMs\":\(p.queuedMs),\"queuedMinMs\":\(p.queuedMinMs ?? -1),\"lateMaxMs\":\(p.lateMaxMs),\"lateMaxGraphMs\":\(p.lateMaxGraphMs),\"droppedChunks\":\(p.droppedChunks),\"droppedMs\":\(p.droppedMs)} output: {\"rmsDbfs\":\(o.rmsDbfs ?? 0),\"peakDbfs\":\(o.peakDbfs ?? 0),\"heardRmsDbfs\":\(o.heardRmsDbfs ?? 0),\"audibleMs\":\(o.audibleMs),\"mixFormat\":\"\(o.mixFormat)\"}")
         }
         let rb = r("paced + readback ticks", .today)
         check("today reproduces the defect on paced + readback ticks", Double(rb.holes) / minutes >= 3, String(format: "%.1f holes/min", Double(rb.holes) / minutes))

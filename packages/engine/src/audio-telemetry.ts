@@ -1,4 +1,4 @@
-import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { AudioState, LedgerRow, LiveAudio } from "@jarhead/protocol";
 
 /**
@@ -25,6 +25,10 @@ const REPLY_GAP_MS = 500;
 const REPLY_MIN_DELTAS = 3;
 /** The daemon.log line's rate limit. */
 export const AUDIO_LINE_EVERY_MS = 5000;
+/** The event-loop monitor's sampling interval: every reading carries it, so the reported delay has it taken off. */
+export const LOOP_RESOLUTION_MS = 10;
+/** Meters replaced before their session's `closed` keep their last figures this long (in sessions), for a late close. */
+const RETIRED_KEEP = 4;
 /** The percentiles read the newest this many figures (about 160 s of 40 ms deltas); the maxima are the session's. */
 const KEEP = 4096;
 
@@ -56,12 +60,15 @@ class SessionMeter {
   private replyMaxLead = 0;
   private lastArrival = 0;
   private readonly aheads: number[] = [];
-  private readonly loop: IntervalHistogram | undefined;
+  private readonly loop: LoopMonitor | undefined;
 
-  constructor(readonly formatRate: number | undefined) {
+  constructor(
+    readonly formatRate: number | undefined,
+    monitor: () => LoopMonitor | undefined,
+  ) {
     try {
-      this.loop = monitorEventLoopDelay({ resolution: 10 });
-      this.loop.enable();
+      this.loop = monitor();
+      this.loop?.enable();
     } catch {
       this.loop = undefined;
     }
@@ -108,20 +115,33 @@ class SessionMeter {
     return this.deltas > 0;
   }
 
+  /**
+   * The figures so far. A figure with nothing behind it is absent (the contract makes all but the counts optional):
+   * no delta yet, no size; no second delta inside a reply, no arrival; no reply of REPLY_MIN_DELTAS, no lead.
+   * `loopDelayMaxMs` is the event loop's longest delay this window (since the last `audio:` line, `resetLoop`), less
+   * the monitor's own sampling interval.
+   */
   figures(): LiveAudio {
     const aheads = this.replyDeltas >= REPLY_MIN_DELTAS ? [...this.aheads, this.replyMaxLead - this.replyFirstLead] : this.aheads;
-    const loop = this.loop ? Math.round(this.loop.max / 1e6) : undefined;
+    const loop = this.loop ? this.loop.max / 1e6 - LOOP_RESOLUTION_MS : undefined;
     return {
       deltas: this.deltas,
-      deltaMsP50: Math.round(percentile(this.sizes, 0.5)),
-      deltaMsMax: Math.round(this.maxSize),
-      arrivalP99Ms: Math.round(percentile(this.gaps, 0.99)),
-      arrivalMaxMs: Math.round(this.maxGap),
-      aheadMs: Math.round(percentile(aheads, 0.5)),
+      ...(this.sizes.length ? { deltaMsP50: Math.round(percentile(this.sizes, 0.5)), deltaMsMax: Math.round(this.maxSize) } : {}),
+      ...(this.gaps.length ? { arrivalP99Ms: Math.round(percentile(this.gaps, 0.99)), arrivalMaxMs: Math.round(this.maxGap) } : {}),
+      ...(aheads.length ? { aheadMs: Math.round(percentile(aheads, 0.5)) } : {}),
       gatedFrames: this.gated,
-      ...(loop !== undefined && Number.isFinite(loop) ? { loopDelayMaxMs: loop } : {}),
+      ...(loop !== undefined && Number.isFinite(loop) ? { loopDelayMaxMs: Math.max(0, Math.round(loop)) } : {}),
       ...(this.formatRate !== undefined ? { formatRate: this.formatRate } : {}),
     };
+  }
+
+  /** The `audio:` line went out: the event loop's window starts again. */
+  resetLoop(): void {
+    try {
+      this.loop?.reset();
+    } catch {
+      // the monitor is gone; the figure stays as it was
+    }
   }
 
   dispose(): void {
@@ -133,41 +153,85 @@ class SessionMeter {
   }
 }
 
+/** What SessionMeter reads of `monitorEventLoopDelay` (a seam for the tests). `max` is in nanoseconds. */
+export interface LoopMonitor {
+  readonly max: number;
+  enable(): void;
+  disable(): void;
+  reset(): void;
+}
+
 export interface AudioTelemetryOptions {
   readonly now: () => number;
   /** daemon.log (the engine's `log.info`). */
   readonly log: (line: string) => void;
+  /** The event-loop monitor for each session; `monitorEventLoopDelay` sampling every LOOP_RESOLUTION_MS by default. */
+  readonly loopMonitor?: () => LoopMonitor | undefined;
 }
 
-/** The engine's half: one meter per open session, the rate-limited line, the close row. */
+const defaultLoopMonitor = (): LoopMonitor => monitorEventLoopDelay({ resolution: LOOP_RESOLUTION_MS });
+
+/**
+ * The engine's half: the open session's meter, the rate-limited line, the close row.
+ *
+ * At most one meter runs: a session the engine opens retires every other one (its event-loop monitor stops at
+ * once). A session can end with no `closed` behind it (live.on("error") settles the transcript and nothing more),
+ * so a meter left to its close could run for the daemon's lifetime. A retired meter's last figures are kept for the
+ * newest RETIRED_KEEP sessions, so a `closed` that comes after the next session opened still writes its row.
+ */
 export class AudioTelemetry {
   private readonly meters = new Map<string, SessionMeter>();
+  /** Retired sessions' last Live figures (undefined when they heard nothing), oldest first. */
+  private readonly retired = new Map<string, LiveAudio | undefined>();
   /** The session the snapshot and the line report: the last one opened and not yet closed. */
   private current: string | undefined;
-  private lastLine = "";
+  /** What the last line said, its event-loop figure aside (that one moves every window). */
+  private lastKey = "";
   private lastLineAt = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly opts: AudioTelemetryOptions) {}
 
-  /** session.started: a fresh meter, and the format Live echoed in daemon.log. */
+  /** Meters running now; at most one. */
+  get running(): number {
+    return this.meters.size;
+  }
+
+  private meterFor(sessionId: string, formatRate: number | undefined): SessionMeter {
+    const meter = new SessionMeter(formatRate, this.opts.loopMonitor ?? defaultLoopMonitor);
+    for (const [id, other] of this.meters) {
+      if (id === sessionId) {
+        other.dispose();
+        continue;
+      }
+      // Retired: its monitor stops now; its figures wait for a late close.
+      this.retired.delete(id);
+      this.retired.set(id, other.heard ? other.figures() : undefined);
+      other.dispose();
+    }
+    this.meters.clear();
+    while (this.retired.size > RETIRED_KEEP) this.retired.delete(this.retired.keys().next().value as string);
+    this.meters.set(sessionId, meter);
+    return meter;
+  }
+
+  /** session.started: a fresh meter (any other one retired), and the format Live echoed in daemon.log. */
   open(sessionId: string, format: { readonly type?: string; readonly rate?: number } | undefined): void {
-    this.meters.get(sessionId)?.dispose();
     const rate = typeof format?.rate === "number" && Number.isFinite(format.rate) ? format.rate : undefined;
-    this.meters.set(sessionId, new SessionMeter(rate));
+    this.retired.delete(sessionId);
+    this.meterFor(sessionId, rate);
     this.current = sessionId;
-    this.lastLine = "";
+    this.lastKey = "";
     this.lastLineAt = Number.NEGATIVE_INFINITY;
     this.opts.log(rate !== undefined ? `audio format echoed: ${format?.type ?? "audio"} ${rate} Hz (session ${sessionId})` : `audio format: session.started echoed none (session ${sessionId})`);
   }
 
-  /** One of Live's output deltas, played or dropped by the output gate (`gated`). */
+  /** One of Live's output deltas, played or dropped by the output gate (`gated`). A retired session's are not counted. */
   delta(sessionId: string | undefined, bytes: number, gated: boolean): void {
-    if (!sessionId) return;
+    if (!sessionId || this.retired.has(sessionId)) return;
     let meter = this.meters.get(sessionId);
     if (!meter) {
-      meter = new SessionMeter(undefined);
-      this.meters.set(sessionId, meter);
-      this.current ??= sessionId;
+      meter = this.meterFor(sessionId, undefined);
+      this.current = sessionId;
     }
     meter.delta(bytes, this.opts.now(), gated);
   }
@@ -184,11 +248,15 @@ export class AudioTelemetry {
     if (!meter || !state || !(state.playout || state.duck || state.output)) return;
     const now = this.opts.now();
     if (now - this.lastLineAt < AUDIO_LINE_EVERY_MS) return;
-    const line = audioLine(state, meter.figures());
-    if (line === this.lastLine) return;
-    this.lastLine = line;
+    const live = meter.figures();
+    const { loopDelayMaxMs: _loop, ...steady } = live;
+    const key = audioLine(state, steady);
+    if (key === this.lastKey) return;
+    this.lastKey = key;
     this.lastLineAt = now;
-    this.opts.log(`audio: ${line}`);
+    this.opts.log(`audio: ${audioLine(state, live)}`);
+    // The line carried this window's event-loop figure; the next one starts now.
+    meter.resetLoop();
   }
 
   /** Session close: the summary line, and the ledger row when anything was measured (undefined otherwise). */
@@ -197,7 +265,8 @@ export class AudioTelemetry {
     this.meters.delete(sessionId);
     if (this.current === sessionId) this.current = undefined;
     meter?.dispose();
-    const live = meter?.heard ? meter.figures() : undefined;
+    const live = meter ? (meter.heard ? meter.figures() : undefined) : this.retired.get(sessionId);
+    this.retired.delete(sessionId);
     const app = state && (state.playout || state.duck || state.output) ? state : undefined;
     if (!live && !app) return undefined;
     this.opts.log(`audio (session ${sessionId} closed): ${audioLine(app, live)}`);

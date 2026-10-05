@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { addLogSink } from "@jarhead/core";
 import type { AudioState, LedgerRow, LiveAudio } from "@jarhead/protocol";
-import { audioLine } from "../audio-telemetry.ts";
+import { AudioTelemetry, audioLine, type LoopMonitor } from "../audio-telemetry.ts";
 import { rows, settle, world, type World } from "./world.ts";
 
 /**
@@ -198,4 +198,119 @@ test("v2 telemetry: the audio: line leaves out a live figure the contract lets b
   assert.equal(audioLine(undefined, { deltas: 3, gatedFrames: 0 }), "live 3 deltas");
   assert.equal(audioLine(undefined, { deltas: 30, gatedFrames: 0, deltaMsP50: 40, aheadMs: 0 }), "live 40 ms deltas · ahead 0 ms");
   assert.equal(audioLine(undefined, undefined), "nothing measured");
+});
+
+/** A monitorEventLoopDelay stand-in: `max` is set by the test, in ms; reset and disable are counted. */
+class FakeLoop implements LoopMonitor {
+  maxMs = 0;
+  resets = 0;
+  disabled = false;
+  get max(): number {
+    return this.maxMs * 1e6;
+  }
+  enable(): void {}
+  disable(): void {
+    this.disabled = true;
+  }
+  reset(): void {
+    this.resets++;
+    this.maxMs = 0;
+  }
+}
+
+function telemetry(): { t: AudioTelemetry; clock: { t: number }; lines: string[]; loops: FakeLoop[] } {
+  const clock = { t: 1_000_000 };
+  const lines: string[] = [];
+  const loops: FakeLoop[] = [];
+  const t = new AudioTelemetry({
+    now: () => clock.t,
+    log: (line) => {
+      if (line.startsWith("audio:")) lines.push(line);
+    },
+    loopMonitor: () => {
+      const l = new FakeLoop();
+      loops.push(l);
+      return l;
+    },
+  });
+  return { t, clock, lines, loops };
+}
+
+test("v2 telemetry: loop max is the event loop's longest delay this window, less the monitor's 10 ms sampling, and each audio: line starts a new window", () => {
+  const { t, clock, lines, loops } = telemetry();
+  t.open("sess_a", { type: "audio/pcm", rate: 24_000 });
+  for (let i = 0; i < 5; i++) {
+    t.delta("sess_a", 40 * 48, false);
+    clock.t += 40;
+  }
+  const loop = loops[0]!;
+  // One play block that waited behind a slow tick: 160 ms measured, 150 ms of it the stall.
+  loop.maxMs = 160;
+  assert.equal(t.snapshotField().liveAudio?.loopDelayMaxMs, 150, "the sampling interval is taken off");
+  t.frame(FRAME);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, / · loop max 150 ms$/);
+  assert.equal(loop.resets, 1, "the line closed the window");
+  // The next window is calm: 12 ms measured.
+  loop.maxMs = 12;
+  clock.t += 5000;
+  t.frame({ ...FRAME, playout: { ...FRAME.playout!, queuedMs: 140 } });
+  assert.equal(lines.length, 2);
+  assert.match(lines[1]!, / · loop max 2 ms$/, "the stall no longer pins the figure");
+  // Only the loop figure moved: that is not news, so no line and the window keeps running.
+  loop.maxMs = 40;
+  clock.t += 6000;
+  t.frame({ ...FRAME, playout: { ...FRAME.playout!, queuedMs: 140 } });
+  assert.equal(lines.length, 2, "a moving loop figure alone writes no line");
+  assert.equal(loop.resets, 2);
+  assert.equal(t.snapshotField().liveAudio?.loopDelayMaxMs, 30);
+  loop.maxMs = 5;
+  assert.equal(t.snapshotField().liveAudio?.loopDelayMaxMs, 0, "never below zero");
+});
+
+test("v2 telemetry: a session that never emits closed does not keep its meter: the next open retires it, its monitor stops, a late close still writes its row", () => {
+  const { t, clock, loops } = telemetry();
+  t.open("sess_a", undefined);
+  for (let i = 0; i < 4; i++) {
+    t.delta("sess_a", 40 * 48, false);
+    clock.t += 40;
+  }
+  // live.on("error") settled sess_a and nothing more: no close. The reconnect opens sess_b.
+  t.open("sess_b", undefined);
+  assert.equal(t.running, 1, "one meter runs, the open session's");
+  assert.equal(loops[0]!.disabled, true, "sess_a's 10 ms event-loop timer is off");
+  assert.equal(loops[1]!.disabled, false);
+  t.delta("sess_a", 40 * 48, false);
+  assert.equal(t.running, 1, "a straggling delta for a retired session starts no meter");
+  t.delta("sess_b", 40 * 48, false);
+  assert.equal(t.snapshotField().liveAudio?.deltas, 1, "the snapshot reports the open session");
+  // sess_a's closed arrives after all: its row carries its own figures.
+  const late = t.close("sess_a", undefined);
+  assert.equal(late?.type, "audio.playout");
+  assert.equal(late?.type === "audio.playout" ? late.liveAudio?.deltas : undefined, 4);
+  assert.equal(t.snapshotField().liveAudio?.deltas, 1, "closing the retired session leaves the open one alone");
+  // Sessions that never close, one after another: still one meter, and the retired figures stay bounded.
+  for (let i = 0; i < 20; i++) {
+    t.open(`sess_${i}`, undefined);
+    t.delta(`sess_${i}`, 40 * 48, false);
+  }
+  assert.equal(t.running, 1);
+  assert.equal(loops.filter((l) => !l.disabled).length, 1, "every monitor but the open session's is off");
+  assert.equal(t.close("sess_0", undefined), undefined, "a session retired long ago is forgotten: no figures, no app frame, no row");
+  assert.equal(t.close("sess_18", undefined)?.type, "audio.playout", "a recent one still closes with its figures");
+});
+
+test("v2 telemetry: liveAudio leaves out what it has not measured: one delta has a size but no arrival and no lead", () => {
+  const { t } = telemetry();
+  t.open("sess_a", undefined);
+  t.delta("sess_a", 40 * 48, false);
+  const live = t.snapshotField().liveAudio!;
+  assert.equal(live.deltas, 1);
+  assert.equal(live.deltaMsP50, 40);
+  assert.equal(live.arrivalP99Ms, undefined);
+  assert.equal(live.arrivalMaxMs, undefined);
+  assert.equal(live.aheadMs, undefined);
+  t.close("sess_a", undefined);
+  t.open("sess_b", undefined);
+  assert.deepEqual(Object.keys(t.snapshotField().liveAudio!).sort(), ["deltas", "gatedFrames", "loopDelayMaxMs"], "nothing heard yet: the counts and the loop");
 });

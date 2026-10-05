@@ -12,7 +12,7 @@ import { audioChecks, audioStatusLines, type Check } from "../doctor.ts";
  */
 
 type PlayoutRow = Extract<LedgerRow, { type: "audio.playout" }>;
-type Extras = { readonly liveAudio?: LiveAudio; readonly lastPlayout?: PlayoutRow };
+type Extras = { readonly liveAudio?: LiveAudio; readonly lastPlayout?: PlayoutRow; readonly now?: number };
 const statusLines = audioStatusLines as (state: AudioState | undefined, settings: { recording: boolean } | undefined, profiler?: undefined, extras?: Extras) => string[];
 type CheckInput = Parameters<typeof audioChecks>[0] & Extras;
 const checks = audioChecks as (i: CheckInput) => Check[];
@@ -85,10 +85,21 @@ test("v2 status: underruns and drops are counted in words, nothing voiced yet sa
 
 test("v2 status: no app connected, the last session's figures come from the ledger row", () => {
   const row: PlayoutRow = { at: NOW - 3_600_000, type: "audio.playout", sessionId: "live_u7_abcdefgh1234", playout: CALM.playout!, duck: CALM.duck!, output: CALM.output!, liveAudio: LIVE };
-  const lines = statusLines(undefined, { recording: false }, undefined, { lastPlayout: row });
+  const lines = statusLines(undefined, { recording: false }, undefined, { lastPlayout: row, now: NOW });
   assert.equal(lines[0], "  audio      no app connected");
-  assert.match(lines[1]!, /^ {13}last session …abcdefgh1234 · \d\d:\d\d:\d\d \(the ledger\)$/);
+  assert.equal(lines[1], "             last session …abcdefgh1234 · 1 h ago (the ledger)");
   assert.deepEqual(lines.slice(2), [...PLAYBACK, LIVE_LINE]);
+  // readLastPlayout looks back 7 days: a clock time alone would read as today.
+  const old = statusLines(undefined, { recording: false }, undefined, { lastPlayout: { ...row, at: NOW - 6 * 86_400_000 }, now: NOW });
+  assert.equal(old[1], "             last session …abcdefgh1234 · 6 d ago (the ledger)");
+});
+
+test("v2 status: the app connected and no session open, the live line is the last session's, and says so", () => {
+  const row: PlayoutRow = { at: NOW - 3_600_000, type: "audio.playout", sessionId: "s1", liveAudio: LIVE };
+  const lines = statusLines(CALM, { recording: false }, undefined, { lastPlayout: row, now: NOW });
+  assert.deepEqual(lines.slice(4), [...PLAYBACK, `${LIVE_LINE} · last session, 1 h ago`]);
+  // A session open: the daemon's own figures, never the row's.
+  assert.deepEqual(statusLines(CALM, { recording: false }, undefined, { liveAudio: LIVE, lastPlayout: row, now: NOW }).slice(4), [...PLAYBACK, LIVE_LINE]);
 });
 
 test("v2 status: readLastPlayout finds the newest audio.playout row across the last days", () => {
@@ -177,4 +188,37 @@ test("v2 status and doctor: a liveAudio with only the contract's required counts
   const partial: LiveAudio = { deltas: 40, gatedFrames: 1, deltaMsP50: 40, arrivalP99Ms: 130 };
   assert.equal(statusLines(CALM, { recording: false }, undefined, { liveAudio: partial }).at(-1), "             live    40 ms deltas · arrival p99 130 ms");
   assert.equal(playback(checks({ ...base, state: CALM, liveAudio: partial })).find((r) => r.name === "live arrival")?.status, "warn", "arrival p99 130 ms is over the line");
+});
+
+test("v2 doctor: the app is blamed for underruns only when its queue ran late enough to explain them; with no figure that does, the cause is not known yet", () => {
+  // Kevin ran the doctor after sleeping Jarhead: the app's frame has the counters, no session is open, so no liveAudio.
+  const rough: AudioState = { ...CALM, playout: { ...CALM.playout!, underruns: 6, underrunMs: 400, longestUnderrunMs: 150, lateMaxMs: 2 } };
+  const unknown = playback(checks({ ...base, phase: "asleep", state: rough }))[0]!;
+  assert.equal(unknown.status, "warn");
+  assert.equal(unknown.fix, "the cause is not known yet: the app's queue ran at most 2 ms late, and Live's arrival was not measured");
+  // Live paced in real time (arrival p99 31 ms for 40 ms deltas): no lateness on either side explains a 150 ms hole.
+  assert.equal(playback(checks({ ...base, state: rough, liveAudio: LIVE }))[0]!.fix, "the cause is not known yet: the app's queue ran at most 2 ms late, and Live fell at most 0 ms behind");
+  // The window's late max is 2 ms, but since the graph started a play block waited 160 ms: that is the app.
+  const graph = playback(checks({ ...base, state: { ...rough, playout: { ...rough.playout!, lateMaxGraphMs: 160 } }, liveAudio: LIVE }))[0]!;
+  assert.match(graph.detail, /late max 160 ms/);
+  assert.match(graph.fix ?? "", /^the speaker's queue in the app ran late \(late max 160 ms\)/);
+  // As long as the longest hole is material too, even under 40 ms.
+  const short = { ...rough, playout: { ...rough.playout!, underruns: 9, longestUnderrunMs: 30, lateMaxMs: 30 } };
+  assert.match(playback(checks({ ...base, state: short, liveAudio: LIVE }))[0]!.fix ?? "", /the app, not the network$/);
+});
+
+test("v2 doctor: with no session open, Live's figures come from the newest audio.playout row, and the rows say it was the last session", () => {
+  const rough: AudioState = { ...CALM, playout: { ...CALM.playout!, underruns: 6, underrunMs: 400, longestUnderrunMs: 150, lateMaxMs: 2 } };
+  const row: PlayoutRow = { at: NOW - 3_600_000, type: "audio.playout", sessionId: "s1", playout: rough.playout!, liveAudio: { ...LIVE, arrivalP99Ms: 210, arrivalMaxMs: 420 } };
+  const rows = playback(checks({ ...base, phase: "asleep", state: rough, lastPlayout: row }));
+  assert.equal(rows[0]!.detail, "6 underruns (zero-cushion would be 4) · longest 150 ms · late max 2 ms · arrival p99 210 ms (last session)");
+  assert.equal(rows[0]!.fix, "Live's audio arrived late (arrival p99 210 ms): the network or the daemon, not the app");
+  const live = rows.find((r) => r.name === "live arrival")!;
+  assert.equal(live.status, "warn");
+  assert.match(live.detail, / · last session, 1 h ago$/);
+  assert.doesNotMatch(rows.find((r) => r.name === "duck")!.detail, /last session/, "the app's own rows are the app's");
+  // A session open: the daemon's figures win over the row.
+  const open = playback(checks({ ...base, state: rough, liveAudio: LIVE, lastPlayout: row }));
+  assert.doesNotMatch(open[0]!.detail, /last session/);
+  assert.doesNotMatch(open.find((r) => r.name === "live arrival")!.detail, /last session/);
 });

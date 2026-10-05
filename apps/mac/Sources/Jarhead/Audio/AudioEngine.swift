@@ -121,6 +121,8 @@ final class AudioEngine {
             let speaker = telemetry.readback()
             return AudioCounters(playout: speaker?.playout, duck: BargeInDuck.shared.telemetry(), output: speaker?.output)
         }
+        // A frame went out: `lateMaxMs` and `queuedMinMs` start a new window (PLAN §3).
+        stateReader.published = { [telemetry] in telemetry.closeWindow() }
         stateReader.start()
     }
 

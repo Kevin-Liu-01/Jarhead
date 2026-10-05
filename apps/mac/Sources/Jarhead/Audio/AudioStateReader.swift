@@ -164,6 +164,8 @@ final class AudioStateReader {
     var onRestart: ((RouteRestart) -> Void)?
     /// Voice PLAN W1.5: the speaker's and the duck's counters, each under its own lock; called on `queue` at every publish.
     var counters: (() -> AudioCounters)?
+    /// A frame read through `counters` went out (`onAudioState`): the per-window figures start again. On `queue`.
+    var published: (() -> Void)?
 
     private let router = MicRouter()
     private var local = AudioLocalFacts()
@@ -273,6 +275,7 @@ final class AudioStateReader {
         guard state != lastState else { return }
         lastState = state
         onAudioState?(state)
+        published?()
     }
 
     /// A listener fired. Bursts fold into one look 50 ms later; a burst of nothing but

@@ -286,8 +286,15 @@ final class SpeakerScheduler {
 
 /// The speaker's figures for the state frame (voice PLAN W1.5): written on `jarhead.audio` after each
 /// chunk, read on the state reader's queue at each publish, one lock between them. Everything counts
-/// since the graph started (`restart`), except the dropped chunks, which arrive while the graph is
-/// down and count since `start()` (`resetDropped`).
+/// since the graph started (`restart`), except:
+/// - the dropped chunks, which arrive while the graph is down and count since `start()` (`resetDropped`);
+/// - `lateMaxMs` and `queuedMinMs`, which are per window (PLAN §3): the time since the previous frame went
+///   out (`closeWindow`), so one play block that waited behind a restart is in one frame, not every frame
+///   after it. `lateMaxGraphMs` keeps the since-the-graph-started maximum beside the cumulative underruns.
+///
+/// The window is closed by the reader after a frame it read actually went out. A wait noted between the read
+/// and the close belongs to the next window: `readback()` starts a "since this read" maximum and `closeWindow()`
+/// makes it the window, so no figure falls between two frames.
 final class PlaybackTelemetry: @unchecked Sendable {
     /// A chunk at or above this RMS is voiced (the engine's AUDIBLE_OUTPUT_LEVEL; Live streams near-silence between sentences).
     static let voicedRMS = 0.02
@@ -295,7 +302,13 @@ final class PlaybackTelemetry: @unchecked Sendable {
     private let lock = NSLock()
     private var stats = PlayoutModel.Stats()
     private var targetFrames = PlayoutModel.defaultTargetFrames
-    private var lateMaxSeconds = 0.0
+    /// The longest wait since the graph started, this window's, and the one since the last read.
+    private var graphLateMaxSeconds = 0.0
+    private var windowLateMaxSeconds = 0.0
+    private var readLateMaxSeconds = 0.0
+    /// The smallest backlog this window and since the last read, in player frames; nil before a chunk in it.
+    private var windowQueuedMinFrames: Int?
+    private var readQueuedMinFrames: Int?
     private var droppedChunks = 0
     private var droppedSeconds = 0.0
     private var voicedSeconds = 0.0
@@ -312,7 +325,11 @@ final class PlaybackTelemetry: @unchecked Sendable {
         lock.lock()
         stats = PlayoutModel.Stats()
         targetFrames = PlayoutModel.defaultTargetFrames
-        lateMaxSeconds = 0
+        graphLateMaxSeconds = 0
+        windowLateMaxSeconds = 0
+        readLateMaxSeconds = 0
+        windowQueuedMinFrames = nil
+        readQueuedMinFrames = nil
         voicedSeconds = 0
         voicedEnergy = 0
         heardEnergy = 0
@@ -334,7 +351,9 @@ final class PlaybackTelemetry: @unchecked Sendable {
     func noteLate(_ seconds: Double) {
         guard seconds.isFinite, seconds > 0 else { return }
         lock.lock()
-        lateMaxSeconds = max(lateMaxSeconds, seconds)
+        graphLateMaxSeconds = max(graphLateMaxSeconds, seconds)
+        windowLateMaxSeconds = max(windowLateMaxSeconds, seconds)
+        readLateMaxSeconds = max(readLateMaxSeconds, seconds)
         lock.unlock()
     }
 
@@ -352,6 +371,9 @@ final class PlaybackTelemetry: @unchecked Sendable {
         lock.lock()
         stats = model.stats
         targetFrames = model.targetFrames
+        let queued = model.stats.queuedFrames
+        windowQueuedMinFrames = min(windowQueuedMinFrames ?? queued, queued)
+        readQueuedMinFrames = min(readQueuedMinFrames ?? queued, queued)
         if chunk.rms >= PlaybackTelemetry.voicedRMS, chunk.seconds > 0 {
             let g = Double(min(1, max(0, gain)))
             voicedSeconds += chunk.seconds
@@ -362,7 +384,8 @@ final class PlaybackTelemetry: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// The playout and output objects as the frame carries them; nil before the first graph.
+    /// The playout and output objects as the frame carries them; nil before the first graph. The window's
+    /// figures stay open until `closeWindow()`: a frame that does not go out (nothing changed) keeps them.
     func readback() -> (playout: PlayoutReadback, output: OutputReadback)? {
         lock.lock()
         defer { lock.unlock() }
@@ -377,10 +400,14 @@ final class PlaybackTelemetry: @unchecked Sendable {
         p.resets = stats.resets
         p.targetMs = ms(targetFrames)
         p.queuedMs = ms(stats.queuedFrames)
-        p.queuedMinMs = stats.queuedMinFrames.map(ms)
-        p.lateMaxMs = Int((lateMaxSeconds * 1000).rounded())
+        p.queuedMinMs = windowQueuedMinFrames.map(ms)
+        p.lateMaxMs = Int((windowLateMaxSeconds * 1000).rounded())
+        p.lateMaxGraphMs = Int((graphLateMaxSeconds * 1000).rounded())
         p.droppedChunks = droppedChunks
         p.droppedMs = Int((droppedSeconds * 1000).rounded())
+        // What lands after this read is the next window's, whether or not this frame goes out.
+        readLateMaxSeconds = 0
+        readQueuedMinFrames = nil
         var o = OutputReadback()
         o.audibleMs = Int((voicedSeconds * 1000).rounded())
         o.mixFormat = mixFormat
@@ -390,5 +417,13 @@ final class PlaybackTelemetry: @unchecked Sendable {
             o.peakDbfs = levelDbfs(peak)
         }
         return (p, o)
+    }
+
+    /// The frame from the last `readback()` went out: the window is what came after that read.
+    func closeWindow() {
+        lock.lock()
+        windowLateMaxSeconds = readLateMaxSeconds
+        windowQueuedMinFrames = readQueuedMinFrames
+        lock.unlock()
     }
 }

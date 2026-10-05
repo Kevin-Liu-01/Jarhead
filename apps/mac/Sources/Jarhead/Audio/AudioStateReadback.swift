@@ -56,9 +56,11 @@ struct PlayoutReadback: Equatable {
     var resets = 0
     var targetMs = 0
     var queuedMs = 0
+    /// The smallest backlog this window (since the previous frame went out).
     var queuedMinMs: Int?
-    /// The longest wait of a play block on `jarhead.audio`, enqueue to run.
+    /// The longest wait of a play block on `jarhead.audio`, enqueue to run: this window's, and since the graph started.
     var lateMaxMs = 0
+    var lateMaxGraphMs = 0
     /// Chunks that arrived while the graph was down, since the last `start()`.
     var droppedChunks = 0
     var droppedMs = 0

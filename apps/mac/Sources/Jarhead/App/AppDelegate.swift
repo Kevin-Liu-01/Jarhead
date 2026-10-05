@@ -795,6 +795,7 @@ private extension AudioPlayoutInfo {
         queuedMs = Double(p.queuedMs)
         queuedMinMs = p.queuedMinMs.map(Double.init)
         lateMaxMs = Double(p.lateMaxMs)
+        lateMaxGraphMs = Double(p.lateMaxGraphMs)
         droppedChunks = p.droppedChunks
         droppedMs = Double(p.droppedMs)
     }

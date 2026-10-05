@@ -1135,7 +1135,10 @@ export interface AudioCheckInput {
   readonly probe: AudioProbeRead | undefined;
   readonly appBuiltAt: number | undefined;
   readonly now: number;
-  /** Voice PLAN W1.5: `snapshot.liveAudio`, and the ledger's newest `audio.playout` row for when no app is connected. */
+  /**
+   * Voice PLAN W1.5: `snapshot.liveAudio` (present only while a session is open), and the ledger's newest
+   * `audio.playout` row: the whole report when no app is connected, and Live's figures when no session is open.
+   */
   readonly liveAudio?: LiveAudio | undefined;
   readonly lastPlayout?: AudioPlayoutRow | undefined;
 }
@@ -1226,11 +1229,46 @@ interface Playback {
   readonly liveAudio?: LiveAudio | undefined;
 }
 
-/** The app's frame while it carries the telemetry, else the ledger's last session (`last`), else nothing. */
-function playbackOf(state: AudioState | undefined, live: LiveAudio | undefined, last: AudioPlayoutRow | undefined): { readonly figures: Playback; readonly last?: AudioPlayoutRow } | undefined {
-  if (state && (state.playout || state.duck || state.output)) return { figures: { ...state, liveAudio: live } };
+/** Where one playback report's figures came from. */
+interface PlaybackSource {
+  readonly figures: Playback;
+  /** The whole report is the ledger's last session (no app connected). */
+  readonly last?: AudioPlayoutRow;
+  /** Only Live's figures are the last session's (the app is connected, no session is open). */
+  readonly liveFrom?: AudioPlayoutRow;
+}
+
+/**
+ * The app's frame while it carries the telemetry, else the ledger's last session (`last`), else nothing. With
+ * no session open the daemon has no `liveAudio`, so Live's figures come from the newest row: the app's counters
+ * run since its graph started, and the graph a sleep stopped is the last session's.
+ */
+function playbackOf(state: AudioState | undefined, live: LiveAudio | undefined, last: AudioPlayoutRow | undefined): PlaybackSource | undefined {
+  if (state && (state.playout || state.duck || state.output)) {
+    if (live === undefined && last?.liveAudio) return { figures: { ...state, liveAudio: last.liveAudio }, liveFrom: last };
+    return { figures: { ...state, liveAudio: live } };
+  }
   if (last) return { figures: last, last };
   return undefined;
+}
+
+/** A delay long enough to explain a hole in the voice on its own: 40 ms, one of Live's deltas. */
+const MATERIAL_LATE_MS = 40;
+
+/**
+ * What the figures say made the speaker run dry: the app's queue (`late max`, since the graph started), Live's
+ * arrival (the p99 gap between deltas past one delta's own length: how far behind real time Live fell), or
+ * neither. A delay counts only when it is material: MATERIAL_LATE_MS or more, or as long as the longest hole.
+ * Both material: the larger. Neither: not known yet, never a guess.
+ */
+export function playoutCause(playout: NonNullable<Playback["playout"]>, live: LiveAudio | undefined): { readonly who: "app" | "network" | undefined; readonly lateMs: number; readonly behindMs: number | undefined } {
+  const lateMs = playout.lateMaxGraphMs ?? playout.lateMaxMs;
+  const behindMs = live?.arrivalP99Ms !== undefined ? Math.max(0, live.arrivalP99Ms - (live.deltaMsP50 ?? 0)) : undefined;
+  const material = (ms: number): boolean => ms >= MATERIAL_LATE_MS || (playout.longestUnderrunMs > 0 && ms >= playout.longestUnderrunMs);
+  const app = material(lateMs);
+  const network = behindMs !== undefined && material(behindMs);
+  const who = app && (!network || lateMs >= (behindMs ?? 0)) ? "app" : network ? "network" : undefined;
+  return { who, lateMs, behindMs };
 }
 
 /** The ledger's newest `audio.playout` row over today and the `days - 1` before it; undefined when none. */
@@ -1305,17 +1343,24 @@ function shortSession(id: string): string {
   return id.length > 12 ? `…${id.slice(-12)}` : id;
 }
 
-/** What `status` passes beside the frame: the daemon's live figures, and the ledger's last session when no app is connected. */
+/**
+ * What `status` passes beside the frame: the daemon's live figures (only while a session is open), and the
+ * ledger's newest `audio.playout` row (readLastPlayout): the whole playback block when no app is connected, and
+ * the `live` line when the app is connected and no session is open. `now` dates the row (`1 h ago`).
+ */
 export interface AudioStatusExtras {
   readonly liveAudio?: LiveAudio | undefined;
   readonly lastPlayout?: AudioPlayoutRow | undefined;
+  readonly now?: number;
 }
 
 /**
  * The doctor's five playback rows, none required. From the app's frame while it is connected, else from the
- * ledger's last session (`· last session, 1 h ago`); nothing measured yet adds no row.
+ * ledger's last session (`· last session, 1 h ago`); nothing measured yet adds no row. With no session open,
+ * Live's figures are the last session's row's.
  * - `playout`: more than one underrun per minute of audible speech, or one longer than 80 ms; the fix says
- *   whether the app's queue (`late max`) or the arrival (`arrival p99`, the network or the daemon) explains it.
+ *   whether the app's queue (`late max`) or the arrival (`arrival p99`, the network or the daemon) explains it,
+ *   or that neither figure does yet (`playoutCause`).
  * - `duck`: more than one unconfirmed duck per minute of audible speech.
  * - `residual echo`: the mic's p99 while Jarhead is audible and nothing is ducked at -44 dBFS or louder.
  * - `output level`: heard RMS under -30 dBFS or the volume under 30% (hard to hear); a peak at -1 dBFS or over (the limiter).
@@ -1329,17 +1374,21 @@ export function playbackChecks(state: AudioState | undefined, live: LiveAudio | 
   if (!source) return out;
   const p = source.figures;
   const tail = source.last ? ` · last session, ${agoWords(source.last.at, now)}` : "";
+  // Live's figures alone from the last session: said where they are printed.
+  const liveTail = source.liveFrom ? ` · last session, ${agoWords(source.liveFrom.at, now)}` : tail;
   const minutes = speechMinutes(p);
   if (p.playout) {
     const u = p.playout;
     const bad = u.underruns / minutes > 1 || u.longestUnderrunMs > 80;
-    const arrival = p.liveAudio?.arrivalP99Ms !== undefined ? ` · arrival p99 ${db0(p.liveAudio.arrivalP99Ms)} ms` : "";
-    const detail = `${plural(u.underruns, "underrun")} (zero-cushion would be ${u.wouldBeUnderruns}) · longest ${db0(u.longestUnderrunMs)} ms · late max ${db0(u.lateMaxMs)} ms${arrival}${tail}`;
-    const arrivalP99 = p.liveAudio?.arrivalP99Ms;
-    const network = arrivalP99 !== undefined && arrivalP99 > u.lateMaxMs;
-    const fix = network
-      ? `Live's audio arrived late (arrival p99 ${db0(arrivalP99)} ms): the network or the daemon, not the app`
-      : `the speaker's queue in the app ran late (late max ${db0(u.lateMaxMs)} ms): the app, not the network`;
+    const cause = playoutCause(u, p.liveAudio);
+    const arrival = p.liveAudio?.arrivalP99Ms !== undefined ? ` · arrival p99 ${db0(p.liveAudio.arrivalP99Ms)} ms${source.liveFrom ? " (last session)" : ""}` : "";
+    const detail = `${plural(u.underruns, "underrun")} (zero-cushion would be ${u.wouldBeUnderruns}) · longest ${db0(u.longestUnderrunMs)} ms · late max ${db0(cause.lateMs)} ms${arrival}${tail}`;
+    const fix =
+      cause.who === "network"
+        ? `Live's audio arrived late (arrival p99 ${db0(p.liveAudio?.arrivalP99Ms ?? 0)} ms): the network or the daemon, not the app`
+        : cause.who === "app"
+          ? `the speaker's queue in the app ran late (late max ${db0(cause.lateMs)} ms): the app, not the network`
+          : `the cause is not known yet: the app's queue ran at most ${db0(cause.lateMs)} ms late, ${cause.behindMs !== undefined ? `and Live fell at most ${db0(cause.behindMs)} ms behind` : "and Live's arrival was not measured"}`;
     add({ name: "playout", status: bad ? "warn" : "ok", detail, ...(bad ? { fix } : {}) });
   }
   if (p.duck) {
@@ -1376,7 +1425,7 @@ export function playbackChecks(state: AudioState | undefined, live: LiveAudio | 
     if (l.formatRate !== undefined && l.formatRate !== 24_000) fix = `Live echoed ${l.formatRate} Hz, not 24000; the speaker plays at the wrong speed`;
     else if ((l.arrivalP99Ms ?? 0) > 120) fix = "Live's audio arrives in bursts: the network (Wi-Fi) or the daemon";
     else if ((l.loopDelayMaxMs ?? 0) > 100) fix = `the daemon's event loop stalled for ${l.loopDelayMaxMs} ms`;
-    add({ name: "live arrival", status: fix ? "warn" : "ok", detail: `${liveWords(l)}${tail}`, ...(fix ? { fix } : {}) });
+    add({ name: "live arrival", status: fix ? "warn" : "ok", detail: `${liveWords(l)}${liveTail}`, ...(fix ? { fix } : {}) });
   }
   return out;
 }
@@ -1396,8 +1445,10 @@ export function audioStatusLines(state: AudioState | undefined, settings: AudioS
     const head = profiler ? `  audio      no app connected${recording} — defaults: in ${device(profiler.defaultInput)} · out ${device(profiler.defaultOutput)}` : `  audio      no app connected${recording}`;
     const last = extras.lastPlayout;
     if (!last) return [head];
-    // The last session's playback figures, from the ledger (voice PLAN W1.5).
-    return [head, `${STATUS_PAD}last session${last.sessionId ? ` ${shortSession(last.sessionId)}` : ""} · ${clockWords(last.at)} (the ledger)`, ...playbackLines(last)];
+    // The last session's playback figures, from the ledger (voice PLAN W1.5), dated as the doctor dates them: a
+    // clock time alone would read as today for a row up to 7 days old.
+    const ago = agoWords(last.at, extras.now ?? Date.now());
+    return [head, `${STATUS_PAD}last session${last.sessionId ? ` ${shortSession(last.sessionId)}` : ""} · ${ago} (the ledger)`, ...playbackLines(last)];
   }
   const since = state.since !== undefined && state.running ? ` · since ${clockWords(state.since)}` : "";
   const lines = [`  audio      voice processing ${voiceProcessingWords(state)}${since}`];
@@ -1411,7 +1462,12 @@ export function audioStatusLines(state: AudioState | undefined, settings: AudioS
     lines.push(`${STATUS_PAD}recording ${onOff(state.recording)} · guard off · ${rest}${muted}`);
   }
   // The playback lines (voice PLAN W1.5): the playout cushion, the duck, the output level, Live's arrival.
-  if (state.playout || state.duck || state.output) lines.push(...playbackLines({ ...state, liveAudio: extras.liveAudio }));
+  if (state.playout || state.duck || state.output) {
+    lines.push(...playbackLines({ ...state, liveAudio: extras.liveAudio }));
+    // No session open: Live's figures are the last session's, from the ledger, and say so.
+    const last = extras.liveAudio === undefined ? extras.lastPlayout : undefined;
+    if (last?.liveAudio) lines.push(`${STATUS_PAD}${"live".padEnd(8)}${liveWords(last.liveAudio)} · last session, ${agoWords(last.at, extras.now ?? Date.now())}`);
+  }
   return lines;
 }
 
@@ -1682,7 +1738,8 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
       appBuiltAt: appBuiltAt(),
       now: Date.now(),
       liveAudio: daemon?.liveAudio,
-      lastPlayout: daemon?.audioState?.playout ? undefined : readLastPlayout(new Ledger(cfg.stateDir), Date.now()),
+      // The whole report with no app connected; Live's figures with no session open (the app's frame has no arrival).
+      lastPlayout: daemon?.liveAudio ? undefined : readLastPlayout(new Ledger(cfg.stateDir), Date.now()),
     })) add(c);
     if (opts.testAudio) {
       add(

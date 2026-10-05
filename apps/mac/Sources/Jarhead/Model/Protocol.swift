@@ -1393,7 +1393,9 @@ public struct AudioPlayoutInfo: Codable, Equatable {
     public var queuedMs: Double = 0
     /// nil when nothing was scheduled this window.
     public var queuedMinMs: Double?
+    /// This window's longest wait on the audio queue (since the previous frame), and the longest since the graph started.
     public var lateMaxMs: Double = 0
+    public var lateMaxGraphMs: Double?
     /// Arrived while the graph was down.
     public var droppedChunks: Int = 0
     public var droppedMs: Double = 0
@@ -1413,6 +1415,7 @@ extension AudioPlayoutInfo: SoftTelemetry {
         queuedMs = c.soft(.queuedMs) ?? 0
         queuedMinMs = c.soft(.queuedMinMs)
         lateMaxMs = c.soft(.lateMaxMs) ?? 0
+        lateMaxGraphMs = c.soft(.lateMaxGraphMs)
         droppedChunks = c.soft(.droppedChunks) ?? 0
         droppedMs = c.soft(.droppedMs) ?? 0
     }
@@ -1424,6 +1427,7 @@ extension AudioPlayoutInfo: SoftTelemetry {
             "lateMaxMs": wireNumber(lateMaxMs), "droppedChunks": droppedChunks, "droppedMs": wireNumber(droppedMs),
         ]
         putNumber(&o, "queuedMinMs", queuedMinMs)
+        putNumber(&o, "lateMaxGraphMs", lateMaxGraphMs)
         return o
     }
 }

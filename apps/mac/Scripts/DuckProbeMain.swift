@@ -1092,6 +1092,36 @@ struct PureSections {
                 for a in arrivals { _ = m.plan(frames: f, now: a) }
                 return m.stats.wouldBeUnderruns == 2 && m.stats.underruns == 0 && m.stats.queuedMinFrames == 960 ? nil : "\(m.stats)"
             }),
+            ("the frame's late max and backlog minimum are per window, the graph's late max stays, and a wait between a read and its close is the next window's", {
+                // Voice PLAN §3: lateMaxMs and queuedMinMs per window (since the previous frame went out); lateMaxGraphMs since the graph started.
+                let t = PlaybackTelemetry()
+                t.restart(mixFormat: "48000 Hz ×2")
+                var m = PlayoutModel()
+                func scheduled(_ plan: PlayoutModel.Plan) -> SpeakerScheduler.Scheduled {
+                    SpeakerScheduler.Scheduled(rms: 0.1, peak: 0.3, seconds: 0.04, prerollSeconds: 0, plan: plan)
+                }
+                // Window 1: a play block waited 300 ms behind a restart; the backlog fell to 40 ms.
+                t.noteLate(0.300)
+                t.noteScheduled(scheduled(m.plan(frames: f, now: 0)), model: m, gain: 1)
+                t.noteScheduled(scheduled(m.plan(frames: f, now: Int64(target))), model: m, gain: 1)
+                let first = t.readback()?.playout
+                // A 20 ms wait lands after the read, before the frame's close.
+                t.noteLate(0.020)
+                t.closeWindow()
+                // Window 2: the backlog at 80 ms; this frame does not go out (no close), so window 2 runs on.
+                t.noteScheduled(scheduled(m.plan(frames: f, now: Int64(target))), model: m, gain: 1)
+                let second = t.readback()?.playout
+                t.noteLate(0.050)
+                let third = t.readback()?.playout
+                t.closeWindow()
+                let fourth = t.readback()?.playout
+                let ok = first?.lateMaxMs == 300 && first?.lateMaxGraphMs == 300 && first?.queuedMinMs == 40
+                    && second?.lateMaxMs == 20 && second?.lateMaxGraphMs == 300 && second?.queuedMinMs == 80
+                    && third?.lateMaxMs == 50 && third?.queuedMinMs == 80
+                    && fourth?.lateMaxMs == 0 && fourth?.queuedMinMs == nil && fourth?.lateMaxGraphMs == 300
+                func w(_ p: PlayoutReadback?) -> String { "late \(p?.lateMaxMs ?? -1) graph \(p?.lateMaxGraphMs ?? -1) min \(p?.queuedMinMs.map(String.init) ?? "nil")" }
+                return ok ? nil : "\(w(first)) | \(w(second)) | \(w(third)) | \(w(fourth))"
+            }),
             ("the fade ramp is monotonic, finite, inside (0, 1], and ends at 1", {
                 let n = PlayoutModel.fadeFrames
                 let g = (0 ..< n).map { PlayoutModel.fadeGain($0) }
