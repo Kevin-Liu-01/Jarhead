@@ -564,10 +564,14 @@ export interface RingLine {
   readonly more: number;
 }
 
-/** One change on one row; broadcast like thread.event, coalesced 50 ms per id. `state`, `missed` and `tick` fit 200 B (detail ≤ 70); `fired` carries its presses and a line capped at 80, ≈ 270 B (protocol.test.ts measures them). */
+/** One change on one row; broadcast like thread.event, coalesced 50 ms per id. `state`, `missed` and `tick` fit 200 B (detail ≤ 70); `fired` carries its presses and a line capped at 80, ≈ 270 B, ≈ 280 B with `ring` (protocol.test.ts and contract-additions.test.ts measure them). */
 export type AutomationEvent = { readonly seq: number; readonly at: number; readonly id: string } & (
   | { readonly kind: "set"; readonly automation: Automation }
-  | { readonly kind: "fired"; readonly actions: readonly AutomationActionKind[]; readonly line: string; readonly ok: boolean; readonly detail?: string; readonly lateMs?: number; readonly presses: readonly AutomationPress[] }
+  /**
+   * `ring` (SL-14): true when this fire put a ring up (`Snapshot.ringing` names it); false when it only acted (a
+   * routine that opened an app), so no surface shows it as a ring. Absent from a daemon before the field.
+   */
+  | { readonly kind: "fired"; readonly actions: readonly AutomationActionKind[]; readonly line: string; readonly ok: boolean; readonly detail?: string; readonly lateMs?: number; readonly presses: readonly AutomationPress[]; readonly ring?: boolean }
   | { readonly kind: "state"; readonly state: AutomationState; readonly nextAt?: number; readonly detail?: string }
   | { readonly kind: "missed"; readonly dueAt: number; readonly lateMs?: number; readonly skipped?: boolean; readonly why: MissedWhy }
   /** a running timer, ≤ 1/s, only while a client views the island/Console; never a snapshot */
@@ -1021,6 +1025,134 @@ export interface AudioState {
   readonly aggregatePresent: boolean;
   /** Stamped by the engine: wall-clock ms when `running` was last seen going true; absent while down. */
   readonly since?: number;
+  /** Voice PLAN W1.5: the speaker player since the graph started; absent from a build that does not count it. */
+  readonly playout?: AudioPlayout;
+  /** Voice PLAN W1.5: the barge-in duck since the graph started. */
+  readonly duck?: AudioDuck;
+  /** Voice PLAN W1.5: what reached the speaker. */
+  readonly output?: AudioOutput;
+}
+
+// Voice PLAN W1.5: the playback telemetry. The app counts `playout`, `duck` and `output` (Audio/Playout.swift,
+// BargeInDuck.swift, AudioEngine.swift) and sends them in the `audio-state` frame; the daemon counts `liveAudio`.
+// Numbers and three closed-vocabulary words only: nothing here quotes what Kevin or Jarhead said. A level in
+// dBFS is absent when there was nothing to measure (silence is -inf, which JSON cannot carry).
+
+/** The speaker player since the graph started. `…Ms` are milliseconds of audio at 24 kHz. */
+export interface AudioPlayout {
+  /** Chunks played. */
+  readonly chunks: number;
+  /** The player ran dry mid-stream: how often, for how long in all, and the longest hole. */
+  readonly underruns: number;
+  readonly underrunMs: number;
+  readonly longestUnderrunMs: number;
+  /** The shadow zero-cushion count: the player of before the cushion, measured in the same session. */
+  readonly wouldBeUnderruns: number;
+  /** Start, flush, restart, after a gate. */
+  readonly resets: number;
+  /** The current pre-roll target. */
+  readonly targetMs: number;
+  /** The backlog at the last schedule. */
+  readonly queuedMs: number;
+  /** The smallest backlog this window; absent when nothing was scheduled in it. */
+  readonly queuedMinMs?: number;
+  /** The longest enqueue-to-run wait of a play block on the audio queue this window. */
+  readonly lateMaxMs: number;
+  /** Arrived while the graph was down. */
+  readonly droppedChunks: number;
+  readonly droppedMs: number;
+}
+
+/** The newest duck, for the `duck` line. `source`: what started it (`gate`; the word paths only confirm). */
+export interface AudioDuckLast {
+  readonly source: string;
+  readonly confirmed: boolean;
+  /** How deep it went: -6 unconfirmed, -20 confirmed. */
+  readonly depthDb: number;
+  /** The mic run that tripped it, and the threshold it crossed. */
+  readonly runDbfs?: number;
+  readonly thresholdDbfs?: number;
+  /** Back at unity this long after the duck; absent while it holds. */
+  readonly releasedAfterMs?: number;
+  /** Why it released: `quiet after gate`, `capped at 4 s`. */
+  readonly reason?: string;
+}
+
+/** The barge-in duck since the graph started (counts by kind, time ducked, the residual echo). */
+export interface AudioDuck {
+  readonly ducks: number;
+  /** Ducks the energy gate started. */
+  readonly gate: number;
+  readonly confirmed: number;
+  readonly unconfirmed: number;
+  /** Unconfirmed ducks held past 700 ms because the mic stayed hot. */
+  readonly held: number;
+  /** Partials refused as confirmation (Jarhead's own words, or words from before the duck). */
+  readonly refusedWords: number;
+  /** Live items for Kevin refused as confirmation (opened before the duck, or too soon after it). */
+  readonly refusedLive?: number;
+  /** Words with recent energy while nothing was ducked: what used to start a duck and now waits for the gate. */
+  readonly wordOnsetsSkipped: number;
+  /** Time at a gain under 0.9, and at -14 dB or deeper. */
+  readonly duckedMs: number;
+  readonly deepMs: number;
+  /** Mic slices while Jarhead is audible and the duck is idle: the number that decides whether the gate trips on his own echo. */
+  readonly residualP50Dbfs?: number;
+  readonly residualP99Dbfs?: number;
+  /** The learned echo floor. */
+  readonly echoFloorDbfs?: number;
+  readonly last?: AudioDuckLast;
+}
+
+/** What reached the speaker: voiced chunks before the duck, after its gain, the mixer's format, the device volume. */
+export interface AudioOutput {
+  readonly rmsDbfs?: number;
+  readonly peakDbfs?: number;
+  readonly heardRmsDbfs?: number;
+  /** The mainMixer-to-output connection: `48000 Hz ×2`. */
+  readonly mixFormat?: string;
+  /** The default output's volume scalar, 0..1 (HAL); absent when the HAL cannot say. */
+  readonly volume?: number;
+}
+
+/** The daemon's own view of the voice's audio (`Snapshot.liveAudio`), since the session opened. */
+export interface LiveAudio {
+  /** Audio deltas from Live, and their size in milliseconds. */
+  readonly deltas: number;
+  readonly deltaMsP50?: number;
+  readonly deltaMsMax?: number;
+  /** Inter-arrival times. */
+  readonly arrivalP99Ms?: number;
+  readonly arrivalMaxMs?: number;
+  /** How far Live sends ahead of real time: the spread of (cumulative audio minus wall time) since the first delta. */
+  readonly aheadMs?: number;
+  /** Frames the output gate dropped. */
+  readonly gatedFrames: number;
+  /** The event loop's longest delay per 5 s (`monitorEventLoopDelay`). */
+  readonly loopDelayMaxMs?: number;
+  /** The rate echoed in session.started. */
+  readonly formatRate?: number;
+}
+
+/** Shape checks for one telemetry object: present and finite where required, finite or absent where optional, a string where named. */
+function telemetryOk(value: unknown, required: readonly string[], optional: readonly string[], strings: readonly string[] = []): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const o = value as Record<string, unknown>;
+  const finite = (k: string): boolean => typeof o[k] === "number" && Number.isFinite(o[k] as number);
+  return required.every(finite) && optional.every((k) => o[k] === undefined || finite(k)) && strings.every((k) => o[k] === undefined || typeof o[k] === "string");
+}
+
+const PLAYOUT_REQUIRED = ["chunks", "underruns", "underrunMs", "longestUnderrunMs", "wouldBeUnderruns", "resets", "targetMs", "queuedMs", "lateMaxMs", "droppedChunks", "droppedMs"] as const;
+const DUCK_REQUIRED = ["ducks", "gate", "confirmed", "unconfirmed", "held", "refusedWords", "wordOnsetsSkipped", "duckedMs", "deepMs"] as const;
+const DUCK_OPTIONAL = ["refusedLive", "residualP50Dbfs", "residualP99Dbfs", "echoFloorDbfs"] as const;
+
+function duckOk(value: unknown): boolean {
+  if (!telemetryOk(value, DUCK_REQUIRED, DUCK_OPTIONAL)) return false;
+  const last = (value as Record<string, unknown>)["last"];
+  if (last === undefined) return true;
+  if (!telemetryOk(last, ["depthDb"], ["runDbfs", "thresholdDbfs", "releasedAfterMs"], ["reason"])) return false;
+  const l = last as Record<string, unknown>;
+  return typeof l["source"] === "string" && typeof l["confirmed"] === "boolean";
 }
 
 /** The wire's shape check for an `audio-state` frame: the booleans and counters the readers index on must be there and typed; a frame that fails is dropped, never kept. */
@@ -1043,6 +1175,9 @@ export function isAudioState(value: unknown): value is AudioState {
   if (!(typeof v["wiring"] === "string" && typeof v["tapFormat"] === "string")) return false;
   if (!(optNum("duckLevel") && optBool("advancedDucking") && optBool("agc") && optBool("bypassed") && optNum("guardHeldMs") && optNum("since"))) return false;
   if (!(device("hears") && device("speaks"))) return false;
+  if (v["playout"] !== undefined && !telemetryOk(v["playout"], PLAYOUT_REQUIRED, ["queuedMinMs"])) return false;
+  if (v["duck"] !== undefined && !duckOk(v["duck"])) return false;
+  if (v["output"] !== undefined && !telemetryOk(v["output"], [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "volume"], ["mixFormat"])) return false;
   const shared = v["sharedWith"];
   return shared === undefined || (Array.isArray(shared) && shared.every((s) => typeof s === "string"));
 }
@@ -1113,15 +1248,19 @@ export interface Snapshot {
   readonly recipesAsking: readonly string[];
   /** design12: the app's audio graph as it last read itself back; absent when no app is connected. */
   readonly audioState?: AudioState;
+  /** Voice PLAN W1.5: the daemon's own counts of the open session's audio; absent while no session is open. */
+  readonly liveAudio?: LiveAudio;
 }
 
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
 /** `brain.local`: the local server or model needs Kevin — not running, nothing pulled that can call tools, the picked id is gone, a cloud tag, a window too small. Amber, with the command to run in `remedy.copy`. */
-/** `automation.*`: a row fired late or was skipped (`missed`, remedy Run now), an action kind is off in Settings (`blocked`), the wake-brain minutes are spent (`budget`), banners are denied (`notifications`), a watched folder cannot be read (`watch`, remedy Ask). */
+/** `automation.*`: a row fired late or was skipped (`missed`, remedy Run now), an action kind is off in Settings (`blocked`), the wake-brain minutes are spent (`budget`), banners are denied (`notifications`), a watched folder cannot be read (`watch`, remedy Ask), an unattended fire failed (`failed`, SL-15: a red recipe exit is there in the morning; remedy Open Console or Run now; the row's next ok fire clears it). */
+/** `app.version` (APP-3): the app and the daemon were built from different checkouts (their hellos' PROTOCOL_VERSION differ, or a snapshot did not decode). The text says to relaunch, or run pnpm build:mac (`remedy.copy`). Go is refused until it clears. */
 export type ProblemKind =
   | "permission.accessibility" | "permission.screenRecording" | "permission.microphone" | "permission.fullDiskAccess" | "permission.other"
   | "brain.unavailable" | "brain.probe" | "brain.local" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "dock" | "daemon" | "crash" | "other"
-  | "automation.missed" | "automation.blocked" | "automation.budget" | "automation.notifications" | "automation.watch";
+  | "automation.missed" | "automation.blocked" | "automation.budget" | "automation.notifications" | "automation.watch" | "automation.failed"
+  | "app.version";
 
 export interface ProblemRemedy {
   /** Button text: "Open pane", "Request", "Retry", "Reveal", "Restart daemon", "Fix the Dock"; the automation problems say "Run now" (missed), "Open Console" (blocked), "Ask" (watch). */
@@ -1161,6 +1300,17 @@ export interface UsageToday {
 }
 
 /**
+ * LM-6: one day of the `ledger.days` reply's `totals`, for the Ledger tab's day rows and month heads: Jarhead's
+ * sessions that day and the Live seconds they billed (closed rows, a lost session's last usage row included).
+ */
+export interface LedgerDayTotals {
+  /** YYYY-MM-DD local, as the day list spells it. */
+  readonly day: string;
+  readonly sessions: number;
+  readonly billedSeconds: number;
+}
+
+/**
  * One of Jarhead's own Live sessions as the ledger recorded it — the Console's
  * "Jarhead" section. A resume opens a new session continuing the paused one;
  * `resumedFrom` links the chain into one conversation.
@@ -1191,6 +1341,16 @@ export interface JarheadSessionSummary {
 export type ConversationState = "active" | "archived" | "trashed";
 
 // --------------------------------------------------------- shell messages ---
+
+/**
+ * APP-3: the contract's version. The daemon and the app each send it in their hello (daemon/src/wire.ts); the
+ * Swift mirror is `ProtocolVersion.current` and a test pins the two equal. A peer whose number differs, or that
+ * sends none (a build from before the field), was built from another checkout: a pull, or a respawn from new
+ * source under an old binary. That is `app.version`. Bump it when a change would make the other side fail or
+ * misread a frame: a required field added, renamed or retyped, a frame or a command renamed. An optional
+ * addition does not bump it.
+ */
+export const PROTOCOL_VERSION = 1;
 
 /** Engine → surface. Snapshots are full and cheap; levels are high-frequency and separate. */
 export type EngineEvent =
@@ -1378,6 +1538,9 @@ export type OverlayCommand =
 
 // ----------------------------------------------------------------- ledger ---
 
+/** V8 / LM-2: the `session.closed` reason for a session the daemon died in, written at the next start with the seconds of its last `session.usage` row. */
+export const SESSION_LOST_REASON = "lost";
+
 /**
  * One line of ~/.jarhead/ledger/<date>.jsonl. Append-only; the Console is a view
  * over this. `at` is wall-clock ms.
@@ -1387,7 +1550,10 @@ export type OverlayCommand =
  */
 export type LedgerRow =
   | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string; readonly resumedFrom?: string; readonly language?: string; readonly accent?: Accent }
+  /** `reason` is the close's own word (`sleep:said`, Live's), or SESSION_LOST_REASON for a session the daemon died in. */
   | { readonly at: number; readonly type: "session.closed"; readonly sessionId: string; readonly reason: string; readonly usageSeconds: number }
+  /** V8 / LM-2: the open session's billed seconds so far, coalesced every 60 s and at detach. A daemon that dies with the session open leaves this as its last word. */
+  | { readonly at: number; readonly type: "session.usage"; readonly sessionId: string; readonly usageSeconds: number }
   /** A pause closed `sessionId` to stop the meter; the conversation is held. */
   | { readonly at: number; readonly type: "pause"; readonly sessionId: string; readonly usageSeconds: number }
   /** A resume opened `sessionId` continuing `resumedFrom` after `pausedMs`. */
@@ -1442,7 +1608,9 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "recipe.trashed"; readonly name: string }
   | { readonly at: number; readonly type: "recipe.restored"; readonly name: string }
   // ---- audio (design12): one row per Kevin turn while the software echo guard holds the wire (Recording, or the fallback rung) — the counters as the app last reported them, so a self-talk loop reads as rising `gated` with no `breakthroughs`.
-  | { readonly at: number; readonly type: "audio.guard"; readonly sessionId?: string; readonly tailMs: number; readonly heldMs?: number; readonly gated: number; readonly chunks: number; readonly breakthroughs: number; readonly fallback: boolean };
+  | { readonly at: number; readonly type: "audio.guard"; readonly sessionId?: string; readonly tailMs: number; readonly heldMs?: number; readonly gated: number; readonly chunks: number; readonly breakthroughs: number; readonly fallback: boolean }
+  /** Voice PLAN W1.5: one row at session close with the last playback counters, so `status` and the doctor can read the last session while Jarhead sleeps. No transcript text. */
+  | { readonly at: number; readonly type: "audio.playout"; readonly sessionId?: string; readonly playout?: AudioPlayout; readonly duck?: AudioDuck; readonly output?: AudioOutput; readonly liveAudio?: LiveAudio };
 
 // ------------------------------------------------------------ type guards ---
 

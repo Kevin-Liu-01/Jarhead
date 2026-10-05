@@ -13,7 +13,7 @@
  */
 
 import type { ToolResult } from "@jarhead/hands";
-import type { SystemSignal } from "@jarhead/protocol";
+import type { LedgerDayTotals, SystemSignal } from "@jarhead/protocol";
 
 export const FRAME_JSON = 1;
 export const FRAME_MIC = 2;
@@ -71,7 +71,8 @@ export class FrameParser {
 
 /** daemon → app */
 export type DaemonMessage =
-  | { readonly type: "hello"; readonly version: string; readonly pid: number; readonly stateDir: string }
+  /** `version` is the package's; `protocol` is PROTOCOL_VERSION (APP-3), absent from a daemon before the field. A surface whose number differs raises `app.version`. */
+  | { readonly type: "hello"; readonly version: string; readonly pid: number; readonly stateDir: string; readonly protocol?: number }
   | { readonly type: "snapshot"; readonly snapshot: unknown }
   | { readonly type: "levels"; readonly levels: unknown }
   | { readonly type: "toast"; readonly text: string; readonly tone: "info" | "warn" | "error" }
@@ -79,7 +80,8 @@ export type DaemonMessage =
   | { readonly type: "audio"; readonly control: "flush" }
   /** Rows of a day, a session or a whole chain; `truncated` when a chain read kept only its newest CHAIN_ROWS_MAX rows. */
   | { readonly type: "ledger.rows"; readonly id: string; readonly rows: unknown[]; readonly truncated?: boolean }
-  | { readonly type: "ledger.days"; readonly id: string; readonly days: string[] }
+  /** The day list, newest first; `totals` (LM-6) carries each day's sessions and billed seconds, absent from a daemon before the field. */
+  | { readonly type: "ledger.days"; readonly id: string; readonly days: string[]; readonly totals?: readonly LedgerDayTotals[] }
   /** Memory items (MemoryItem[]) for `memory.list` / `memory.search`; never a vector. */
   | { readonly type: "memory.items"; readonly id: string; readonly items: unknown[] }
   /** Jarhead's own sessions (JarheadSessionSummary[]), newest first. */
@@ -120,7 +122,8 @@ export type DaemonMessage =
 
 /** app → daemon */
 export type ClientMessage =
-  | { readonly type: "hello"; readonly pid: number; readonly version?: string; readonly audio?: boolean }
+  /** `protocol` is the sender's PROTOCOL_VERSION (APP-3; `ProtocolVersion.current` in Swift), absent from a build before the field. The app's hello (`audio: true`) with another number, or with none, is a skew. */
+  | { readonly type: "hello"; readonly pid: number; readonly version?: string; readonly audio?: boolean; readonly protocol?: number }
   | { readonly type: "command"; readonly command: unknown }
   | { readonly type: "mic-level"; readonly level: number }
   /**
