@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bench, type BenchRow } from "../bench.ts";
+import type { JarheadConfig } from "@jarhead/core";
+import { BENCH_OPENAI_KEY, EAR_CAREFUL_DISPATCH_TARGET_MS, EAR_DISPATCH_TARGET_MS, EAR_GATE_METRICS, bench, benchConfig, earGate, type BenchRow } from "../bench.ts";
 
 /**
  * `pnpm jarhead bench --fake-hands`, once, as a smoke test: every row the table promises is
@@ -31,6 +32,8 @@ test("bench --fake-hands: the promised rows are measured; the generations row is
     "read during a type (acting helper held 1.5 s)",
     "acting call incl. observation (mouse_move in place)",
   ]) assert.ok(byMetric.has(want), `row "${want}" was measured; rows: ${names.join(" | ")}`);
+  // The gate judges the bench's own rows by name: a renamed ear row would fail every real-helper run.
+  for (const metric of EAR_GATE_METRICS) assert.ok(byMetric.has(metric), `the gate's row "${metric}" is one the bench measures`);
   for (const row of r.rows) {
     assert.ok(row.n >= 1 && Number.isFinite(row.median), `${row.metric}: n ${row.n}, median ${row.median}`);
     if (row.metric !== "status reflex: brain generations (count, target 0)") assert.equal(row.unit, "ms", row.metric);
@@ -49,6 +52,10 @@ test("bench --fake-hands: the promised rows are measured; the generations row is
     const stop = r.extras["targetedStop"] as { stoppedOne: boolean; othersLive: number };
     assert.equal(stop.stoppedOne, true);
     assert.equal(stop.othersLive, 1, "the other thread carries on");
+    // PERF-7: the row times the table's own answer, never the split's lines that also name Spotify.
+    const status = r.extras["statusReflex"] as { line: string | null; generations: number };
+    assert.match(status.line ?? "", /^Spotify is/, "the status row timed the table's answer");
+    assert.equal(status.generations, 0, "the table answered, not the brain");
   } else {
     assert.ok(threads.splitResults.length > 0, "when two threads could not start, the bench says what thread_start answered");
   }
@@ -59,4 +66,67 @@ test("bench --fake-hands: the promised rows are measured; the generations row is
   assert.equal(parsed.hands, "fake");
   assert.equal(parsed.brain, "stand-in");
   assert.deepEqual(parsed.rows.map((x) => x.metric), names);
+});
+
+/** One table row as bench() builds it: the p95 is what the gate reads. */
+function row(metric: string, p95: number, target?: number): BenchRow {
+  return { metric, unit: "ms", n: 20, median: p95, p90: p95, p95, max: p95, target, pass: target === undefined ? undefined : p95 <= target };
+}
+/** The three ear rows at the given p95s (the fake-hands medians by default: the 120 ms window, the 450 ms one, a final at once). */
+function earRows(partial = 122, careful = 452, final = 1): BenchRow[] {
+  return [row("ear: partial → dispatch", partial, EAR_DISPATCH_TARGET_MS), row("ear: careful partial → dispatch", careful, EAR_CAREFUL_DISPATCH_TARGET_MS), row("ear: final → dispatch", final, EAR_DISPATCH_TARGET_MS)];
+}
+
+test("RX-10: with the real helper the bench exits 1 when an ear row's p95 is over 250 / 580 ms; --no-gate and fake hands exit 0", () => {
+  // The README's numbers, held here so a moved target is a failing test and a README edit.
+  assert.equal(EAR_DISPATCH_TARGET_MS, 250);
+  assert.equal(EAR_CAREFUL_DISPATCH_TARGET_MS, 580);
+  const real = { realHelper: true, gate: true };
+  assert.deepEqual(earGate(earRows(), real), { verdict: "ok", exitCode: 0 });
+  assert.deepEqual(earGate(earRows(250, 580, 250), real), { verdict: "ok", exitCode: 0 }, "at the target is a pass");
+  assert.deepEqual(earGate(earRows(251), real), { verdict: "FAIL", exitCode: 1 }, "a prefire partial over 250 ms");
+  assert.deepEqual(earGate(earRows(122, 581), real), { verdict: "FAIL", exitCode: 1 }, "a careful partial over 580 ms");
+  assert.deepEqual(earGate(earRows(122, 452, 251), real), { verdict: "FAIL", exitCode: 1 }, "a final over 250 ms");
+  assert.deepEqual(earGate(earRows().slice(1), real), { verdict: "FAIL", exitCode: 1 }, "a missing ear row: the ear never dispatched");
+  assert.deepEqual(earGate([], real), { verdict: "FAIL", exitCode: 1 });
+  // The acting call is judged at p95 in the table, but it is not the ear's gate.
+  assert.deepEqual(earGate([...earRows(), row("acting call incl. observation (mouse_move in place)", 900, 350)], real), { verdict: "ok", exitCode: 0 });
+  assert.deepEqual(earGate(earRows(400), { realHelper: true, gate: false }), { verdict: "FAIL", exitCode: 0 }, "--no-gate prints the FAIL and exits 0");
+  assert.deepEqual(earGate(earRows(400), { realHelper: false, gate: true }), { verdict: "not judged (fake hands)", exitCode: 0 });
+});
+
+test("W2-7: the bench's config keeps the user's settings and none of their secrets; with fake hands the helper's path does not exist", () => {
+  // What readConfig() gives on a Mac with keys in ~/.jarhead/env and a server URL set.
+  const base: JarheadConfig = {
+    openaiApiKey: "sk-user",
+    anthropicApiKey: "sk-ant-user",
+    liveModel: "gpt-live-1",
+    liveVoice: "ballad",
+    brain: "auto",
+    brainModel: "",
+    brainEffort: "medium",
+    brainBaseUrl: "https://example.com/v1",
+    brainApiKey: "sk-user",
+    stateDir: "/Users/someone/.jarhead",
+    socketPath: "/Users/someone/.jarhead/jarhead.sock",
+    idleSleepMinutes: 10,
+    logLevel: "info",
+    claudeBin: undefined,
+    codexBin: undefined,
+    handsBin: "/repo/build/jarhead-hands",
+    memoryModel: undefined,
+  };
+  const fake = benchConfig(base, "/tmp/jh-bench-1", { codex: false, fakeHands: true });
+  assert.equal(fake.openaiApiKey, BENCH_OPENAI_KEY);
+  assert.equal(fake.anthropicApiKey, undefined);
+  assert.equal(fake.brainApiKey, undefined);
+  assert.equal(fake.brainBaseUrl, undefined);
+  assert.equal(fake.liveVoice, "ballad", "the user's settings stay");
+  assert.equal(fake.brain, "auto");
+  assert.equal(fake.stateDir, "/tmp/jh-bench-1/state");
+  assert.equal(fake.handsBin, "/tmp/jh-bench-1/no-hands");
+  const real = benchConfig(base, "/tmp/jh-bench-1", { codex: true, fakeHands: false });
+  assert.equal(real.handsBin, "/repo/build/jarhead-hands", "the real helper is what a real-helper run measures");
+  assert.equal(real.brain, "codex");
+  assert.equal(real.openaiApiKey, BENCH_OPENAI_KEY, "Codex runs on its own login, never on the user's OpenAI key");
 });
