@@ -6,8 +6,8 @@ import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient, type ClientMessage } from "@jarhead/daemon";
 import { runHygiene, type DockAudit, type HygieneReport } from "@jarhead/install";
-import { type AgentInfo, type AudioSettings, type AudioState, type BrainKind, type Delegation, type Effort, type EngineCommand, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SetupStatus, type SleepCause, type Snapshot, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
-import { MEMORY_ID, agentsByStatus, agoWords, audioStatusLines, memoryLine, readAudioProfiler, render, runChecks, summarizePermissions } from "./doctor.ts";
+import { type AgentInfo, type AudioSettings, type AudioState, type LiveAudio, type BrainKind, type Delegation, type Effort, type EngineCommand, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SetupStatus, type SleepCause, type Snapshot, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
+import { MEMORY_ID, agentsByStatus, agoWords, audioStatusLines, memoryLine, playbackInputs, readAudioProfiler, render, runChecks, summarizePermissions } from "./doctor.ts";
 import { localStatusLine, runBrain, runModels, type BrainDaemon } from "./local-cli.ts";
 import { bench } from "./bench.ts";
 import { benchBrain } from "./bench-brain.ts";
@@ -537,7 +537,7 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brain?: BrainKind; brainModel?: string; audio?: AudioSettings }; automations?: Automation[]; nextFire?: Snapshot["nextFire"]; ringing?: Snapshot["ringing"]; audioState?: AudioState };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brain?: BrainKind; brainModel?: string; audio?: AudioSettings }; automations?: Automation[]; nextFire?: Snapshot["nextFire"]; ringing?: Snapshot["ringing"]; audioState?: AudioState; liveAudio?: LiveAudio };
   console.log(`\n  phase      ${s.phase}`);
   // The voice and accent are the session's own (picked at connect; a change is heard at the next wake).
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed${s.session.voice ? ` · ${s.session.voice} · English${s.session.accent && s.session.accent !== "none" ? ` (${s.session.accent})` : ""}` : ""}` : "none"}`);
@@ -551,7 +551,10 @@ async function status(): Promise<void> {
   if (flags.has("--permissions")) for (const p of perms.all) console.log(`    ${p.grant === "granted" ? "✔" : p.grant === "denied" ? "✘" : "?"} ${p.label.padEnd(20)} ${p.grant.padEnd(8)} ${p.ask === "settings" ? "System Settings" : p.ask === "perApp" ? "per app" : "prompt"}${p.required ? " · required" : ""}${p.detail ? ` · ${p.detail}` : ""}`);
   // The audio graph (design12) as the app last read it back: the knobs, the rung, hears / speaks with the rate that tells hands-free from full quality, the guard's counters.
   // No app connected: one read-only system_profiler line for the defaults (≈ 1 s; skipped with --no-levels, like the levels wait).
-  for (const line of audioStatusLines(s.audioState, s.settings?.audio, s.audioState || flags.has("--no-levels") ? undefined : readAudioProfiler())) console.log(line);
+  // The playback lines (voice PLAN W1.5): the open session's Live figures, else the ledger's newest audio.playout row
+  // (the whole block with no app connected, the live line with no session open). The day files are read only then.
+  const playback = playbackInputs(s.liveAudio, readLedger, Date.now());
+  for (const line of audioStatusLines(s.audioState, s.settings?.audio, s.audioState || flags.has("--no-levels") ? undefined : readAudioProfiler(), playback)) console.log(line);
   if (levels) console.log(`  levels     mic ${levels.input.toFixed(3)}   speaker ${levels.output.toFixed(3)}`);
   // Agents by status: `ended` is a session with no live process (however old); `unknown` means the process evidence was missing, not "old".
   const byStatus = agentsByStatus(s.agents);
