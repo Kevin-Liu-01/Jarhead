@@ -699,9 +699,11 @@ enum AutomationForm {
         return AutomationDraft(name: clean, whenPhrase: phrase, then: [action], clauses: clauses, echo: echo(name: clean, phrase: phrase, kind: kind))
     }
 
-    /// The brain a wake-brain fire runs on: what `auto` resolved to when the setup says, else Settings' choice.
+    /// The brain the cost line names: the one the engine judges the row by, so what Kevin reads is what it records as heard.
+    /// The engine reads Settings' brain until engine.ts hands Automations its `brainKind` (what `auto` resolved to). When it
+    /// does, this reads `snapshot.setup.brainResolved ?? snapshot.settings.brain` in the same change.
     static func billedBrain(_ snapshot: Snapshot) -> BrainKind {
-        snapshot.setup.brainResolved ?? snapshot.settings.brain
+        snapshot.settings.brain
     }
 
     /// The brains billed per token on an API key (core's API_BRAINS): the cost line says so instead of the plan.

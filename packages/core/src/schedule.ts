@@ -102,11 +102,18 @@ const UNIT_MS: Readonly<Record<string, number>> = {
   h: 3_600_000, hr: 3_600_000, hrs: 3_600_000, hour: 3_600_000, hours: 3_600_000,
 };
 const SKIP_WORDS = new Set(["at", "on", "in", "and", "the", "a", "an", "o'clock", "oclock", "please", "alarm", "for", "me", "wake", "up", "this"]);
+type Part = "morning" | "evening" | "night";
 /** The part of the day a word names; the plural (and "nightly", and "every" before one) makes it a daily recurrence. */
-const PART_WORDS: Readonly<Record<string, { readonly part: "morning" | "evening"; readonly daily: boolean }>> = {
+const PART_WORDS: Readonly<Record<string, { readonly part: Part; readonly daily: boolean }>> = {
   morning: { part: "morning", daily: false }, mornings: { part: "morning", daily: true },
   evening: { part: "evening", daily: false }, evenings: { part: "evening", daily: true },
-  night: { part: "evening", daily: false }, nights: { part: "evening", daily: true }, nightly: { part: "evening", daily: true },
+  night: { part: "night", daily: false }, nights: { part: "night", daily: true }, nightly: { part: "night", daily: true },
+};
+/** The hours a part of the day holds: a time the part cannot move (am/pm said, or written the 24-hour way) must be one of them. */
+const PART_HOURS: Readonly<Record<Part, (hh: number) => boolean>> = {
+  morning: (hh) => hh <= 11,
+  evening: (hh) => hh >= 12 || hh === 0,
+  night: (hh) => hh >= 18 || hh <= 5,
 };
 const NOT_YET = /\b(monthly|month|months|1st|2nd|3rd|\d+th|first|second|third|fourth|last|year|yearly|annually)\b/;
 const err = (error: string): { readonly error: string } => ({ error });
@@ -118,6 +125,8 @@ interface Clock {
   readonly exact: boolean;
   /** am/pm, noon or midnight was said: no part of the day moves it. */
   readonly said: boolean;
+  /** The hour was written the 24-hour way ("07:10", "0:15", "19:00"): no part of the day moves it either. */
+  readonly h24: boolean;
 }
 
 /** "twelve minutes" → "12 minutes", "seven forty five" → "7 45", "seven oh five" stays "7 oh 5" for the clock to read. */
@@ -164,24 +173,25 @@ function parseDuration(text: string): number | undefined {
 
 const meridian = (w: string | undefined): "am" | "pm" | undefined => (w === "am" || w === "a.m." ? "am" : w === "pm" || w === "p.m." ? "pm" : undefined);
 
-/** An hour and its minutes with an am/pm said or not; undefined past 23:59. */
-function clockOf24(hh: number, mm: number, ap: "am" | "pm" | undefined, exact: boolean): Clock | undefined {
+/** An hour and its minutes with an am/pm said or not; undefined past 23:59. `written` is the hour as said: "07", "0" or "19" is a 24-hour hour. */
+function clockOf24(hh: number, mm: number, ap: "am" | "pm" | undefined, exact: boolean, written = String(hh)): Clock | undefined {
   let h = hh;
   if (ap === "pm" && h < 12) h += 12;
   if (ap === "am" && h === 12) h = 0;
   if (h > 23 || mm > 59) return undefined;
-  return { hh: h, mm, exact: exact || ap !== undefined, said: ap !== undefined };
+  const h24 = /^0\d$/.test(written) || Number(written) === 0 || Number(written) >= 13;
+  return { hh: h, mm, exact: exact || ap !== undefined, said: ap !== undefined, h24 };
 }
 
 /** One token: "7", "7:10", "7.10", "07:10", "7am", "7pm", "noon", "midnight"; `next` may be a trailing am/pm word. */
 function parseClock(tok: string, next: string | undefined): { readonly clock: Clock; readonly used: number } | undefined {
-  if (tok === "noon") return { clock: { hh: 12, mm: 0, exact: true, said: true }, used: 1 };
-  if (tok === "midnight") return { clock: { hh: 0, mm: 0, exact: true, said: true }, used: 1 };
+  if (tok === "noon") return { clock: { hh: 12, mm: 0, exact: true, said: true, h24: false }, used: 1 };
+  if (tok === "midnight") return { clock: { hh: 0, mm: 0, exact: true, said: true, h24: false }, used: 1 };
   const r = /^(\d{1,2})(?:[:.](\d{2}))?(am|pm|a\.m\.|p\.m\.)?$/.exec(tok);
   if (!r) return undefined;
   const own = meridian(r[3]);
   const ap = own ?? meridian(next);
-  const clock = clockOf24(Number(r[1]), r[2] === undefined ? 0 : Number(r[2]), ap, r[2] !== undefined);
+  const clock = clockOf24(Number(r[1]), r[2] === undefined ? 0 : Number(r[2]), ap, r[2] !== undefined, r[1]);
   return clock ? { clock, used: !own && ap ? 2 : 1 } : undefined;
 }
 
@@ -201,7 +211,7 @@ function readClock(words: readonly string[], i: number): { readonly clock: Clock
     const back = toward === "to" || toward === "before";
     const hh = Number(hour[1]);
     if (back && w === "half") return undefined;
-    const clock = clockOf24(back ? (hh + 23) % 24 : hh, back ? 60 - rel : rel, ap, false);
+    const clock = clockOf24(back ? (hh + 23) % 24 : hh, back ? 60 - rel : rel, ap, false, hour[1]);
     return clock ? { clock, used: 3 + (!own && ap ? 1 : 0) } : undefined;
   }
   const one = parseClock(w, toward);
@@ -218,15 +228,19 @@ function readClock(words: readonly string[], i: number): { readonly clock: Clock
   }
   if (mm === undefined || mm > 59) return one;
   const ap = meridian(words[j]);
-  const clock = clockOf24(Number(w), mm, ap, false);
+  const clock = clockOf24(Number(w), mm, ap, false, w);
   return clock ? { clock, used: j - i + (ap ? 1 : 0) } : one;
 }
 
-/** A part of the day settles a clock no am/pm was said for: the morning's 12 is midnight's hour, the evening's 1–11 are 13–23, its 12 is midnight. */
-function inPart(c: Clock, part: "morning" | "evening" | undefined): Clock {
-  if (!part || c.said) return c;
-  if (part === "morning") return { ...c, hh: c.hh === 12 ? 0 : c.hh, exact: true };
-  return { ...c, hh: c.hh === 12 ? 0 : c.hh < 12 ? c.hh + 12 : c.hh, exact: true };
+/**
+ * A part of the day settles a 12-hour clock: every part's 12 is midnight's hour; the morning keeps 1–11; the evening's 1–11
+ * are 13–23; the night keeps 1–5 (two at night is 02:00) and makes 6–11 into 18–23. A clock the part cannot move (am/pm said,
+ * or a 24-hour hour) must already be in the part: '07:10' and 'evening' is undefined, for the caller to refuse.
+ */
+function inPart(c: Clock, part: Part): Clock | undefined {
+  if (c.said || c.h24) return PART_HOURS[part](c.hh) ? c : undefined;
+  const hh = c.hh === 12 ? 0 : part === "morning" ? c.hh : part === "evening" ? (c.hh < 12 ? c.hh + 12 : c.hh) : c.hh >= 6 && c.hh < 12 ? c.hh + 12 : c.hh;
+  return { ...c, hh, exact: true };
 }
 
 function clockTime(c: Pick<Clock, "hh" | "mm">): ClockTime {
@@ -269,10 +283,11 @@ function timer(ms: number): ParsedWhen {
  * Kevin's phrase → when it fires: "7:10" · "at seven" · "seven ten" · "7.10" · "half past seven" ·
  * "quarter to eight" · "tomorrow 07:10" · "tomorrow morning at 7" · "in 12 minutes" · "twelve minutes" ·
  * "in an hour and a half" · "weekdays 09:00" · "daily 18:00" · "nightly 23:00" · "every night at
- * eleven" · "mornings at 7" · "weekends 10:30" · "mon,wed 07:10" · "every 2 h" · "every 45 min".
- * Number words are read as digits. A bare hour with no am/pm ("at seven") is the next 07:00 or 19:00
- * at least PARSE_LEAD_MS away; a morning or an evening word settles it; a colon form is the hour it
- * says, today if still ahead, else tomorrow. Monthly phrases are pass 2: "not yet — say the date".
+ * eleven" · "every night at two" · "mornings at 7" · "weekends 10:30" · "mon,wed 07:10" · "every 2 h" ·
+ * "every 45 min". Number words are read as digits. A bare hour with no am/pm ("at seven") is the next
+ * 07:00 or 19:00 at least PARSE_LEAD_MS away; a morning, an evening or a night word settles it (two at
+ * night is 02:00), and "this morning" or "this evening" is today's; a colon form is the hour it says,
+ * today if still ahead, else tomorrow. Monthly phrases are pass 2: "not yet — say the date".
  * Words it does not know are named in the error, never guessed.
  */
 export function parseWhen(phrase: string, now: number): ParsedWhen {
@@ -311,7 +326,8 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
   const days = new Set<Weekday>();
   let clock: Clock | undefined;
   let date: "today" | "tonight" | "tomorrow" | undefined;
-  let part: "morning" | "evening" | undefined;
+  let part: Part | undefined;
+  let partWord = "";
   let every = false;
   let daily = false;
   for (let i = 0; i < words.length; i++) {
@@ -336,7 +352,10 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
     const named = PART_WORDS[w];
     if (named) {
       part = named.part;
+      partWord = w;
       if (named.daily || every) daily = true;
+      // "this morning" and "this evening" are today's: a time already gone is refused, never moved to tomorrow.
+      else if (words[i - 1] === "this" && !date) date = "today";
       continue;
     }
     if (w === "weekdays" || w === "weekday") {
@@ -367,7 +386,14 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
   }
   if (daily && days.size === 0) for (const d of WEEKDAY_ALL) days.add(d);
   if (!clock) return err(days.size ? "say a time too: 'weekdays 09:00'" : `didn't catch a time in "${phrase.trim()}"`);
-  clock = inPart(clock, part);
+  if (part) {
+    const settled = inPart(clock, part);
+    if (!settled) return err(`${clockTime(clock)} and '${partWord}' don't go together; say one`);
+    clock = settled;
+  } else if (date === "tonight" && !clock.said && !clock.h24) {
+    // Tonight reads a bare hour as the night does: seven is 19:00, two is 02:00, twelve is midnight.
+    clock = inPart(clock, "night") ?? clock;
+  }
 
   if (days.size) {
     if (date) return err("a day of the week and 'tomorrow' don't go together; say one");
@@ -377,16 +403,18 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
   }
 
   const lead = now + PARSE_LEAD_MS;
-  if (date === "tomorrow") return { kind: "at", at: atClock(dayStart(now, 1), clockTime(clock)) };
+  // The small hours of a named day's evening or night belong to the morning after it: "tomorrow night at 2" said on a Monday
+  // is Wednesday 02:00, and "tonight at midnight" is the midnight ahead, not the one gone.
+  const after = date !== undefined && (date === "tonight" || part === "evening" || part === "night") && clock.hh < 6 ? 1 : 0;
+  if (date === "tomorrow") return { kind: "at", at: atClock(dayStart(now, 1 + after), clockTime(clock)) };
   if (date === "today" || date === "tonight") {
-    // A bare hour on a named day has its 12-hour twin too: "today at nine" said at 14:00 is 21:00; "tonight at seven" is 19:00 —
-    // tonight takes the evening reading outright. An exact time ("today 07:10", "tonight 7am") is what it says.
+    // A bare hour on a named day has its 12-hour twin too: "today at nine" said at 14:00 is 21:00. Tonight and a part of the
+    // day settled the hour above. An exact time ("today 07:10", "tonight 7am") is what it says.
     const twin = !clock.exact && clock.hh <= 12;
-    const evening = date === "tonight" && twin && clock.hh < 12;
-    const clocks: ClockTime[] = evening ? [clockTime({ ...clock, hh: clock.hh + 12 })] : twin ? [clockTime(clock), clockTime({ ...clock, hh: (clock.hh + 12) % 24 })] : [clockTime(clock)];
+    const clocks: ClockTime[] = twin ? [clockTime(clock), clockTime({ ...clock, hh: (clock.hh + 12) % 24 })] : [clockTime(clock)];
     let best: number | undefined;
     for (const t of clocks) {
-      const at = atClock(dayStart(now), t);
+      const at = atClock(dayStart(now, after), t);
       if (at >= lead && (best === undefined || at < best)) best = at;
     }
     return best !== undefined ? { kind: "at", at: best } : err(`${clocks[clocks.length - 1] ?? clockTime(clock)} has passed today`);

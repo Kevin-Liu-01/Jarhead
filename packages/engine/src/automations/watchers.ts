@@ -12,7 +12,10 @@ import type { AutomationExec, ShellRunner } from "./executor.ts";
  * a name it holds (there at arm, or already fired) is never a landing, whatever happens to
  * its contents — Preview saving an annotation is not a download. Browser partials,
  * .DS_Store and names the glob passes over never count and are never statted. A folder of
- * LIST_ASYNC_AT entries or more is listed off the event loop. An app quitting or launching
+ * LIST_ASYNC_AT entries or more is listed off the event loop. Two reads stay inline on purpose:
+ * a smaller folder's listing (about 1 ms at 1,000 entries, so a landing is seen in the tick that
+ * lists it), and a restart's baseline, which stats each landable name once to leave out what
+ * landed after the last heartbeat (about one stat per entry, once per daemon start). An app quitting or launching
  * arrives as the app's `system.signal`; while no app client forwards them, the process list
  * (`ps -axo pid,comm` through the exec seam) every APP_POLL_MS is the fallback edge — a
  * window leaving the screen is not a quit. `recipe.red` runs its recipe every

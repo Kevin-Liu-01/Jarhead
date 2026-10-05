@@ -104,6 +104,61 @@ test("SL-16: what was refused stays refused, in its own words", () => {
   assert.match(error("morning"), /didn't catch a time/);
 });
 
+test("SL-16: the night keeps its small hours: two at night is 02:00, never 14:00", () => {
+  assert.equal(words("every night at two"), "daily 02:00");
+  assert.equal(words("nightly at 2"), "daily 02:00");
+  assert.equal(words("every night at one"), "daily 01:00");
+  assert.equal(words("every night at eleven"), "daily 23:00");
+  assert.equal(words("nightly at 12"), "daily 00:00");
+  assert.equal(words("every night at 11:30"), "daily 23:30");
+  assert.equal(words("at two at night"), "02:00 · Tue 6 Oct");
+  assert.equal(words("half past twelve at night"), "00:30 · Tue 6 Oct");
+  assert.equal(words("every night at 2am"), "daily 02:00");
+  assert.equal(words("every night at 11pm"), "daily 23:00");
+});
+
+test("SL-16: a named day's night runs into the next morning: 'tomorrow night at 2' said on Monday is Wednesday 02:00, 'tonight at 1' is Tuesday 01:00", () => {
+  assert.equal(words("tomorrow night at 2"), "02:00 · Wed 7 Oct");
+  assert.equal(words("tomorrow night at 11"), "23:00 · Tue 6 Oct");
+  assert.equal(words("tonight at 1"), "01:00 · Tue 6 Oct");
+  assert.equal(words("tonight at midnight"), "00:00 · Tue 6 Oct");
+  assert.equal(words("tonight at 12"), "00:00 · Tue 6 Oct", "tonight's twelve is midnight, not noon");
+  assert.equal(words("tonight at 7:30"), "19:30 · Mon 5 Oct");
+  assert.equal(words("this evening at 12"), "00:00 · Tue 6 Oct");
+});
+
+test("SL-16: 'this morning' and 'this evening' are today's: a time already gone is refused, as before", () => {
+  const error = (p: string, now: number): string => {
+    const w = parseWhen(p, now);
+    assert.ok("error" in w, `"${p}" is refused`);
+    return w.error;
+  };
+  assert.match(error("this evening at 7", local(2026, 10, 5, 21, 0)), /19:00 has passed today/);
+  assert.match(error("this evening at seven", local(2026, 10, 5, 21, 0)), /19:00 has passed today/);
+  assert.match(error("this morning at 7", local(2026, 10, 5, 9, 0)), /07:00 has passed today/);
+  assert.equal(words("this evening at 7"), "19:00 · Mon 5 Oct");
+  assert.equal(words("this morning at 7"), "07:00 · Mon 5 Oct");
+  assert.equal(words("this evening at 7:10"), "19:10 · Mon 5 Oct");
+  assert.equal(words("evening at 7", local(2026, 10, 5, 21, 0)), "19:00 · Tue 6 Oct", "no 'this': the next evening's seven");
+});
+
+test("SL-16: a part of the day never moves a 24-hour time or an am/pm; one outside the part is refused", () => {
+  const error = (p: string): string => {
+    const w = parseWhen(p, MON_0600);
+    assert.ok("error" in w, `"${p}" is refused`);
+    return w.error;
+  };
+  assert.match(error("07:10 this evening"), /07:10 and 'evening' don't go together; say one/);
+  assert.match(error("this evening 07:10"), /07:10 and 'evening' don't go together/);
+  assert.match(error("nightly 07:00"), /07:00 and 'nightly' don't go together/);
+  assert.match(error("every evening at 7am"), /07:00 and 'evening' don't go together/);
+  assert.match(error("every morning at 19:00"), /19:00 and 'morning' don't go together/);
+  assert.equal(words("every evening at 19:30"), "daily 19:30");
+  assert.equal(words("nightly 23:00"), "daily 23:00");
+  assert.equal(words("this evening 0:15"), "00:15 · Tue 6 Oct", "a 24-hour midnight hour is this evening's own, the night after it");
+  assert.equal(words("every morning at 06:30"), "daily 06:30");
+});
+
 test("SL-18: the cost line says how the brain is paid for", () => {
   assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire on your plan, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");
   assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false, true), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire billed as API tokens on your key, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");

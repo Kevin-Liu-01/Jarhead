@@ -503,3 +503,79 @@ test("SL-18: the wake-brain question says how the brain is paid for: the plan, A
     autos.dispose();
   }
 });
+
+test("SL-18: under 'auto', the question and the heard the Console records name the brain auto resolved to: API tokens on the key, or a warm-up on this Mac", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-w22-cost-auto-"));
+  let resolved: string | undefined = "anthropic-api";
+  let current: Settings = { ...DEFAULT_SETTINGS, brain: "auto", automations: { ...DEFAULT_AUTOMATIONS, unattended: [...DEFAULT_AUTOMATIONS.unattended, "wake-brain"], wakeBudgetMinutesPerDay: 5 } };
+  const t = new Date(2026, 9, 5, 9, 0, 0).getTime();
+  const autos = new Automations({
+    stateDir: dir,
+    now: () => t,
+    ledger: new Ledger(dir),
+    settings: () => current,
+    updateSettings: (patch) => (current = { ...current, ...patch } as Settings),
+    hands: {} as never,
+    reader: {} as never,
+    redact: (s) => s,
+    emit: () => undefined,
+    problem: () => undefined,
+    live: () => undefined,
+    brain: { warmUp: async () => undefined, lane: async () => undefined, after: async () => undefined },
+    present: async () => false,
+    // Settings say auto, so the settings-based seam says "not local": the resolved kind decides instead.
+    localBrain: () => current.brain === "local",
+    brainKind: () => resolved,
+    onChange: () => undefined,
+    exec: fakeExec().exec,
+    home: home(),
+  });
+  const draft = (name: string): AutomationSetInput => ({ name, when: { kind: "at", at: t + H }, then: [{ kind: "wake-brain", prompt: "summarise my agents", budget: { steps: 5, seconds: 60 }, speak: true }], echo: "Wake the brain." });
+  const consoleHeard = async (name: string): Promise<string | undefined> => {
+    const toasts: string[] = [];
+    await autos.command({ type: "automation.set", automation: draft(name) } as never, (text) => void toasts.push(text));
+    assert.match(toasts[0] ?? "", /^armed: /, toasts.join(" | "));
+    return autos.table.named(name)?.confirmed?.heard;
+  };
+  try {
+    const q = autos.arm(draft("rundown"), "brain", false);
+    assert.equal(q.kind, "confirm");
+    assert.match((q as { question: string }).question, /per fire billed as API tokens on your key/);
+    assert.equal(await consoleHeard("rundown"), (q as { question: string }).question, "what the Console recorded as heard is the engine's question");
+    resolved = "local";
+    const local = autos.arm(draft("rundown local"), "brain", false);
+    assert.match((local as { question: string }).question, /per fire a model warm-up on this Mac/);
+    assert.equal(await consoleHeard("rundown local"), (local as { question: string }).question);
+    resolved = undefined;
+    assert.match((autos.arm(draft("rundown later"), "brain", false) as { question: string }).question, /per fire on your plan/, "nothing resolved yet: Settings' brain, as the form reads it");
+  } finally {
+    autos.dispose();
+  }
+});
+
+test("SL-18: the engine names the brain 'auto' resolved to in the wake-brain question and in the heard it records (runs once engine.ts passes brainKind)", async (t) => {
+  const apiBrain = { kind: "anthropic-api", start: async () => ({ ready: true, detail: "api" }), handle: async () => ({ status: "done", text: "" }), cancel: async () => undefined, stop: async () => undefined };
+  const w = world({ brain: apiBrain as never, automations: { exec: fakeExec().exec, home: home() } });
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    // The W2-1 / W2-2 contract: engine.ts hands Automations `brainKind`; until that merge the engine judges by Settings' brain,
+    // and the Console's form reads Settings' brain too, so the two agree.
+    if ((engine.automations as unknown as { opts: { brainKind?: unknown } }).opts.brainKind === undefined) {
+      t.skip("engine.ts passes no brainKind yet (the W2-1 merge wires it, and AutomationForm.billedBrain reads setup.brainResolved with it)");
+      return;
+    }
+    assert.equal(engine.snapshot().settings.brain, "auto");
+    // The brain proves itself after start(): until it is ready, auto has resolved to nothing.
+    await until(() => engine.snapshot().brainReady, 1500);
+    settings(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "wake-brain"], wakeBudgetMinutesPerDay: 5 });
+    const draft: AutomationSetInput = { name: "rundown", when: { kind: "at", at: clock.t + H }, then: [{ kind: "wake-brain", prompt: "summarise my agents", budget: { steps: 5, seconds: 60 }, speak: true }], echo: "Wake the brain." };
+    const q = engine.automations.arm(draft, "brain", false);
+    assert.equal(q.kind, "confirm");
+    assert.match((q as { question: string }).question, /billed as API tokens on your key/);
+    await engine.automations.command({ type: "automation.set", automation: draft } as never, () => undefined);
+    assert.match(engine.automations.table.named("rundown")?.confirmed?.heard ?? "", /billed as API tokens on your key/);
+  } finally {
+    await engine.stop();
+  }
+});
