@@ -9,13 +9,25 @@ import Network
 /// Snapshots are decoded once, off `net`, on their own serial queue (voice PLAN W2.2): the speaker's
 /// frames and the `audio` flush ride the same socket and are handed on from `net` in arrival order,
 /// so a 283 KB snapshot decoded inline held every speaker frame behind it for the whole decode.
-/// Every other JSON frame stays on `net`, in order with the PCM.
+/// Every other JSON frame stays on `net`, in order with the PCM. At most one decode runs and one
+/// payload waits, the newest (the app's half of W2.3): a burst is decoded twice, not once per frame.
 final class EngineClient: @unchecked Sendable {
     private let socketPath: String
     private let state: AppState
     private let net = DispatchQueue(label: "jarhead.engine-client")
-    /// Where snapshots are decoded. Serial: they apply in the order they came.
+    /// Where snapshots are decoded, one at a time (`decodeNextSnapshot`).
     private let snapshotQueue = DispatchQueue(label: "jarhead.engine-client.snapshot", qos: .userInitiated)
+    /// The newest snapshot payload not yet decoded, with its connection's epoch and its arrival number. A newer one
+    /// replaces it: snapshots are whole states, so only the newest says anything. On `net`.
+    private var snapshotSlot: (payload: Data, epoch: Int, seq: Int)?
+    /// A decode is under way on `snapshotQueue`. On `net`.
+    private var snapshotDecoding = false
+    /// Snapshots in arrival order, and the newest one applied: a decode that finishes after a newer snapshot
+    /// applied (on handleMessage's fallback path) is dropped. On `net`.
+    private var snapshotSeq = 0
+    private var snapshotAppliedSeq = 0
+    /// Snapshots decoded off `net` since launch. On `net`; the snapshot probe reads it by reflection, once the socket is quiet.
+    private var snapshotDecodes = 0
     /// Bumped whenever a connection opens, drops or stops (on `net`): a snapshot decoded for a connection
     /// that has gone since says nothing about the daemon now, and is not applied.
     private var connectionEpoch = 0
@@ -715,11 +727,12 @@ final class EngineClient: @unchecked Sendable {
             if let id = obj["id"] as? String { pendingPings.removeAll { $0.id == id } }
         case "snapshot":
             // A snapshot frame that does not start with its type (`isSnapshotFrame`), decoded here as before.
+            snapshotSeq += 1
             guard let sub = obj["snapshot"], let snap: Snapshot = decode(sub) else {
                 snapshotUndecodable()
                 return
             }
-            applySnapshot(snap)
+            applySnapshot(snap, seq: snapshotSeq)
         case "levels":
             guard let sub = obj["levels"], let levels: AudioLevels = decode(sub) else { return }
             let clean = AudioLevels(input: finiteLevel(levels.input), output: finiteLevel(levels.output))
@@ -809,24 +822,44 @@ final class EngineClient: @unchecked Sendable {
         let snapshot: Snapshot
     }
 
-    /// On `net`: decode on `snapshotQueue`, then apply back on `net`, unless the connection has changed since.
+    /// On `net`: the payload waits in the one slot (replacing any older one), and a decode starts unless one runs.
     private func decodeSnapshot(_ payload: Data) {
-        let epoch = connectionEpoch
+        snapshotSeq += 1
+        snapshotSlot = (payload, connectionEpoch, snapshotSeq)
+        if !snapshotDecoding { decodeNextSnapshot() }
+    }
+
+    /// On `net`: decode the waiting payload on `snapshotQueue`, apply it back on `net` unless its connection has gone
+    /// since, then take whatever arrived meanwhile (the newest only). A payload from a gone connection is dropped undecoded.
+    private func decodeNextSnapshot() {
+        guard let next = snapshotSlot else {
+            snapshotDecoding = false
+            return
+        }
+        snapshotSlot = nil
+        guard next.epoch == connectionEpoch else {
+            decodeNextSnapshot()
+            return
+        }
+        snapshotDecoding = true
+        snapshotDecodes += 1
         snapshotQueue.async { [weak self] in
             guard let self else { return }
             var snap: Snapshot?
             do {
-                snap = try jarheadJSONDecoder.decode(SnapshotFrame.self, from: payload).snapshot
+                snap = try jarheadJSONDecoder.decode(SnapshotFrame.self, from: next.payload).snapshot
             } catch {
                 self.log("decode Snapshot: \(error)")
             }
             self.net.async {
-                guard epoch == self.connectionEpoch else { return }
-                guard let snap else {
-                    self.snapshotUndecodable()
-                    return
+                if next.epoch == self.connectionEpoch {
+                    if let snap {
+                        self.applySnapshot(snap, seq: next.seq)
+                    } else {
+                        self.snapshotUndecodable()
+                    }
                 }
-                self.applySnapshot(snap)
+                self.decodeNextSnapshot()
             }
         }
     }
@@ -838,8 +871,10 @@ final class EngineClient: @unchecked Sendable {
         log("undecodable snapshot")
     }
 
-    /// On `net`: the snapshot for the auto-resume, then the ≤ 30 Hz publish.
-    private func applySnapshot(_ snap: Snapshot) {
+    /// On `net`: the snapshot for the auto-resume, then the ≤ 30 Hz publish. One older than the last applied is dropped.
+    private func applySnapshot(_ snap: Snapshot, seq: Int) {
+        guard seq > snapshotAppliedSeq else { return }
+        snapshotAppliedSeq = seq
         noteSnapshotForResume(snap)
         queueSnapshot(sanitized(snap))
     }

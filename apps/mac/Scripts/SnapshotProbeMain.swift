@@ -13,18 +13,28 @@ import Foundation
 //             socket's own cost), 20 times each: what the snapshot adds is its decode, when that runs on `net`
 //   paced     40 ms speaker frames in real time, 283 KB snapshots at 3.8/s, SNAPSHOT_PROBE_SECONDS
 //             (default 20): each frame's lateness against its ideal time
+//   waiting   one 3 MB snapshot, then 19 small ones right behind it: they arrive while the big one decodes, so
+//             exactly one more decode runs, the newest's (the slot: one decode runs, one payload waits)
+//   burst     20 snapshots of 283 KB written at once (a backed-up socket draining): at most one decode runs and
+//             one payload waits, the newest, so the burst costs 2 or 3 decodes and the state ends on the newest
 //   decoded   a snapshot carrying the playback telemetry (audioState.playout/duck/output, liveAudio)
 //             reaches AppState through the new path; a malformed snapshot is dropped and the next applies;
 //             a liveAudio with only its counts decodes (W2-5's optional figures); a malformed snapshot on
 //             handleMessage's fallback path is dropped too
 //
-// Gates: order exact; behind adds ≤ 2 ms at p50; paced p99 ≤ 35 ms; decoded fields equal. SNAPSHOT_PROBE_NO_GATES=1
-// prints the figures without judging them (to run the same probe against another EngineClient.swift).
+// Gates: order exact; behind adds ≤ 2 ms at p50; paced p99 ≤ 35 ms; waiting exactly 2 decodes, ends on the newest;
+// burst ≤ 3 decodes, ends on the newest; decoded fields equal. Behind, paced and burst are timings: a load average far
+// above the cores stretches them (on 18 cores at 100 to 250, burst read 4 and 6 decodes in 2 of 9 runs).
+// SNAPSHOT_PROBE_NO_GATES=1 prints the figures without judging them (to run the same probe against another
+// EngineClient.swift).
 
 // MARK: - stubs for what EngineClient reaches outside Model/ and Daemon/
 
 /// The speaker, as EngineClient sees it: `play(pcm:)` and `flush()`, called on `net`. Records arrival times only.
+/// A frame whose seq is `stallSeq` holds `net` for `stallSeconds` first: an app that lost the CPU for that long.
 final class AudioEngine: @unchecked Sendable {
+    static let stallSeq = 77_777
+    static let stallSeconds = 0.3
     struct Event {
         let seq: Int
         let at: UInt64
@@ -34,6 +44,7 @@ final class AudioEngine: @unchecked Sendable {
 
     func play(pcm: Data) {
         let seq = pcm.count >= 4 ? Int(pcm.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }) : -1
+        if seq == AudioEngine.stallSeq { Thread.sleep(forTimeInterval: AudioEngine.stallSeconds) }
         let now = DispatchTime.now().uptimeNanoseconds
         lock.lock(); log.append(Event(seq: seq, at: now)); lock.unlock()
     }
@@ -134,6 +145,21 @@ final class FakeDaemon: @unchecked Sendable {
 
     func send(json: String) { send(SnapshotProbe.frame(.json, Data(json.utf8))) }
 
+    /// The client socket's send buffer (8 KB by default for a local stream): widened, a burst sits in the kernel
+    /// whole, as a backlog does when the app gets the CPU back, and the app reads it at memory speed. Returns the old size.
+    @discardableResult
+    func setSendBuffer(_ bytes: Int32) -> Int32 {
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        guard fd >= 0 else { return 0 }
+        var old: Int32 = 0
+        var len = socklen_t(MemoryLayout<Int32>.size)
+        getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &old, &len)
+        var v = bytes
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, socklen_t(MemoryLayout<Int32>.size))
+        return old
+    }
+
     func dropClient() {
         writeLock.lock()
         if fd >= 0 { close(fd); fd = -1 }
@@ -196,6 +222,12 @@ func percentile(_ v: [Double], _ p: Double) -> Double {
 }
 
 func ms(_ ns: UInt64) -> Double { Double(ns) / 1e6 }
+
+/// EngineClient's own count of snapshots decoded off `net`, read by reflection (no API for a probe); nil for an
+/// EngineClient.swift that keeps none (SNAPSHOT_PROBE_CLIENT). Read only once the socket is quiet.
+func snapshotDecodes(_ client: EngineClient) -> Int? {
+    Mirror(reflecting: client).children.first { $0.label == "snapshotDecodes" }?.value as? Int
+}
 
 func spin(_ seconds: Double) {
     let end = Date().addingTimeInterval(seconds)
@@ -312,6 +344,47 @@ struct SnapshotProbeMain {
             let paced = speaker.take().compactMap { e -> Double? in ideal[e.seq].map { ms(e.at &- $0) } }
             let p99 = percentile(paced, 0.99)
             check(paced.count == total && p99 <= 35, String(format: "paced: %d frames at 40 ms with 283 KB snapshots at 3.8/s: lateness p50 %.1f ms, p99 %.1f ms, max %.1f ms (n %d)", total, percentile(paced, 0.5), p99, paced.max() ?? 0, paced.count))
+
+            // waiting: the big snapshot's decode is still running when the 19 small ones have all been read (they fit
+            // in a few 64 KB reads), so the slot ends holding the newest and the burst costs exactly two decodes.
+            spin(0.5)
+            let waitingBefore = snapshotDecodes(client)
+            var waitingFrames = SnapshotProbe.snapshot(base, bytes: 3_000_000, phase: "speaking", extra: ["liveAudio": ["deltas": 2000, "gatedFrames": 0]])
+            let bigKB = waitingFrames.count / 1000
+            for i in 1 ..< 20 {
+                waitingFrames.append(SnapshotProbe.snapshot(base, bytes: 0, phase: "speaking", extra: ["liveAudio": ["deltas": 2000 + i, "gatedFrames": 0]]))
+            }
+            let narrowed = daemon.setSendBuffer(8 << 20)
+            daemon.send(waitingFrames)
+            let waitingUntil = Date().addingTimeInterval(10)
+            while state.snapshot.liveAudio?.deltas != 2019, Date() < waitingUntil { spin(0.02) }
+            spin(0.5)
+            daemon.setSendBuffer(narrowed)
+            let waitingDecodes = waitingBefore.flatMap { before in snapshotDecodes(client).map { $0 - before } }
+            check(waitingDecodes == 2 && state.snapshot.liveAudio?.deltas == 2019,
+                  "waiting: a \(bigKB) KB snapshot, then 19 small ones behind it: \(waitingDecodes.map(String.init) ?? "n/a") decodes off net (exactly 2); the state ends on the newest (deltas \(state.snapshot.liveAudio?.deltas ?? -1))")
+
+            // burst: an app that lost the CPU for 300 ms (a speaker frame holds `net`) while 20 snapshots, each marked
+            // by its liveAudio.deltas, landed in a send buffer wide enough to hold them all. When it gets the CPU
+            // back it reads them at memory speed; the slot keeps the newest waiting while one decodes, so the
+            // burst is decoded about twice, not 20 times, and the state ends on the last one.
+            spin(0.5)
+            let decodedBefore = snapshotDecodes(client)
+            var burstFrames = Data()
+            for i in 0 ..< 20 {
+                burstFrames.append(SnapshotProbe.snapshot(base, bytes: 283_000, phase: "speaking", extra: ["liveAudio": ["deltas": 1000 + i, "gatedFrames": 0]]))
+            }
+            let narrow = daemon.setSendBuffer(8 << 20)
+            var stalled = SnapshotProbe.speaker(AudioEngine.stallSeq)
+            stalled.append(burstFrames)
+            daemon.send(stalled)
+            let burstUntil = Date().addingTimeInterval(5)
+            while state.snapshot.liveAudio?.deltas != 1019, Date() < burstUntil { spin(0.02) }
+            spin(0.5)
+            daemon.setSendBuffer(narrow)
+            let burstDecodes = decodedBefore.flatMap { before in snapshotDecodes(client).map { $0 - before } }
+            check((burstDecodes ?? 0) <= 3 && burstDecodes != nil && state.snapshot.liveAudio?.deltas == 1019,
+                  "burst: 20 snapshots of \(burstFrames.count / 20_000) KB written at once: \(burstDecodes.map(String.init) ?? "n/a") decodes off net (at most 3); the state ends on the newest (deltas \(state.snapshot.liveAudio?.deltas ?? -1))")
 
             // decoded: the telemetry reaches AppState; a malformed snapshot is dropped and the next one applies.
             spin(0.5)
