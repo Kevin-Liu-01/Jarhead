@@ -24,7 +24,8 @@ import Foundation
 //
 // Gates: order exact; behind adds ≤ 2 ms at p50; paced p99 ≤ 35 ms; waiting exactly 2 decodes, ends on the newest;
 // burst ≤ 3 decodes, ends on the newest; decoded fields equal. Behind, paced and burst are timings: a load average far
-// above the cores stretches them (on 18 cores at 100 to 250, burst read 4 and 6 decodes in 2 of 9 runs).
+// above the cores stretches them. On 18 cores at a load of 100 to 250, burst read 2 or 3 decodes in 10 of 11 runs and 6
+// in the run whose paced p99 was 137 ms; waiting read 2 in 7 of 7.
 // SNAPSHOT_PROBE_NO_GATES=1 prints the figures without judging them (to run the same probe against another
 // EngineClient.swift).
 
