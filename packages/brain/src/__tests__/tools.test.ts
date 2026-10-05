@@ -506,7 +506,8 @@ test("secret values are redacted from every result, wherever they came from", as
   const home = fakeHome();
   mkdirSync(join(home, ".jarhead"), { recursive: true });
   writeFileSync(join(home, ".jarhead", "env"), 'OPENAI_API_KEY="sk-live-abcdefghijklmnop"\nJARHEAD_WAKE_PASSPHRASE=open-sesame-42\nSHORT=ab\nJARHEAD_BRAIN_MODEL=gpt-5.6-terra\n');
-  const { runner, dir } = makeRunner({ home, env: { ...process.env, ANTHROPIC_API_KEY: "ant-key-from-env-value" } });
+  // The fake home's ~/.jarhead is the state dir, as on a Mac with JARHEAD_STATE_DIR unset: the redactor reads the state dir's env file (W2-9).
+  const { runner, dir } = makeRunner({ home, env: { ...process.env, JARHEAD_STATE_DIR: join(home, ".jarhead"), ANTHROPIC_API_KEY: "ant-key-from-env-value" } });
   runner.attach(makeSink().sink, makeTask("read"));
   assert.deepEqual(secretValues({ ANTHROPIC_API_KEY: "ant-key-from-env-value" }, home).sort(), ["ant-key-from-env-value", "open-sesame-42", "sk-live-abcdefghijklmnop"], "env keys and the secret-named values in the env file, quotes stripped; short ones and settings such as the model name skipped");
   assert.equal(runner.redactor.count, 3);
