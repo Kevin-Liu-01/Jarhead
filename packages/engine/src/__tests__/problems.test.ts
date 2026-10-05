@@ -163,8 +163,9 @@ test("Live errors are typed by the classifier: a limit is voice.limit with Retry
     await engine.ready();
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
-    live.emit("error", new Error("response_input_buffer_full: Backend response input history is limited to 128 items"), "steer_9");
-    live.emit("error", new Error("response_input_buffer_full: Backend response input history is limited to 128 items"), "steer_10");
+    // A passing limit. The session's own input cap (response_input_buffer_full) is a Reopen that stays (w2-1-voice V11).
+    live.emit("error", new Error("rate_limit_exceeded: Rate limit reached for gpt-live-1"), "steer_9");
+    live.emit("error", new Error("rate_limit_exceeded: Rate limit reached for gpt-live-1"), "steer_10");
     const limit = ofKind(w, "voice.limit");
     assert.equal(limit.length, 1, "deduped by kind + text");
     assert.equal(limit[0]!.remedy?.label, "Retry in 30 s");

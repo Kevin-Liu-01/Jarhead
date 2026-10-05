@@ -1,8 +1,8 @@
 /**
  * W2-1, the engine's state (launch triage):
  *
- * - RF-7: a circle snaps to the topmost window under its centroid (or its own app's windows right behind it), never
- *   to a window hidden behind another app's.
+ * - RF-7: a circle snaps to the topmost window under its centroid only, never to a window hidden behind it, whether
+ *   that window is another app's or the front window's own app's.
  * - APP-8: settings.json is written whole or not at all; a file that will not parse is moved to settings.json.bad,
  *   never written over with the defaults, and the Console says so.
  * - WG-9 (decision D4): settings.json wins; JARHEAD_IDLE_SLEEP_MINUTES is the default until Settings saves one.
@@ -43,6 +43,29 @@ test("RF-7 (audit repro): a circle over a window hidden BEHIND the front one doe
     const m = engine.snapshot().marks.at(-1)!;
     assert.notEqual(m.element?.app, "Notes", `snapped to ${JSON.stringify(m.element)} at ${JSON.stringify(m.rect)}: a window that is not visible there`);
     assert.equal(m.element?.app, "Safari");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("RF-7: a circle over a window hidden behind another window of the SAME app does not snap to the hidden one", async () => {
+  const w = world();
+  const { engine } = w;
+  // Two Safari windows: the article in front, the Downloads window behind it, where Kevin circles part of the page.
+  screenAt(w, [
+    { app: "Safari", title: "Article", x: 0, y: 0, w: 1600, h: 1000, pid: 500, windowId: 1, layer: 0 },
+    { app: "Safari", title: "Downloads", x: 400, y: 300, w: 340, h: 240, pid: 500, windowId: 2, layer: 0 },
+  ]);
+  try {
+    await engine.start();
+    await engine.ready();
+    await engine.wake("test");
+    await settle();
+    await engine.command({ type: "mark.add", rect: { x: 380, y: 280, w: 380, h: 280 } });
+    await until(() => engine.snapshot().marks.length > 0 && engine.snapshot().marks.every((m) => m.element !== undefined), 3000);
+    const m = engine.snapshot().marks.at(-1)!;
+    assert.notEqual(m.element?.title, "Downloads", `snapped to ${JSON.stringify(m.element)} at ${JSON.stringify(m.rect)}: a window he cannot see there`);
+    assert.deepEqual(m.element, { role: "AXStaticText", title: "a paragraph", app: "Safari" }, "what he circled on the page");
   } finally {
     await engine.stop();
   }

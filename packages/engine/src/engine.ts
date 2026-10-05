@@ -103,13 +103,19 @@ const SIGN_IN_HINTS: Readonly<Record<SelectableBrain, string>> = {
   "openai-responses": "Check OPENAI_API_KEY in Setup, then press Retry.",
 };
 
-/** Why a brain failed a task, when the cause is the brain itself and not the task (E-SIGNEDOUT). */
-export type BrainFailure = "auth" | "rate" | "unreachable";
+/**
+ * Why a brain failed a task, when the cause is the brain itself and not the task (E-SIGNEDOUT). `quota`: a usage
+ * limit or a quota that lasts hours or needs billing (Codex's "try again in 2 hours", OpenAI's insufficient_quota).
+ * `rate`: a passing limit (a 429, an overloaded server) that a minute clears.
+ */
+export type BrainFailure = "auth" | "quota" | "rate" | "unreachable";
 
 // A login or key the server refused. Read from the brains' own error lines (Codex's "401 Unauthorized: Your
 // authentication token has expired", Claude Code's "Invalid API key · Please run /login", the SDKs' 401s).
 const AUTH_FAILURE = /\b401\b|unauthori[sz]ed|authentication|invalid (?:x-)?api[ _-]?key|incorrect api key|is rejected by the api|token (?:has )?expired|expired (?:token|login|credentials)|not (?:signed|logged) in|signed out|(?:log|sign)(?:ging)? ?in again|please run \/login|codex login|claude auth login/i;
-const RATE_FAILURE = /rate[ _-]?limit|too many requests|\b429\b|usage limit|quota|overloaded|\b529\b/i;
+// Read before RATE_FAILURE: OpenAI's insufficient_quota comes as a 429 too.
+const QUOTA_FAILURE = /usage limit|quota|\b\d+-hour limit|(?:daily|weekly|monthly) limit|credit balance|billing/i;
+const RATE_FAILURE = /rate[ _-]?limit|too many requests|\b429\b|overloaded|\b529\b/i;
 const UNREACHABLE_FAILURE = /could not reach|did not answer within|fetch failed|socket hang up|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|network (?:error|is unreachable)|service unavailable|\b50[234]\b/i;
 // The brains' own words for a task that ran and did not finish: never a fault of the brain's login or line.
 const TASK_FAILURE = /^(?:the model declined|I stopped after|I ran out of time|already handling a task|the answer was cut off|the task no longer fits)/i;
@@ -119,6 +125,7 @@ export function classifyBrainFailure(error: string | undefined): BrainFailure | 
   const text = String(error ?? "").trim();
   if (!text || TASK_FAILURE.test(text)) return undefined;
   if (AUTH_FAILURE.test(text)) return "auth";
+  if (QUOTA_FAILURE.test(text)) return "quota";
   if (RATE_FAILURE.test(text)) return "rate";
   if (UNREACHABLE_FAILURE.test(text)) return "unreachable";
   return undefined;
@@ -180,16 +187,21 @@ interface PendingSwap extends SlowStart {
   readonly threadFactory: ThreadBrainFactory | undefined;
 }
 
-/** `p`, or undefined once `ms` pass first. */
-function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+/** A brain the walk passes over until a restart for any other reason: a lost login, or a usage limit that lasts. */
+interface BrainSkip {
+  readonly failure: "auth" | "quota";
+  /** The brain's own words, trimmed. */
+  readonly why: string;
+}
+
+/** A promise that resolves undefined once `ms` pass; `clear` disarms it. */
+function deadline(ms: number): { readonly passed: Promise<undefined>; clear(): void } {
   let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    p,
-    new Promise<undefined>((resolve) => {
-      timer = setTimeout(() => resolve(undefined), ms);
-      timer.unref?.();
-    }),
-  ]).finally(() => clearTimeout(timer));
+  const passed = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+    timer.unref?.();
+  });
+  return { passed, clear: () => clearTimeout(timer) };
 }
 
 /**
@@ -275,7 +287,7 @@ export interface EngineOptions {
   readonly discoverLocal?: (o: { baseUrl?: string | undefined; ramBytes: number }) => Promise<LocalServerStatus>;
   /** False: start() makes no key check of its own (`probeSetup` still runs when asked). Tests pass false; the network is not theirs. */
   readonly probe?: boolean;
-  /** The fetch `probeSetup` checks the OpenAI key with (default the global one). */
+  /** The fetch `probeSetup` checks the OpenAI key with, and memory's model pick, embedder and extractor use (default the global one). */
   readonly fetch?: typeof fetch;
   /**
    * Test seam for the selection walk: the brain each kind would start. A kind the record leaves out is not configured.
@@ -431,9 +443,17 @@ export class Engine extends EventEmitter<EngineEvents> {
   private selectionSeq = 0;
   /** A slow start that proved ready and outranks the running brain, waiting for a quiet moment (`trySwap`). */
   private pendingSwap: PendingSwap | undefined;
-  /** The kind whose login failed mid-run (E-SIGNEDOUT): the walk passes it over until a restart for any other reason. */
-  private authSkip: { readonly kind: string; readonly why: string } | undefined;
-  /** The row a failed task raised about the running brain (signed out, rate limited, unreachable); its next done task clears it. */
+  /**
+   * The kinds whose login or usage limit failed mid-run (E-SIGNEDOUT). They add up, so two signed-out brains never
+   * alternate: the walk passes every one over until a restart for any other reason (Retry, keys, a setting).
+   */
+  private brainSkips = new Map<SelectableBrain, BrainSkip>();
+  /** The skipped kinds the last walk passed over before it landed, and the rows that name them with the brain used meanwhile (`raisePassedRows`). */
+  private brainPassed: readonly (readonly [SelectableBrain, BrainSkip])[] = [];
+  private passedRows: string[] = [];
+  /** V11: Kevin pressed Reopen while a task or a thread ran; the session reopens once nothing runs that a pause would cancel. */
+  private capReopenPending = false;
+  /** The row a failed task raised about the running brain (signed out, a usage limit, rate limited, unreachable); its next done task clears it. */
   private brainRuntimeRow: string | undefined;
   /** settings.json could not be read and was moved aside: the line start() raises (APP-8). */
   private settingsBad: { readonly text: string; readonly path: string } | undefined;
@@ -825,6 +845,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       // fallback is running (docs/LOCAL.md §4).
       local: () => this.localMemoryTarget(),
       onChange: () => this.scheduleSnapshot(),
+      // The fetch the engine was given reaches memory's model pick, embedder and extractor too (V14 / BL-12).
+      ...(opts.fetch ? { fetchImpl: opts.fetch } : {}),
       ...(opts.memory ?? {}),
     });
     // Reflexes run through the same runner as every brain call; the click pre-check asks which app is up. The
@@ -1626,7 +1648,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** The settings a selection reads: kind, model, server root, effort — what `updateSettings` restarts the brain for. */
   private brainIdentity(): string {
     const s = this.settings;
-    return `${s.brain}|${s.brainModel}|${s.brainBaseUrl ?? ""}|${s.effort}|${this.userName}`;
+    // The skips too: one added or cleared while a pass runs is read by one more pass.
+    return `${s.brain}|${s.brainModel}|${s.brainBaseUrl ?? ""}|${s.effort}|${this.userName}|${[...this.brainSkips.keys()].join(",")}`;
   }
 
   /**
@@ -1635,10 +1658,11 @@ export class Engine extends EventEmitter<EngineEvents> {
    * request changed (a click during the heal timer's own restart), the pass runs once more on what
    * stands now, so the brain never ends on settings Kevin has since moved away from.
    */
-  async restartBrain(reason: string, o: { readonly skip?: { readonly kind: string; readonly why: string } } = {}): Promise<void> {
-    // A login that failed mid-run is passed over by this pass; a restart for any other reason (Retry, keys, a
-    // setting, a rename) tries every backend again.
-    this.authSkip = o.skip;
+  async restartBrain(reason: string, o: { readonly skip?: { readonly kind: SelectableBrain } & BrainSkip } = {}): Promise<void> {
+    // A login or a usage limit that failed mid-run joins the kinds the walk passes over; a restart for any other
+    // reason (Retry, keys, a setting, a rename) tries every backend again.
+    if (o.skip) this.brainSkips.set(o.skip.kind, { failure: o.skip.failure, why: o.skip.why });
+    else this.brainSkips.clear();
     if (this.brainRestart) return this.brainRestart;
     this.brainRestart = (async () => {
       let why = reason;
@@ -1775,6 +1799,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const seq = ++this.selectionSeq;
     this.dropPendingSwap();
     this.brainRank = Number.POSITIVE_INFINITY;
+    this.brainPassed = [];
     if (this.opts.brain) {
       this.brain = this.opts.brain;
       this.brainRank = 0;
@@ -1792,6 +1817,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.clearProblems("brain.unavailable");
     this.clearProblems("brain.probe");
     this.brainRuntimeRow = undefined;
+    this.passedRows = [];
     const wanted = this.settings.brain;
     // Settings.brainModel is "" for "that backend's default"; only a real id is an override.
     const model = this.settings.brainModel.trim() || undefined;
@@ -1909,17 +1935,18 @@ export class Engine extends EventEmitter<EngineEvents> {
     // Responses delegation.
     const order: readonly Kind[] = wanted === "auto" || wanted === "codex" ? AUTO_BRAIN_ORDER : [wanted];
     const walks = order.length > 1;
-    // A login that failed mid-run (E-SIGNEDOUT) is passed over until a restart for any other reason.
-    const skipAuth = walks ? this.authSkip : undefined;
-    // F-AUTO-PROBE: a start that takes longer than this goes on in the background while the walk takes the next client
-    // brain that is ready, and takes over once it proves itself. Never in favour of Responses: Live fixes the delegation
-    // when the session starts, so a later swap away from it would cost a reconnect. So the last configured client
-    // brain in the order is waited for as long as its own start takes (each start bounds its probe at about 5 s).
+    // The logins and usage limits that failed mid-run (E-SIGNEDOUT) are passed over until a restart for any other reason.
+    const skips = walks ? new Map(this.brainSkips) : new Map<SelectableBrain, BrainSkip>();
+    // F-AUTO-PROBE: a start that takes longer than this goes on in the background while the walk starts the next
+    // client brain. Every start still running races the one the walk waits on, so whichever proves itself first takes
+    // the Go: the one that outranks the others at once, a lower one until a better one proves itself and takes over
+    // at the next quiet moment. Responses is started only when every client start has failed: Live fixes the
+    // delegation when the session starts, so a later swap away from it would cost a reconnect.
     const patience = this.opts.brainPatienceMs ?? Engine.BRAIN_PATIENCE_MS;
-    const lastClient = walks ? order.reduce((last, k, i) => (k !== "openai-responses" && k !== skipAuth?.kind && !configured(k) ? i : last), -1) : -1;
     const slow: SlowStart[] = [];
     const tried: string[] = []; // for the log: every kind passed over, and why
     const failed: string[] = []; // labels of configured backends that would not start
+    const passed: string[] = []; // labels of the brains passed over for a lost login or a usage limit
     let skipped = 0; // kinds that were simply not configured
     const adopt = (rank: number, kind: Kind, brain: Brain, detail: string): void => {
       this.brain = brain;
@@ -1931,9 +1958,10 @@ export class Engine extends EventEmitter<EngineEvents> {
       // (they have a problem() line each) and whether the rest were merely absent.
       // A brain still starting ahead of this one is the whole story: it takes over when it is up.
       const still = slow.filter((x) => x.rank < rank).map((x) => x.label);
-      const why = still.length ? `${still.join(", ")} still starting` : [failed.length ? `${failed.join(", ")} could not start` : "", skipped ? "no other brain is signed in or configured" : ""].filter(Boolean).join("; ");
+      const why = still.length ? `${still.join(", ")} still starting` : Engine.walkWhy(passed, failed, skipped);
       this.brainDetail = why && ((wanted === "auto" && kind === "openai-responses") || still.length) ? `${detail} (${wanted === "auto" ? "auto: " : ""}${why})` : detail;
       log.info(`${wanted}: using ${kind}${tried.length ? ` after ${tried.join("; ")}` : ""}`);
+      this.raisePassedRows();
       // The starts still running may outrank it: the first to prove itself takes over at the next quiet moment.
       for (const x of slow) void x.starting.then((r) => this.slowStarted(x, r, seq, threadFactoryFor(x.kind)));
     };
@@ -1953,24 +1981,32 @@ export class Engine extends EventEmitter<EngineEvents> {
       }
       this.problemOf("brain.unavailable", `${label} brain unavailable (${detail}); ${walks ? "trying the next backend" : "using the OpenAI backend instead"}`, Engine.BRAIN_REMEDY);
     };
-    /** Before Responses: every slow start is waited out, and the first in order that proved itself is taken. */
-    const settleSlow = async (): Promise<boolean> => {
-      const results = await Promise.all(slow.map((x) => x.starting));
-      const pending = slow.splice(0);
-      let won: number | undefined;
-      for (const [i, x] of pending.entries()) {
-        if (won === undefined && results[i]!.ready) won = i;
-        else {
-          await x.brain.stop().catch(() => undefined);
-          if (!results[i]!.ready) refused(x.kind, x.label, results[i]!.detail);
+    /**
+     * The first to land of: every start still running, in the walk's order (so the higher one wins a tie), then the
+     * candidate's own start, then the patience (undefined).
+     */
+    const landed = (candidate: SlowStart | undefined, patienceOver: Promise<undefined> | undefined): Promise<{ x: SlowStart; r: { ready: boolean; detail: string } } | undefined> =>
+      Promise.race([...[...slow, ...(candidate ? [candidate] : [])].map((x) => x.starting.then((r) => ({ x, r }))), ...(patienceOver ? [patienceOver] : [])]);
+    /** A slow start landed while the walk waited on something else: ready, it takes the Go; failed, it gets its line. */
+    const slowLanded = async (x: SlowStart, r: { ready: boolean; detail: string }): Promise<boolean> => {
+      slow.splice(slow.indexOf(x), 1);
+      if (r.ready) return true;
+      await x.brain.stop().catch(() => undefined);
+      refused(x.kind, x.label, r.detail);
+      return false;
+    };
+    /** No client brain is left to start: the first slow start that proves itself takes the Go; false when all failed. */
+    const drainSlow = async (): Promise<boolean> => {
+      while (slow.length) {
+        const { x, r } = (await landed(undefined, undefined))!;
+        if (await slowLanded(x, r)) {
+          adopt(x.rank, x.kind, x.brain, r.detail);
+          return true;
         }
       }
-      if (won === undefined) return false;
-      const x = pending[won]!;
-      adopt(x.rank, x.kind, x.brain, results[won]!.detail);
-      return true;
+      return false;
     };
-    for (const [rank, kind] of order.entries()) {
+    walk: for (const [rank, kind] of order.entries()) {
       // The kind Kevin asked for is always tried; the rest only when configured.
       const skip = configured(kind);
       if (skip) {
@@ -1979,30 +2015,53 @@ export class Engine extends EventEmitter<EngineEvents> {
         skipped++;
         continue;
       }
-      if (kind === skipAuth?.kind) {
-        refused(kind, BRAIN_LABELS[kind], `signed out: ${skipAuth.why}`);
+      const lost = skips.get(kind);
+      if (lost) {
+        // Its row names the fix and the brain used meanwhile (`raisePassedRows`, once the walk lands).
+        this.brainPassed = [...this.brainPassed, [kind, lost]];
+        tried.push(`${BRAIN_LABELS[kind]}: ${lost.failure === "auth" ? "signed out" : "usage limit"}: ${lost.why}`);
+        passed.push(`${BRAIN_LABELS[kind]} ${lost.failure === "auth" ? "signed out" : "at its usage limit"}`);
         continue;
       }
-      if (kind === "openai-responses" && slow.length && (await settleSlow())) return;
+      if (kind === "openai-responses" && slow.length && (await drainSlow())) return;
       const candidate = make(kind);
       if (!candidate) continue;
       if (candidate.warning) this.problemOf("brain.probe", candidate.warning, Engine.BRAIN_REMEDY);
-      const starting = candidate.brain.start().catch((e: unknown) => ({ ready: false, detail: (e as Error).message }));
-      const r = rank < lastClient ? await within(starting, patience) : await starting;
-      if (r === undefined) {
-        log.info(`${wanted}: ${kind} has not proved itself in ${patience} ms; trying the next backend while it starts`);
-        tried.push(`${candidate.label} still starting`);
-        slow.push({ rank, kind, brain: candidate.brain, label: candidate.label, starting });
-        continue;
+      const c: SlowStart = { rank, kind, brain: candidate.brain, label: candidate.label, starting: candidate.brain.start().catch((e: unknown) => ({ ready: false, detail: (e as Error).message })) };
+      // Only a walk has a next backend to move on to; Responses itself is the end of it.
+      const timer = walks && kind !== "openai-responses" ? deadline(patience) : undefined;
+      try {
+        for (;;) {
+          const next = await landed(c, timer?.passed);
+          if (!next) {
+            log.info(`${wanted}: ${kind} has not proved itself in ${patience} ms; trying the next backend while it starts`);
+            tried.push(`${c.label} still starting`);
+            slow.push(c);
+            continue walk;
+          }
+          if (next.x !== c) {
+            // A start the walk moved on from proved itself first: it outranks this one, so it takes the Go now and
+            // this one goes on with the rest (it stops when it lands, never ahead of a brain that outranks it).
+            if (await slowLanded(next.x, next.r)) {
+              slow.push(c);
+              adopt(next.x.rank, next.x.kind, next.x.brain, next.r.detail);
+              return;
+            }
+            continue;
+          }
+          if (next.r.ready) {
+            adopt(rank, kind, c.brain, next.r.detail);
+            return;
+          }
+          await c.brain.stop().catch(() => undefined);
+          refused(kind, c.label, next.r.detail);
+          continue walk;
+        }
+      } finally {
+        timer?.clear();
       }
-      if (r.ready) {
-        adopt(rank, kind, candidate.brain, r.detail);
-        return;
-      }
-      await candidate.brain.stop().catch(() => undefined);
-      refused(kind, candidate.label, r.detail);
     }
-    if (slow.length && (await settleSlow())) return;
+    if (slow.length && (await drainSlow())) return;
     // An explicit choice that could not start: the Live session's own Responses delegation always can.
     const responses = new ResponsesBrain({ runner: this.runner, userName: this.userName, effort: "low" });
     const r = await responses.start();
@@ -2011,6 +2070,30 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.threadFactoryOfKind = undefined;
     this.brainReady = r.ready;
     this.brainDetail = r.detail;
+    this.raisePassedRows();
+  }
+
+  /** Why the walk landed where it did, for the brain's detail line: what it passed over, what failed, what was absent. */
+  private static walkWhy(passed: readonly string[], failed: readonly string[], skipped: number): string {
+    return [passed.join(", "), failed.length ? `${failed.join(", ")} could not start` : "", skipped ? "no other brain is signed in or configured" : ""].filter(Boolean).join("; ");
+  }
+
+  /**
+   * The rows for the brains the last walk passed over (E-SIGNEDOUT), each with its own fix and the brain in use
+   * meanwhile. Raised when the walk lands, and again when a slow start takes over, so the name stays true.
+   */
+  private raisePassedRows(): void {
+    for (const text of this.passedRows) this.clearProblemText(text);
+    this.passedRows = [];
+    const kind = this.brain?.kind;
+    const using = kind === undefined ? undefined : kind in BRAIN_LABELS ? BRAIN_LABELS[kind as SelectableBrain] : kind;
+    const meanwhile = using ? ` Using ${using} meanwhile.` : "";
+    for (const [skipped, s] of this.brainPassed) {
+      const label = BRAIN_LABELS[skipped];
+      const text = s.failure === "auth" ? `${label} is signed out (${s.why}). ${SIGN_IN_HINTS[skipped]}${meanwhile}` : `${label} hit its usage limit (${s.why}). Press Retry once it resets.${meanwhile}`;
+      this.passedRows.push(text);
+      this.problemOf("brain.unavailable", text, Engine.BRAIN_REMEDY);
+    }
   }
 
   /** How long the walk waits on one brain's start before it moves on (F-AUTO-PROBE): no Go waits longer on one probe. */
@@ -2018,13 +2101,16 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /**
    * A start the walk stopped waiting on has finished. Ready, and still outranking the brain in use in the same
-   * selection pass, it is queued to take over (`trySwap`); otherwise it stops, with the walk's line when it failed.
+   * selection pass, it is queued to take over (`trySwap`); otherwise it stops. A failed one that outranked the brain
+   * in use gets the walk's line; one the brain in use outranks was never going to be used, so it goes quietly.
    */
   private slowStarted(x: SlowStart, r: { ready: boolean; detail: string }, seq: number, threadFactory: ThreadBrainFactory | undefined): void {
-    const current = seq === this.selectionSeq && x.rank < this.brainRank && x.rank < (this.pendingSwap?.rank ?? Number.POSITIVE_INFINITY);
+    const outranks = seq === this.selectionSeq && x.rank < this.brainRank;
+    const current = outranks && x.rank < (this.pendingSwap?.rank ?? Number.POSITIVE_INFINITY);
     if (!r.ready || !current) {
       void x.brain.stop().catch(() => undefined);
-      if (!r.ready && seq === this.selectionSeq) this.problemOf("brain.unavailable", `${x.label} brain unavailable (${r.detail})`, Engine.BRAIN_REMEDY);
+      if (!r.ready && outranks) this.problemOf("brain.unavailable", `${x.label} brain unavailable (${r.detail})`, Engine.BRAIN_REMEDY);
+      else if (!r.ready) log.info(`auto: ${x.label} could not start (${r.detail}); a brain that outranks it is in use`);
       return;
     }
     this.dropPendingSwap();
@@ -2054,6 +2140,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.brainDetail = next.detail;
     this.setupProbe = { ...this.setupProbe, brain: "ok" };
     log.info(`auto: switched to ${next.label} from ${old?.kind ?? "nothing"}`);
+    // The rows about the brains the walk passed over name the one in use meanwhile.
+    this.raisePassedRows();
     this.scheduleSnapshot();
     // The spares were the old kind's; they go with it. Memory follows the brain in use.
     void (async () => {
@@ -2126,9 +2214,10 @@ export class Engine extends EventEmitter<EngineEvents> {
   /**
    * What a task's result says about the brain itself (E-SIGNEDOUT), read by the proxy after every main-lane task. A
    * login or key the server refused: a typed row with its fix, the brain not ready, and, when the selection walks
-   * (`auto`, or `codex`), a restart that passes the signed-out kind over. A rate limit or an unreachable server: a
-   * row of its own, the brain left as it is. A task that finishes clears the row and restores ready. Returns the
-   * error line Kevin hears instead, when there is a better one than the raw message.
+   * (`auto`, or `codex`), a restart that passes the signed-out kind over. A usage limit or a quota: the same walk, or
+   * a row that says to try later. A passing rate limit or an unreachable server: a row of its own, the brain left as
+   * it is. A task that finishes clears the row and restores ready. Returns the error line Kevin hears instead, when
+   * there is a better one than the raw message.
    */
   private noteBrainResult(brain: Brain, r: BrainResult): string | undefined {
     if (brain !== this.brain) return undefined; // a brain the engine has since replaced
@@ -2151,16 +2240,26 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (!failure) return undefined;
     const raw = (r.error ?? "").replace(/\s+/g, " ").trim();
     const why = raw.length > 160 ? `${raw.slice(0, 159)}…` : raw;
-    if (failure === "auth") {
-      this.brainReady = false;
-      this.setupProbe = { ...this.setupProbe, brain: "unavailable" };
+    if (failure === "auth" || failure === "quota") {
+      if (failure === "auth") {
+        this.brainReady = false;
+        this.setupProbe = { ...this.setupProbe, brain: "unavailable" };
+      }
       const walks = !this.opts.brain && (this.settings.brain === "auto" || this.settings.brain === "codex") && kind !== undefined && kind !== "openai-responses";
+      const what = failure === "auth" ? "is signed out" : "hit its usage limit";
       if (walks) {
-        // The walk raises the row itself ("signed out: …; trying the next backend") and lands on the next brain. The
-        // restart waits for this turn to end: it cancels whatever runs, and this turn's failure must still be said.
-        log.warn(`${label} failed its login mid-run (${why}); selecting the next backend`);
-        setTimeout(() => void this.restartBrain(`${label} is signed out`, { skip: { kind, why } }), 0);
-        return `${label} is signed out. Switching to the next brain. Ask again.`;
+        // The walk passes this kind over, with every other it passed over since the last Retry, and raises its row
+        // (the fix, and the brain used meanwhile) once it lands. The restart waits for this turn to end: it cancels
+        // whatever runs, and this turn's failure must still be said.
+        log.warn(`${label} ${what} mid-run (${why}); selecting the next backend`);
+        setTimeout(() => void this.restartBrain(`${label} ${what}`, { skip: { kind, failure, why } }), 0);
+        return `${label} ${what}. Switching to the next brain. Ask again.`;
+      }
+      if (failure === "quota") {
+        // A usage limit or a quota lasts hours or needs billing: a minute does not clear it. The server's own words
+        // say when it resets, when they say.
+        this.raiseBrainRow(`${label} brain hit its usage limit (${why}). Try again later.`);
+        return undefined;
       }
       this.raiseBrainRow(`${label} brain is signed out (${why}). ${kind ? SIGN_IN_HINTS[kind] : "Sign it in, then press Retry."}`);
       this.scheduleSnapshot();
@@ -2314,6 +2413,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (!reconnect) this.addressed();
       this.usageSeconds = 0;
       this.contextRatio = undefined;
+      // A new session starts with an empty input buffer: the cap the last one held went with it (V11).
+      this.capReopenPending = false;
+      this.clearProblems("voice.limit", (t) => Engine.SESSION_CAP.test(t));
       this.ledger.append({ at, type: "session.started", sessionId: res.id, voice: this.settings.voice, language: this.settings.language, accent: this.settings.accent, ...(resume ? { resumedFrom: resume.pause.sessionId } : {}) });
       // Grants live with the conversation: a resume continues the chain it left, a new session starts one.
       this.confirmations.beginConversation(resume ? (this.ledger.chainRootOf(resume.pause.sessionId) ?? resume.pause.sessionId) : res.id);
@@ -3771,12 +3873,6 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.emit("event", { ...this.threadTranscript(threadId, entries, total, false), mode: "append" });
   }
 
-  /**
-   * The composite look for `BrainTask.notes[0]` (DECISIONS §11b): what the reading helper already knows — the
-   * front app and window from the AX tick, the labelled controls from the ear-hints read, what the observer last
-   * saw — rendered in the pixels of the last screenshot when one was taken. A cache read, never a probe: the
-   * eyes' shot is the one round trip a task pays at its start; a stale or empty cache gives no preamble.
-   */
   /** notes[0] for a main-lane task: the composite look, then one line naming the live threads, so a thread started on an earlier request can be read, waited for or stopped by name (TH-3). */
   private async mainLook(): Promise<string | undefined> {
     const look = await this.compositeLook();
@@ -3784,6 +3880,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     return [look, threads].filter(Boolean).join("\n") || undefined;
   }
 
+  /**
+   * The composite look for `BrainTask.notes[0]` (DECISIONS §11b): what the reading helper already knows — the
+   * front app and window from the AX tick, the labelled controls from the ear-hints read, what the observer last
+   * saw — rendered in the pixels of the last screenshot when one was taken. A cache read, never a probe: the
+   * eyes' shot is the one round trip a task pays at its start; a stale or empty cache gives no preamble.
+   */
   private async compositeLook(): Promise<string | undefined> {
     const state = this.screenState.get(Engine.EAR_HINTS_REREAD_MS + Engine.AX_WARM_MS);
     if (!state || (!state.front && !state.ax && !state.focused)) return undefined;
@@ -4127,9 +4229,9 @@ export class Engine extends EventEmitter<EngineEvents> {
    * biggest thing mostly inside his stroke. (The element under the centroid of a
    * circled dialog is a label inside it; the label always fits, the dialog is what
    * he meant. A circled button: the window around it fails the coverage test and
-   * the button is the largest fit.) The windows are the topmost one under the centroid
-   * and its own app's windows right behind it (the list is front to back): a window
-   * behind another app's is not what he sees there (RF-7). Both probes run at once and
+   * the button is the largest fit.) The only window is the topmost one under the centroid
+   * (the list is front to back): a window behind it, even its own app's, is not what he
+   * sees there (RF-7). Both probes run at once and
    * either may fail (no Accessibility, no helper): then the box itself stands, with the
    * app under the centroid noted when the window list could say.
    */
@@ -4146,13 +4248,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (el?.frame && el.frame.w > 0 && el.frame.h > 0) {
       candidates.push({ rect: el.frame, element: { ...(el.role ? { role: el.role } : {}), ...(el.title || el.description ? { title: (el.title || el.description) as string } : {}), ...(el.app ? { app: el.app } : {}) } });
     }
-    // The topmost window under the centroid and its own app's windows stacked right behind it (a sheet over its
-    // document). The list is front to back; past the first window of another app, nothing is what he sees there.
-    const under = (wins?.windows ?? []).filter((w) => w.w > 0 && w.h > 0 && contains({ x: w.x, y: w.y, w: w.w, h: w.h }, centroid));
-    const top = under[0];
-    const firstOther = top ? under.findIndex((w) => w.app !== top.app) : -1;
-    const visible = firstOther === -1 ? under : under.slice(0, firstOther);
-    for (const w of visible) candidates.push({ rect: { x: w.x, y: w.y, w: w.w, h: w.h }, element: { role: "AXWindow", ...(w.title ? { title: w.title } : {}), ...(w.app ? { app: w.app } : {}) } });
+    // The topmost window under the centroid, and only it. The list is front to back (a sheet or a dialog sits in front
+    // of its document), so a window behind it is hidden there, whichever app it belongs to.
+    const top = (wins?.windows ?? []).find((w) => w.w > 0 && w.h > 0 && contains({ x: w.x, y: w.y, w: w.w, h: w.h }, centroid));
+    if (top) candidates.push({ rect: { x: top.x, y: top.y, w: top.w, h: top.h }, element: { role: "AXWindow", ...(top.title ? { title: top.title } : {}), ...(top.app ? { app: top.app } : {}) } });
     const fits = candidates.filter((c) => contains(c.rect, centroid) && c.rect.w * c.rect.h >= 16 && coverage(c.rect, padded) >= Engine.MARK_SNAP_COVERAGE).sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h);
     const best = fits[0];
     if (best) {
@@ -4376,7 +4475,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    * Only ever on Kevin's press or his words — browsing 22 voices must never churn paid
    * starts, and nothing here opens a session from asleep.
    */
-  async reopenVoice(opts: { readonly how?: "reconnected" | "voice change" } = {}): Promise<void> {
+  async reopenVoice(opts: { readonly how?: "reconnected" | "voice change"; readonly why?: string } = {}): Promise<void> {
     if (this.delegator?.active !== undefined || this.threads.running() > 0) {
       this.toast("busy — heard at the next wake", "info");
       return;
@@ -4390,8 +4489,9 @@ export class Engine extends EventEmitter<EngineEvents> {
     const pause = this.pauseInfo;
     if (!pause) return; // a sleep raced the pause: nothing is held, nothing to reopen
     const how = opts.how ?? "voice change";
-    log.info(`voice change: reopening the session (${was} → ${this.settings.voice} / ${this.settings.accent}; ${how})`);
-    await this.connect("voice change", { pause, continuity: this.continuityFor(pause, how), how });
+    const why = opts.why ?? "voice change";
+    log.info(`${why}: reopening the session (${was} → ${this.settings.voice} / ${this.settings.accent}; ${how})`);
+    await this.connect(why, { pause, continuity: this.continuityFor(pause, how), how });
   }
 
   /** The word the Console shows when a resumed session is up: "resumed", "back" (a reconnect), or the voice it now speaks with. */
@@ -5291,6 +5391,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.watchLiveFrames(now);
     // A slow brain start that proved itself takes over once nothing runs (F-AUTO-PROBE).
     this.trySwap();
+    // Reopen was pressed while work ran (V11): the session reopens once nothing runs that a pause would cancel.
+    if (this.capReopenPending && this.delegator?.active === undefined && this.threads.running() === 0) void this.retryProblem("voice.limit");
     if (now - this.memoryLoggedAt >= Engine.MEMORY_LOG_MS) {
       this.memoryLoggedAt = now;
       this.logMemory();
@@ -5608,11 +5710,11 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** A cap the session itself has hit (V11): only a new session clears it, so the one press reopens it with the conversation. */
   private static readonly REOPEN_REMEDY: ProblemRemedy = { label: "Reopen", command: { type: "problem.retry", kind: "voice.limit" } };
   /**
-   * A cap the server itself says is per session: `response_input_buffer_full: … limited to 128 items and 32768 UTF-8
-   * bytes per session`. Waiting never clears it. Read from the message's own scope words; a line that does not say
-   * which (a truncated one) keeps the passing limit's remedy.
+   * A cap the session itself holds: `response_input_buffer_full: … limited to 128 items and 32768 UTF-8 bytes per
+   * session`. Waiting never clears it. Read from the stable error code first, so a truncated or reworded line is
+   * still this cap, and from the server's scope words for any other cap it says is per session.
    */
-  private static readonly SESSION_CAP = /\bper session\b/i;
+  private static readonly SESSION_CAP = /\bresponse_input_buffer_full\b|\bper[- ]session\b/i;
 
   /**
    * A GPT-Live-1 error as a typed problem: a cap (`voice.limit`, clears itself after
@@ -5667,14 +5769,23 @@ export class Engine extends EventEmitter<EngineEvents> {
         return;
       case "voice.limit": {
         // A per-request or per-minute cap is over by the time anyone presses it. A per-session one is not (V11):
-        // the session is paused and reopened at once, the conversation carried on as a reconnect carries it.
+        // the session is paused and reopened, the conversation carried on as a reconnect carries it.
         const sessionCap = this.problems.some((t) => this.problemMeta.get(t)?.kind === kind && Engine.SESSION_CAP.test(t));
-        this.clearProblems(kind);
-        if (sessionCap && this.live?.session && !this.connecting && !this.pauseInfo && !this.sleeping) {
-          await this.pause({ quiet: true });
-          const pause = this.pauseInfo;
-          if (pause) await this.connect("reopen after the session's cap", { pause, continuity: this.continuityFor(pause, "reconnected"), how: "reconnected" });
+        this.capReopenPending = false;
+        if (!sessionCap || !this.live?.session || this.connecting || this.pauseInfo || this.sleeping) {
+          // A passing cap, or no open session holds the cap any more: the next session starts empty.
+          this.clearProblems(kind);
+          return;
         }
+        if (this.delegator?.active !== undefined || this.threads.running() > 0) {
+          // A pause cancels a running task and every thread, as reopenVoice refuses to: the row stays, and the
+          // session reopens from tick() once nothing runs.
+          this.capReopenPending = true;
+          this.toast("busy · reopens when the task is done", "info");
+          return;
+        }
+        this.clearProblems(kind);
+        await this.reopenVoice({ how: "reconnected", why: "the session's input cap" });
         return;
       }
       case "voice.connection":

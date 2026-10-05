@@ -775,6 +775,18 @@ export function testConfig(dir: string, over: Partial<JarheadConfig> = {}): Jarh
   };
 }
 
+/** The global fetch as the test preload left it, read once when this module loads. */
+const preloadFetch = globalThis.fetch;
+
+/**
+ * The fetch a world's engine is given: every request answered 401, as a server answers a key it does not know, so
+ * nothing leaves the process. A test that put its own fetch on globalThis (user-name's F4 model probe) gets that one.
+ */
+export const refusingFetch: typeof fetch = async (input, init) => {
+  if (globalThis.fetch !== preloadFetch) return globalThis.fetch(input, init);
+  return new Response(JSON.stringify({ error: { message: "Incorrect API key provided (test)", code: "invalid_api_key" } }), { status: 401, headers: { "content-type": "application/json" } });
+};
+
 /**
  * `where.dir` reuses another world's state dir (its ledger, its settings) — a second engine
  * over the same day. `where.firstSessionId` names that engine's first FakeLive (default
@@ -885,9 +897,10 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
   // `observeSettleMs: 0`: the observer's 150 ms settle before it reads the screen after an acting tool is real time
   // (an app's reaction), pointless against a fake helper that answers at once; the `now:` line itself still lands.
-  // `probe: false` and `discoverLocal`: no start-up key check against api.openai.com and no look at the loopback ports
-  // (V14 / BL-12), so a world passes under JARHEAD_TEST_NET=strict. A test that wants either passes its own.
-  engine = new Engine({ config, connectors: [], ...(where.select ? {} : { brain }), fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, probe: false, discoverLocal: async () => localNone(), ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
+  // `probe: false`, `fetch` and `discoverLocal`: no start-up key check against api.openai.com, a 401 for the key
+  // check Retry runs and for memory's model pick (what a server says to a key it does not know), and no look at the
+  // loopback ports (V14 / BL-12), so a world passes under JARHEAD_TEST_NET=strict. A test that wants any passes its own.
+  engine = new Engine({ config, connectors: [], ...(where.select ? {} : { brain }), fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, probe: false, fetch: refusingFetch, discoverLocal: async () => localNone(), ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
   // The real service's audit rows reach the ledger through the bridge's onRow; the fake's do the same here.
   if (fakeMemory) fakeMemory.onRow = (row) => engine.ledger.append(row);
   const events: EngineEvent[] = [];

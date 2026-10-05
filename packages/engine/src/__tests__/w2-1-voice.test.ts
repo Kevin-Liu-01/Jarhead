@@ -6,8 +6,9 @@
  * - V5: a long typed line reaches Live in appends that each fit the 500-token cap, then one short line to answer.
  * - V6: typed while paused and the resume fails, the words are "not sent" and the conversation is still paused;
  *   typed during a handshake, the line waits for its session.
- * - V11: `response_input_buffer_full` is a per-session cap; its one press reopens the session, and the row does not
- *   clear itself while the cap still holds.
+ * - V11: `response_input_buffer_full` is a per-session cap, read from its code; its one press reopens the session, and
+ *   the row does not clear itself while the cap still holds. Pressed while a task runs, it cancels nothing: the
+ *   session reopens once the task is done.
  *
  * Temp state dir, no network, no audio: the sessions are FakeLive, or a real LiveSession over a fake socket.
  */
@@ -17,7 +18,7 @@ import { APPEND_CHAR_BUDGET, LiveSession, estimateTokens, type SessionConfig, ty
 import type { Brain } from "@jarhead/brain";
 import type { EngineEvent } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
-import { FakeLive, current, rows, settle, until, world } from "./world.ts";
+import { FakeLive, current, delegate, rows, settle, until, world } from "./world.ts";
 
 const tick = (engine: Engine): void => (engine as unknown as { tick(): void }).tick();
 const toasts = (events: readonly EngineEvent[]): string[] => events.filter((e): e is Extract<EngineEvent, { type: "toast" }> => e.type === "toast").map((e) => e.text);
@@ -250,6 +251,71 @@ test("V11: a cap that passes (a rate limit) keeps its 'Retry in 30 s' and clears
     clock.t += Engine.VOICE_LIMIT_CLEAR_MS + 1000;
     tick(engine);
     assert.equal(engine.typedProblems().filter((p) => p.kind === "voice.limit").length, 0);
+  } finally {
+    await engine.stop();
+  }
+});
+
+const REOPEN = { label: "Reopen", command: { type: "problem.retry", kind: "voice.limit" } };
+
+test("V11: Reopen pressed while a task runs cancels nothing; the row stays, and the session reopens with the conversation once the task is done", async () => {
+  const w = world();
+  const { engine } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    delegate(w, "jarhead summarize my inbox", "item_1");
+    assert.ok(await until(() => w.brain.tasks.length === 1));
+    current(w).emit("error", new Error("response_input_buffer_full: Backend response input history is limited to 128 items and 32768 UTF-8 bytes per session."), "item_2");
+    await engine.retryProblem("voice.limit");
+    await settle(50);
+    assert.equal(w.brain.tasks[0]!.signal.aborted, false, "the running task was not cancelled");
+    assert.equal(w.brain.cancels, 0);
+    assert.equal(w.lives.length, 1, "no reopen while the task runs");
+    assert.ok(toasts(w.events).includes("busy · reopens when the task is done"), JSON.stringify(toasts(w.events)));
+    assert.deepEqual(engine.typedProblems().find((p) => p.kind === "voice.limit")?.remedy, REOPEN, "the row stays while the cap holds");
+    tick(engine);
+    await settle(20);
+    assert.equal(w.lives.length, 1, "a tick while the task runs opens nothing");
+    // The task is done: a tick reopens the session, resumed from the full one.
+    w.brain.resolve!({ status: "done", summary: "three new emails." });
+    assert.ok(
+      await until(() => {
+        tick(engine);
+        return w.lives.length === 2 && engine.transportState === "awake";
+      }),
+      `sessions: ${w.lives.length}, transport: ${engine.transportState}`,
+    );
+    const started = rows<{ type: string; sessionId: string; resumedFrom?: string }>(w, "session.started");
+    assert.equal(started.at(-1)?.resumedFrom, "sess_1");
+    assert.equal(engine.typedProblems().filter((p) => p.kind === "voice.limit").length, 0);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("V11: the session cap is read from its code, so a truncated line still gets Reopen; any cap the server says is per-session does too; a new session clears them", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    current(w).emit("error", new Error("response_input_buffer_full: Backend response input history is limited to 128 items"), "item_9");
+    current(w).emit("error", new Error("context_window: this conversation has reached its per-session token budget"), "item_10");
+    const limits = engine.typedProblems().filter((p) => p.kind === "voice.limit");
+    assert.equal(limits.length, 2, JSON.stringify(limits));
+    for (const row of limits) assert.deepEqual(row.remedy, REOPEN, row.text);
+    clock.t += Engine.VOICE_LIMIT_CLEAR_MS + 1000;
+    tick(engine);
+    assert.equal(engine.typedProblems().filter((p) => p.kind === "voice.limit").length, 2, "neither clears itself");
+    // The server drops the session: the new one starts with an empty buffer, so the rows go with the old one.
+    (current(w) as FakeLive).serverClosed("connection_lost", 5);
+    assert.ok(await until(() => w.lives.length === 2 && engine.transportState === "awake", 3000));
+    assert.equal(engine.typedProblems().filter((p) => p.kind === "voice.limit").length, 0, JSON.stringify(engine.typedProblems()));
   } finally {
     await engine.stop();
   }
