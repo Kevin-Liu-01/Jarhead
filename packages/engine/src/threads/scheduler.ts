@@ -1,10 +1,10 @@
 import { join } from "node:path";
 import { logger, newId, type Ledger } from "@jarhead/core";
-import { ComputerToolset, ConfirmationState, HOLD_ID, Screen, spokenQuestion, type ArmedConfirmation, type ConfirmationDesk, type ConfirmationGrant, type FocusLease, type Grantable, type LaneConfirmationState, type NativeHands, type PendingConfirmation, type ToolResult, type ToolsetOptions } from "@jarhead/hands";
+import { ComputerToolset, ConfirmationState, HOLD_ID, Screen, YES_PATTERN, spokenQuestion, type ArmedConfirmation, type ConfirmationDesk, type ConfirmationGrant, type FocusLease, type Grantable, type LaneConfirmationState, type NativeHands, type PendingConfirmation, type ToolResult, type ToolsetOptions } from "@jarhead/hands";
 import { screenNote, type Brain, type BrainAttachment, type BrainResult, type BrainSink, type BrainTask, type RunOutcome, type RunnerOptions, type ThreadFloor, type ToolRunner } from "@jarhead/brain";
 import { MAIN_THREAD_ID, THREAD_MAX_LIVE, THREAD_NAME_CHARS, THREAD_SECONDS_DEFAULT, THREAD_SECONDS_MAX, THREAD_SPAWN_DEPTH, THREAD_STEPS_DEFAULT, THREAD_STEPS_MAX, type LedgerRow, type OverlayCommand, type Thread, type ThreadEvent, type ThreadStatus, type TranscriptItem } from "@jarhead/protocol";
 import { BrainPool, type PoolLane, type Ready } from "./brain-pool.ts";
-import { confirmationResume, cutLine, noAnswerLine, phraseForLine, phraseForTool, resumeText, stillAsksLine, threadBrief } from "./lines.ts";
+import { confirmationResume, cutLine, movedOnLine, noAnswerLine, phraseForLine, phraseForTool, resumeText, stillAsksLine, threadBrief } from "./lines.ts";
 import { LaneRunner, ThreadAwareRunner, type ActionObserverLike, type ActingSerializerLike, type SpawnLane } from "./runner.ts";
 import { ThreadEventCoalescer, ThreadTable, THREAD_EVENT_COALESCE_MS } from "./table.ts";
 import { ThreadLog, ThreadTurns, type ThreadTurn } from "./turns.ts";
@@ -35,6 +35,8 @@ export const THREAD_IDLE_END_MS = 10 * 60_000;
 export const THREAD_QUESTION_REASK_MS = 3 * 60_000 - 10_000;
 /** A thread's lost or lapsed question is asked again at most this many times; the next loss ends the thread `stopped` with a line. */
 export const THREAD_REASKS_MAX = 2;
+/** Kevin's latest requests kept for `keepAsking` (what he said since a question was put to him). */
+const KEVIN_LINES_KEPT = 16;
 /** A next turn whose brain refused it because the last turn's `handle` is still in flight waits this long for the brain to let go. */
 export const LET_GO_WAIT_MS = 5_000;
 /** speak_progress on a thread speaks this many times per turn, with its name. */
@@ -47,6 +49,21 @@ export const MEMORY_RECALL_MS = 250;
 export const SUPERSEDE_WAIT_MS = 5_000;
 /** Finished jobs kept for thread_wait / thread_read after the end. */
 const FINISHED_MAX = 50;
+
+/** Words against a yes anywhere in an answer: "yeah, no, don't send it" is not a yes, whatever its first word. */
+const AGAINST_YES = /\b(?:no|nope|nah|not|don['’]?t|do\s+not|never|cancel|stop|wait|but|instead|actually|later)\b|\?/i;
+/** An answer that opens with a no ("no", "nope", "no, don't send it", "don't", "not now", "cancel that", "never mind", "yeah, no"). "No problem" and "no worries" are not one. */
+const DECLINE = /^[\s,.!?;:…-]*(?:(?:hey\s+)?jarhead[\s,.!?;:…-]+)?(?:(?:yeah|yes|oh|um|uh|well)[\s,.!?;:…-]+)?(?:no(?![\s,.!?;:…-]+(?:problem|problems|worries|doubt)\b)|nope|nah|negative|not\s+(?:now|yet|that|this|it|today)|don['’]?t|do\s+not|never|cancel|stop|hold\s+off|leave\s+it|skip\s+it|forget\s+it|never\s*mind|scratch\s+that|i\s+changed\s+my\s+mind)\b/i;
+
+/** Kevin's words are a yes and nothing against it (the Delegator's YES_PATTERN, with no word against it anywhere). */
+function plainYes(words: string): boolean {
+  return YES_PATTERN.test(words) && !AGAINST_YES.test(words);
+}
+
+/** Kevin's words open with a no. */
+function declines(words: string): boolean {
+  return DECLINE.test(words);
+}
 
 // -------------------------------------------------------------- contracts
 
@@ -278,6 +295,10 @@ interface Job {
   ask: ThreadAsk | undefined;
   /** When the question last reached the floor or the queue (the scheduler's clock). */
   askedAt: number;
+  /** Kevin's line count (`kevinLine`) when it did: his requests after it are his words since. */
+  askedLine: number;
+  /** The question reached the floor since it was last asked: it was spoken, so Kevin heard it. */
+  heard: boolean;
   /** Times the question was asked again since its turn ended (THREAD_REASKS_MAX). */
   reasks: number;
   /** The conversation (the root's chain id) it started in: a finished thread is found by name within it. */
@@ -314,6 +335,10 @@ export class ThreadScheduler {
   /** How often the LIST of threads changed (a start, an end) — the only times the snapshot is asked for; a step never moves it (tests pin that). */
   listChanges = 0;
   private readonly supersedeWaitMs: number;
+  /** Kevin's latest requests to Jarhead, numbered (the newest KEVIN_LINES_KEPT), and how many he has made. */
+  private readonly kevinLines: { readonly n: number; readonly words: string }[] = [];
+  private kevinLine = 0;
+  private readonly unhear: (() => void) | undefined;
 
   /** The user's name as every line here says it. */
   private get userName(): string {
@@ -334,6 +359,20 @@ export class ThreadScheduler {
         return factory ? this.makeLane(newId("t"), factory) : undefined;
       },
     });
+    // Kevin's words as each of his requests reaches Jarhead: the Delegator writes a main
+    // `delegation.created` row (spoken or typed, an aside included) before anything else
+    // happens to it. `keepAsking` reads them: a question he heard and then talked past is
+    // never asked again behind his back.
+    this.unhear = opts.ledger?.onRow((row) => this.onLedgerRow(row));
+  }
+
+  /** A main request (not a thread's turn, not an automation's) is Kevin's words. */
+  private onLedgerRow(row: LedgerRow): void {
+    if (row.type !== "delegation.created") return;
+    const d = row.delegation;
+    if ((d.threadId !== undefined && d.threadId !== MAIN_THREAD_ID) || d.origin) return;
+    this.kevinLines.push({ n: ++this.kevinLine, words: d.request.replace(/\s+/g, " ").trim() });
+    if (this.kevinLines.length > KEVIN_LINES_KEPT) this.kevinLines.splice(0, this.kevinLines.length - KEVIN_LINES_KEPT);
   }
 
   // --------------------------------------------------------- the tools
@@ -441,6 +480,8 @@ export class ThreadScheduler {
       question: undefined,
       ask: undefined,
       askedAt: 0,
+      askedLine: 0,
+      heard: false,
       reasks: 0,
       conversation: this.opts.desk.root.conversationId,
       verbs: Promise.resolve(),
@@ -587,12 +628,15 @@ export class ThreadScheduler {
     job.turn = turn;
     job.question = undefined;
     job.ask = undefined;
+    job.heard = false;
     job.reasks = 0;
     job.hold = false;
     job.progressSpoken = 0;
     this.publish(this.table.turn(job.id, turn.delegation.id, spec.request));
     this.armTimer(job, turn);
     const sink = this.sinkFor(job, turn);
+    // A new turn's count starts here, before the eyes' shot: a last turn that spent its whole budget never refuses this one's look.
+    lane.runner.beginTurn();
 
     const [screen, memory, look] = await Promise.all([this.look(job, turn, sink), this.recall(spec.request, turn.abort.signal), this.composite(turn.abort.signal)]);
     if (job.settled || turn.superseded !== undefined) {
@@ -617,7 +661,7 @@ export class ThreadScheduler {
       // Never inside kevinDialogue: the gates must not read a remembered line as his words today.
       ...(memory ? { memory } : {}),
     };
-    // The step budget counts this turn's own calls (the eyes' shot above is not one).
+    // …and again here: the step budget counts this turn's own calls (the eyes' shot above is not one).
     lane.runner.beginTurn();
     const result = await this.callBrain(job, task, sink);
     // This turn's cap timer only: a brain that let go late (after a bounded supersede) must not clear the next turn's.
@@ -654,7 +698,7 @@ export class ThreadScheduler {
       const q = queued ? spokenQuestion(queued.description) : job.question;
       job.question = q;
       job.ask ??= this.deskQuestion(job.id);
-      job.askedAt = this.now();
+      this.markAsked(job);
       job.turns.close(turn, { status: "awaiting-confirmation", summary: q });
       job.turn = undefined;
       this.publish(this.table.question(job.id, q));
@@ -1153,7 +1197,13 @@ export class ThreadScheduler {
     if (threadId === MAIN_THREAD_ID) return { ok: false, reason: "the main thread's yes is the engine's to arm" };
     const job = this.jobs.get(threadId);
     if (!job || job.settled) return { ok: false, reason: "that thread is gone" };
-    if (!this.opts.desk.root.arm(this.grantRecord())) return { ok: false, reason: "the question has expired" };
+    const armed = this.opts.desk.root.arm(this.grantRecord());
+    // Past the root's TTL a yes arms nothing (`arm` answers undefined, or `expired` once the desk keeps
+    // an expired question on the floor): the question is asked again, and his next yes lands it.
+    if (!armed || (armed as ArmedConfirmation & { readonly expired?: true }).expired === true) {
+      const again = this.askAgain(job, this.now(), "expired");
+      return { ok: false, reason: again ? "the question had expired; it is asked again" : "the question had expired" };
+    }
     await this.resume(threadId, opts);
     return { ok: true };
   }
@@ -1302,7 +1352,7 @@ export class ThreadScheduler {
     const already = this.table.get(job.id)?.status === "waiting-kevin";
     job.question = question;
     job.ask = this.deskQuestion(job.id) ?? job.ask;
-    job.askedAt = this.now();
+    this.markAsked(job);
     this.publish(this.table.question(job.id, question));
     if (!already) this.row({ at: this.now(), type: "thread.status", threadId: job.id, status: "waiting-kevin", threadStatus: "waiting-kevin", detail: cutLine(question, 200) });
     this.say(job, `${job.name} asks: ${cutLine(question, 160)}`);
@@ -1382,36 +1432,104 @@ export class ThreadScheduler {
   }
 
   /**
-   * A thread waiting on Kevin's yes keeps its question where he can answer it. When the
-   * question left the desk unanswered (he asked for something else and it was dropped; a
-   * queued one went stale) or has sat on the floor until the root's TTL is nearly spent,
-   * it is asked again with its own tool call: "<Name> still asks: …" when it lands on the
-   * floor; queued behind another, the desk speaks it when promoted. After
-   * THREAD_REASKS_MAX re-asks the next loss ends the thread `stopped`, with a line saying
-   * how to ask again — never `done`, and never left waiting on a question nobody can answer.
+   * A thread waiting on Kevin's yes keeps its question where he can answer it.
+   *
+   * - On the desk, it is asked again (its own tool call) once he can no longer answer it
+   *   there: on the floor just before the root's TTL lapses, or past its TTL (`holds`).
+   * - Gone from the desk unanswered, after he heard it and then said something that is not
+   *   a plain yes, that was his answer: a no stops the thread ("<Name> stopped.", as Deny),
+   *   anything else ends it `stopped` with a line saying how to ask again. It is never asked
+   *   again behind his back, so a later "okay" never lands what he declined.
+   * - Gone with no word from him since (a yes past its TTL, a queued question he never
+   *   heard), it is asked again: "<Name> still asks: …" when it lands on the floor; queued
+   *   behind another, the desk speaks it when promoted.
+   *
+   * After THREAD_REASKS_MAX re-asks the next loss ends the thread `stopped` with a line,
+   * never `done`, and never left waiting on a question nobody can answer.
    */
   private keepAsking(job: Job, now: number): void {
     const desk = this.opts.desk;
     const onFloor = desk.floor?.laneId === job.id;
-    if (!onFloor && desk.queued.some((q) => q.laneId === job.id)) return;
-    if (onFloor && now - job.askedAt < THREAD_QUESTION_REASK_MS) return;
+    if (onFloor) job.heard = true;
+    if (onFloor || desk.queued.some((q) => q.laneId === job.id)) {
+      if (this.holds(job.id) && !(onFloor && now - job.askedAt >= THREAD_QUESTION_REASK_MS)) return;
+      this.askAgain(job, now, onFloor ? "about to lapse" : "stale in the queue");
+      return;
+    }
+    const said = job.heard ? this.saidSince(job) : undefined;
+    if (said === undefined) {
+      this.askAgain(job, now, "dropped");
+      return;
+    }
+    if (declines(said)) {
+      log.info(`thread ${job.name}: ${this.userName} said no to its question; stopping it`);
+      void this.stopJob(job, "kevin", `${this.userName} said no`);
+      return;
+    }
+    log.info(`thread ${job.name}: ${this.userName} moved on from its question; stopping it, not asking again`);
+    this.endJob(job, "stopped", `${this.userName} moved on from its question`, movedOnLine(job.name));
+  }
+
+  /**
+   * Ask the question again with its own tool call: the old ask leaves the desk first, so the
+   * fresh one restarts the root's TTL. False when there is nothing to ask or the re-asks ran
+   * out; the thread then ends `stopped` with its line.
+   */
+  private askAgain(job: Job, now: number, why: string): boolean {
+    const desk = this.opts.desk;
     const ask = job.ask;
     if (!ask || job.reasks >= THREAD_REASKS_MAX) {
       log.info(`thread ${job.name}: its question went unanswered${ask ? ` after ${job.reasks} re-asks` : ""}; stopping it`);
       this.endJob(job, "stopped", "no answer to its question", noAnswerLine(job.name));
-      return;
+      return false;
     }
     job.reasks++;
-    // On the floor but nearly stale: the old ask goes first, so the fresh one restarts the root's TTL.
-    if (onFloor) desk.drop(job.id);
+    const heardBefore = job.heard;
+    if (desk.floor?.laneId === job.id || desk.queued.some((q) => q.laneId === job.id)) desk.drop(job.id);
     job.laneRef.confirmations.ask(ask.description, ask.member, ask.input, ask.grantable);
-    job.askedAt = now;
+    this.markAsked(job, now);
     const q = spokenQuestion(ask.description);
     job.question = q;
     this.publish(this.table.question(job.id, q));
-    log.info(`thread ${job.name}: its question was ${onFloor ? "about to lapse" : "dropped"}; asked again (${job.reasks}/${THREAD_REASKS_MAX})`);
-    if (desk.floor?.laneId === job.id) this.say(job, stillAsksLine(job.name, q));
+    log.info(`thread ${job.name}: its question was ${why}; asked again (${job.reasks}/${THREAD_REASKS_MAX})`);
+    // On the floor it is spoken: "still asks" when Kevin heard it before, else for the first time (it waited in the queue).
+    if (job.heard) this.say(job, heardBefore ? stillAsksLine(job.name, q) : `${job.name} asks: ${cutLine(q, 160)}`);
     this.notify();
+    return true;
+  }
+
+  /** The question was just put on the desk: Kevin's requests from here are his words since; on the floor it is spoken, so he hears it. */
+  private markAsked(job: Job, now = this.now()): void {
+    job.askedAt = now;
+    job.askedLine = this.kevinLine;
+    job.heard = this.opts.desk.floor?.laneId === job.id;
+  }
+
+  /**
+   * What Kevin said since the question was put to him that is not a plain yes: a no first,
+   * else the first other request; "" when one fell off the kept lines (fails closed); undefined
+   * when he said nothing since, or only yes.
+   */
+  private saidSince(job: Job): string | undefined {
+    const count = this.kevinLine - job.askedLine;
+    if (count <= 0) return undefined;
+    const since = this.kevinLines.filter((l) => l.n > job.askedLine);
+    const no = since.find((l) => declines(l.words));
+    if (no) return no.words;
+    const other = since.find((l) => !plainYes(l.words));
+    if (other) return other.words;
+    return since.length < count ? "" : undefined;
+  }
+
+  /**
+   * Can Kevin still answer this lane's question where it is? The desk's own `holds` when it has
+   * one (W1-4: a question past its TTL holds nothing); before that, its floor and queue (the
+   * root's TTL is kept by the re-ask before it lapses).
+   */
+  private holds(laneId: string): boolean {
+    const desk = this.opts.desk as ConfirmationDesk & { readonly holds?: (laneId: string) => boolean };
+    if (typeof desk.holds === "function") return desk.holds(laneId);
+    return desk.floor?.laneId === laneId || desk.queued.some((q) => q.laneId === laneId);
   }
 
   /** The question a lane has on the desk right now, as asked: the root's pending when it holds the floor, its queued entry otherwise. */
@@ -1435,6 +1553,7 @@ export class ThreadScheduler {
   }
 
   dispose(): void {
+    this.unhear?.();
     this.events.dispose();
     for (const job of this.jobs.values()) this.clearTimer(job);
   }

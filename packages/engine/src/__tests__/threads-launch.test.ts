@@ -16,14 +16,18 @@ import { RecordingHands, delegate, nextUtterance, settle, threadNameOf, until, w
 
 /**
  * W1-5, the launch audit's threads findings as pins (scratchpad/launch/threads): a thread's
- * question is re-asked when it vanished or went stale, and ends `stopped` with a line after two
- * re-asks (TH-1); an idle end is `stopped`, never `done`; the confirmation turn carries Kevin's
- * own words (RAIL-2); the main brain reaches its threads by name from any later request (TH-3)
- * and `thread_wait` all reports a finished sibling (TH-7); the background lane leaves the front
- * browser tab alone (TH-4); a step budget of N lets N calls act (TH-5); a stopped main turn's
- * screen tool never acts (F-CODEX-AFTERSTOP); an inner shell's osascript is screen work
- * (RAIL-8); and two quick follow-ups run one turn at a time on a brain that, like every real
- * one, refuses a second `handle` (TH-2, re-run: red at HEAD, so the verbs queue).
+ * question is re-asked when it vanished with no word from Kevin or went stale, and ends
+ * `stopped` with a line after two re-asks (TH-1); one he heard and then answered no to, or
+ * talked past, is never asked again behind his back, so a later "okay" sends nothing (the
+ * W1-5 review's TH-1 no); an idle end is `stopped`, never `done`; the confirmation turn carries
+ * Kevin's own words (RAIL-2; the engine half is a todo until the wave-1 merge wires the words);
+ * the main brain reaches its threads by name from any later request (TH-3) and `thread_wait`
+ * all reports a finished sibling (TH-7); the background lane leaves the front browser tab
+ * alone (TH-4); a step budget of N lets N calls act and never refuses the next turn's eyes
+ * (TH-5); a stopped main turn's screen tool never acts, and a lease cut with the task live is
+ * not a stop (F-CODEX-AFTERSTOP); inner shells, groups, substitutions and a shell on stdin are
+ * screen work (RAIL-8); and two quick follow-ups run one turn at a time on a brain that, like
+ * every real one, refuses a second `handle` (TH-2, re-run: red at HEAD, so the verbs queue).
  *
  * The scheduler half runs over a fake brain that refuses an overlapping `handle` exactly as
  * codex.ts, claude.ts, compatible.ts and anthropic.ts do ("already handling a task"), a real
@@ -51,7 +55,7 @@ const fakeConnector: AgentConnector = {
   read: async () => "",
 };
 
-function harness(o: { deaf?: boolean; supersedeWaitMs?: number; letGoMs?: number } = {}) {
+function harness(o: { deaf?: boolean; supersedeWaitMs?: number; letGoMs?: number; eyes?: boolean } = {}) {
   const clock = { t: 1_757_500_000_000 };
   const now = (): number => clock.t;
   const dir = mkdtempSync(join(tmpdir(), "jh-w15-threads-"));
@@ -133,12 +137,13 @@ function harness(o: { deaf?: boolean; supersedeWaitMs?: number; letGoMs?: number
     table,
     coalesceMs: 30,
     warmThreads: () => 0,
-    eyes: false,
+    eyes: o.eyes ?? false,
     supersedeWaitMs: o.supersedeWaitMs,
   });
   return {
     scheduler,
     table,
+    ledger,
     clock,
     hands,
     handsBg,
@@ -160,6 +165,13 @@ type H = ReturnType<typeof harness>;
 
 const text = (r: { kind: string }): string => (r as { text?: string; message?: string }).text ?? (r as { message?: string }).message ?? "";
 
+/** Kevin's request reaching Jarhead, as the Delegator records it: a main `delegation.created` row with his words. */
+let dlgSeq = 0;
+function kevinSays(h: H, request: string): void {
+  const at = h.clock.t;
+  h.ledger.append({ at, type: "delegation.created", delegation: { id: `dlg_k${++dlgSeq}`, liveId: `item_k${dlgSeq}`, createdAt: at, offsetMs: 0, request, status: "running", steps: [], timings: { delegatedAt: at } } });
+}
+
 /** Slack on the screen lane clicks Send: the gate asks, the turn ends on the question, the question holds the floor. */
 async function slackAsks(h: H): Promise<string> {
   h.ctl.script = async (job) => {
@@ -174,10 +186,11 @@ async function slackAsks(h: H): Promise<string> {
 
 // ------------------------------------------------------------- TH-1: questions re-ask
 
-test("TH-1 re-ask: Kevin moves on before answering (the question leaves the root); at the next tick Slack asks again on the floor ('Slack still asks: …'), and his later yes lands the click", async () => {
+test("TH-1 re-ask: a question that leaves the root with no word from Kevin since (only his late yes) is asked again at the next tick on the floor ('Slack still asks: …'), and his next yes lands the click", async () => {
   const h = harness();
   const id = await slackAsks(h);
-  // Kevin asks for something else first: the Delegator drops the pending question (delegator.ts, a new request that is not a yes).
+  // His yes came after the root's TTL: the Delegator's arm finds it expired and the question leaves the root.
+  kevinSays(h, "yes");
   h.desk.dropQuestion();
   assert.equal(h.desk.floor, undefined);
   h.scheduler.tick();
@@ -223,6 +236,85 @@ test("TH-1 limit: after two re-asks a question that vanishes again ends the thre
   assert.equal(h.desk.floor, undefined);
   assert.equal(h.hands.named("click").length, 0, "nothing was sent");
   await until(() => h.byName("Slack")!.stops === 1);
+  h.scheduler.dispose();
+});
+
+test("TH-1 no: Kevin says 'no, don't send it' and the question leaves the root with it; the tick never asks it again: Slack stops ('Slack stopped.', Kevin said no), and his later 'okay' arms nothing and sends nothing", async () => {
+  const h = harness();
+  const id = await slackAsks(h);
+  // The Delegator records his words, then drops the question (a request that is not a yes).
+  kevinSays(h, "no, don't send it");
+  h.desk.dropQuestion();
+  h.scheduler.tick();
+  h.clock.t += 2_000;
+  h.scheduler.tick();
+  const t = h.table.get(id)!;
+  assert.equal(t.status, "stopped");
+  assert.equal(t.detail, "Kevin said no");
+  assert.equal(h.says.at(-1), "Slack stopped.");
+  assert.ok(!h.says.some((x) => x.startsWith("Slack still asks")), "asked again right after Kevin said no");
+  assert.equal(h.desk.floor, undefined);
+  kevinSays(h, "okay.");
+  assert.equal(h.root.arm(), undefined, "an 'okay' a beat later has nothing to arm");
+  assert.equal(h.hands.named("click").length, 0, "nothing was sent");
+  h.scheduler.dispose();
+});
+
+test("TH-1 moved on: Kevin heard the question, asked for something else, and it left the root; it is not asked again behind his back: Slack ends 'stopped' with a line saying how to ask again", async () => {
+  const h = harness();
+  const id = await slackAsks(h);
+  kevinSays(h, "what's the weather tomorrow");
+  h.desk.dropQuestion();
+  h.scheduler.tick();
+  const t = h.table.get(id)!;
+  assert.equal(t.status, "stopped");
+  assert.equal(t.detail, "Kevin moved on from its question");
+  assert.equal(h.says.at(-1), "Slack stopped. You moved on from its question. Ask me again to retry.");
+  assert.ok(!h.says.some((x) => x.startsWith("Slack still asks")));
+  assert.equal(h.root.arm(), undefined);
+  assert.equal(h.hands.named("click").length, 0);
+  h.scheduler.dispose();
+});
+
+test("TH-1 queued: Slack's question waited behind Jarhead's own and went with it when Kevin answered Jarhead; he never heard it, so it is asked ('Slack asks: …', not 'still asks') and his yes lands it", async () => {
+  const h = harness();
+  h.desk.lane("jarhead", "Jarhead").ask('left click on "Delete" in Finder', "left_click", { coordinate: [10, 20] });
+  h.ctl.script = async (job) => {
+    const r = (await job.runner.run("click_element", { name: "Send" })).result;
+    return { status: "done", summary: r.kind === "needs-confirmation" ? r.question : r.kind === "text" ? "sent." : `failed: ${text(r)}` };
+  };
+  h.scheduler.start(h.parentA, { name: "Slack", task: "send Ben: I'm running late", lane: "screen" });
+  await until(() => h.spawned()[0]?.status === "waiting-kevin");
+  const id = h.spawned()[0]!.id;
+  assert.equal(h.desk.floor?.name, "Jarhead", "Slack's question waits behind Jarhead's");
+  assert.ok(!h.says.some((x) => x.startsWith("Slack asks")), "a queued question is not spoken");
+  // "no" to Jarhead's own question: the Delegator drops it, and the queue with it.
+  kevinSays(h, "no");
+  h.desk.dropQuestion();
+  h.scheduler.tick();
+  assert.equal(h.desk.floorLane(), id, "asked on the floor");
+  assert.match(h.says.at(-1) ?? "", /^Slack asks: /);
+  assert.ok(h.root.arm() !== undefined);
+  await h.scheduler.resume(id);
+  await until(() => h.table.get(id)!.status === "done");
+  assert.equal(h.hands.named("click").length, 1);
+  h.scheduler.dispose();
+});
+
+test("TH-1 Allow past the TTL: the Console's Allow on an expired question arms nothing, says it is asked again, and asks it; the next Allow lands the click", async () => {
+  const h = harness();
+  const id = await slackAsks(h);
+  h.clock.t += 4 * 60_000;
+  const late = await h.scheduler.answerYes(id);
+  assert.equal(late.ok, false);
+  assert.equal(late.reason, "the question had expired; it is asked again");
+  assert.equal(h.desk.floorLane(), id);
+  assert.match(h.says.at(-1) ?? "", /^Slack still asks: /);
+  assert.equal(h.hands.named("click").length, 0, "an expired yes acted");
+  const again = await h.scheduler.answerYes(id);
+  assert.equal(again.ok, true, again.reason);
+  await until(() => h.table.get(id)!.status === "done");
+  assert.equal(h.hands.named("click").length, 1);
   h.scheduler.dispose();
 });
 
@@ -343,6 +435,30 @@ test("TH-5: a 2-step budget lets at most 2 tool calls act; the third is refused 
   h.scheduler.dispose();
 });
 
+test("TH-5 eyes: a turn that spent exactly its budget (a 1-step thread whose one call asked) leaves the next turn its eyes' shot and its full budget", async () => {
+  const h = harness({ eyes: true });
+  const id = await (async () => {
+    h.ctl.script = async (job) => {
+      const r = (await job.runner.run("click_element", { name: "Send" })).result;
+      return { status: "done", summary: r.kind === "needs-confirmation" ? r.question : r.kind === "text" ? "sent." : `failed: ${text(r)}` };
+    };
+    h.scheduler.start(h.parentA, { name: "Slack", task: "send Ben: I'm running late", lane: "screen", budget: { steps: 1 } });
+    await until(() => h.spawned()[0]?.status === "waiting-kevin");
+    return h.spawned()[0]!.id;
+  })();
+  const fb = h.byName("Slack")!;
+  assert.ok(fb.tasks[0]!.attachments?.some((a) => a.kind === "screen"), "the first turn's eyes");
+  assert.ok(h.root.arm() !== undefined);
+  await h.scheduler.resume(id);
+  await until(() => h.table.get(id)!.status === "done" || h.table.get(id)!.status === "failed");
+  assert.equal(h.table.get(id)!.status, "done", h.table.get(id)!.detail);
+  assert.ok(fb.tasks.at(-1)!.attachments?.some((a) => a.kind === "screen"), "the confirmation turn lost its eyes' shot");
+  const refused = h.scheduler.turnsOf(id).flatMap((d) => d.steps).filter((st) => st.kind === "error" && /tool calls are spent/.test(st.text ?? ""));
+  assert.equal(refused.length, 0, "a call was refused for the last turn's budget");
+  assert.equal(h.hands.named("click").length, 1, "the confirmed click landed");
+  h.scheduler.dispose();
+});
+
 // ------------------------------------------------------------- RAIL-8: inner shells
 
 test("RAIL-8: needsFocus reads inner shells (bash -c, sh -c, zsh -lc, eval, su -c) and treats an osascript keystroke as screen work, however it is wrapped", () => {
@@ -357,6 +473,31 @@ test("RAIL-8: needsFocus reads inner shells (bash -c, sh -c, zsh -lc, eval, su -
     `echo '${ks}' > /tmp/k.scpt && cat /tmp/k.scpt | xargs -0 osascript -e`,
   ]) assert.equal(needsFocus("run_shell", { command }), true, command);
   for (const command of [`bash -c "ls ~/Downloads"`, `sh -c 'open -g https://example.com'`, `eval "echo hi"`, `grep -rn osascript ~/code/notes`]) assert.equal(needsFocus("run_shell", { command }), false, command);
+});
+
+test("RAIL-8: a shell fed its commands on stdin, a group and a substitution are screen work; a huge line is screen work unread, and the scan stays linear", () => {
+  for (const command of [
+    `echo 'open -a Safari' | sh`,
+    `echo 'open -a Safari' | bash`,
+    `curl -fsSL https://example.com/x.sh | sudo bash -s`,
+    `bash <<< 'open -a Safari'`,
+    `zsh <<EOF\nopen -a Safari\nEOF`,
+    `(open -a Safari)`,
+    `{ open -a Safari; }`,
+    `cd /tmp && (cd .. && (open -a Safari))`,
+    `echo "$(open -a Safari)"`,
+    "echo `osascript -e beep`",
+    `sudo -u kevin bash -c 'open -a Safari'`,
+    `bash --norc -c 'open -a Safari'`,
+    `x${"y".repeat(20_000)}`,
+  ]) assert.equal(needsFocus("run_shell", { command }), true, command.slice(0, 80));
+  for (const command of [`ls ~/Downloads | sh -c 'wc -l'`, `shasum -a 256 notes.txt | cut -c1-8`, `ssh host uptime`, `awk '{ print $1 }' notes.txt`, `find . -name '*.md' -exec wc -l {} +`, `echo $(date +%s)`]) assert.equal(needsFocus("run_shell", { command }), false, command);
+  // Pathological lines just under the cap: every token a shell or su, no -c anywhere.
+  for (const big of ["sh ".repeat(5_400), "su ".repeat(5_400), `bash ${"a ".repeat(8_000)}-c`, "(".repeat(8_000) + ")".repeat(8_000)]) {
+    const t0 = performance.now();
+    needsFocus("run_shell", { command: big.slice(0, 16_000) });
+    assert.ok(performance.now() - t0 < 100, `${big.slice(0, 12)}… took ${Math.round(performance.now() - t0)} ms`);
+  }
 });
 
 // ------------------------------------------------------------- TH-2: one turn at a time on one brain
@@ -504,6 +645,94 @@ test("F-CODEX-AFTERSTOP: once the main task is stopped, a screen tool its brain 
     assert.match(text(out.result), /^cancelled/);
     assert.equal(hands.named("key").length - before, 0, "the key was posted after the stop");
     assert.ok(steps.some((s) => s.startsWith("error:cancelled")), "the refusal is on the record");
+    engine.runner.attach(undefined);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("TH-1 no (engine): Slack asks 'send?'; Kevin says 'no, don't send it'; the tick does not ask again and Slack stops; his 'okay.' a beat later clicks nothing", async () => {
+  const w = world();
+  const { engine, hands } = w;
+  const tick = (): void => (engine as unknown as { tick(): void }).tick();
+  try {
+    w.threads.script = async (job): Promise<BrainResult> => {
+      const r = (await job.runner.run("click_element", { name: "Send" })).result;
+      return { status: "done", summary: r.kind === "needs-confirmation" ? r.question : r.kind === "text" ? "sent." : "failed" };
+    };
+    await split(w);
+    await engine.runner.run("thread_start", { name: "Slack", task: "send Ben: I'm running late", lane: "screen" });
+    await until(() => named(w, "Slack")?.status === "waiting-kevin");
+    w.brain.resolve!({ status: "done", summary: "on it." });
+    await settle(50);
+    nextUtterance(w);
+    delegate(w, "no, don't send it", "item_no");
+    await settle(100);
+    tick();
+    await settle(20);
+    w.clock.t += 2_000;
+    tick();
+    await settle(20);
+    assert.equal(named(w, "Slack")?.status, "stopped");
+    // The tick stops it ("Kevin said no"); merged with W1-3, the Delegator stops it on the no first, as Deny does ("Kevin stopped it").
+    assert.match(named(w, "Slack")?.detail ?? "", /^Kevin (said no|stopped it)$/);
+    assert.equal(engine.threads.floorThread(), undefined, "asked again after Kevin said no");
+    nextUtterance(w);
+    delegate(w, "okay.", "item_ok");
+    await settle(300);
+    assert.equal(hands.named("click").length, 0, "the declined send landed");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test(
+  "RAIL-2 (engine): a spoken yes reaches the confirmation turn as Kevin's own words",
+  { todo: "wiring at the wave-1 merge: the Delegator's yes calls threads.resume(floor.id, { words }) (W1-3), engine.ts passes it through and sayText calls answerYes(floor.id, { words }) (W1-1)" },
+  async () => {
+    const w = world();
+    const { engine } = w;
+    try {
+      w.threads.script = async (job): Promise<BrainResult> => {
+        const r = (await job.runner.run("click_element", { name: "Send" })).result;
+        return { status: "done", summary: r.kind === "needs-confirmation" ? r.question : r.kind === "text" ? "sent." : "failed" };
+      };
+      await split(w);
+      await engine.runner.run("thread_start", { name: "Slack", task: "send Ben: I'm running late", lane: "screen" });
+      await until(() => named(w, "Slack")?.status === "waiting-kevin");
+      nextUtterance(w);
+      delegate(w, "yes, send it", "item_yes");
+      await until(() => named(w, "Slack")?.status === "done");
+      const turn = w.threads.byName("Slack")!.tasks.at(-1)!;
+      assert.equal(turn.confirmation, true);
+      assert.ok(turn.dialogue.includes('"yes, send it"'), turn.dialogue);
+    } finally {
+      await engine.stop();
+    }
+  },
+);
+
+test("main lane: a cut of the lease while the task is live is not a stop; the screen is asked for once more and the call acts (a second call's force-take cut the first)", async () => {
+  const w = world();
+  const { engine, hands } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    const sink: BrainSink = { thinking: () => undefined, commentary: () => undefined, screenshot: () => undefined, step: () => undefined };
+    engine.runner.attach(sink, { delegationId: "item_live", request: "press return", dialogue: "", confirmation: false, offsetMs: 0, signal: new AbortController().signal });
+    // A thread holds the screen mid-op, so Jarhead's priority taker waits for it.
+    assert.equal((await engine.lease.acquire("t_other", { priority: false, timeoutMs: 50 })).ok, true);
+    let finishOp!: () => void;
+    const op = engine.lease.act("t_other", () => new Promise<void>((r) => (finishOp = r)));
+    const before = hands.named("key").length;
+    const call = engine.runner.run("key", { text: "Return" });
+    await settle(30);
+    engine.lease.cancelAll("Jarhead's hands took the screen");
+    const out = await call;
+    finishOp();
+    await op;
+    assert.notEqual(out.result.kind === "error" ? out.result.message.slice(0, 9) : "", "cancelled", "a live task's call was told the task was stopped");
+    assert.equal(hands.named("key").length - before, 1, "the key did not land");
     engine.runner.attach(undefined);
   } finally {
     await engine.stop();

@@ -59,6 +59,11 @@ export function noAnswerLine(name: string): string {
   return `${name} stopped with no answer. Ask me again to retry.`;
 }
 
+/** The end when Kevin talked past a question he heard and it left the desk: never asked again behind his back. */
+export function movedOnLine(name: string): string {
+  return `${name} stopped. You moved on from its question. Ask me again to retry.`;
+}
+
 /** The default's text, for the pins. */
 export const CONFIRMATION_RESUME: string = confirmationResume("Kevin");
 

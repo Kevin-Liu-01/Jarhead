@@ -9,9 +9,13 @@ import { ACTING_TOOLS, FOCUS_APPLESCRIPT } from "@jarhead/brain";
  * engine's `runner`) subclass ToolRunner through `LeasedRunner`, what the two share,
  * and re-record the step the base records; they never edit it.
  *
- * `background` never touches the pointer, keyboard or front app — Apple events,
- * browser_*, files, shell, web — and is refused the rest HERE, not in policy.ts
- * (a rail). `screen` waits its turn for the one FocusLease, ranked by admission
+ * `background` never touches the pointer, the keyboard, the front app or the front
+ * browser tab. It has Apple events, the browser reads (browser_read, browser_find,
+ * browser_tabs), web_fetch and web_search, the file tools and a shell line that fronts
+ * nothing, and is refused the rest HERE, not in policy.ts (a rail): FOCUS_TOOLS (the
+ * pointer and keys, open_url, browser_navigate/click/type, the clipboard), a focusing
+ * applescript and a shell line that fronts an app or types (`needsFocus`). `screen`
+ * waits its turn for the one FocusLease, ranked by admission
  * (Kevin's hands > the main lane > threads by age; the lease's `rank` is the lease's
  * business — taken here as an option and handed through). Two hooks for the speed
  * pass ride as options: an `observer` that annotates every ACTING tool's result with
@@ -65,31 +69,57 @@ export function needsFocus(name: string, args: Record<string, unknown>): boolean
   return false;
 }
 
-/** osascript sending keystrokes, wherever it sits in the line: they land in whatever is in front. */
-const OSASCRIPT_KEYS = /\bosascript\b[\s\S]*\b(?:keystroke|key code)\b|\b(?:keystroke|key code)\b[\s\S]*\bosascript\b/i;
+/** osascript sending keystrokes, wherever each sits in the line: they land in whatever is in front. Two linear scans. */
+const OSASCRIPT = /\bosascript\b/i;
+const KEYSTROKE = /\b(?:keystroke|key code)\b/i;
+
+/** A shell line is judged over its first this many characters; a longer one is screen work (fails closed, and the scan stays bounded). */
+export const SHELL_SCAN_CHARS = 16_384;
+
+/** A shell by name: sh, bash, zsh, ksh, dash, fish, csh, tcsh, under any directory (path segments, so a long word is scanned once). */
+const SHELL_NAME = String.raw`(?:[\w.~-]*\/)*(?:ba|z|k|da|fi|c|tc)?sh\b`;
 
 /**
- * A shell line fronts an app or types: core's `shellSteals` on the line and on every inner
- * command it writes out (`bash -c '…'`, `sh -c`, `zsh -lc`, `eval "…"`, `su kevin -c '…'`, a
- * few levels deep), and an osascript keystroke however it is wrapped. Fails closed: a false
- * positive costs a background thread one refusal, a miss types behind Kevin's back.
+ * A shell fed its commands on stdin (`… | sh`, `… | bash -s`, `bash <<< '…'`, `zsh <<EOF`): what it
+ * runs is not written out where it can be judged, so it is screen work. A piped `sh -c '…'` is not this
+ * (its command is written out and judged as an inner shell).
+ */
+const SHELL_ON_STDIN = new RegExp(String.raw`\|\s*(?:(?:sudo|env|exec|command|nohup)\s+)*${SHELL_NAME}(?!\s+-\w*c)|(?:^|[\s;&|(\`])${SHELL_NAME}[^;&|\n]{0,120}?<<`);
+
+/**
+ * A shell line fronts an app or types: core's `shellSteals` on the line, on every inner command
+ * it writes out (`bash -c '…'`, `sh -c`, `zsh -lc`, `eval "…"`, `su kevin -c '…'`) and on every
+ * group or substitution (`( … )`, `{ …; }`, `$( … )`, backticks), a few levels deep; an osascript
+ * keystroke however it is wrapped; and a shell fed its commands on stdin. Fails closed: a false
+ * positive costs a background thread one refusal, a miss types behind Kevin's back. A line past
+ * SHELL_SCAN_CHARS is screen work unread.
  */
 function shellNeedsFocus(command: string): boolean {
-  if (OSASCRIPT_KEYS.test(command)) return true;
-  return [command, ...innerShells(command)].some((c) => shellSteals(c));
+  if (command.length > SHELL_SCAN_CHARS) return true;
+  if ((OSASCRIPT.test(command) && KEYSTROKE.test(command)) || SHELL_ON_STDIN.test(command)) return true;
+  return [command, ...innerCommands(command)].some((c) => shellSteals(c));
 }
 
-/** An inner shell or eval that carries its command written out, anywhere in the line. */
-const INNER_SHELL = /(?:^|[\s;&|(`])(?:\S*\/)?(?:(?:ba|z|k|da|fi|c|tc)?sh\b[^;&|'"]*?\s-\w*c\w*|eval|su\b[^;&|'"]*?\s-c)\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+))/g;
+/**
+ * An inner shell or eval that carries its command written out, anywhere in the line. The stretch
+ * between the shell's name and its `-c` is bounded (and never crosses a line), so the scan is
+ * linear in the line, never quadratic.
+ */
+const INNER_SHELL = new RegExp(String.raw`(?:^|[\s;&|(\`])(?:${SHELL_NAME}[^;&|'"\n]{0,120}?\s-\w*c\w*|eval|su\b[^;&|'"\n]{0,120}?\s-c)\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+))`, "g");
 
-/** The commands an inner shell or eval in this line would run, written out, up to three levels deep. */
-function innerShells(command: string, depth = 0): string[] {
+/** A group or a substitution, innermost first: `$( … )`, backticks, `( … )`, `{ …; }`. */
+const GROUPED = /\$\(([^()]*)\)|`([^`]*)`|\(([^()]*)\)|\{\s([^{}]*)\}/g;
+
+/** The commands this line runs written out inside it (inner shells, evals, groups, substitutions), up to three levels deep. */
+function innerCommands(command: string, depth = 0): string[] {
   if (depth >= 3) return [];
   const out: string[] = [];
-  for (const m of command.matchAll(INNER_SHELL)) {
-    const inner = (m[1] ?? m[2]?.replace(/\\(.)/g, "$1") ?? m[3] ?? "").trim();
-    if (inner) out.push(inner, ...innerShells(inner, depth + 1));
-  }
+  const add = (inner: string | undefined): void => {
+    const c = inner?.trim();
+    if (c) out.push(c, ...innerCommands(c, depth + 1));
+  };
+  for (const m of command.matchAll(INNER_SHELL)) add(m[1] ?? m[2]?.replace(/\\(.)/g, "$1") ?? m[3]);
+  for (const m of command.matchAll(GROUPED)) add(m[1] ?? m[2] ?? m[3] ?? m[4]);
   return out;
 }
 
@@ -475,12 +505,12 @@ export class ThreadAwareRunner extends LeasedRunner {
     }
     if (!needsFocus(name, args)) return this.rendered(await this.runBase(name, input));
     const got = await this.takeScreen();
-    if (!got.ok && (got.reason === "cancelled" || got.reason === "cut")) {
-      // The task was stopped (or the lease cut) while its brain still had this call in flight: nothing acts.
+    if (!got.ok && got.reason === "cancelled") {
+      // The task was stopped while its brain still had this call in flight: nothing acts.
       const result: ToolResult = { kind: "error", message: `cancelled: the task was stopped before ${name} ran; nothing was done` };
       const ms = this.clock() - started;
       recordStep(this.sinkRef, name, args, result, ms);
-      log.info(`main lane ${name}: ${got.reason}; not run`);
+      log.info(`main lane ${name}: the task was stopped; not run`);
       return { result, ms };
     }
     if (got.ok && got.refocused) this.sinkRef?.step({ kind: "note", text: `brought ${got.refocused} back to the front` });
@@ -504,17 +534,24 @@ export class ThreadAwareRunner extends LeasedRunner {
    * Jarhead's hands win — but never mid-op: a thread's op in flight (a long `type`)
    * finishes first, bounded by the helper's own timeout, then Jarhead's lands next.
    * Past MAIN_LEASE_WAIT_MS the lease is cut and taken, so the thread's next tool
-   * waits on Jarhead instead of landing between its keystrokes. A stop (the task's
-   * signal) or a cut meanwhile answers `cancelled`, and `run` acts on nothing.
+   * waits on Jarhead instead of landing between its keystrokes. A stop meanwhile (the
+   * task's signal) answers `cancelled`, and `run` acts on nothing. A cut of the lease is
+   * a stop only when that signal says so: otherwise another of Jarhead's own calls took
+   * the screen by force, and the screen is asked for once more, as the force-take does.
    */
   private async takeScreen(): Promise<LeaseOutcome> {
     const signal = this.taskRef?.signal;
-    const got = await this.lease.acquire(ThreadAwareRunner.ACTOR, { priority: true, signal, timeoutMs: MAIN_LEASE_WAIT_MS });
-    if (got.ok || got.reason === "cancelled" || got.reason === "cut") return got;
+    const take = async (timeoutMs: number): Promise<LeaseOutcome> => {
+      const got = await this.lease.acquire(ThreadAwareRunner.ACTOR, { priority: true, signal, timeoutMs });
+      return !got.ok && got.reason === "cut" && signal?.aborted ? { ok: false, reason: "cancelled" } : got;
+    };
+    const got = await take(MAIN_LEASE_WAIT_MS);
+    if (got.ok || got.reason === "cancelled") return got;
+    if (got.reason === "cut") return take(WAIT_MAX_MS);
     const holder = this.lease.holder;
     log.warn(`main lane: ${got.reason} for ${MAIN_LEASE_WAIT_MS} ms; taking the screen`);
     this.lease.cancelAll("Jarhead's hands took the screen");
     this.sinkRef?.step({ kind: "note", text: `took the screen${holder ? ` from ${holder}` : ""} (${got.reason})` });
-    return this.lease.acquire(ThreadAwareRunner.ACTOR, { priority: true, signal, timeoutMs: WAIT_MAX_MS });
+    return take(WAIT_MAX_MS);
   }
 }
