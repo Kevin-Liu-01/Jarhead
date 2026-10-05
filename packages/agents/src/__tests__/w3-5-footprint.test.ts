@@ -62,6 +62,44 @@ test("PERF-12: readHeadTail runs a few reads at a time, reuses their buffers, an
   }
 });
 
+test("PERF-12: a buffer allocation that throws gives its read slot back, so later reads still run", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jarhead-w35-alloc-"));
+  const path = join(dir, "f.jsonl");
+  writeFileSync(path, "a\nb\n");
+  const cap = (store as Record<string, unknown>)["SLICE_READS_AT_ONCE"] as number;
+  // A size no earlier read asked for, so no spare fits and every one of these reads allocates. Only that size fails,
+  // as an ArrayBuffer allocation can under memory pressure; anything else the process allocates meanwhile is real.
+  const huge = 1 << 28;
+  const real = Buffer.allocUnsafe;
+  let thrown = 0;
+  Buffer.allocUnsafe = ((n: number) => {
+    if (n >= huge) {
+      thrown += 1;
+      throw new RangeError("Array buffer allocation failed");
+    }
+    return real(n);
+  }) as typeof Buffer.allocUnsafe;
+  try {
+    const before = slots();
+    const failed = await Promise.allSettled(Array.from({ length: cap }, () => store.readHeadTail(path, huge, 1)));
+    Buffer.allocUnsafe = real;
+    assert.equal(thrown, cap, `each of the ${cap} reads tried to allocate`);
+    assert.ok(failed.every((r) => r.status === "rejected" && /allocation failed/.test(String((r.reason as Error).message))), "each read failed with its allocation's error");
+    assert.equal(slots().allocated - before.allocated, 0, "a failed allocation is not counted as a buffer");
+    // Every slot was taken by a read that failed. Each must have come back, or these reads wait for ever.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const after = await Promise.race([
+      Promise.all(Array.from({ length: cap + 1 }, () => store.readHeadTail(path, 16, 16))),
+      new Promise<"stuck">((resolve) => (timer = setTimeout(() => resolve("stuck"), 2000))),
+    ]).finally(() => clearTimeout(timer));
+    if (after === "stuck") assert.fail(`${cap + 1} reads after the failures still waiting after 2 s: the failed reads kept their slots`);
+    for (const r of after) assert.deepEqual(r.head, ["a", "b"]);
+  } finally {
+    Buffer.allocUnsafe = real;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("PERF-12: a Codex scan parses in rounds of SCAN_BATCH, so it stops less than a round past its cap", async () => {
   const root = mkdtempSync(join(tmpdir(), "jarhead-w35-codex-"));
   try {
@@ -132,4 +170,39 @@ test("PERF-12: loadSdk hands Node the SDK's entry as it is on disk, past tsx: no
   assert.equal(r.query, "function");
   assert.equal(r.same, true, "a plain import afterwards gets the same module: one copy for the session and the MCP server");
   assert.equal(r.memo, true, "one load per process");
+});
+
+test("PERF-12: where node:module cannot register the hook, loadSdk still loads the SDK through the plain import", async () => {
+  const sessionTs = fileURLToPath(new URL("../claude-code/session.ts", import.meta.url));
+  const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
+  // A child under tsx, as the daemon runs. registerHooks first refuses the hook, then is missing; each case gets its own
+  // copy of session.ts (a query on the URL), so neither inherits the other's memoized load.
+  const code = `
+    import Module, { createRequire, findSourceMap, syncBuiltinESMExports } from "node:module";
+    import { pathToFileURL } from "node:url";
+    const sessionTs = ${JSON.stringify(sessionTs)};
+    const entryPath = createRequire(sessionTs).resolve("@anthropic-ai/claude-agent-sdk");
+    const mapped = (f) => findSourceMap(f) !== undefined || findSourceMap(pathToFileURL(f).href) !== undefined;
+    const out = {};
+    Module.registerHooks = () => { throw new Error("hooks refused"); };
+    syncBuiltinESMExports();
+    const refused = await import(pathToFileURL(sessionTs).href + "?refused");
+    const a = await refused.loadSdk();
+    out.refused = { query: typeof a.query, sourceMap: mapped(entryPath) };
+    Module.registerHooks = undefined;
+    syncBuiltinESMExports();
+    const missing = await import(pathToFileURL(sessionTs).href + "?missing");
+    const b = await missing.loadSdk();
+    out.missing = { query: typeof b.query, same: a === b };
+    console.log(JSON.stringify(out));
+    process.exit(0);
+  `;
+  const { stdout, stderr } = await run(process.execPath, ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e", code], { cwd: packageRoot, env: process.env, timeout: 120_000, maxBuffer: 1 << 20 });
+  const r = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as { refused: { query: string; sourceMap: boolean }; missing: { query: string; same: boolean } };
+  assert.equal(r.refused.query, "function", "registerHooks threw: the SDK still loads");
+  assert.equal(r.refused.sourceMap, true, "and it came through tsx, the plain import's path");
+  assert.equal(r.missing.query, "function", "registerHooks is missing: the SDK still loads");
+  assert.equal(r.missing.same, true, "the plain import gives the one copy of the SDK");
+  assert.match(stderr, /hooks refused/, "the refusal is logged");
+  assert.match(stderr, /node:module has no registerHooks/, "the missing hook is logged");
 });

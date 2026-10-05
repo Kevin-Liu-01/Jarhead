@@ -104,11 +104,13 @@ class SliceReads {
     else await new Promise<void>((resolve) => this.waiting.push(resolve));
     this.stats.peak = Math.max(this.stats.peak, this.active);
     this.stats.reads += 1;
-    const buf = this.take(bytes);
+    // The buffer is taken inside the try: an allocation that throws still gives the slot back.
+    let buf: Buffer | undefined;
     try {
+      buf = this.take(bytes);
       return await read(buf);
     } finally {
-      if (this.spare.length < SLICE_READS_AT_ONCE) this.spare.push(buf);
+      if (buf && this.spare.length < SLICE_READS_AT_ONCE) this.spare.push(buf);
       const next = this.waiting.shift();
       if (next) next();
       else this.active -= 1;
@@ -119,9 +121,11 @@ class SliceReads {
   private take(bytes: number): Buffer {
     const buf = this.spare.pop();
     if (buf && buf.length >= bytes) return buf;
-    this.largest = Math.max(this.largest, bytes);
+    const size = Math.max(this.largest, bytes);
+    const fresh = Buffer.allocUnsafe(size);
+    this.largest = size;
     this.stats.allocated += 1;
-    return Buffer.allocUnsafe(this.largest);
+    return fresh;
   }
 }
 

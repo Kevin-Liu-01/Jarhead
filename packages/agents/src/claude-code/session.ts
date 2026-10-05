@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
-import { registerHooks } from "node:module";
+import * as nodeModule from "node:module";
 import { logger } from "@jarhead/core";
 import type { AgentStatus } from "@jarhead/protocol";
 import { AsyncQueue } from "./queue.ts";
@@ -396,16 +396,27 @@ export function loadSdk(): Promise<SdkLike> {
   return sdkLoad;
 }
 
-/** Import the ES module `specifier` names from its bytes on disk, past every other loader in this process. */
+/**
+ * Import the ES module `specifier` names from its bytes on disk, past every other loader in this process.
+ *
+ * module.registerHooks is still marked active development. Where it is missing or refuses the hook, the module loads
+ * through the plain import and every loader in the process: it costs the memory again, never the SDK.
+ */
 async function importAsOnDisk(specifier: string): Promise<SdkLike> {
   const url = import.meta.resolve(specifier);
-  const hooks = registerHooks({
-    load: (u, context, next) => (u === url ? { format: "module", source: readFileSync(new URL(u)), shortCircuit: true } : next(u, context)),
-  });
+  let hooks: nodeModule.ModuleHooks | undefined;
+  try {
+    if (typeof nodeModule.registerHooks !== "function") throw new Error("node:module has no registerHooks");
+    hooks = nodeModule.registerHooks({
+      load: (u, context, next) => (u === url ? { format: "module", source: readFileSync(new URL(u)), shortCircuit: true } : next(u, context)),
+    });
+  } catch (e) {
+    log.warn(`the Agent SDK loads through every loader, at the full memory cost: ${(e as Error).message}`);
+  }
   try {
     return (await import(url)) as SdkLike;
   } finally {
-    hooks.deregister();
+    hooks?.deregister();
   }
 }
 
