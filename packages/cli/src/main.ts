@@ -88,6 +88,7 @@ flags
   --codex        (bench) drive the real Codex brain for the delegation runs (a couple of tiny turns on your login)
   --fake-hands   (bench) answer the helper's requests in-process instead of the Swift helper
   --no-gate      (bench) do not exit non-zero when the ear's p95 to dispatch is over 250 ms with the real helper
+  --no-duck      (bench) skip the Swift duck probe
   --effort E     (bench --brain) run the brain at effort low|medium|high|xhigh|max (default: the configured effort) — one flag for an A/B
   --observe off  (bench --brain) run with Settings.observe off: acting results without the now: line — the A/B for the observation lever
   --compare F    (bench --brain) print median deltas per command against a previous --out report
@@ -911,7 +912,7 @@ try {
         if (!(await benchBrain({ runs: Math.max(1, Number(flagValue("runs") ?? 2) || 2), ...(effort ? { effort: effort as Effort } : {}), noReflex: flags.has("--no-reflex"), allowApiSpend: flags.has("--allow-api-spend"), json: flags.has("--json"), ...(flagValue("out") ? { out: flagValue("out") } : {}), ...(only?.length ? { only } : {}), ...(observe ? { observe: observe === "on" } : {}), ...(flagValue("compare") ? { compare: flagValue("compare") } : {}) })).ok) process.exit(1);
         break;
       }
-      if (!(await bench({ runs: Math.max(1, Number(flagValue("runs") ?? 5) || 5), codex: flags.has("--codex"), fakeHands: flags.has("--fake-hands"), json: flags.has("--json"), gate: !flags.has("--no-gate") })).ok) process.exit(1);
+      if (!(await bench({ runs: Math.max(1, Number(flagValue("runs") ?? 5) || 5), codex: flags.has("--codex"), fakeHands: flags.has("--fake-hands"), json: flags.has("--json"), gate: !flags.has("--no-gate"), duck: !flags.has("--no-duck") })).ok) process.exit(1);
       break;
     case "cmd": {
       const sub = rest[0];

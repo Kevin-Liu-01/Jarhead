@@ -189,7 +189,7 @@ test("W2-7: the bench's config keeps the user's settings and none of their secre
   assert.equal(benchConfig({ ...base, openaiApiKey: undefined }, "/tmp/jh-bb-1", { codex: false, fakeHands: true, brainKeys: true }).openaiApiKey, BENCH_OPENAI_KEY, "a wake still wants a key");
 });
 
-test("W2-7: `pnpm jarhead bench --no-duck` reaches bench(); main.ts passes the flag as `duck` and help lists it", { todo: 'main.ts is W2-1\'s this wave. At integration its bench() call gains `duck: !flags.has("--no-duck")` and help gains the --no-duck line. Then this todo goes.' }, () => {
+test("W2-7: `pnpm jarhead bench --no-duck` reaches bench(); main.ts passes the flag as `duck` and help lists it", () => {
   // bench() reads no argv, so the flag works only when main.ts passes it. Through the CLI an unwired flag
   // builds and runs the Swift duck probe, so this reads main.ts instead of running it.
   const main = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "main.ts"), "utf8");
