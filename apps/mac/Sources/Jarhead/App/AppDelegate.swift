@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var audioFrameLast: AudioStateInfo?
     private var audioFrameSentAt: CFAbsoluteTime = 0
     private var audioFramePending = false
+    /// The playout windows of the frames since the last one sent (voice PLAN §3): the next frame out carries them all.
+    private var audioFrameWindows = PlayoutWindowFold()
     /// The engine's last read-back as the island needs it (the guard's edge, who shares the mic).
     private var audioGuardHeld = false
     private var audioSharedWith: String?
@@ -600,10 +602,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func sendAudioFrame(_ info: AudioStateInfo) {
         guard info != audioFrameLast else { return }
         audioFrameLast = info
+        // Every frame's window counts, including the ones the trailing send below folds away.
+        if let p = info.playout { audioFrameWindows.note(lateMaxMs: p.lateMaxMs, queuedMinMs: p.queuedMinMs) }
         let now = CFAbsoluteTimeGetCurrent()
         if now - audioFrameSentAt >= 1 {
             audioFrameSentAt = now
-            client.sendAudioState(info)
+            client.sendAudioState(withWindows(info))
             return
         }
         guard !audioFramePending else { return }
@@ -614,9 +618,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, let last = self.audioFrameLast else { return }
                 self.audioFramePending = false
                 self.audioFrameSentAt = CFAbsoluteTimeGetCurrent()
-                self.client.sendAudioState(last)
+                self.client.sendAudioState(self.withWindows(last))
             }
         }
+    }
+
+    /// The frame going out, its `lateMaxMs` and `queuedMinMs` covering every window since the last frame sent.
+    private func withWindows(_ info: AudioStateInfo) -> AudioStateInfo {
+        let windows = audioFrameWindows.take()
+        guard var p = info.playout else { return info }
+        if let late = windows.lateMaxMs { p.lateMaxMs = late }
+        if let queued = windows.queuedMinMs { p.queuedMinMs = queued }
+        var out = info
+        out.playout = p
+        return out
     }
 
     /// The island's mute box and peek chip (`NotchDock.audioNotification`): the setting, the guard's edge, who shares.
@@ -772,6 +787,76 @@ private extension AudioStateInfo {
                   hears: r.hears.map(AudioDeviceInfo.init), speaks: r.speaks.map(AudioDeviceInfo.init), tapFormat: r.tapFormat,
                   recording: r.recording, fallback: r.fallback, guardOn: r.guardOn, guardTailMs: r.guardTailMs,
                   guardHeldMs: Int((r.heldSeconds * 1000).rounded()), gated: r.gated, chunks: r.chunks, breakthroughs: r.breakthroughs,
-                  sharedWith: r.sharedWith?.map(MicRouteInfo.processName), inputMuted: r.inputMuted, aggregatePresent: r.aggregatePresent)
+                  sharedWith: r.sharedWith?.map(MicRouteInfo.processName), inputMuted: r.inputMuted, aggregatePresent: r.aggregatePresent,
+                  playout: r.playout.map(AudioPlayoutInfo.init), duck: r.duck.map(AudioDuckInfo.init), output: r.output.map(AudioOutputInfo.init))
+    }
+}
+
+// MARK: - voice PLAN W1.5: the playback telemetry as W2-5's contract spells it (Model/Protocol.swift)
+//
+// The readbacks count in whole milliseconds; the mirrors carry Doubles and write finite numbers only. Each field is
+// set by name, so the mapping never depends on a mirror's declaration order.
+
+private extension AudioPlayoutInfo {
+    init(_ p: PlayoutReadback) {
+        self.init()
+        chunks = p.chunks
+        underruns = p.underruns
+        underrunMs = Double(p.underrunMs)
+        longestUnderrunMs = Double(p.longestUnderrunMs)
+        wouldBeUnderruns = p.wouldBeUnderruns
+        resets = p.resets
+        targetMs = Double(p.targetMs)
+        queuedMs = Double(p.queuedMs)
+        queuedMinMs = p.queuedMinMs.map(Double.init)
+        lateMaxMs = Double(p.lateMaxMs)
+        lateMaxGraphMs = Double(p.lateMaxGraphMs)
+        droppedChunks = p.droppedChunks
+        droppedMs = Double(p.droppedMs)
+    }
+}
+
+private extension AudioDuckLastInfo {
+    init(_ e: DuckEventReadback) {
+        self.init()
+        source = e.source
+        confirmed = e.confirmed
+        depthDb = e.depthDb
+        runDbfs = e.runDbfs
+        thresholdDbfs = e.thresholdDbfs
+        releasedAfterMs = e.releasedAfterMs.map(Double.init)
+        reason = e.reason
+    }
+}
+
+private extension AudioDuckInfo {
+    init(_ d: DuckReadback) {
+        self.init()
+        ducks = d.ducks
+        gate = d.gate
+        confirmed = d.confirmed
+        unconfirmed = d.unconfirmed
+        held = d.held
+        refusedWords = d.refusedWords
+        refusedLive = d.refusedLive
+        wordOnsetsSkipped = d.wordOnsetsSkipped
+        duckedMs = Double(d.duckedMs)
+        deepMs = Double(d.deepMs)
+        residualP50Dbfs = d.residualP50Dbfs
+        residualP99Dbfs = d.residualP99Dbfs
+        echoFloorDbfs = d.echoFloorDbfs
+        last = d.last.map(AudioDuckLastInfo.init)
+    }
+}
+
+private extension AudioOutputInfo {
+    init(_ o: OutputReadback) {
+        self.init()
+        rmsDbfs = o.rmsDbfs
+        peakDbfs = o.peakDbfs
+        heardRmsDbfs = o.heardRmsDbfs
+        audibleMs = Double(o.audibleMs)
+        mixFormat = o.mixFormat.isEmpty ? nil : o.mixFormat
+        volume = o.volume
     }
 }

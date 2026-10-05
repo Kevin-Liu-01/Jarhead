@@ -1056,8 +1056,13 @@ export interface AudioPlayout {
   readonly queuedMs: number;
   /** The smallest backlog this window; absent when nothing was scheduled in it. */
   readonly queuedMinMs?: number;
-  /** The longest enqueue-to-run wait of a play block on the audio queue this window. */
+  /**
+   * The longest enqueue-to-run wait of a play block on the audio queue this window. A window is the time since
+   * the app's previous frame went out, so one wait behind a restart is in one frame, not every frame after it.
+   */
   readonly lateMaxMs: number;
+  /** The longest such wait since the graph started, beside the cumulative underruns it may explain (the doctor reads it). Absent from an app before the field. */
+  readonly lateMaxGraphMs?: number;
   /** Arrived while the graph was down. */
   readonly droppedChunks: number;
   readonly droppedMs: number;
@@ -1109,6 +1114,8 @@ export interface AudioOutput {
   readonly rmsDbfs?: number;
   readonly peakDbfs?: number;
   readonly heardRmsDbfs?: number;
+  /** Voiced audio played (chunks at or over the audible level): the doctor's per-minute rules divide by it. Absent from an app before the field. */
+  readonly audibleMs?: number;
   /** The mainMixer-to-output connection: `48000 Hz ×2`. */
   readonly mixFormat?: string;
   /** The default output's volume scalar, 0..1 (HAL); absent when the HAL cannot say. */
@@ -1167,9 +1174,9 @@ function duckOk(value: unknown, shed: AudioTelemetryShed[] | undefined): boolean
 
 /** The telemetry objects an `audio-state` frame may carry, each with its own check. */
 const TELEMETRY_CHECKS: readonly (readonly [key: "playout" | "duck" | "output", ok: (value: unknown, shed: AudioTelemetryShed[] | undefined) => boolean])[] = [
-  ["playout", (v) => telemetryOk(v, PLAYOUT_REQUIRED, ["queuedMinMs"])],
+  ["playout", (v) => telemetryOk(v, PLAYOUT_REQUIRED, ["queuedMinMs", "lateMaxGraphMs"])],
   ["duck", duckOk],
-  ["output", (v) => telemetryOk(v, [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "volume"], ["mixFormat"])],
+  ["output", (v) => telemetryOk(v, [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "audibleMs", "volume"], ["mixFormat"])],
 ];
 
 /**

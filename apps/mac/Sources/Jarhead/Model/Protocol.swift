@@ -1394,7 +1394,9 @@ public struct AudioPlayoutInfo: Codable, Equatable {
     public var queuedMs: Double = 0
     /// nil when nothing was scheduled this window.
     public var queuedMinMs: Double?
+    /// This window's longest wait on the audio queue (since the previous frame), and the longest since the graph started.
     public var lateMaxMs: Double = 0
+    public var lateMaxGraphMs: Double?
     /// Arrived while the graph was down.
     public var droppedChunks: Int = 0
     public var droppedMs: Double = 0
@@ -1414,6 +1416,7 @@ extension AudioPlayoutInfo: SoftTelemetry {
         queuedMs = c.soft(.queuedMs) ?? 0
         queuedMinMs = c.soft(.queuedMinMs)
         lateMaxMs = c.soft(.lateMaxMs) ?? 0
+        lateMaxGraphMs = c.soft(.lateMaxGraphMs)
         droppedChunks = c.soft(.droppedChunks) ?? 0
         droppedMs = c.soft(.droppedMs) ?? 0
     }
@@ -1425,6 +1428,7 @@ extension AudioPlayoutInfo: SoftTelemetry {
             "lateMaxMs": wireNumber(lateMaxMs), "droppedChunks": droppedChunks, "droppedMs": wireNumber(droppedMs),
         ]
         putNumber(&o, "queuedMinMs", queuedMinMs)
+        putNumber(&o, "lateMaxGraphMs", lateMaxGraphMs)
         return o
     }
 }
@@ -1525,6 +1529,8 @@ public struct AudioOutputInfo: Codable, Equatable {
     public var rmsDbfs: Double?
     public var peakDbfs: Double?
     public var heardRmsDbfs: Double?
+    /// Voiced audio played, in ms: the doctor's per-minute rules divide by it. nil from an app before the field.
+    public var audibleMs: Double?
     public var mixFormat: String?
     public var volume: Double?
 }
@@ -1536,6 +1542,7 @@ extension AudioOutputInfo: SoftTelemetry {
         rmsDbfs = c.soft(.rmsDbfs)
         peakDbfs = c.soft(.peakDbfs)
         heardRmsDbfs = c.soft(.heardRmsDbfs)
+        audibleMs = c.soft(.audibleMs)
         mixFormat = c.soft(.mixFormat)
         volume = c.soft(.volume)
     }
@@ -1545,6 +1552,7 @@ extension AudioOutputInfo: SoftTelemetry {
         putNumber(&o, "rmsDbfs", rmsDbfs)
         putNumber(&o, "peakDbfs", peakDbfs)
         putNumber(&o, "heardRmsDbfs", heardRmsDbfs)
+        putNumber(&o, "audibleMs", audibleMs)
         if let mixFormat { o["mixFormat"] = mixFormat }
         putNumber(&o, "volume", volume)
         return o

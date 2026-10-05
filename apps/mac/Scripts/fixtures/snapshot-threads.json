@@ -263,13 +263,13 @@
         "inputMuted": false,
         "aggregatePresent": true,
         "since": 1789243200400,
-        "playout": { "chunks": 412, "underruns": 0, "underrunMs": 0, "longestUnderrunMs": 0, "wouldBeUnderruns": 4, "resets": 3, "targetMs": 120, "queuedMs": 121, "queuedMinMs": 96, "lateMaxMs": 7, "droppedChunks": 0, "droppedMs": 0 },
+        "playout": { "chunks": 412, "underruns": 0, "underrunMs": 0, "longestUnderrunMs": 0, "wouldBeUnderruns": 4, "resets": 3, "targetMs": 120, "queuedMs": 121, "queuedMinMs": 96, "lateMaxMs": 7, "lateMaxGraphMs": 31, "droppedChunks": 0, "droppedMs": 0 },
         "duck": {
           "ducks": 2, "gate": 2, "confirmed": 2, "unconfirmed": 0, "held": 0, "refusedWords": 1, "refusedLive": 0, "wordOnsetsSkipped": 3,
           "duckedMs": 900, "deepMs": 400, "residualP50Dbfs": -61, "residualP99Dbfs": -49, "echoFloorDbfs": -55,
           "last": { "source": "gate", "confirmed": true, "depthDb": -20, "runDbfs": -31.5, "thresholdDbfs": -38, "releasedAfterMs": 900, "reason": "quiet after gate" }
         },
-        "output": { "rmsDbfs": -21.8, "peakDbfs": -4.1, "heardRmsDbfs": -22, "mixFormat": "48000 Hz ×2", "volume": 0.62 }
+        "output": { "rmsDbfs": -21.8, "peakDbfs": -4.1, "heardRmsDbfs": -22, "audibleMs": 61000, "mixFormat": "48000 Hz ×2", "volume": 0.62 }
       },
       "liveAudio": { "deltas": 640, "deltaMsP50": 40, "deltaMsMax": 120, "arrivalP99Ms": 31, "arrivalMaxMs": 182, "aheadMs": 0, "gatedFrames": 0, "loopDelayMaxMs": 12, "formatRate": 24000 },
       "hiddenAgents": [],
@@ -1053,9 +1053,9 @@
         "at": 1789243262600,
         "type": "audio.playout",
         "sessionId": "sess_d92e1a",
-        "playout": { "chunks": 610, "underruns": 1, "underrunMs": 40, "longestUnderrunMs": 40, "wouldBeUnderruns": 6, "resets": 4, "targetMs": 120, "queuedMs": 0, "lateMaxMs": 9, "droppedChunks": 0, "droppedMs": 0 },
+        "playout": { "chunks": 610, "underruns": 1, "underrunMs": 40, "longestUnderrunMs": 40, "wouldBeUnderruns": 6, "resets": 4, "targetMs": 120, "queuedMs": 0, "lateMaxMs": 9, "lateMaxGraphMs": 42, "droppedChunks": 0, "droppedMs": 0 },
         "duck": { "ducks": 3, "gate": 3, "confirmed": 2, "unconfirmed": 1, "held": 0, "refusedWords": 1, "wordOnsetsSkipped": 3, "duckedMs": 1500, "deepMs": 600, "residualP50Dbfs": -60, "residualP99Dbfs": -48, "echoFloorDbfs": -55 },
-        "output": { "rmsDbfs": -22.1, "peakDbfs": -3.9, "heardRmsDbfs": -22.4, "mixFormat": "48000 Hz ×2", "volume": 0.62 },
+        "output": { "rmsDbfs": -22.1, "peakDbfs": -3.9, "heardRmsDbfs": -22.4, "audibleMs": 88000, "mixFormat": "48000 Hz ×2", "volume": 0.62 },
         "liveAudio": { "deltas": 980, "deltaMsP50": 40, "deltaMsMax": 160, "arrivalP99Ms": 34, "arrivalMaxMs": 210, "aheadMs": 0, "gatedFrames": 12, "loopDelayMaxMs": 14, "formatRate": 24000 }
       },
       {

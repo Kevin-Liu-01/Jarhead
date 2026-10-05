@@ -173,14 +173,14 @@ test("LM-6: the ledger.days reply's totals are {day, sessions, billedSeconds}; S
 
 const PLAYOUT = {
   chunks: 412, underruns: 0, underrunMs: 0, longestUnderrunMs: 0, wouldBeUnderruns: 4, resets: 3, targetMs: 120,
-  queuedMs: 121, queuedMinMs: 96, lateMaxMs: 7, droppedChunks: 0, droppedMs: 0,
+  queuedMs: 121, queuedMinMs: 96, lateMaxMs: 7, lateMaxGraphMs: 31, droppedChunks: 0, droppedMs: 0,
 } satisfies Required<AudioPlayout>;
 const LAST = { source: "gate", confirmed: true, depthDb: -20, runDbfs: -31.5, thresholdDbfs: -38, releasedAfterMs: 900, reason: "quiet after gate" } satisfies Required<AudioDuckLast>;
 const DUCK = {
   ducks: 2, gate: 2, confirmed: 2, unconfirmed: 0, held: 0, refusedWords: 1, refusedLive: 0, wordOnsetsSkipped: 3, duckedMs: 900, deepMs: 400,
   residualP50Dbfs: -61, residualP99Dbfs: -49, echoFloorDbfs: -55, last: LAST,
 } satisfies Required<AudioDuck>;
-const OUTPUT = { rmsDbfs: -21.8, peakDbfs: -4.1, heardRmsDbfs: -22, mixFormat: "48000 Hz ×2", volume: 0.62 } satisfies Required<AudioOutput>;
+const OUTPUT = { rmsDbfs: -21.8, peakDbfs: -4.1, heardRmsDbfs: -22, audibleMs: 61_000, mixFormat: "48000 Hz ×2", volume: 0.62 } satisfies Required<AudioOutput>;
 const LIVE = {
   deltas: 640, deltaMsP50: 40, deltaMsMax: 120, arrivalP99Ms: 31, arrivalMaxMs: 182, aheadMs: 0, gatedFrames: 0, loopDelayMaxMs: 12, formatRate: 24000,
 } satisfies Required<LiveAudio>;

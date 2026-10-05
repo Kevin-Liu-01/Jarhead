@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import { specByName } from "@jarhead/brain";
-import { isAudioState, isEngineCommand, type AudioState, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
+import { isAudioState, isEngineCommand, type AudioState, type AudioTelemetryShed, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
 import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, parseClientMessage, type DaemonMessage } from "./wire.ts";
 
 /**
@@ -21,6 +21,13 @@ import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJ
  * one day's log — and a page of sixty turns to each of them is bytes for nobody.
  * Snapshots, toasts, overlay commands and `thread.event` stay broadcast: they are small
  * and every surface (orb, notch, rail, CLI) reads them.
+ *
+ * One socket carries the speaker's PCM and every JSON frame, and Node queues whatever the
+ * kernel will not take. A snapshot is a whole state, so a client that reads slowly (the app
+ * busy decoding one) keeps only the newest: past SNAPSHOT_BACKLOG_BYTES of backlog a new
+ * snapshot waits as the client's one pending snapshot, replaced by any newer one, and is
+ * written on 'drain' (voice PLAN W2.3). Speaker frames and every other frame are written at
+ * once, in order, and never dropped.
  */
 
 const log = logger("daemon");
@@ -28,6 +35,19 @@ const log = logger("daemon");
 /** `memory.list` / `memory.search`: the default and the ceiling on one answer (a MemoryItem is ~400 B; the frame rides the same socket as the snapshots). */
 export const MEMORY_LIST_DEFAULT = 50;
 export const MEMORY_LIST_MAX = 200;
+
+/**
+ * A client's socket backlog (`writableLength`) past which a new snapshot waits for 'drain' as its
+ * one pending snapshot instead of queueing behind the others. prove-3 measured 0.29 to 1.49 MB
+ * queued, up to five whole snapshots ahead of the next speaker frame.
+ */
+export const SNAPSHOT_BACKLOG_BYTES = 64 * 1024;
+
+/**
+ * How often the `audio-state: shed …` debug line may repeat. A malformed telemetry object comes back in every frame
+ * the app sends (up to 1 Hz), so one line a minute says it, with the number of frames that shed something since.
+ */
+export const AUDIO_SHED_LINE_EVERY_MS = 60_000;
 
 /** What the server needs from the engine; the real Engine satisfies it, and the test fakes implement all of it. */
 export interface EngineLike {
@@ -136,6 +156,10 @@ interface Client {
    */
   readonly viewers: Set<string>;
   readonly panes: Map<string, Set<string>>;
+  /** The newest snapshot frame held while the socket is backed up; written on 'drain' (`writeSnapshot`). */
+  pendingSnapshot: Buffer | undefined;
+  /** A 'drain' listener is armed for `pendingSnapshot`. */
+  drainArmed: boolean;
 }
 
 /**
@@ -198,6 +222,9 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   private appGoneTimer: NodeJS.Timeout | undefined;
   /** close() has begun: the sockets it destroys are not apps that crashed. */
   private closing = false;
+  /** The last `audio-state: shed …` line, and the frames that shed something since (W2-5 / V2, PLAN W1.5). */
+  private shedLineAt = Number.NEGATIVE_INFINITY;
+  private shedFrames = 0;
 
   /** Over the engine, or over a ToolHost (a brain's private tool socket): then only `tool.run` does anything. */
   constructor(
@@ -212,7 +239,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     this.engine.on("event", (e) => {
       switch (e.type) {
         case "snapshot":
-          return this.broadcast({ type: "snapshot", snapshot: e.snapshot });
+          return this.broadcastSnapshot(e.snapshot);
         case "levels":
           return this.broadcast({ type: "levels", levels: e.levels });
         case "toast":
@@ -331,11 +358,11 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   }
 
   private accept(socket: Socket): void {
-    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, bye: false, audioState: false, viewers: new Set(), panes: new Map() };
+    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, bye: false, audioState: false, viewers: new Set(), panes: new Map(), pendingSnapshot: undefined, drainArmed: false };
     this.clients.add(client);
     socket.setNoDelay(true);
     this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir });
-    this.send(client, { type: "snapshot", snapshot: this.engine.snapshot() });
+    this.writeSnapshot(client, encodeJson({ type: "snapshot", snapshot: this.engine.snapshot() }));
     socket.on("data", (chunk: Buffer) => {
       let frames;
       try {
@@ -350,6 +377,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     socket.on("error", (e) => log.debug(`client error: ${e.message}`));
     socket.on("close", () => {
       this.clients.delete(client);
+      client.pendingSnapshot = undefined;
       // Its conversation viewers go with it — here (no more pages routed its way) and in the
       // engine (a Console killed with the window open leaves no tail running).
       client.viewers.clear();
@@ -413,15 +441,19 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       case "mic-level":
         this.engine.reportInputLevel(Number(msg.level) || 0);
         return;
-      case "audio-state":
+      case "audio-state": {
         // Data, never a command (design12): the shape is checked here and a malformed frame is dropped with a line, never kept.
-        if (!isAudioState(msg.state)) {
+        // A malformed playout, duck or output costs only itself; what was shed is said too (rate-limited), never lost silently.
+        const shed: AudioTelemetryShed[] = [];
+        if (!isAudioState(msg.state, shed)) {
           log.debug("audio-state frame dropped: malformed");
           return;
         }
+        if (shed.length) this.noteShed(shed);
         client.audioState = true;
         this.engine.reportAudioState?.(msg.state);
         return;
+      }
       case "ear":
         if (typeof msg.text === "string") this.engine.ear(msg.text, msg.isFinal === true, Number(msg.segment ?? 0), Number(msg.at ?? Date.now()));
         return;
@@ -616,6 +648,37 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     for (const c of this.clients) if (c.socket.writable) c.socket.write(frame);
   }
 
+  /** A snapshot to every client, encoded once; a backed-up client keeps only the newest (`writeSnapshot`). */
+  private broadcastSnapshot(snapshot: unknown): void {
+    if (this.clients.size === 0) return;
+    const frame = encodeJson({ type: "snapshot", snapshot });
+    for (const c of this.clients) this.writeSnapshot(c, frame);
+  }
+
+  /**
+   * One snapshot frame to one client. While the socket's backlog is past SNAPSHOT_BACKLOG_BYTES (or a
+   * snapshot already waits), the frame becomes the client's one pending snapshot, replacing any older one,
+   * and goes out on 'drain'. Snapshots are whole states, so the client always ends on the newest; a
+   * frame of any other kind is never held here.
+   */
+  private writeSnapshot(c: Client, frame: Buffer): void {
+    const socket = c.socket;
+    if (!socket.writable) return;
+    if (c.pendingSnapshot === undefined && !(socket.writableLength > SNAPSHOT_BACKLOG_BYTES && socket.writableNeedDrain)) {
+      socket.write(frame);
+      return;
+    }
+    c.pendingSnapshot = frame;
+    if (c.drainArmed) return;
+    c.drainArmed = true;
+    socket.once("drain", () => {
+      c.drainArmed = false;
+      const pending = c.pendingSnapshot;
+      c.pendingSnapshot = undefined;
+      if (pending) this.writeSnapshot(c, pending);
+    });
+  }
+
   /**
    * A conversation page to the clients showing that conversation and nobody else: encoded
    * once, written to each client whose `viewers` holds `key`. A page nobody opened goes
@@ -634,6 +697,16 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       frame ??= encodeJson(message);
       c.socket.write(frame);
     }
+  }
+
+  /** An `audio-state` frame passed without what `shed` names: one debug line a minute at most, with the count since the last. */
+  private noteShed(shed: readonly AudioTelemetryShed[]): void {
+    this.shedFrames++;
+    const now = Date.now();
+    if (now - this.shedLineAt < AUDIO_SHED_LINE_EVERY_MS) return;
+    this.shedLineAt = now;
+    log.debug(`audio-state: shed ${shed.join(", ")} (malformed) · ${this.shedFrames} frame${this.shedFrames === 1 ? "" : "s"} shed since the last line`);
+    this.shedFrames = 0;
   }
 
   /** One pane of this client opened (or closed) a conversation; the routing key stays while any of its panes has it. */
