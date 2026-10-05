@@ -79,6 +79,22 @@ export interface RememberResult {
   readonly op: "added" | "updated" | "noop";
 }
 
+/**
+ * What a read leaves out. `hidden`: session ids whose conversation is in the Trash — an
+ * item every source of which is one of them is not read back (decision D5: Move to Trash
+ * hides what was learned only from that conversation; Restore brings it back). Nothing is
+ * written: the item stays live in the store, and a source from any other conversation, or
+ * Kevin's own "remember that", keeps it.
+ */
+export interface ReadOptions {
+  readonly hidden?: ReadonlySet<string>;
+}
+
+export interface SearchOptions extends ReadOptions {
+  /** False: rank by words only, with no embedding call (memory off; a query the redactor changed). */
+  readonly vectors?: boolean;
+}
+
 interface Deferred {
   tries: number;
   readonly candidates: Candidate[];
@@ -101,8 +117,9 @@ const byRecent = (a: MemoryItem, b: MemoryItem): number => b.lastSeenAt - a.last
  * behind each other): a merge snapshots the live pool and then awaits the
  * decider, so a concurrent add would land as a twin it never saw. The sync
  * verbs (forget, restore, edit, forgetRecent) apply at once; a merge in flight
- * refreshes an item it touches from the store, so a forget between its awaits
- * is not undone.
+ * reads the pool again once the decider answers, and a target that is no longer
+ * live becomes a plain add (`mergeCandidates`), so a forget between its awaits
+ * is not undone — and the store never merges an item that is not live.
  */
 export class MemoryService {
   readonly store: MemoryStore;
@@ -382,8 +399,19 @@ export class MemoryService {
     }
   }
 
-  private retrievable(): Retrievable[] {
-    return this.store.items("live").map((it) => {
+  /** Live items a read may return: every one, less those learned only from sessions in `hidden`. */
+  private live(hidden?: ReadonlySet<string>): MemoryItem[] {
+    const items = this.store.items("live");
+    return hidden && hidden.size > 0 ? items.filter((it) => MemoryService.visible(it, hidden)) : items;
+  }
+
+  /** An item stays visible while one source is not in `hidden` (another conversation, Kevin's own words, a tool). */
+  private static visible(it: MemoryItem, hidden: ReadonlySet<string>): boolean {
+    return it.sources.length === 0 || it.sources.some((s) => s.sessionId === undefined || !hidden.has(s.sessionId));
+  }
+
+  private retrievable(hidden?: ReadonlySet<string>): Retrievable[] {
+    return this.live(hidden).map((it) => {
       const vec = this.store.vectorFor(it.id, this.embedder);
       return vec ? { ...it, vec } : it;
     });
@@ -447,8 +475,8 @@ export class MemoryService {
    * `retrieveTimeoutMs`; past it the block is ranked by words and the vector
    * lands for the next turn. Records what was used for the Now rail.
    */
-  async retrieveForBrain(query: string, opts: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {}): Promise<Rendered> {
-    const items = this.retrievable();
+  async retrieveForBrain(query: string, opts: { readonly signal?: AbortSignal; readonly timeoutMs?: number } & ReadOptions = {}): Promise<Rendered> {
+    const items = this.retrievable(opts.hidden);
     if (items.length === 0) return { tokens: 0, ids: [] };
     const q = query.trim();
     const vec = q ? await this.queryVector(q, opts.timeoutMs ?? this.retrieveTimeoutMs, opts.signal) : undefined;
@@ -460,8 +488,8 @@ export class MemoryService {
   }
 
   /** The once-per-session voice block (≤ VOICE_MEMORY_TOKENS); synchronous, from the index. */
-  retrieveForVoice(): Rendered {
-    const items = this.retrievable();
+  retrieveForVoice(opts: ReadOptions = {}): Rendered {
+    const items = this.retrievable(opts.hidden);
     if (items.length === 0) return { tokens: 0, ids: [] };
     const r = retrieve(items, { embedder: this.embedder, now: this.now(), budgetTokens: VOICE_MEMORY_TOKENS });
     const block = renderVoiceBlock(r.picked, VOICE_MEMORY_TOKENS, this.userName);
@@ -559,18 +587,22 @@ export class MemoryService {
     return true;
   }
 
-  /** Newest first; never carries a vector. */
-  list(state: MemoryState | "all" = "live", limit = 50): MemoryItem[] {
-    return this.store.items(state).sort(byRecent).slice(0, Math.max(0, limit));
+  /** Newest first; never carries a vector. `live` leaves out what `hidden` hides; `all` is the whole record. */
+  list(state: MemoryState | "all" = "live", limit = 50, opts: ReadOptions = {}): MemoryItem[] {
+    return (state === "live" ? this.live(opts.hidden) : this.store.items(state)).sort(byRecent).slice(0, Math.max(0, limit));
   }
 
-  /** Ranked by similarity (vector when the query embeds in time, else the query's coverage of the item's words) plus an exact-substring bonus. */
-  async search(query: string, limit = 30, state: MemoryState | "all" = "live"): Promise<MemoryItem[]> {
+  /**
+   * Ranked by similarity (vector when the query embeds in time, else the query's coverage of
+   * the item's words) plus an exact-substring bonus. `vectors: false` ranks by words alone and
+   * never calls the embedder.
+   */
+  async search(query: string, limit = 30, state: MemoryState | "all" = "live", opts: SearchOptions = {}): Promise<MemoryItem[]> {
     const q = query.trim();
-    if (!q) return this.list(state, limit);
-    const vec = await this.queryVector(q, SEARCH_TIMEOUT_MS);
+    if (!q) return this.list(state, limit, opts);
+    const vec = opts.vectors === false ? undefined : await this.queryVector(q, SEARCH_TIMEOUT_MS);
     const needle = q.toLowerCase();
-    const pool = this.store.items(state);
+    const pool = state === "live" ? this.live(opts.hidden) : this.store.items(state);
     const weight = tokenWeights(pool.map((it) => it.text));
     const scored = pool.map((it) => {
       const sim = querySimilarityOf(this.embedder, { text: q, vec }, { text: it.text, vec: this.store.vectorFor(it.id, this.embedder) }, weight);
@@ -584,10 +616,11 @@ export class MemoryService {
       .map((s) => s.it);
   }
 
-  summary(): Omit<MemorySummary, "enabled" | "pending"> {
+  /** Counts and mode; `count` is what a read returns (the live items less those `hidden` hides). */
+  summary(opts: ReadOptions = {}): Omit<MemorySummary, "enabled" | "pending"> {
     const c = this.store.counts();
     return {
-      count: c.live,
+      count: opts.hidden && opts.hidden.size > 0 ? this.live(opts.hidden).length : c.live,
       forgotten: c.forgotten,
       archived: c.archived,
       embeddings: this.embeddings(),

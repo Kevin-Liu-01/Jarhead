@@ -43,6 +43,12 @@ import type { EngineCommand, LedgerRow, LocalFlavor, MemoryItem, MemoryKind, Mem
  * `relink()` rebuilds the service when that identity moves and `reembed` heals the
  * vectors at quiet ticks.
  *
+ * Off means off: with `Settings.memory` false nothing is extracted, injected or embedded —
+ * the Memory rail's filter is ranked by words, as is a filter the redactor changed. A
+ * conversation in the Trash is never read, and what was learned only from it is left out
+ * of every read (the brain's and the voice's blocks, the rail, the counts) until Restore;
+ * the store keeps it (decision D5).
+ *
  * Tests inject a FakeMemoryService through `EngineOptions.memory.service`; a store
  * that cannot start leaves memory off with one warning and the engine runs on.
  */
@@ -73,10 +79,16 @@ const REMEMBER_PLAIN = /^(?:remember that|keep in mind(?: that)?|note that)\s+\S
 /** The clause to keep, from the ORIGINAL text so names keep their case; the trailing full stop goes. */
 const REMEMBER_CLAUSE = /\b(?:remember that|keep in mind(?: that)?|note that)\s+(.{8,200}?)[.!?]*\s*$/i;
 
+/** What a read leaves out: the session ids whose conversation is in the Trash (the package's ReadOptions). */
+interface HiddenRead {
+  readonly hidden?: ReadonlySet<string>;
+}
+
 /**
  * The memory service as the bridge uses it — the public surface of the package's
  * MemoryService (assigning the real one below is the type check), and what a test's
- * FakeMemoryService implements.
+ * FakeMemoryService implements. The read options are optional to honour: a fake that
+ * ignores them reads everything.
  */
 export interface MemoryServiceLike {
   /** The store, for the extraction watermark per conversation (the bridge's cheap gate before a run). */
@@ -85,8 +97,8 @@ export interface MemoryServiceLike {
   ingestSession(sessionId: string, rows: readonly LedgerRow[], opts?: IngestOptions): Promise<IngestResult>;
   /** Embed a line Kevin just said so the delegation-time query is a cache hit (QUERY_LRU); never throws. */
   prime(text: string): Promise<void>;
-  retrieveForBrain(query: string, opts?: { readonly signal?: AbortSignal; readonly timeoutMs?: number }): Promise<Rendered>;
-  retrieveForVoice(): Rendered;
+  retrieveForBrain(query: string, opts?: { readonly signal?: AbortSignal; readonly timeoutMs?: number } & HiddenRead): Promise<Rendered>;
+  retrieveForVoice(opts?: HiddenRead): Rendered;
   /** An explicit "remember that …" (origin kevin) or a Console/CLI add; undefined = refused (a secret shape, the redactor changed it). */
   remember(text: string, kind?: MemoryKind, origin?: "extracted" | "kevin" | "tool"): Promise<RememberResult | undefined>;
   /** Tombstone every live item said in the last `ms` (and write the exclusion window); returns how many. */
@@ -94,9 +106,10 @@ export interface MemoryServiceLike {
   forget(id: string, by: "kevin" | "reflex" | "cli"): boolean;
   restore(id: string): boolean;
   edit(id: string, text: string, kind?: MemoryKind): boolean;
-  list(state?: MemoryState | "all", limit?: number): MemoryItem[];
-  search(query: string, limit?: number, state?: MemoryState | "all"): Promise<MemoryItem[]>;
-  summary(): Omit<MemorySummary, "enabled" | "pending">;
+  list(state?: MemoryState | "all", limit?: number, opts?: HiddenRead): MemoryItem[];
+  /** `vectors: false` ranks by words with no embedding call. */
+  search(query: string, limit?: number, state?: MemoryState | "all", opts?: HiddenRead & { readonly vectors?: boolean }): Promise<MemoryItem[]>;
+  summary(opts?: HiddenRead): Omit<MemorySummary, "enabled" | "pending">;
   /** One slice of housekeeping (≤ 200 pair checks); the cursor carries across calls; `done` ends the pass. */
   consolidateStep(opts?: { readonly signal?: AbortSignal }): Promise<{ readonly merged: number; readonly archived: number; readonly done: boolean }>;
   /** Live items with no vector in the current embedding space, `limit` at a time; returns how many were embedded, 0 when every item has one. */
@@ -158,6 +171,8 @@ type MemoryCommand = Extract<EngineCommand, { type: `memory.${string}` }>;
 /** How long the start waits for the key's model list before running the package default. */
 const PICK_TIMEOUT_MS = 8_000;
 
+const NONE: ReadonlySet<string> = new Set();
+
 export class MemoryBridge {
   private service: MemoryServiceLike | undefined;
   /** Closed conversations (chain roots) waiting for a quiet tick, oldest first. */
@@ -187,8 +202,14 @@ export class MemoryBridge {
   private reembedPending = false;
   /** A reembed slice is the run in flight (not a conversation: the summary's `pending` leaves it out). */
   private reembedding = false;
+  /** `hidden()`'s answer until a row that can change it lands (a tombstone, a carried decision, a day moved either way). */
+  private hiddenIds: ReadonlySet<string> | undefined;
 
   constructor(private readonly opts: MemoryBridgeOptions) {
+    // Every snapshot reads the counts: the Trash's sessions are asked of the ledger once per change, not per snapshot.
+    opts.ledger.onRow((row) => {
+      if (row.type.startsWith("conversation.") || row.type === "ledger.moved") this.hiddenIds = undefined;
+    });
     if (opts.service) {
       this.service = opts.service;
       return;
@@ -378,6 +399,18 @@ export class MemoryBridge {
     }
   }
 
+  /** The session ids whose conversation is in the Trash: what every read leaves out. Empty when the ledger cannot say. */
+  private hidden(): ReadonlySet<string> {
+    if (this.hiddenIds) return this.hiddenIds;
+    try {
+      this.hiddenIds = this.opts.ledger.trashedSessionIds();
+      return this.hiddenIds;
+    } catch (e) {
+      log.debug(`trashed sessions unknown: ${(e as Error).message}`);
+      return NONE;
+    }
+  }
+
   /**
    * The closed conversations of the last week, newest first: one entry per chain, closed
    * when every member is (a member without a closed row is the open one — or a lost one
@@ -385,8 +418,10 @@ export class MemoryBridge {
    */
   private closedChains(): { root: string; closedAt: number }[] {
     let sessions;
+    let roots: ReadonlyMap<string, string>;
     try {
       sessions = this.opts.ledger.sessions();
+      roots = this.opts.ledger.chainRoots();
     } catch (e) {
       log.debug(`ledger walk skipped: ${(e as Error).message}`);
       return [];
@@ -394,7 +429,7 @@ export class MemoryBridge {
     const since = this.opts.now() - CATCHUP_WINDOW_MS;
     const byRoot = new Map<string, { closedAt: number; open: boolean; trashed: boolean }>();
     for (const s of sessions) {
-      const root = this.rootOf(s.id);
+      const root = roots.get(s.id) ?? s.id;
       const cur = byRoot.get(root) ?? { closedAt: 0, open: false, trashed: false };
       if (s.closedAt === undefined) cur.open = true;
       else cur.closedAt = Math.max(cur.closedAt, s.closedAt);
@@ -635,7 +670,7 @@ export class MemoryBridge {
         }, RETRIEVE_RACE_MS);
         timer.unref?.();
       });
-      const r = await Promise.race([service.retrieveForBrain(q, { signal: race.signal, timeoutMs: RETRIEVE_RACE_MS }), timeout]);
+      const r = await Promise.race([service.retrieveForBrain(q, { signal: race.signal, timeoutMs: RETRIEVE_RACE_MS, hidden: this.hidden() }), timeout]);
       if (!r) {
         log.debug(`retrieval past ${RETRIEVE_RACE_MS} ms; the turn goes out without memory`);
         return undefined;
@@ -659,7 +694,7 @@ export class MemoryBridge {
     const service = this.service;
     if (!service) return undefined;
     try {
-      const r = service.retrieveForVoice();
+      const r = service.retrieveForVoice({ hidden: this.hidden() });
       this.budgetUsed = { ...this.budgetUsed, voice: r.tokens };
       return r.text;
     } catch (e) {
@@ -672,7 +707,7 @@ export class MemoryBridge {
   summary(): MemorySummary {
     let base: Omit<MemorySummary, "enabled" | "pending"> | undefined;
     try {
-      base = this.service?.summary();
+      base = this.service?.summary({ hidden: this.hidden() });
     } catch (e) {
       log.debug(`summary failed: ${(e as Error).message}`);
     }
@@ -757,14 +792,21 @@ export class MemoryBridge {
 
   // ---------------------------------------------------------- daemon reads
 
-  /** The Memory rail's list (default live). Vectors never leave the store. */
+  /** The Memory rail's list (default live, less what the Trash hides). Vectors never leave the store. */
   list(state?: MemoryState | "all", limit?: number): MemoryItem[] {
-    return MemoryBridge.clean(this.service?.list(state, limit) ?? []);
+    return MemoryBridge.clean(this.service?.list(state, limit, { hidden: this.hidden() }) ?? []);
   }
 
+  /**
+   * The Memory rail's filter and `jarhead memory search`. The query is embedded only with
+   * memory on and only when the redactor leaves it as it is; otherwise it is ranked by
+   * words and nothing leaves the Mac (off means no embedding call; a key read into the
+   * filter never reaches the endpoint).
+   */
   async search(query: string, limit?: number): Promise<MemoryItem[]> {
     if (!this.service) return [];
-    return MemoryBridge.clean(await this.service.search(query, limit));
+    const vectors = this.opts.enabled() && this.opts.redact(query) === query;
+    return MemoryBridge.clean(await this.service.search(query, limit, "live", { vectors, hidden: this.hidden() }));
   }
 
   flush(): void {

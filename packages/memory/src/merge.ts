@@ -114,7 +114,10 @@ function neighboursOf(pool: ReadonlyMap<string, Pooled>, c: Candidate, cand: Emb
  * evidence onto words nobody said. Items added during the run join the pool,
  * so two near-identical candidates in one batch collapse to one add and one
  * touch. Embedding runs first and its failure throws before anything is
- * written — the service defers the run rather than mixing vector spaces.
+ * written — the service defers the run rather than mixing vector spaces. The
+ * decider is the one await inside the loop: once it answers, the pool is read
+ * again, and a target that is no longer live (Kevin pressed Forget meanwhile)
+ * turns the decision into a plain ADD.
  */
 export async function mergeCandidates(store: MemoryStore, candidates: readonly Candidate[], embedder: Embedder, decider: Decider, opts: MergeOptions): Promise<MergeResult> {
   const texts = candidates.map((c) => c.text);
@@ -135,6 +138,12 @@ export async function mergeCandidates(store: MemoryStore, candidates: readonly C
     const it = store.get(id);
     if (it && it.state === "live") pool.set(id, { item: it, vec: store.vectorFor(id, embedder) });
     else pool.delete(id);
+  };
+  // The sync verbs (Forget, Edit) apply at once, also while the decider is out: after every
+  // await the pool is read again (an item the store replaced since), so no decision lands
+  // on an item that is not live.
+  const resync = (): void => {
+    for (const [id, p] of [...pool]) if (store.get(id) !== p.item) refresh(id);
   };
   let added = 0;
   let updated = 0;
@@ -175,8 +184,15 @@ export async function mergeCandidates(store: MemoryStore, candidates: readonly C
       continue;
     }
     let d: Decision = { op: "ADD" };
-    if (top && s >= T.band) d = await decider.decide(c, N, { thresholds: T, now: opts.now, ...(opts.signal ? { signal: opts.signal } : {}) });
-    const target = d.target && pool.has(d.target) ? d.target : top?.item.id;
+    let target: string | undefined;
+    if (top && s >= T.band) {
+      d = await decider.decide(c, N, { thresholds: T, now: opts.now, ...(opts.signal ? { signal: opts.signal } : {}) });
+      // The item the decider meant, as it saw the pool; then the pool as it is now. A target
+      // Kevin forgot meanwhile (or one archived or merged) is gone from it, and the decision
+      // becomes a plain ADD: the forgotten words are neither rewritten, touched nor superseded.
+      target = d.target && pool.has(d.target) ? d.target : top.item.id;
+      resync();
+    }
     const targetItem = target ? pool.get(target)?.item : undefined;
 
     if (d.op === "NOOP" && targetItem) {
