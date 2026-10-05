@@ -21,6 +21,13 @@ import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJ
  * one day's log — and a page of sixty turns to each of them is bytes for nobody.
  * Snapshots, toasts, overlay commands and `thread.event` stay broadcast: they are small
  * and every surface (orb, notch, rail, CLI) reads them.
+ *
+ * One socket carries the speaker's PCM and every JSON frame, and Node queues whatever the
+ * kernel will not take. A snapshot is a whole state, so a client that reads slowly (the app
+ * busy decoding one) keeps only the newest: past SNAPSHOT_BACKLOG_BYTES of backlog a new
+ * snapshot waits as the client's one pending snapshot, replaced by any newer one, and is
+ * written on 'drain' (voice PLAN W2.3). Speaker frames and every other frame are written at
+ * once, in order, and never dropped.
  */
 
 const log = logger("daemon");
@@ -28,6 +35,13 @@ const log = logger("daemon");
 /** `memory.list` / `memory.search`: the default and the ceiling on one answer (a MemoryItem is ~400 B; the frame rides the same socket as the snapshots). */
 export const MEMORY_LIST_DEFAULT = 50;
 export const MEMORY_LIST_MAX = 200;
+
+/**
+ * A client's socket backlog (`writableLength`) past which a new snapshot waits for 'drain' as its
+ * one pending snapshot instead of queueing behind the others. prove-3 measured 0.29 to 1.49 MB
+ * queued, up to five whole snapshots ahead of the next speaker frame.
+ */
+export const SNAPSHOT_BACKLOG_BYTES = 64 * 1024;
 
 /** What the server needs from the engine; the real Engine satisfies it, and the test fakes implement all of it. */
 export interface EngineLike {
@@ -136,6 +150,10 @@ interface Client {
    */
   readonly viewers: Set<string>;
   readonly panes: Map<string, Set<string>>;
+  /** The newest snapshot frame held while the socket is backed up; written on 'drain' (`writeSnapshot`). */
+  pendingSnapshot: Buffer | undefined;
+  /** A 'drain' listener is armed for `pendingSnapshot`. */
+  drainArmed: boolean;
 }
 
 /**
@@ -212,7 +230,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     this.engine.on("event", (e) => {
       switch (e.type) {
         case "snapshot":
-          return this.broadcast({ type: "snapshot", snapshot: e.snapshot });
+          return this.broadcastSnapshot(e.snapshot);
         case "levels":
           return this.broadcast({ type: "levels", levels: e.levels });
         case "toast":
@@ -331,11 +349,11 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   }
 
   private accept(socket: Socket): void {
-    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, bye: false, audioState: false, viewers: new Set(), panes: new Map() };
+    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, bye: false, audioState: false, viewers: new Set(), panes: new Map(), pendingSnapshot: undefined, drainArmed: false };
     this.clients.add(client);
     socket.setNoDelay(true);
     this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir });
-    this.send(client, { type: "snapshot", snapshot: this.engine.snapshot() });
+    this.writeSnapshot(client, encodeJson({ type: "snapshot", snapshot: this.engine.snapshot() }));
     socket.on("data", (chunk: Buffer) => {
       let frames;
       try {
@@ -350,6 +368,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     socket.on("error", (e) => log.debug(`client error: ${e.message}`));
     socket.on("close", () => {
       this.clients.delete(client);
+      client.pendingSnapshot = undefined;
       // Its conversation viewers go with it — here (no more pages routed its way) and in the
       // engine (a Console killed with the window open leaves no tail running).
       client.viewers.clear();
@@ -614,6 +633,37 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   private broadcast(message: DaemonMessage): void {
     const frame = encodeJson(message);
     for (const c of this.clients) if (c.socket.writable) c.socket.write(frame);
+  }
+
+  /** A snapshot to every client, encoded once; a backed-up client keeps only the newest (`writeSnapshot`). */
+  private broadcastSnapshot(snapshot: unknown): void {
+    if (this.clients.size === 0) return;
+    const frame = encodeJson({ type: "snapshot", snapshot });
+    for (const c of this.clients) this.writeSnapshot(c, frame);
+  }
+
+  /**
+   * One snapshot frame to one client. While the socket's backlog is past SNAPSHOT_BACKLOG_BYTES (or a
+   * snapshot already waits), the frame becomes the client's one pending snapshot, replacing any older one,
+   * and goes out on 'drain'. Snapshots are whole states, so the client always ends on the newest; a
+   * frame of any other kind is never held here.
+   */
+  private writeSnapshot(c: Client, frame: Buffer): void {
+    const socket = c.socket;
+    if (!socket.writable) return;
+    if (c.pendingSnapshot === undefined && !(socket.writableLength > SNAPSHOT_BACKLOG_BYTES && socket.writableNeedDrain)) {
+      socket.write(frame);
+      return;
+    }
+    c.pendingSnapshot = frame;
+    if (c.drainArmed) return;
+    c.drainArmed = true;
+    socket.once("drain", () => {
+      c.drainArmed = false;
+      const pending = c.pendingSnapshot;
+      c.pendingSnapshot = undefined;
+      if (pending) this.writeSnapshot(c, pending);
+    });
   }
 
   /**
