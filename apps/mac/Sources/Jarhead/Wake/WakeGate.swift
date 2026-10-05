@@ -8,6 +8,32 @@ private struct GateInputs: Equatable {
     var wake: WakeSettings
 }
 
+/// What the gate needs from the on-device recogniser. `WakeWordListener` in the app;
+/// a scripted one in `Scripts/wake-gate-check.sh`, which drives the gate with no microphone.
+protocol WakeListening: AnyObject {
+    /// (text, isFinal, segment): the cumulative text of one recogniser segment. Main queue.
+    var onTranscript: ((String, Bool, Int) -> Void)? { get set }
+    var onStatus: ((WakeWordListener.Status) -> Void)? { get set }
+    func start()
+    func stop()
+    func setContextualStrings(_ strings: [String])
+    /// End the segment and open a fresh one; the new number on the main queue, nil when not running.
+    func rollSegment(_ completion: @escaping (Int?) -> Void)
+}
+
+extension WakeWordListener: WakeListening {}
+
+/// The gate's voice: its prompts and earcons. `LocalSpeaker` in the app (shared with the
+/// automations, so `isQuiet` covers their echo too); a recorder in the check, which plays nothing.
+protocol WakeSpeaking: AnyObject {
+    func isQuiet(now: Date) -> Bool
+    func speak(_ text: String)
+    func stop()
+    func earcon(_ name: String)
+}
+
+extension LocalSpeaker: WakeSpeaking {}
+
 /// The wake word gate. While the engine is asleep it listens on-device for one of
 /// the wake phrases; when it hears one it authenticates — Touch ID / Apple Watch /
 /// Mac password through the system sheet, or a spoken or typed passphrase — and only
@@ -33,10 +59,13 @@ private struct GateInputs: Equatable {
 @MainActor
 final class WakeGate {
     private let state: AppState
-    private let listener = WakeWordListener()
+    private let listener: WakeListening
     /// The shared on-device speaker (`AppState.localSpeaker`): the automations' chimes and lines go through the
     /// same instance, so `isQuiet` below covers their echo too (design11's echo rail).
-    private var speaker: LocalSpeaker { state.localSpeaker }
+    private let speaker: WakeSpeaking
+    /// Touch ID, an Apple Watch or the Mac password (`LocalAuth.System`), behind a seam.
+    private let owner: OwnerFactor
+    private let timing: Timing
     private var cancellables = Set<AnyCancellable>()
 
     // Inputs.
@@ -62,6 +91,11 @@ final class WakeGate {
     // Transcript bookkeeping (normalised text of the current recogniser segment).
     private var currentSegment = 0
     private var consumedUpTo = 0
+    /// Segments below this are spent (WG-6). A heard word retires the segment it was heard in
+    /// and the listener rolls; the recogniser keeps revising the old segment's text for a while
+    /// ("hey jarhead" becomes "hey jar head", the match moves one character past `consumedUpTo`),
+    /// and none of that is a new word. It once popped a second sheet and counted a second miss.
+    private var segmentFloor = 0
     /// While a passphrase prompt is open: the recogniser segment the answer must come
     /// from. The listener rolls to a fresh segment at the prompt, so the answer is
     /// never spliced out of the wake word's own (still being revised) transcript. nil
@@ -77,7 +111,7 @@ final class WakeGate {
     // Authentication.
     private var currentMethod = ""
     private var passphraseOpen = false
-    private var ownerAuth: LocalAuth.OwnerAuth?
+    private var ownerAuth: OwnerPrompt?
     private var candidateTimer: Task<Void, Never>?
     private var authDeadline: Task<Void, Never>?
     private var grantWatchdog: Task<Void, Never>?
@@ -92,21 +126,46 @@ final class WakeGate {
     private var lockedUntil: Date?
     private var cooldownUntil: Date = .distantPast
 
-    static let authTimeout: TimeInterval = 15
+    /// The gate's clock, in one place. `standard` is what ships; the check runs a short copy
+    /// so its scenarios take seconds, and pins `standard` itself.
+    struct Timing: Equatable {
+        /// No answer this long → "Never mind."
+        var authTimeout: TimeInterval = 15
+        /// `maxUnanswered` prompts inside this window lock the gate.
+        var unansweredWindow: TimeInterval = 120
+        var lockout: TimeInterval = 60
+        /// After a denial, a word is held (not consumed) this long.
+        var cooldown: TimeInterval = 2.5
+        /// A spoken partial is judged once it has been still this long (a final at once).
+        var candidateSettle: TimeInterval = 1.1
+        /// A granted go that never wakes the engine goes back to listening after this.
+        var grantWatchdog: TimeInterval = 12
+        static let standard = Timing()
+    }
+
     static let maxFailures = 3
     static let maxUnanswered = 3
-    static let unansweredWindow: TimeInterval = 120
-    static let lockout: TimeInterval = 60
-    static let cooldown: TimeInterval = 2.5
     static let retryDelayFloor: TimeInterval = 2
     static let retryDelayCeiling: TimeInterval = 30
     static let unavailableRecheck: TimeInterval = 30
 
-    init(state: AppState) {
+    /// The app's gate: the real recogniser, the shared speaker, the system sheet, the shipped clock.
+    convenience init(state: AppState) {
+        self.init(state: state, listener: WakeWordListener(), speaker: state.localSpeaker, owner: LocalAuth.System(),
+                  timing: .standard, audioEnabled: WakeGate.audioEnabled(ProcessInfo.processInfo.environment))
+    }
+
+    /// Everything the gate touches outside itself comes in here, so `Scripts/wake-gate-check.sh`
+    /// runs the real gate with no microphone, no synthesiser and no sheet.
+    init(state: AppState, listener: WakeListening, speaker: WakeSpeaking, owner: OwnerFactor, timing: Timing, audioEnabled: Bool) {
         self.state = state
+        self.listener = listener
+        self.speaker = speaker
+        self.owner = owner
+        self.timing = timing
         inputs = GateInputs(phase: state.snapshot.phase, wake: state.snapshot.settings.wake)
         connected = state.connected
-        enabledByEnvironment = ProcessInfo.processInfo.environment["JARHEAD_NO_AUDIO"] != "1"
+        enabledByEnvironment = audioEnabled
 
         listener.onTranscript = { [weak self] text, isFinal, segment in
             MainActor.assumeIsolated { self?.handleTranscript(text, isFinal: isFinal, segment: segment) }
@@ -146,6 +205,11 @@ final class WakeGate {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    /// JARHEAD_NO_AUDIO=1 keeps the gate off: no listener, no microphone.
+    static func audioEnabled(_ environment: [String: String]) -> Bool {
+        environment["JARHEAD_NO_AUDIO"] != "1"
     }
 
     // MARK: - inputs
@@ -255,13 +319,16 @@ final class WakeGate {
     // MARK: - transcripts
 
     private func handleTranscript(_ raw: String, isFinal: Bool, segment: Int) {
+        // A spent segment (see `segmentFloor`), or an older one finishing late: not new words.
+        // The listener numbers its segments upward for its whole life.
+        guard segment >= max(segmentFloor, currentSegment) else { return }
         let text = LocalAuth.normalize(raw)
         if segment != currentSegment {
             currentSegment = segment
             consumedUpTo = 0
         }
         // Our own prompts come back through the microphone; never act on them.
-        guard speaker.isQuiet() else { return }
+        guard speaker.isQuiet(now: Date()) else { return }
 
         switch mode {
         case .listening:
@@ -373,6 +440,7 @@ final class WakeGate {
             grant()
             return
         }
+        retireSegment()
         publish(.heard)
         speaker.earcon("Pop")
         beginAuthentication(inputs.wake.auth)
@@ -401,9 +469,17 @@ final class WakeGate {
         return true
     }
 
+    /// WG-6: one utterance is one attempt. What was heard is spent (`segmentFloor`) and the
+    /// listener rolls, so the next words land in a fresh segment. The passphrase path rolls
+    /// once more after its prompt (`openAnswerSegment`); a roll costs a recogniser task, nothing else.
+    private func retireSegment() {
+        segmentFloor = max(segmentFloor, currentSegment + 1)
+        listener.rollSegment { _ in }
+    }
+
     private func beginAuthentication(_ auth: WakeAuth) {
         let hasPassphrase = LocalAuth.hasPassphrase
-        let ownerAvailable = LocalAuth.ownerAuthAvailable()
+        let ownerAvailable = owner.available()
         var useOwner = false
         var usePassphrase = false
         switch auth {
@@ -436,22 +512,23 @@ final class WakeGate {
         pendingCandidate = nil
         promptEcho = []
         answerSegment = nil
-        let ownerName = LocalAuth.ownerAuthName()
+        let ownerName = owner.name()
         currentMethod = useOwner && usePassphrase ? "\(ownerName) or passphrase" : (useOwner ? ownerName : "passphrase")
         publish(.authenticating(method: currentMethod))
         say(usePassphrase ? "Password?" : "\(ownerName)?")
         if usePassphrase { openAnswerSegment() }
 
         if useOwner {
-            let owner = LocalAuth.OwnerAuth()
-            ownerAuth = owner
+            let prompt = owner.prompt()
+            ownerAuth = prompt
             Task { @MainActor [weak self] in
-                let ok = await owner.evaluate(reason: "wake Jarhead")
-                self?.ownerAuthFinished(ok, owner: owner)
+                let ok = await prompt.evaluate(reason: "wake Jarhead")
+                self?.ownerAuthFinished(ok, prompt: prompt)
             }
         }
+        let timeout = timing.authTimeout
         authDeadline = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(WakeGate.authTimeout * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.authTimedOut()
         }
@@ -480,21 +557,22 @@ final class WakeGate {
         }
     }
 
-    private func ownerAuthFinished(_ ok: Bool, owner: LocalAuth.OwnerAuth) {
-        guard mode == .authenticating, ownerAuth === owner else { return }
+    private func ownerAuthFinished(_ ok: Bool, prompt: OwnerPrompt) {
+        guard mode == .authenticating, ownerAuth === prompt else { return }
         ownerAuth = nil
         if ok {
             grant()
         } else if !passphraseOpen {
-            deny(reason: "\(LocalAuth.ownerAuthName()) did not confirm", say: "No.", countsAsFailure: true)
+            deny(reason: "\(owner.name()) did not confirm", say: "No.", countsAsFailure: true)
         }
         // With the passphrase path open, a cancelled sheet just leaves the spoken path until the deadline.
     }
 
     private func scheduleCandidateCheck(_ candidate: String, immediate: Bool) {
         candidateTimer?.cancel()
+        let settle = timing.candidateSettle
         candidateTimer = Task { @MainActor [weak self] in
-            if !immediate { try? await Task.sleep(nanoseconds: 1_100_000_000) }
+            if !immediate { try? await Task.sleep(nanoseconds: UInt64(settle * 1_000_000_000)) }
             guard !Task.isCancelled, let self, self.mode == .authenticating else { return }
             await self.verifyCandidate(candidate)
         }
@@ -548,13 +626,13 @@ final class WakeGate {
     private func authTimedOut() {
         guard mode == .authenticating else { return }
         let now = Date()
-        unanswered = unanswered.filter { now.timeIntervalSince($0) < WakeGate.unansweredWindow }
+        unanswered = unanswered.filter { now.timeIntervalSince($0) < timing.unansweredWindow }
         unanswered.append(now)
         if unanswered.count >= WakeGate.maxUnanswered {
             lockOut(after: "three unanswered prompts")
             return
         }
-        deny(reason: "no answer in \(Int(WakeGate.authTimeout)) s", say: "Never mind.", countsAsFailure: false)
+        deny(reason: "no answer in \(Int(timing.authTimeout)) s", say: "Never mind.", countsAsFailure: false)
     }
 
     // MARK: - outcomes
@@ -584,8 +662,9 @@ final class WakeGate {
         stopListener()
         state.send(.go)
         // If the engine never wakes (daemon trouble), go back to listening rather than hang.
+        let watchdog = timing.grantWatchdog
         grantWatchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(watchdog * 1_000_000_000))
             guard !Task.isCancelled, let self, self.mode == .granting else { return }
             self.mode = .idle
             self.state.toast(resuming ? "Said the word, but the engine did not resume." : "Said the word and authenticated, but the engine did not wake.", tone: .warn)
@@ -604,10 +683,11 @@ final class WakeGate {
         }
         publish(.denied(reason: reason))
         if let text { speaker.speak(text) }
-        cooldownUntil = Date().addingTimeInterval(WakeGate.cooldown)
+        let cooldown = timing.cooldown
+        cooldownUntil = Date().addingTimeInterval(cooldown)
         // Leave the denial visible for the length of the cooldown, then listen again.
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(WakeGate.cooldown * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(cooldown * 1_000_000_000))
             self?.update()
         }
     }
@@ -618,13 +698,14 @@ final class WakeGate {
         failures = 0
         unanswered = []
         state.wakeHeard = ""
-        let until = Date().addingTimeInterval(WakeGate.lockout)
+        let lockout = timing.lockout
+        let until = Date().addingTimeInterval(lockout)
         lockedUntil = until
         publish(.lockedOut(until: until))
         speaker.speak("Locked for a minute.")
         state.toast("Wake word locked for a minute after \(reason).", tone: .warn)
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(WakeGate.lockout * 1_000_000_000) + 200_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(lockout * 1_000_000_000) + 200_000_000)
             guard let self else { return }
             if let l = self.lockedUntil, l <= Date() { self.lockedUntil = nil }
             self.update()
@@ -693,8 +774,8 @@ final class WakeGate {
             state.toast("No wake passphrase is set.", tone: .warn)
             return
         }
-        guard settings.auth != .touchId || !LocalAuth.ownerAuthAvailable() else {
-            state.toast("Wake authentication is set to \(LocalAuth.ownerAuthName()); the passphrase is not accepted.", tone: .warn)
+        guard settings.auth != .touchId || !owner.available() else {
+            state.toast("Wake authentication is set to \(owner.name()); the passphrase is not accepted.", tone: .warn)
             return
         }
         if let until = lockedUntil, until > Date() {
