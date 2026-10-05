@@ -2,9 +2,9 @@ import AppKit
 
 /// The signals the daemon cannot see on its own — it has no NSWorkspace — observed here on Kevin's behalf and
 /// forwarded as `system.signal` frames (design11 § Contract `SystemSignal`): an app launched or quit, the Mac
-/// slept or woke, the screen locked or unlocked, a display came or went, the clock jumped. Every one is
-/// **data** for the daemon's watchers, never a command: nothing here wakes the engine, opens a session or
-/// answers anything. No TCC prompt is behind any of these notifications.
+/// slept or woke, the screen locked or unlocked, a display came or went, the clock jumped or the zone changed.
+/// Every one is **data** for the daemon's watchers, never a command: nothing here wakes the engine, opens a
+/// session or answers anything. No TCC prompt is behind any of these notifications.
 @MainActor
 final class SignalObserver {
     private let state: AppState
@@ -46,6 +46,11 @@ final class SignalObserver {
             MainActor.assumeIsolated { self?.displaysChanged() }
         })
         observers.append(NotificationCenter.default.addObserver(forName: .NSSystemClockDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.forward("clock.changed") }
+        })
+        // A new time zone (Kevin flew, or set it) is a clock change too: the daemon reads the zone again and moves every
+        // clock row to the new wall clock. The wire has no zone signal of its own.
+        observers.append(NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.forward("clock.changed") }
         })
     }

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readlinkSync, renameSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, classifyUrl, clockOf, openPathReason, pressKeyReason, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
 import { runShell, type Brain, type BrainResult, type BrainSink, type BrainTask } from "@jarhead/brain";
@@ -37,18 +37,37 @@ export const HEADLESS_NOTE: string = headlessNote("Kevin");
 
 // -------------------------------------------------------------------- seams
 
-/** The engine's own processes for a fire: `open` to completion, `caffeinate` held until Done. Fixed argv, never a shell line. */
+/**
+ * The engine's own reach into the Mac for automations: `open` to completion, `caffeinate` held until
+ * Done, the process list the app fallback reads, the zone link. Fixed argv, never a shell line. A test's
+ * exec leaves `output` and `zone` out: then there is no fallback poll and the zone is the process's own.
+ */
 export interface AutomationExec {
   run(file: string, argv: readonly string[], timeoutMs: number): Promise<{ readonly code: number | null; readonly error?: string | undefined }>;
   /** Start a process that is killed later (`caffeinate -t N` for a running timer); undefined when it could not start. */
   hold(file: string, argv: readonly string[]): { kill(): void } | undefined;
+  /** A fixed argv's standard output (`/bin/ps -axo pid,comm`, the app quit fallback). */
+  output?(file: string, argv: readonly string[], timeoutMs: number): Promise<{ readonly code: number | null; readonly stdout: string; readonly error?: string | undefined }>;
+  /** The Mac's zone as the /etc/localtime link names it ("America/Los_Angeles"); undefined when the link cannot be read. */
+  zone?(): string | undefined;
 }
 
-/** The default: `runShell` with an argv (no shell), and a detached child for the hold. */
+/** The default: `runShell` with an argv (no shell), a detached child for the hold, readlink(2) for the zone. */
 export const defaultAutomationExec: AutomationExec = {
   run: async (file, argv, timeoutMs) => {
     const r = await runShell({ command: [file, ...argv].join(" "), argv: [file, ...argv], timeoutMs });
     return { code: r.code, ...(r.error ? { error: r.error } : {}) };
+  },
+  output: async (file, argv, timeoutMs) => {
+    const r = await runShell({ command: [file, ...argv].join(" "), argv: [file, ...argv], timeoutMs });
+    return { code: r.code, stdout: r.stdout, ...(r.error ? { error: r.error } : {}) };
+  },
+  zone: () => {
+    try {
+      return /\/zoneinfo\/(.+)$/.exec(readlinkSync("/etc/localtime"))?.[1];
+    } catch {
+      return undefined;
+    }
   },
   hold: (file, argv) => {
     try {
@@ -134,7 +153,12 @@ export interface FireContext {
   readonly quiet: boolean;
   /** The instant the row was due (the alarm's head clock). */
   readonly dueAt: number;
+  /** Inside the row's cooldown: a folder fire files its file (or runs its recipe on it) and skips chime, say and notify. */
+  readonly muted?: boolean | undefined;
 }
+
+/** The line kinds: what a ring sounds, says or shows. */
+const LINE_KINDS: ReadonlySet<AutomationActionKind> = new Set<AutomationActionKind>(["chime", "say", "notify"]);
 
 export interface FireOutcome {
   readonly ok: boolean;
@@ -221,6 +245,7 @@ export class AutomationExecutor {
     const spoken: string[] = [];
     // The actions run in the order Kevin set them — `then` is his sequence — and the first failure stops the chain.
     for (const action of a.then) {
+      if (ctx.muted && LINE_KINDS.has(action.kind)) continue;
       actions.push(action.kind);
       const r = await this.one(action, ctx, kind, what, nextAt, spoken);
       if (r.what) what = r.what;

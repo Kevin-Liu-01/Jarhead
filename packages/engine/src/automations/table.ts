@@ -189,6 +189,12 @@ export class AutomationTable {
     return this.byId.get(key) ?? this.byId.get(this.byName.get(key.toLowerCase()) ?? "");
   }
 
+  /** The non-trashed row wearing this name (case-insensitive), whatever its state. */
+  named(name: string): Automation | undefined {
+    const id = this.byName.get(name.trim().toLowerCase());
+    return id === undefined ? undefined : this.byId.get(id);
+  }
+
   /** Whether a non-trashed row already wears this name (case-insensitive), other than `exceptId`. */
   nameTaken(name: string, exceptId?: string): boolean {
     const id = this.byName.get(name.trim().toLowerCase());

@@ -4543,7 +4543,7 @@ extension PreviewDelegate {
         let chimePhrase = chime.whenPhrase ?? "nil"
         let chimeWhen = chime.when == nil ? "no when" : "when"
         let chimeQuiet = chime.clauses.quiet ?? "nil"
-        expect("add form: whenPhrase rides, nothing parsed", [chimePhrase, chimeWhen, chimeQuiet].joined(separator: " | "), "weekdays 09:00 | no when | override")
+        expect("add form: whenPhrase rides, nothing parsed, no quiet clause", [chimePhrase, chimeWhen, chimeQuiet].joined(separator: " | "), "weekdays 09:00 | no when | nil")
         expect("add form: echo", chime.echo + " / " + AutomationForm.echo(name: "pasta", phrase: "in 12 min", kind: "chime"), "Weekdays 09:00, ring “standup”. / In 12 min, ring “pasta”.")
         let wakeDraft = AutomationForm.draft(name: "summarise", phrase: "daily 18:00", kind: "wake-brain").then[0]
         let wakePrompt = wakeDraft.prompt ?? "-"

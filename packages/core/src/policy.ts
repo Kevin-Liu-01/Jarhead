@@ -1780,6 +1780,12 @@ export interface AutomationContext {
   readonly fromThread?: boolean | undefined;
   /** The brain is a local model (the cost line says warm-up, not plan). */
   readonly localBrain?: boolean | undefined;
+  /**
+   * How a brain that is not local is paid for: `plan` (a login's plan, the default), `key` (tokens billed on Kevin's API key:
+   * anthropic-api, openai-responses, an openai-compatible server sent his key) or `server` (an openai-compatible server he set
+   * that gets no key of his, so Jarhead cannot say who bills it). The cost line says which.
+   */
+  readonly paid?: BrainPaid | undefined;
   /** Kevin's own words for the row, when known; a folder he named is one `file` may move into. */
   readonly request?: string | undefined;
   readonly home?: string | undefined;
@@ -1928,15 +1934,21 @@ function clobberReason(command: string): string | undefined {
   return undefined;
 }
 
+/** How a wake-brain fire is paid for when the brain is not a model on this Mac (AutomationContext.paid). */
+export type BrainPaid = "plan" | "key" | "server";
+
+const PAID_WORDS: Readonly<Record<BrainPaid, string>> = { plan: "on your plan", key: "billed as API tokens on your key", server: "on the server you set" };
+
 /**
  * The cost line for `wake-brain`, said word for word before the yes and recorded as
  * `confirmed.heard`: N = ceil(budget.seconds / 60), M = Settings.wakeBudgetMinutesPerDay;
- * a local brain warms a model on this Mac instead of spending Kevin's plan.
+ * a local brain warms a model on this Mac, an API brain is billed as tokens on Kevin's key,
+ * a server he set without his key runs it there, and the rest spend his plan.
  */
-export function costLine(budget: { readonly steps: number; readonly seconds: number }, cap: number, local: boolean): string {
+export function costLine(budget: { readonly steps: number; readonly seconds: number }, cap: number, local: boolean, paid: BrainPaid = "plan"): string {
   const n = Math.max(1, Math.ceil(budget.seconds / 60));
   const minutes = n === 1 ? "brain minute" : "brain minutes";
-  const where = local ? "a model warm-up on this Mac" : "on your plan";
+  const where = local ? "a model warm-up on this Mac" : PAID_WORDS[paid];
   return `this wakes the brain — not the voice — while Jarhead is asleep: about ${n} ${minutes} per fire ${where}, up to ${cap} a day; its one-line answer is spoken by the local speaker / shown as a banner`;
 }
 
@@ -2137,7 +2149,7 @@ export function actionReason(action: AutomationAction, ctx: AutomationContext): 
       if (!prompt) return refuse("wake-brain needs a prompt");
       if (prompt.length > WAKE_PROMPT_CHARS) return refuse(`the prompt is ${prompt.length} chars; ${WAKE_PROMPT_CHARS} at most`);
       if (ctx.fromThread) return refuse("a spawned thread cannot arm a brain wake (depth one); the main conversation can");
-      return confirm(costLine(action.budget, ctx.settings.wakeBudgetMinutesPerDay, ctx.localBrain === true));
+      return confirm(costLine(action.budget, ctx.settings.wakeBudgetMinutesPerDay, ctx.localBrain === true, ctx.paid));
     }
     default:
       return refuse(`unknown action kind "${kind}"; not armed`);

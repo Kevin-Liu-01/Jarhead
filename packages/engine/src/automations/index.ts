@@ -1,7 +1,7 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { classifyAction, classifyAutomation, clockOf, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, logger, newId, nextFire, parseWhen, quietEnds, snoozeDefault, Ledger, type ActionContext, type Decision } from "@jarhead/core";
+import { atClock, classifyAction, classifyAutomation, clockOf, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, isLoopbackHost, logger, newId, nextFire, parseWhen, quietEnds, secretsPresent, snoozeDefault, Ledger, type ActionContext, type AutomationContext, type Decision } from "@jarhead/core";
 import { runShell, type AutomationChangeResult, type AutomationSetContext, type AutomationSetResult, type AutomationSource, type AutomationVerb, type RecipeRow } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import {
@@ -40,7 +40,7 @@ import { Watchers } from "./watchers.ts";
 export { AutomationTable, JOURNAL_COMPACT_BYTES } from "./table.ts";
 export { AutomationExecutor, defaultAutomationExec, freeName, firstSentence } from "./executor.ts";
 export type { AutomationExec, LiveLike, ShellGate, ShellRunner, WakeBrainLane, WakeBrainSeam } from "./executor.ts";
-export { Watchers, FOLDER_POLL_MS, APP_POLL_MS, globToRegExp } from "./watchers.ts";
+export { Watchers, FOLDER_POLL_MS, APP_POLL_MS, LIST_ASYNC_AT, globToRegExp, runningApps } from "./watchers.ts";
 
 /**
  * The Automations façade the engine constructs beside the ThreadScheduler: arming (the
@@ -62,8 +62,56 @@ const log = logger("engine.automations");
 export const AUTOMATION_NAME_CHARS = 24;
 /** The echo line Jarhead read back, at most this long. */
 export const AUTOMATION_ECHO_CHARS = 120;
-/** A timer this long or shorter holds the Mac awake with `caffeinate -t`. */
-export const CAFFEINATE_MAX_MS = 60 * 60_000;
+/** One `caffeinate -t` holds a running timer at most this long; a longer timer is held again before each one runs out. */
+export const CAFFEINATE_CHUNK_MS = 60 * 60_000;
+/** A hold is renewed this long before it runs out. */
+const CAFFEINATE_RENEW_MS = 60_000;
+/** The zone link is read this often from tick() (and at every clock.changed). */
+export const ZONE_CHECK_MS = 60_000;
+/** Files a folder row has waiting at most; past it a landing is counted, not handled. */
+export const FILE_QUEUE_MAX = 100;
+/** The actions that take the landed file: a folder row with one handles every file, one fire each. */
+const FILE_KINDS: ReadonlySet<string> = new Set(["file", "run-recipe"]);
+/** A row in one of these states keeps its name only until another row wants it. */
+const RETIRABLE: ReadonlySet<AutomationState> = new Set<AutomationState>(["done", "failed"]);
+/** The brains always billed per token on an API key: the cost line says so. openai-compatible depends on its server (brainPaid). */
+const API_BRAINS: ReadonlySet<string> = new Set(["anthropic-api", "openai-responses"]);
+
+/** Which brain keys are set, by presence only (core's secretsPresent). */
+export interface BrainKeys {
+  /** JARHEAD_BRAIN_API_KEY: the one key an openai-compatible server other than OpenAI's is sent. */
+  readonly brainApiKey: boolean;
+  /** OPENAI_API_KEY: sent to an openai-compatible root only when it is OpenAI's own host. */
+  readonly openai: boolean;
+}
+
+/** The host of a server root, lowercased; a root written without a scheme ("localhost:11434") is read as http. */
+function hostOfRoot(root: string): string {
+  const r = root.trim();
+  try {
+    return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(r) ? r : `http://${r}`).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * How a wake-brain fire on `brain` is paid for, as the cost line says it: `mac` for a model on this Mac, else core's BrainPaid.
+ * An openai-compatible brain is judged by Settings' server root and the keys that are set, the same three inputs the Console's
+ * form reads (AutomationForm.billing): a loopback root with no brain key is a model on this Mac (Ollama, LM Studio); a root
+ * that is sent Kevin's key bills tokens on it (OpenAI's host takes OPENAI_API_KEY too); any other root, or none in Settings,
+ * is "the server you set". Every other brain: local is `mac`, the API brains `key`, the logins (and an unresolved auto) `plan`.
+ */
+export function brainPaid(brain: string | undefined, brainBaseUrl: string | undefined, keys: BrainKeys): "mac" | NonNullable<AutomationContext["paid"]> {
+  if (brain === "local") return "mac";
+  if (brain !== undefined && API_BRAINS.has(brain)) return "key";
+  if (brain !== "openai-compatible") return "plan";
+  const host = hostOfRoot(brainBaseUrl ?? "");
+  if (!host) return "server";
+  if (isLoopbackHost(host)) return keys.brainApiKey ? "server" : "mac";
+  const openaiHost = host === "api.openai.com" || host.endsWith(".openai.com");
+  return keys.brainApiKey || (openaiHost && keys.openai) ? "key" : "server";
+}
 /** What a `firing` row left by a dead daemon says. */
 export const RESTART_DETAIL = "the daemon restarted";
 /** A recipe the brain hands in with a row is saved with this cap. */
@@ -112,8 +160,8 @@ export interface AutomationsOptions {
   readonly updateSettings: (patch: SettingsPatch) => void;
   /** The acting helper (open_app, the press probes and key). */
   readonly hands: NativeHands;
-  /** The reading helper (the app fallback poll). */
-  readonly reader: NativeHands;
+  /** Unused: the app quit fallback reads the process list through `exec`. The engine still hands it in; the two go together. */
+  readonly reader?: NativeHands | undefined;
   readonly redact: (text: string) => string;
   readonly emit: (event: EngineEvent) => void;
   readonly problem: (kind: ProblemKind, text: string, remedy?: ProblemRemedy) => void;
@@ -125,6 +173,16 @@ export interface AutomationsOptions {
   readonly present: () => Promise<boolean>;
   /** The brain is a local model (the cost line says warm-up, not plan). */
   readonly localBrain: () => boolean;
+  /**
+   * The brain a wake-brain fire would run on, resolved (what `auto` became); absent, Settings' brain. An API brain's cost line
+   * says tokens on the key; wired, it also decides the local warm-up line in place of `localBrain`. The engine wires
+   * `() => (this.brainReady && this.brain ? this.brain.kind : this.settings.brain)`, and the Console's AutomationForm.billedBrain
+   * reads `setup.brainResolved ?? settings.brain` in the same change, so the form shows what the engine records. That is
+   * TRIAGE's W2-1 / W2-2 contract, at the wave merge; until it lands, the default `auto` is judged as "on your plan".
+   */
+  readonly brainKind?: (() => string | undefined) | undefined;
+  /** Which brain keys are set (the openai-compatible cost line); absent, core's secretsPresent(). */
+  readonly brainKeys?: (() => BrainKeys) | undefined;
   /** The snapshot goes out (the LIST or a row changed). */
   readonly onChange: () => void;
   /** The user's name as the lines say it (the engine's effective name; "Kevin" when none is wired). */
@@ -140,6 +198,33 @@ export interface AutomationsOptions {
 
 interface Hold {
   kill(): void;
+}
+
+/** The zone the process's clock math runs in now. */
+function currentZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, "0");
+
+/**
+ * `ms` read as a wall clock in the zone `from`, then the same wall clock in the zone the process runs in now: Mon 07:10 in
+ * New York becomes Mon 07:10 in Los Angeles. A minute the new zone skips rolls forward as atClock does. A zone name Intl
+ * does not know leaves the instant as it was.
+ */
+export function repinned(ms: number, from: string): number {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-US", { timeZone: from, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }).formatToParts(ms);
+  } catch {
+    return ms;
+  }
+  const part = (type: Intl.DateTimeFormatPartTypes): number => Number(parts.find((p) => p.type === type)?.value);
+  const [y, mo, d, h, mi] = [part("year"), part("month"), part("day"), part("hour"), part("minute")];
+  if (![y, mo, d, h, mi].every(Number.isFinite)) return ms;
+  // The seconds past the minute are the same in every zone (offsets are whole minutes).
+  const rest = ((ms % 60_000) + 60_000) % 60_000;
+  return atClock(new Date(y, mo - 1, d), `${pad2(h)}:${pad2(mi)}` as Parameters<typeof atClock>[1]) + rest;
 }
 
 const cut = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -164,6 +249,8 @@ export class Automations implements AutomationSource {
   private lastTickAt = 0;
   /** `<stateDir>/automations/alive`: the last instant this daemon was known to be watching (written every ALIVE_EVERY_MS). */
   private readonly alivePath: string;
+  /** `<stateDir>/automations/zone`, beside it: the zone the rows' wall clocks are pinned to, for a daemon that starts somewhere else. */
+  private readonly zonePath: string;
   private aliveAt = 0;
   /** At load: the previous daemon's last heartbeat, for the missed rows' words ("Jarhead was off from 02:10") and the watchers' baseline. */
   private downSince: number | undefined;
@@ -176,11 +263,17 @@ export class Automations implements AutomationSource {
   /** The ring line per `fired` row (the island's), without `more`. */
   private readonly rings = new Map<string, Omit<RingLine, "more">>();
   private readonly lastChimeAt = new Map<string, number>();
-  /** `caffeinate` holds per running timer. */
-  private readonly holds = new Map<string, Hold>();
+  /** `caffeinate` holds per running timer, and when each runs out. */
+  private readonly holds = new Map<string, { readonly hold: Hold; readonly until: number }>();
+  /** Landed files a folder row has yet to handle, oldest first: one fire each. */
+  private readonly fileQueue = new Map<string, { readonly file: string; readonly what: string | undefined }[]>();
+  /** The zone link as last read (the first read only records it), the zone the rows' clocks were computed in, and when it was read. */
+  private zoneLink: string | undefined;
+  private zone: string | undefined;
+  private zoneCheckedAt = 0;
   /** Signals inside a row's cooldown since its last fire. */
   private readonly cooled = new Map<string, number>();
-  /** Rows whose fire is in flight (a signal storm queues nothing behind it). */
+  /** Rows whose fire is in flight (a signal storm queues nothing behind it; a folder row's landed files wait in fileQueue). */
   private readonly firing = new Set<string>();
   private viewers = 0;
   /** Brain seconds `wake-brain` spent today and the day it was summed for. */
@@ -195,6 +288,7 @@ export class Automations implements AutomationSource {
     this.home = opts.home ?? homedir();
     this.exec = opts.exec ?? defaultAutomationExec;
     this.alivePath = join(opts.stateDir, "automations", "alive");
+    this.zonePath = join(opts.stateDir, "automations", "zone");
     const shell: ShellRunner = opts.shell ?? ((o) => runShell(o));
     const shellGate: ShellGate = opts.shellGate ?? ((ctx: ActionContext): Decision => classifyAction(ctx));
     this.table = new AutomationTable({ stateDir: opts.stateDir, now: this.now, sink: (e) => opts.emit({ type: "automation.event", event: e }), coalesceMs: opts.coalesceMs, compactBytes: opts.compactBytes });
@@ -217,28 +311,40 @@ export class Automations implements AutomationSource {
       reserveBrain: (id, seconds) => this.reservedBrain.set(id, seconds),
       userName: opts.userName,
     });
-    this.watchers = new Watchers({ now: this.now, reader: opts.reader, shell, shellGate, settings: opts.settings, home: this.home, repoRoot: opts.repoRoot });
+    this.watchers = new Watchers({ now: this.now, exec: this.exec, shell, shellGate, settings: opts.settings, home: this.home, repoRoot: opts.repoRoot });
   }
 
   // ------------------------------------------------------------------ load
 
   /**
-   * At `Engine.start()`, after `restoreFromLedger`: the journal, last-by-id; a row left
+   * At `Engine.start()`, after `restoreFromLedger`: the journal, last-by-id; the rows' wall
+   * clocks moved to this zone when the last daemon pinned them elsewhere; a row left
    * `firing` by a dead daemon → `failed: "the daemon restarted"`; repeaters without a
    * `nextAt` get one; watchers are watched again (their listings the new baseline); the
    * day's brain spend is re-summed from the ledger; then `resync(now, "daemon-down")`.
    * A second load over the same journal appends nothing new for a clean table.
    */
   load(now = this.now()): void {
-    const rows = this.table.load();
+    this.table.load();
     this.rings.clear();
     this.holds.clear();
+    this.fileQueue.clear();
+    // The zone the rows are pinned to: this process's own, else the one the last daemon wrote down. A daemon started after
+    // the Mac moved (it quit in New York and starts at login in Los Angeles) moves every wall clock here, as a move while
+    // running does; what that puts behind now is settled by the resync below.
+    this.zone ??= this.readZone();
+    this.checkZone(now);
     // The last daemon's heartbeat: from then until now nothing watched. Its folders' baselines are taken as of that instant.
     const downSince = this.readAlive();
     this.downSince = downSince !== undefined && downSince < now ? downSince : undefined;
-    for (const a of rows) {
+    for (const a of this.table.all()) {
       if (a.state === "firing") {
-        this.write(mut(a, { state: this.repeats(a) ? "armed" : "failed", nextAt: this.repeats(a) ? nextFire(a.when, now, a.createdAt) : undefined, lastDetail: RESTART_DETAIL, updatedAt: now }), "engine", RESTART_DETAIL);
+        const row = this.write(mut(a, { state: this.repeats(a) ? "armed" : "failed", nextAt: this.repeats(a) ? nextFire(a.when, now, a.createdAt) : undefined, lastDetail: RESTART_DETAIL, updatedAt: now }), "engine", RESTART_DETAIL);
+        // A watcher whose fire the dead daemon left in flight watches again, like any armed one.
+        if (row.state === "armed" && row.when.kind === "on") {
+          const err = this.watchers.watch(row, this.downSince);
+          if (err) this.watchProblem(row, err);
+        }
         continue;
       }
       if (a.state === "fired") {
@@ -255,7 +361,8 @@ export class Automations implements AutomationSource {
         const err = this.watchers.watch(a, this.downSince);
         if (err) this.watchProblem(a, err);
       }
-      if (a.state === "armed" && a.when.kind === "in" && a.nextAt !== undefined) this.caffeinate(a, now);
+      // A running timer, or a snoozed one, holds the Mac awake again.
+      if ((a.state === "armed" || a.state === "snoozed") && a.when.kind === "in" && a.nextAt !== undefined) this.caffeinate(a, now);
     }
     this.sumSpend(now);
     this.loaded = true;
@@ -273,6 +380,26 @@ export class Automations implements AutomationSource {
       return Number.isFinite(n) && n > 0 ? n : undefined;
     } catch {
       return undefined;
+    }
+  }
+
+  /** The zone the rows were pinned to when the last daemon wrote it down, or undefined (a first run, a daemon from before the file). */
+  private readZone(): string | undefined {
+    try {
+      const zone = readFileSync(this.zonePath, "utf8").trim();
+      return zone || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** `zone` holds the zone the rows are pinned to: written when it is first recorded and at every move. */
+  private writeZone(zone: string): void {
+    try {
+      mkdirSync(dirname(this.zonePath), { recursive: true });
+      writeFileSync(this.zonePath, zone);
+    } catch (e) {
+      log.debug(`zone: ${(e as Error).message}`);
     }
   }
 
@@ -310,19 +437,24 @@ export class Automations implements AutomationSource {
     if (now - this.aliveAt >= ALIVE_EVERY_MS) this.heartbeat(now);
     const enabled = this.opts.settings().automations.enabled;
     if (!enabled) {
-      // Off: nothing fires, nothing resyncs (a sleep gap while off is settled at the flip), every row stays.
+      // Off: nothing fires, nothing resyncs (a sleep gap while off is settled at the flip), every row stays. The rows still
+      // follow the zone: the flip's resync reads them where the Mac is.
+      if (now - this.zoneCheckedAt >= ZONE_CHECK_MS) this.checkZone(now);
       this.lastTickAt = now;
       this.wasEnabled = false;
       return;
     }
     // The switch back on: what fell due while it was off goes through the missed table — grace for one-shots, skipped
-    // routines — never fired hours late. Otherwise a tick gap over AUTOMATION_SLEEP_GAP_MS means the Mac slept.
+    // routines — never fired hours late. Otherwise a tick gap over AUTOMATION_SLEEP_GAP_MS means the Mac slept. Either
+    // resync reads the zone first; with neither, the zone is read once a minute and what a move put behind now is settled.
     if (this.wasEnabled === false) this.resync(now, "daemon-down");
     else if (this.lastTickAt !== 0 && now - this.lastTickAt > AUTOMATION_SLEEP_GAP_MS) this.resync(now, "mac-slept");
+    else if (now - this.zoneCheckedAt >= ZONE_CHECK_MS) this.checkZone(now, true);
     this.lastTickAt = now;
     this.wasEnabled = true;
     this.fireDue(now);
     this.ringTick(now);
+    this.renewHolds(now);
     void this.pollWatchers(now);
     if (this.viewers > 0) for (const a of this.table.inState("armed")) if (a.when.kind === "in" && a.nextAt !== undefined) this.table.push(a.id, { kind: "tick", remainingMs: Math.max(0, a.nextAt - now) });
     if (this.spendDay !== Ledger.dayFor(now)) this.sumSpend(now);
@@ -339,9 +471,10 @@ export class Automations implements AutomationSource {
         this.roll(a, dueAt, now, "outside its window");
         continue;
       }
-      // Later than its grace (a tick's worth of slack): the missed table, never a late run — whatever let it get this late.
+      // Later than its grace (a tick's worth of slack): the missed table, never a late run — whatever let it get this late. A
+      // deferred row is due at its quiet end and keeps the same grace from there.
       const lateMs = now - dueAt;
-      if (a.state !== "deferred" && lateMs > Math.max(graceFor(automationKind(a)), AUTOMATION_SLEEP_GAP_MS)) {
+      if (lateMs > Math.max(graceFor(automationKind(a)), AUTOMATION_SLEEP_GAP_MS)) {
         this.settleDue(a, now, "daemon-down");
         continue;
       }
@@ -408,10 +541,12 @@ export class Automations implements AutomationSource {
   }
 
   private async pollWatchers(now: number): Promise<void> {
-    const rows = this.armedWatchers();
+    // The armed watchers, and the folder rows that ring or fire: files that land meanwhile wait in their queue.
+    const rows = this.table.all().filter((a) => a.when.kind === "on" && (a.state === "armed" || (isFolderRow(a) && (a.state === "fired" || a.state === "firing"))));
     if (rows.length === 0) return;
     try {
-      for (const f of await this.watchers.poll(now, rows)) this.watcherFire(f.id, now, f.file, f.what);
+      // The app client forwards app.launch / app.quit itself: the process list is only the fallback while none is attached.
+      for (const f of await this.watchers.poll(now, rows, { appSignals: this.viewers > 0 })) this.watcherFire(f.id, now, f.file, f.what);
     } catch (e) {
       log.warn(`watchers: ${(e as Error).message}`);
     }
@@ -419,6 +554,64 @@ export class Automations implements AutomationSource {
 
   private armedWatchers(): Automation[] {
     return this.table.inState("armed").filter((a) => a.when.kind === "on");
+  }
+
+  /**
+   * The zone. The clock math is local and Node keeps the zone the process started in, so the
+   * /etc/localtime link is read once a minute, at every resync and at every `clock.changed` and
+   * `mac.wake`: a link that moved becomes `process.env.TZ` (the first read only records it, so a
+   * process started with its own TZ keeps it). When the process zone is not the one the rows were
+   * pinned to, every wall clock moves (moveZone). `settle`: what the move put behind now is settled
+   * here; a resync passes false and settles it with everything else the gap passed.
+   */
+  private checkZone(now: number, settle = false): void {
+    this.zoneCheckedAt = now;
+    const link = this.exec.zone?.();
+    if (link !== undefined && link !== this.zoneLink) {
+      const first = this.zoneLink === undefined;
+      this.zoneLink = link;
+      if (!first && process.env["TZ"] !== link) {
+        log.info(`the Mac's time zone is now ${link}`);
+        process.env["TZ"] = link;
+      }
+    }
+    const zone = currentZone();
+    const was = this.zone;
+    if (zone === was) return;
+    this.zone = zone;
+    this.writeZone(zone);
+    if (was !== undefined) this.moveZone(was, now, settle);
+  }
+
+  /**
+   * The rows' wall clocks move from the zone `from` to the zone the process runs in now. Each instant is re-pinned, never
+   * recomputed from now: the occurrence a row was waiting for keeps its day and its clock (Mon 07:10 New York → Mon 07:10
+   * Los Angeles), so a skip holds, an occurrence already rung never rings twice, and one a move puts behind now stays due
+   * for the missed table (Run now). Re-pinned: a one-shot's `at`; the `nextAt` of an armed or ringing clock row (an
+   * interval keeps its cadence) and of any deferred row (quiet hours are a wall clock). A timer, a snooze and a watcher
+   * keep their instants.
+   */
+  private moveZone(from: string, now: number, settle: boolean): void {
+    const moved = new Set<string>();
+    for (const a of this.table.all()) {
+      if (a.state === "done" || a.state === "failed" || a.state === "trashed" || a.state === "firing" || a.when.kind === "on") continue;
+      const wall = a.when.kind === "at" || (a.when.kind === "every" && a.when.every.kind !== "interval");
+      const at = a.when.kind === "at" ? repinned(a.when.at, from) : undefined;
+      const pin = a.nextAt !== undefined && (a.state === "deferred" || (wall && (a.state === "armed" || a.state === "fired")));
+      const nextAt = pin && a.nextAt !== undefined ? repinned(a.nextAt, from) : a.nextAt;
+      const whenMoved = a.when.kind === "at" && at !== undefined && at !== a.when.at;
+      if (!whenMoved && nextAt === a.nextAt) continue;
+      const when: AutomationWhen = a.when.kind === "at" && at !== undefined ? { ...a.when, at } : a.when;
+      this.write(mut(a, { when, nextAt, updatedAt: now }), "engine", undefined, false);
+      moved.add(a.id);
+    }
+    log.info(`time zone ${from} → ${this.zone}: ${moved.size} row${moved.size === 1 ? "" : "s"} moved to the new wall clock`);
+    if (moved.size === 0) return;
+    // Awake, with no resync to come: inside its grace the occurrence rings late; past it, a missed row with Run now.
+    if (settle && this.loaded && this.opts.settings().automations.enabled) {
+      for (const a of this.table.due(now)) if (moved.has(a.id) && !this.firing.has(a.id)) this.settleDue(a, now, "mac-slept", "the time zone moved");
+    }
+    this.opts.onChange();
   }
 
   // ---------------------------------------------------------------- signals
@@ -429,6 +622,9 @@ export class Automations implements AutomationSource {
       this.sleptAt = at;
       return;
     }
+    // A clock or zone change (the app forwards NSSystemTimeZoneDidChange as clock.changed) or a wake: the zone first, so every
+    // row is read in the zone the Mac is in now, whichever signal comes first.
+    if (sig.kind === "clock.changed" || sig.kind === "mac.wake") this.checkZone(this.now());
     // Off: the switch's own resync at the flip settles everything; a signal fires nothing meanwhile.
     if (!this.opts.settings().automations.enabled) return;
     if (sig.kind === "mac.wake" || sig.kind === "clock.changed") this.resync(this.now(), "mac-slept");
@@ -443,19 +639,27 @@ export class Automations implements AutomationSource {
     for (const f of fires) this.watcherFire(f.id, this.now(), undefined, f.what);
   }
 
-  /** A watcher saw its signal: the clauses (days / window / once / cooldown) admit or count it, then it fires. */
+  /**
+   * A watcher saw its signal: the clauses (days / window / once / cooldown) admit or count it, then it fires. A folder row
+   * whose actions take the file (file, run-recipe) handles every file: one landing while a fire is in flight waits in the
+   * row's queue, and inside the cooldown only the chime, the line and the banner hold back. Anything else inside the
+   * cooldown, or while its fire is in flight, is counted (a storm is one fire and a number).
+   */
   private watcherFire(id: string, now: number, file: string | undefined, what: string | undefined): void {
     const a = this.table.get(id);
-    // Armed rows fire; a row whose fire is in flight counts the signal (a storm is one fire and a number).
-    if (!a || (a.state !== "armed" && a.state !== "firing")) return;
+    const perFile = file !== undefined && a !== undefined && a.then.some((x) => FILE_KINDS.has(x.kind));
+    // Armed rows fire; a row whose fire is in flight counts the signal; a folder row takes its files while it rings too.
+    if (!a || (a.state !== "armed" && a.state !== "firing" && !(file !== undefined && a.state === "fired"))) return;
     if (!inWindow(a.clauses, now)) return;
     if (a.clauses.once === "day" && a.lastFiredAt !== undefined && Ledger.dayFor(a.lastFiredAt) === Ledger.dayFor(now)) return;
+    if (perFile && (this.firing.has(a.id) || a.state === "firing")) {
+      this.enqueue(a, now, file, what);
+      return;
+    }
     const cooldownMs = (a.clauses.cooldown ?? AUTOMATION_WATCH_COOLDOWN_S) * 1000;
-    if (this.firing.has(a.id) || (a.lastFiredAt !== undefined && now - a.lastFiredAt < cooldownMs)) {
-      const n = (this.cooled.get(a.id) ?? 0) + 1;
-      this.cooled.set(a.id, n);
-      const base = (a.lastDetail ?? "").replace(/ · \+\d+ in cooldown$/, "");
-      this.write(mut(a, { lastDetail: cut(`${base}${base ? " · " : ""}+${n} in cooldown`, DETAIL_CHARS), updatedAt: now }), "engine", undefined, false);
+    const cooling = a.lastFiredAt !== undefined && now - a.lastFiredAt < cooldownMs;
+    if (this.firing.has(a.id) || (cooling && !perFile)) {
+      this.count(a, now, "in cooldown");
       return;
     }
     this.cooled.delete(a.id);
@@ -465,7 +669,41 @@ export class Automations implements AutomationSource {
       this.write(mut(a, { missed: a.missed + 1, lastDetail: "quiet hours: not run", updatedAt: now }), "engine", "quiet hours: not run");
       return;
     }
-    void this.fire(a, now, 0, { dueAt: now, quiet, file, what });
+    void this.fire(a, now, 0, { dueAt: now, quiet, file, what, muted: cooling });
+  }
+
+  /** A signal counted on the row's detail ("+4 in cooldown"), never fired. */
+  private count(a: Automation, now: number, why: string): void {
+    const n = (this.cooled.get(a.id) ?? 0) + 1;
+    this.cooled.set(a.id, n);
+    const base = (a.lastDetail ?? "").replace(/ · \+\d+ (in cooldown|not handled)$/, "");
+    this.write(mut(a, { lastDetail: cut(`${base}${base ? " · " : ""}+${n} ${why}`, DETAIL_CHARS), updatedAt: now }), "engine", undefined, false);
+  }
+
+  /** A landed file waits for the fire in flight; past FILE_QUEUE_MAX it is counted, not handled. */
+  private enqueue(a: Automation, now: number, file: string, what: string | undefined): void {
+    const q = this.fileQueue.get(a.id) ?? [];
+    if (q.length >= FILE_QUEUE_MAX) {
+      this.count(a, now, "not handled");
+      return;
+    }
+    q.push({ file, what });
+    this.fileQueue.set(a.id, q);
+  }
+
+  /** After a fire: the row's waiting files go, one fire each, while it still watches. */
+  private drainFiles(id: string): void {
+    const q = this.fileQueue.get(id);
+    while (q && q.length > 0 && !this.firing.has(id)) {
+      const a = this.table.get(id);
+      if (!a || (a.state !== "armed" && a.state !== "fired")) {
+        this.fileQueue.delete(id);
+        return;
+      }
+      const next = q.shift()!;
+      this.watcherFire(id, this.now(), next.file, next.what);
+    }
+    if (q && q.length === 0) this.fileQueue.delete(id);
   }
 
   // ------------------------------------------------------------------ fire
@@ -476,7 +714,7 @@ export class Automations implements AutomationSource {
    * and re-arms a repeater with the reason. Every fire is an `automation.fired` row and
    * one `fired` event with its presses.
    */
-  private async fire(row: Automation, now: number, lateMs: number, o: { readonly dueAt: number; readonly quiet: boolean; readonly file?: string | undefined; readonly what?: string | undefined }): Promise<void> {
+  private async fire(row: Automation, now: number, lateMs: number, o: { readonly dueAt: number; readonly quiet: boolean; readonly file?: string | undefined; readonly what?: string | undefined; readonly muted?: boolean | undefined }): Promise<void> {
     if (this.firing.has(row.id)) return;
     this.firing.add(row.id);
     this.releaseHold(row.id);
@@ -484,7 +722,7 @@ export class Automations implements AutomationSource {
     const started = this.write(mut(row, { state: "firing", updatedAt: now }), "engine", undefined, false);
     let outcome: FireOutcome;
     try {
-      outcome = await this.executor.fire({ a: started, now, lateMs, file: o.file, quiet: o.quiet, dueAt: o.dueAt }, next);
+      outcome = await this.executor.fire({ a: started, now, lateMs, file: o.file, quiet: o.quiet, dueAt: o.dueAt, muted: o.muted }, next);
     } catch (e) {
       // The same redaction the executor gives its own details: an error carrying a path or a token reaches no surface.
       outcome = { ok: false, actions: row.then.map((x) => x.kind), line: this.executor.line(row, o.dueAt), detail: cut(this.opts.redact(`failed: ${(e as Error).message}`), DETAIL_CHARS), presses: [], ring: false, ms: 0 };
@@ -493,6 +731,8 @@ export class Automations implements AutomationSource {
       // The reservation ends with the fire, in the same turn that adds the real spend below.
       this.reservedBrain.delete(row.id);
     }
+    // The landed file was filed away: a new one under its name lands again.
+    if (o.file !== undefined && !existsSync(o.file)) this.watchers.forget(o.file);
     const at = this.now();
     const current = this.table.get(row.id) ?? started;
     // Kevin trashed or paused it while it ran: the fire's record (the ledger row, the event) still stands; the state stays his.
@@ -535,6 +775,7 @@ export class Automations implements AutomationSource {
     }
     this.table.push(row.id, { kind: "fired", actions: outcome.actions, line: cut(outcome.line, EVENT_LINE_CHARS), ok: outcome.ok, ...(detail ? { detail: cut(detail, EVENT_DETAIL_CHARS) } : {}), ...(lateMs > 0 ? { lateMs } : {}), presses: outcome.presses });
     this.opts.onChange();
+    this.drainFiles(row.id);
   }
 
   /** A repeater armed again after a fire: at `next` (clocks) or waiting for its signal (watchers); past `until` it is done. */
@@ -544,12 +785,16 @@ export class Automations implements AutomationSource {
     return mut(base, { state: "armed", nextAt: next });
   }
 
-  /** A ring ends (Done, unanswered, a restart): one-shots are done, repeaters re-arm; the alarm's one self-snooze is per ring, so it resets here. */
-  private finishRing(a: Automation, now: number, detail: string | undefined): void {
+  /**
+   * A ring ends (Done, unanswered, a restart): one-shots are done, repeaters re-arm; the alarm's one self-snooze is per ring,
+   * so it resets here. `keepDue` (a resync) re-arms a repeater at the occurrence it was waiting for even when that passed,
+   * so the resync settles it: missed, with Run now.
+   */
+  private finishRing(a: Automation, now: number, detail: string | undefined, keepDue = false): void {
     this.rings.delete(a.id);
     this.lastChimeAt.delete(a.id);
     this.selfSnoozed.delete(a.id);
-    const next = a.nextAt !== undefined && a.nextAt > now ? a.nextAt : this.repeats(a) ? nextFire(a.when, now, a.createdAt) : undefined;
+    const next = a.nextAt !== undefined && (keepDue || a.nextAt > now) ? a.nextAt : this.repeats(a) ? nextFire(a.when, now, a.createdAt) : undefined;
     const base: Automation = mut(a, { snoozedUntil: undefined, ...(detail ? { lastDetail: detail } : {}), updatedAt: now });
     if (this.repeats(a) && a.clauses.once !== true) this.write(this.rearmed(base, next, now), "engine", detail);
     else this.write(mut(base, { state: "done", nextAt: undefined }), "engine", detail);
@@ -565,6 +810,14 @@ export class Automations implements AutomationSource {
    * fresh baseline: what landed meanwhile is counted, never replayed.
    */
   resync(now: number, why: MissedWhy): void {
+    // The zone first: a move the gap hid re-pins the rows, and what it put behind now is settled below with the rest.
+    this.checkZone(now);
+    // A ring left up across the gap (the lid closed on it) and older than its kind's grace and the linger ends unanswered.
+    // A repeater re-arms at the occurrence it was waiting for, so the loop below settles what the gap passed.
+    for (const a of this.table.inState("fired")) {
+      if (this.firing.has(a.id) || now - (a.lastFiredAt ?? a.updatedAt) <= Math.max(graceFor(automationKind(a)), AUTOMATION_LINGER_MS)) continue;
+      this.finishRing(a, now, `unanswered · ${whyWords(why, undefined)}`, true);
+    }
     for (const a of this.table.due(now)) {
       if (a.nextAt === undefined || this.firing.has(a.id)) continue;
       this.settleDue(a, now, why);
@@ -580,20 +833,17 @@ export class Automations implements AutomationSource {
   }
 
   /**
-   * One waiting row whose `nextAt` passed (the missed table): a deferred row fires (its quiet
-   * end came); inside its kind's grace it fires late (deferring again if quiet hours hold);
-   * past the grace it is `missed` — routines and watchers skip to the next slot with a row,
-   * one-shots and alarms get ONE problem with Run now, repeaters roll, one-shots stay `failed`.
+   * One waiting row whose `nextAt` passed (the missed table): inside its kind's grace it fires
+   * late (deferring again if quiet hours hold; a deferred row is due at its quiet end and
+   * fires there); past the grace it is `missed` — routines and watchers skip to the next slot
+   * with a row, one-shots and alarms get ONE problem with Run now, repeaters roll, one-shots
+   * stay `failed`. A routine deferred by quiet hours is never run hours after its quiet end.
    */
-  private settleDue(a: Automation, now: number, why: MissedWhy): void {
+  private settleDue(a: Automation, now: number, why: MissedWhy, words = whyWords(why, this.sleptAt, this.downSince)): void {
     if (a.nextAt === undefined) return;
     const dueAt = a.nextAt;
     const lateMs = now - dueAt;
     const kind = automationKind(a);
-    if (a.state === "deferred") {
-      void this.fire(a, now, lateMs, { dueAt, quiet: false });
-      return;
-    }
     if (lateMs <= graceFor(kind)) {
       this.fireOrDefer(a, now, dueAt, lateMs);
       return;
@@ -602,13 +852,13 @@ export class Automations implements AutomationSource {
     this.missedRow(a, dueAt, why, routine);
     if (routine) {
       const next = nextFire(a.when, now, a.createdAt);
-      const detail = `skipped ${describeInstant(dueAt)} · ${whyWords(why, this.sleptAt, this.downSince)}`;
+      const detail = `skipped ${describeInstant(dueAt)} · ${words}`;
       if (next === undefined) this.write(mut(a, { state: "done", nextAt: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
       else this.write(mut(a, { state: "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
       return;
     }
-    const detail = `missed ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt, this.downSince)}`;
-    this.opts.problem("automation.missed", `missed ${a.name} ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt, this.downSince)}`, { label: "Run now", command: { type: "automation.run", id: a.id } });
+    const detail = `missed ${describeInstant(dueAt).slice(0, 5)} · ${words}`;
+    this.opts.problem("automation.missed", `missed ${a.name} ${describeInstant(dueAt).slice(0, 5)} · ${words}`, { label: "Run now", command: { type: "automation.run", id: a.id } });
     if (this.repeats(a)) {
       const next = nextFire(a.when, now, a.createdAt);
       this.write(mut(a, { state: next === undefined ? "done" : "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
@@ -643,7 +893,9 @@ export class Automations implements AutomationSource {
     const name = String(draft.name ?? "").replace(/\s+/g, " ").trim();
     if (!name) return { kind: "refused", reason: `an automation needs a name ${this.opts.userName?.() || "Kevin"} will hear` };
     if (name.length > AUTOMATION_NAME_CHARS) return { kind: "refused", reason: `the name "${cut(name, 30)}" is too long (${AUTOMATION_NAME_CHARS} characters at most)` };
-    if (this.table.nameTaken(name, draft.id)) return { kind: "refused", reason: `an automation named "${name}" is already set; pick another name, or change that one` };
+    // Only a live row keeps its name: a done or failed one wearing it is renamed with its day when this one arms.
+    const holder = this.nameHolder(name, draft.id);
+    if (holder?.live) return { kind: "refused", reason: `an automation named "${name}" is already set; pick another name, or change that one` };
     const then = Array.isArray(draft.then) ? draft.then : [];
     if (then.length === 0 || then.length > AUTOMATION_ACTIONS_MAX) return { kind: "refused", reason: `an automation runs 1 to ${AUTOMATION_ACTIONS_MAX} actions` };
     // When it fires: a normalised `when`, or Kevin's phrase through core's parseWhen — the ONE grammar (the Console's form and the
@@ -655,8 +907,16 @@ export class Automations implements AutomationSource {
       when = parsed;
     }
     if (!when) return { kind: "refused", reason: "say when it fires: a time, 'in 12 minutes', 'weekdays 09:00', or a signal" };
-    const clauses = { ...(draft.clauses ?? {}), quiet: draft.clauses?.quiet ?? (then[0]?.kind === "chime" && when.kind !== "on" ? "override" : "respect") } as Automation["clauses"];
+    // Quiet hours by the kind unless a clause says otherwise: an alarm rings through them; a timer, a reminder, a routine and a watcher respect them.
+    const clauses = { ...(draft.clauses ?? {}), quiet: draft.clauses?.quiet ?? (automationKind({ when, then }) === "alarm" ? "override" : "respect") } as Automation["clauses"];
     const settings = this.opts.settings().automations;
+    // The brain a wake-brain fire would run on: what `auto` resolved to when the engine says (brainKind), else Settings' brain.
+    // The Console's form names the same one, so the cost line it shows is the one recorded as heard.
+    const billed = this.opts.brainKind?.() ?? this.opts.settings().brain;
+    const paid = brainPaid(billed, this.opts.settings().brainBaseUrl, (this.opts.brainKeys ?? secretsPresent)());
+    // The runner's word on a local brain wins; then the server root (an openai-compatible loopback root is this Mac); then, with
+    // no brainKind wired, the engine's own localBrain seam.
+    const localBrain = ctx.localBrain ?? (paid === "mac" || (this.opts.brainKind === undefined && this.opts.localBrain()));
     const judged = classifyAutomation({
       when,
       then,
@@ -666,7 +926,9 @@ export class Automations implements AutomationSource {
       confirmed: false,
       folderWatchers: this.table.folderWatchers(),
       fromThread: ctx.fromThread,
-      localBrain: ctx.localBrain ?? this.opts.localBrain(),
+      localBrain,
+      // A loopback root the runner says is not local is still nobody's bill: "the server you set".
+      paid: paid === "mac" ? "server" : paid,
       request: ctx.request,
       home: this.home,
       repoRoot: this.opts.repoRoot,
@@ -709,6 +971,7 @@ export class Automations implements AutomationSource {
         watchNote = `the folder could not be read yet (${err}); allow it in the Console`;
       }
     }
+    if (holder) this.retire(holder.row, by, now);
     this.table.put(a);
     this.opts.ledger.append({ at: now, type: "automation.set", automation: a, by });
     this.table.push(a.id, { kind: "set", automation: a });
@@ -735,14 +998,27 @@ export class Automations implements AutomationSource {
     this.opts.problem("automation.watch", `${a.name}: ${err}`, { label: "Ask", command: { type: "request-permission", which } });
   }
 
-  /** A running timer ≤ CAFFEINATE_MAX_MS holds the Mac awake: `/usr/bin/caffeinate -t <seconds>`, killed at Done / Snooze / Trash / the fire. */
+  /**
+   * A running timer holds the Mac awake: `/usr/bin/caffeinate -t <seconds>` for the time left, at most CAFFEINATE_CHUNK_MS
+   * at a time (renewHolds takes the next stretch), killed at Done / Snooze / Trash / the fire.
+   */
   private caffeinate(a: Automation, now: number): void {
     if (a.when.kind !== "in" || a.nextAt === undefined) return;
     const ms = a.nextAt - now;
-    if (ms <= 0 || ms > CAFFEINATE_MAX_MS) return;
+    if (ms <= 0) return;
     this.releaseHold(a.id);
-    const hold = this.exec.hold("/usr/bin/caffeinate", ["-t", String(Math.ceil(ms / 1000))]);
-    if (hold) this.holds.set(a.id, hold);
+    const chunk = Math.min(ms, CAFFEINATE_CHUNK_MS);
+    const hold = this.exec.hold("/usr/bin/caffeinate", ["-t", String(Math.ceil(chunk / 1000))]);
+    if (hold) this.holds.set(a.id, { hold, until: now + chunk });
+  }
+
+  /** A hold about to run out on a timer still running (or snoozed) is taken again for the next stretch. */
+  private renewHolds(now: number): void {
+    const due = [...this.holds].filter(([, h]) => h.until - now <= CAFFEINATE_RENEW_MS).map(([id, h]) => [id, h.until] as const);
+    for (const [id, until] of due) {
+      const a = this.table.get(id);
+      if (a && (a.state === "armed" || a.state === "snoozed") && a.nextAt !== undefined && a.nextAt > until) this.caffeinate(a, now);
+    }
   }
 
   private releaseHold(id: string): void {
@@ -750,10 +1026,31 @@ export class Automations implements AutomationSource {
     if (!h) return;
     this.holds.delete(id);
     try {
-      h.kill();
+      h.hold.kill();
     } catch {
       // gone
     }
+  }
+
+  /** The row that keeps `name` from another one (not `exceptId`): a live one refuses it; a done or failed one gives it up. */
+  private nameHolder(name: string, exceptId?: string): { readonly live: boolean; readonly row: Automation } | undefined {
+    const row = this.table.named(name);
+    if (!row || row.id === exceptId) return undefined;
+    return { live: !RETIRABLE.has(row.state), row };
+  }
+
+  /** A done or failed row gives its name up: it wears its day ("pasta · 5 Oct"), with a number when that is taken too; one automation.set row. */
+  private retire(a: Automation, by: ArmOrigin, now: number): void {
+    const day = describeInstant(a.lastFiredAt ?? a.updatedAt).split(" ").slice(-2).join(" ");
+    let name = a.name;
+    for (let n = 1; n < 1000; n++) {
+      const tail = ` · ${day}${n > 1 ? ` ${n}` : ""}`;
+      name = `${cut(a.name, AUTOMATION_NAME_CHARS - tail.length)}${tail}`;
+      if (!this.table.nameTaken(name, a.id)) break;
+    }
+    const row = this.table.put(mut(a, { name, updatedAt: now }));
+    this.opts.ledger.append({ at: now, type: "automation.set", automation: row, by });
+    this.table.push(row.id, { kind: "set", automation: row });
   }
 
   // ----------------------------------------------------------------- verbs
@@ -761,14 +1058,14 @@ export class Automations implements AutomationSource {
   /** The brain's `automation_change`: one verb on one row by name or id; the row as it stands afterwards, with the engine's own words as `detail`. */
   async change(nameOrId: string, verb: ChangeVerb, minutes?: number): Promise<AutomationChangeResult> {
     const before = this.table.find(nameOrId);
-    const r = verb === "run" ? await this.runNow(nameOrId, "brain") : this.changeNow(nameOrId, verb, minutes);
+    const r = verb === "run" ? await this.runNow(nameOrId, "brain") : this.changeNow(nameOrId, verb, minutes, "brain");
     const after = before ? this.table.get(before.id) : undefined;
     if (!r.ok || !after) return { ok: false, reason: r.text };
     return { ok: true, automation: after, detail: r.text };
   }
 
-  /** The synchronous verbs (everything but `run`). */
-  changeNow(nameOrId: string, verb: Exclude<ChangeVerb, "run">, minutes?: number): { readonly ok: boolean; readonly text: string } {
+  /** The synchronous verbs (everything but `run`); `by` is the surface that sent it (a name a restore takes back is recorded under it). */
+  changeNow(nameOrId: string, verb: Exclude<ChangeVerb, "run">, minutes?: number, by: ArmOrigin = "console"): { readonly ok: boolean; readonly text: string } {
     const a = this.table.find(nameOrId);
     if (!a) return { ok: false, text: `no automation named "${nameOrId}"` };
     const now = this.now();
@@ -809,6 +1106,7 @@ export class Automations implements AutomationSource {
         this.releaseHold(a.id);
         this.rings.delete(a.id);
         this.watchers.unwatch(a.id);
+        this.fileQueue.delete(a.id);
         this.write(mut(a, { state: "paused", snoozedUntil: undefined, updatedAt: now }), "kevin");
         return { ok: true, text: `${a.name} paused` };
       }
@@ -821,12 +1119,15 @@ export class Automations implements AutomationSource {
         this.releaseHold(a.id);
         this.rings.delete(a.id);
         this.watchers.unwatch(a.id);
+        this.fileQueue.delete(a.id);
         this.write(mut(a, { state: "trashed", nextAt: undefined, snoozedUntil: undefined, updatedAt: now }), "kevin");
         return { ok: true, text: `${a.name} moved to the Trash · Restore brings it back` };
       }
       case "restore": {
         if (a.state !== "trashed") return { ok: false, text: `${a.name} is not in the Trash` };
-        if (this.table.nameTaken(a.name, a.id)) return { ok: false, text: `another automation is named "${a.name}" now; rename that one first` };
+        const holder = this.nameHolder(a.name, a.id);
+        if (holder?.live) return { ok: false, text: `another automation is named "${a.name}" now; rename that one first` };
+        if (holder) this.retire(holder.row, by, now);
         return this.rearm(a, now, "kevin", "restored");
       }
       default:
@@ -903,7 +1204,9 @@ export class Automations implements AutomationSource {
     const clean = name.replace(/\s+/g, " ").trim();
     if (!clean) return { ok: false, text: "a name is needed" };
     if (clean.length > AUTOMATION_NAME_CHARS) return { ok: false, text: `"${cut(clean, 30)}" is too long (${AUTOMATION_NAME_CHARS} at most)` };
-    if (this.table.nameTaken(clean, a.id)) return { ok: false, text: `another automation is named "${clean}"` };
+    const holder = this.nameHolder(clean, a.id);
+    if (holder?.live) return { ok: false, text: `another automation is named "${clean}"` };
+    if (holder) this.retire(holder.row, by, this.now());
     const row = this.table.put(mut(a, { name: clean, updatedAt: this.now() }));
     this.opts.ledger.append({ at: this.now(), type: "automation.set", automation: row, by });
     this.table.push(row.id, { kind: "set", automation: row });
@@ -1104,6 +1407,11 @@ export function keepRecipeTrash(stored: AutomationSettings, incoming: Automation
     return was?.trashedAt !== undefined ? { ...r, trashedAt: was.trashedAt } : r;
   });
   return { ...incoming, recipes };
+}
+
+/** A row that watches a folder (folder.file / download.done). */
+function isFolderRow(a: Automation): boolean {
+  return a.when.kind === "on" && (a.when.on.kind === "folder.file" || a.when.on.kind === "download.done");
 }
 
 function whyWords(why: MissedWhy, sleptAt: number | undefined, downSince?: number): string {
