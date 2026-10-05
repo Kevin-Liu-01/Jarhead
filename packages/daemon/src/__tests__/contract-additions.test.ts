@@ -2,7 +2,7 @@
 // day totals (LM-6). Both are optional, so a peer from before them still parses. The frames go through the
 // wire's own encoder and parser, the way the server and the app read them. On a live DaemonServer: an
 // audio-state frame with malformed playback telemetry loses only that object (voice PLAN W1.5), and the hello
-// carries PROTOCOL_VERSION once server.ts sends it (a todo until W3-3).
+// carries no `protocol` yet: a pin W3-3 flips to PROTOCOL_VERSION when server.ts sends it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -96,7 +96,10 @@ test("PLAN W1.5 on the socket: an audio-state frame whose playout, duck or outpu
   }
 });
 
-test("APP-3 on the socket: a live DaemonServer's hello carries PROTOCOL_VERSION", { todo: "W3-3 sends it from server.ts, then drops this todo and makes `protocol` required on the DaemonMessage hello" }, async () => {
+// A pin, not a todo: a todo prints a red failure inside every green run. W3-3 sends `protocol` from server.ts, which
+// trips this, and in the same change flips it to `PROTOCOL_VERSION` and makes `protocol` required on the
+// DaemonMessage hello (wire.ts).
+test("APP-3 on the socket: a live DaemonServer's hello carries no protocol yet (W3-3 flips this to PROTOCOL_VERSION)", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "jh-w25-hello-")), "d.sock");
   const server = new DaemonServer(audioEngine([]), path);
   await server.listen();
@@ -106,7 +109,8 @@ test("APP-3 on the socket: a live DaemonServer's hello carries PROTOCOL_VERSION"
     await client.connect({ pid: 1, audio: true });
     const first = await hello;
     assert.equal(first.type, "hello", "the hello is the first frame");
-    assert.equal(first.type === "hello" ? first.protocol : undefined, PROTOCOL_VERSION);
+    assert.ok(first.type === "hello");
+    assert.equal(first.protocol, undefined, `server.ts does not send protocol yet (W3-3 flips this to PROTOCOL_VERSION ${PROTOCOL_VERSION})`);
   } finally {
     client.close();
     await settle();

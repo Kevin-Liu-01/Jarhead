@@ -2,6 +2,7 @@
 //
 // - APP-3: PROTOCOL_VERSION rides both hellos, and `app.version` is the problem a skew raises.
 // - V8 / LM-2: a coalesced `session.usage` row, and `lost` as the reason a session the daemon died in is closed with.
+//   The lost close is dated at the newest row the dead daemon wrote, so it sorts after the session's last rows.
 // - SL-14: a `fired` event says whether it rang.
 // - SL-15: `automation.failed` is the problem a red unattended fire raises.
 // - LM-6: the `ledger.days` reply carries each day's totals.
@@ -26,6 +27,7 @@ import {
   type AudioOutput,
   type AudioPlayout,
   type AudioState,
+  type AudioTelemetryShed,
   type AutomationEvent,
   type LedgerDayTotals,
   type LedgerRow,
@@ -89,16 +91,23 @@ test("APP-3 and SL-15: ProblemKind gains app.version and automation.failed; Swif
     assert.ok(p, `the fixture carries a ${kind} problem`);
     assert.ok(p.remedy?.label, `${kind} has its one remedy`);
   }
-  assert.match(seen.get("app.version")?.text ?? "", /pnpm build:mac/, "the skew row names the rebuild");
-  assert.equal(seen.get("app.version")?.remedy?.copy, "pnpm build:mac", "the command is offered to copy, never run");
+  const skew = seen.get("app.version");
+  assert.match(skew?.text ?? "", /pnpm build:mac/, "the skew row names the rebuild");
+  assert.equal(skew?.remedy?.copy, "pnpm build:mac", "the command is offered to copy, never run");
+  // The text and the button name the same action: a respawn fixes a daemon older than the app, and the rebuild
+  // is for a skew that stays (an app older than the daemon).
+  assert.match(skew?.text ?? "", /Restart the daemon\./, "the text says what the button does");
+  assert.equal(skew?.remedy?.label, "Restart daemon");
+  assert.deepEqual(skew?.remedy?.command, { type: "daemon.restart" });
+  assert.doesNotMatch(skew?.text ?? "", /Relaunch|\u2014/, "no action the button does not take, no em dash");
 });
 
 // ---- V8 / LM-2: billed seconds a dead daemon cannot lose -------------------------------------------------
 
-test("V8 / LM-2: session.usage is a LedgerRow; `lost` is the close reason for a session the daemon died in, dated and billed as its last usage row; Swift's LedgerRow reads both from the columns it has", () => {
+test("V8 / LM-2: session.usage is a LedgerRow; `lost` is the close reason for a session the daemon died in, billed as its last usage row and dated at the newest row the dead daemon wrote; Swift's LedgerRow reads both from the columns it has", () => {
   assert.equal(SESSION_LOST_REASON, "lost");
   const usage: LedgerRow = { at: 60_000, type: "session.usage", sessionId: "sess_a", usageSeconds: 60 };
-  const lost: LedgerRow = { at: 60_000, type: "session.closed", sessionId: "sess_a", reason: SESSION_LOST_REASON, usageSeconds: 60 };
+  const lost: LedgerRow = { at: 87_300, type: "session.closed", sessionId: "sess_a", reason: SESSION_LOST_REASON, usageSeconds: 60 };
   assert.ok(JSON.stringify(usage).length < 100, "one row a minute stays small");
   assert.equal(lost.type, "session.closed", "readers that sum closed rows count it as they are");
   const row = swiftVars("LedgerRow");
@@ -108,12 +117,21 @@ test("V8 / LM-2: session.usage is a LedgerRow; `lost` is the close reason for a 
   assert.match(SWIFT, /static let lostReason = "lost"/, "the Swift side names the word once");
   const rows = ledgerRows();
   const usages = rows.filter((r): r is Extract<LedgerRow, { type: "session.usage" }> => r.type === "session.usage");
-  const closedLost = rows.find((r): r is Extract<LedgerRow, { type: "session.closed" }> => r.type === "session.closed" && r.reason === SESSION_LOST_REASON);
+  const lostAt = rows.findIndex((r) => r.type === "session.closed" && r.reason === SESSION_LOST_REASON);
+  const closedLost = rows[lostAt];
   assert.ok(usages.length > 0, "the fixture carries session.usage rows");
-  assert.ok(closedLost, "the fixture carries a session closed as lost");
+  assert.ok(closedLost?.type === "session.closed", "the fixture carries a session closed as lost");
   const last = usages.filter((u) => u.sessionId === closedLost.sessionId).at(-1);
-  assert.equal(closedLost.usageSeconds, last?.usageSeconds, "a lost close carries the last usage row's seconds");
-  assert.equal(closedLost.at, last?.at, "and its `at`, so a restart after midnight still closes it in the day it billed");
+  assert.ok(last, "the lost session has usage rows");
+  assert.equal(closedLost.usageSeconds, last.usageSeconds, "a lost close carries the last usage row's seconds");
+  // The rows the dead daemon wrote for the session: from its session.started to the close, by position.
+  const startedAt = rows.findIndex((r) => r.type === "session.started" && r.sessionId === closedLost.sessionId);
+  const span = rows.slice(startedAt, lostAt);
+  const newest = Math.max(...span.map((r) => r.at));
+  assert.ok(span.some((r) => r.at > last.at), "the fixture's lost session wrote a row after its last usage row");
+  assert.equal(closedLost.at, newest, "the close is dated at the newest row the dead daemon wrote, not at the last usage row");
+  const byAt = [...span, closedLost].map((r, i) => ({ r, i })).sort((a, b) => a.r.at - b.r.at || a.i - b.i);
+  assert.equal(byAt.at(-1)?.r, closedLost, "a view that orders by `at` (StreamBuilder) shows the close after the session's last rows");
 });
 
 // ---- SL-14: a fire that did not ring says so -------------------------------------------------------------
@@ -180,34 +198,50 @@ test("PLAN W1.5: isAudioState accepts a frame with and without playout, duck and
   const { queuedMinMs: _q, ...playoutBare } = PLAYOUT;
   const { last: _l, residualP50Dbfs: _p50, residualP99Dbfs: _p99, echoFloorDbfs: _e, refusedLive: _r, ...duckBare } = DUCK;
   assert.ok(isAudioState({ ...FRAME, playout: playoutBare, duck: duckBare, output: {} }), "a silent window: no backlog minimum, no residual yet, no voiced chunk");
-  // [why, the bad telemetry, the frame it should leave]: the same frame with the bad object (or the duck's bad `last`) gone.
+  // [why, the bad telemetry, the frame it should leave, what `shed` names]: the same frame with the bad object (or
+  // the duck's bad `last`) gone, and the name of each deleted object reported, so a caller can log the loss.
   const { last: _dropped, ...duckNoLast } = DUCK;
-  const shed: readonly [string, Record<string, unknown>, Record<string, unknown>][] = [
-    ["playout not an object", { playout: 5 }, {}],
-    ["a playout counter spelled as a string", { playout: { ...PLAYOUT, underruns: "3" } }, {}],
-    ["a playout counter missing", { playout: { ...PLAYOUT, chunks: undefined } }, {}],
-    ["a NaN target", { playout: { ...PLAYOUT, targetMs: Number.NaN } }, {}],
-    ["a null backlog minimum", { playout: { ...PLAYOUT, queuedMinMs: null } }, {}],
-    ["a duck without its count", { duck: { ...DUCK, ducks: undefined } }, {}],
-    ["a residual spelled as a string", { duck: { ...DUCK, residualP99Dbfs: "-49" } }, {}],
-    ["a last duck without its source: the duck's counts stay", { duck: { ...DUCK, last: { ...LAST, source: undefined } } }, { duck: duckNoLast }],
-    ["a last duck whose confirmed is a number: the duck's counts stay", { duck: { ...DUCK, last: { ...LAST, confirmed: 1 } } }, { duck: duckNoLast }],
-    ["a last duck that is a number", { duck: { ...DUCK, last: 5 } }, { duck: duckNoLast }],
-    ["an infinite output level", { output: { ...OUTPUT, rmsDbfs: Number.NEGATIVE_INFINITY } }, {}],
-    ["a mix format that is a number", { output: { ...OUTPUT, mixFormat: 48000 } }, {}],
-    ["output null", { output: null }, {}],
-    ["all three at once, beside good devices", { playout: "x", duck: [1, 2, 3], output: 3 }, {}],
+  const cases: readonly [string, Record<string, unknown>, Record<string, unknown>, AudioTelemetryShed[]][] = [
+    ["playout not an object", { playout: 5 }, {}, ["playout"]],
+    ["a playout counter spelled as a string", { playout: { ...PLAYOUT, underruns: "3" } }, {}, ["playout"]],
+    ["a playout counter missing", { playout: { ...PLAYOUT, chunks: undefined } }, {}, ["playout"]],
+    ["a NaN target", { playout: { ...PLAYOUT, targetMs: Number.NaN } }, {}, ["playout"]],
+    ["a null backlog minimum", { playout: { ...PLAYOUT, queuedMinMs: null } }, {}, ["playout"]],
+    ["a duck without its count", { duck: { ...DUCK, ducks: undefined } }, {}, ["duck"]],
+    ["a residual spelled as a string", { duck: { ...DUCK, residualP99Dbfs: "-49" } }, {}, ["duck"]],
+    ["a last duck without its source: the duck's counts stay", { duck: { ...DUCK, last: { ...LAST, source: undefined } } }, { duck: duckNoLast }, ["duck.last"]],
+    ["a last duck whose confirmed is a number: the duck's counts stay", { duck: { ...DUCK, last: { ...LAST, confirmed: 1 } } }, { duck: duckNoLast }, ["duck.last"]],
+    ["a last duck that is a number", { duck: { ...DUCK, last: 5 } }, { duck: duckNoLast }, ["duck.last"]],
+    ["an infinite output level", { output: { ...OUTPUT, rmsDbfs: Number.NEGATIVE_INFINITY } }, {}, ["output"]],
+    ["a mix format that is a number", { output: { ...OUTPUT, mixFormat: 48000 } }, {}, ["output"]],
+    ["output null", { output: null }, {}, ["output"]],
+    ["all three at once, beside good devices", { playout: "x", duck: [1, 2, 3], output: 3 }, {}, ["playout", "duck", "output"]],
+    ["a bad playout and a bad last duck: the duck's counts stay", { playout: 5, duck: { ...DUCK, last: 5 } }, { duck: duckNoLast }, ["playout", "duck.last"]],
   ];
-  for (const [why, telemetry, kept] of shed) {
-    const frame: Record<string, unknown> = { ...FRAME, hears: { name: "Mic", uid: "m", rate: 48000, channels: 1, transport: "built-in" }, ...telemetry };
-    assert.equal(isAudioState(frame), true, `${why}: the frame passes`);
-    assert.deepEqual(frame, { ...FRAME, hears: { name: "Mic", uid: "m", rate: 48000, channels: 1, transport: "built-in" }, ...kept }, `${why}: only the bad object is gone`);
+  const hears = { name: "Mic", uid: "m", rate: 48000, channels: 1, transport: "built-in" };
+  for (const [why, telemetry, kept, names] of cases) {
+    // Each run gets its own copy: a shed `last` is deleted from the duck object itself.
+    const frame: Record<string, unknown> = { ...FRAME, hears, ...structuredClone(telemetry) };
+    const quiet: Record<string, unknown> = { ...FRAME, hears, ...structuredClone(telemetry) };
+    const shed: AudioTelemetryShed[] = [];
+    assert.equal(isAudioState(frame, shed), true, `${why}: the frame passes`);
+    assert.deepEqual(frame, { ...FRAME, hears, ...kept }, `${why}: only the bad object is gone`);
+    assert.deepEqual(shed, names, `${why}: shed names what was deleted`);
+    assert.equal(isAudioState(quiet), true, `${why}: without the list the check passes the same`);
+    assert.deepEqual(quiet, frame, `${why}: and sheds the same`);
   }
+  const clean: AudioTelemetryShed[] = [];
+  assert.ok(isAudioState({ ...FRAME, playout: PLAYOUT, duck: DUCK, output: OUTPUT }, clean));
+  assert.deepEqual(clean, [], "a well-formed frame sheds nothing");
   const badBase: Record<string, unknown> = { ...FRAME, gated: "13", playout: 5 };
-  assert.equal(isAudioState(badBase), false, "a frame whose own counters are malformed is dropped whole");
+  const none: AudioTelemetryShed[] = [];
+  assert.equal(isAudioState(badBase, none), false, "a frame whose own counters are malformed is dropped whole");
   assert.equal(badBase["playout"], 5, "and nothing is deleted from a frame that did not pass");
+  assert.deepEqual(none, [], "so nothing is named");
   const frozen = Object.freeze({ ...FRAME, playout: 5 });
-  assert.equal(isAudioState(frozen), false, "a frozen frame cannot shed its bad object, so it is dropped whole");
+  const stuck: AudioTelemetryShed[] = [];
+  assert.equal(isAudioState(frozen, stuck), false, "a frozen frame cannot shed its bad object, so it is dropped whole");
+  assert.deepEqual(stuck, [], "and a delete that failed is not named");
   assert.equal(isAudioState(Object.freeze({ ...FRAME, playout: PLAYOUT })), true, "a frozen well-formed frame passes untouched");
 });
 

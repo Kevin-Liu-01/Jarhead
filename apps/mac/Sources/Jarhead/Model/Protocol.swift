@@ -923,7 +923,8 @@ public struct Problem: Codable, Equatable, Identifiable {
     /// crash, other, automation.missed, automation.blocked, automation.budget,
     /// automation.notifications, automation.watch, automation.failed (SL-15: an unattended fire
     /// failed, a red recipe exit there in the morning), app.version (APP-3: the app and the daemon
-    /// are from different builds; relaunch, or run pnpm build:mac, in `remedy.copy`).
+    /// are from different builds; the remedy restarts the daemon, and `remedy.copy` is pnpm build:mac
+    /// for a skew that stays, an app older than the daemon).
     /// `dock` is Jarhead twice in the Dock; its remedy is "Fix the Dock"
     /// (`problem.retry {kind:"dock"}`). `brain.local` is the local server or model needing
     /// Kevin — not running, nothing pulled that can call tools, the picked id gone, a cloud tag,
@@ -2087,9 +2088,10 @@ public struct LedgerRow: Codable, Identifiable {
     public var output: AudioOutputInfo?
     public var liveAudio: LiveAudioInfo?
     /// V8 / LM-2: the `session.closed` reason for a session the daemon died in (SESSION_LOST_REASON). The next start
-    /// writes that close with the `usageSeconds` and the `at` of the session's last `session.usage` row (sessionId,
-    /// usageSeconds: the coalesced billed seconds, every 60 s and at detach), or its `session.started` row's `at` and
-    /// 0 s when it has none. The `at` picks the day file, so the close lands in the day the seconds were billed.
+    /// sweeps before it appends anything and writes that close with the `usageSeconds` of the session's last
+    /// `session.usage` row (sessionId, usageSeconds: the coalesced billed seconds, every 60 s and at detach), 0 s when
+    /// it has none, and the newest `at` the dead daemon wrote (the largest in the newest day file). The `at` picks the
+    /// day file, so the close lands where a normal close would have, and it sorts after the session's last rows.
     public static let lostReason = "lost"
     /// The row's key: type · at · the first id it carries (item, step, delegation, thread, the wire's own).
     /// An if/else ladder, not a `??` chain inside the interpolation (CI's older Swift).

@@ -76,6 +76,7 @@ export type DaemonMessage =
    * none, raises `app.version`. Optional only until server.ts sends it: W3-3 adds the send and the app's comparison in
    * one change and then makes it required here (this daemon is always current; only the Swift decoder keeps it
    * optional, for a daemon from before the field). A comparison without the send reads every daemon as a skew.
+   * The daemon's contract-additions.test.ts pins the field absent from a live server's hello; W3-3 flips that pin.
    */
   | { readonly type: "hello"; readonly version: string; readonly pid: number; readonly stateDir: string; readonly protocol?: number }
   | { readonly type: "snapshot"; readonly snapshot: unknown }
@@ -141,8 +142,9 @@ export type ClientMessage =
    * guard's counters, who else holds the mic). Sent on start, stop, a route change and every
    * 5 s with the counters, ≤ 1 Hz. The daemon checks the shape (`isAudioState`) and keeps it in
    * the snapshot for `status`, the doctor and the Console; a malformed frame is dropped, and a
-   * malformed playout, duck or output costs only itself. Data, never a command: nothing here
-   * changes a setting or the graph.
+   * malformed playout, duck or output costs only itself (`isAudioState(state, shed)` names what
+   * it shed, for the debug line). Data, never a command: nothing here changes a setting or the
+   * graph.
    */
   | { readonly type: "audio-state"; readonly state: unknown }
   | { readonly type: "permission"; readonly which: string; readonly state: "granted" | "denied" | "unknown"; readonly detail?: string }
