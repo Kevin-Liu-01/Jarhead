@@ -4,10 +4,10 @@ import Foundation
 // MARK: - barge-in duck
 
 /// The barge-in duck: the instant the microphone hears Kevin over Jarhead's voice, the
-/// speaker comes down 20 dB — before GPT-Live-1 has noticed the interruption (its own
-/// stop lands ~1.4 s later on the public model) — and comes back once he has finished,
-/// or after 700 ms when nothing follows (a cough, a chair). The microphone is never
-/// touched; only the player's volume moves.
+/// speaker comes down 6 dB, and 20 dB once something confirms it is him — before
+/// GPT-Live-1 has noticed the interruption (its own stop lands ~1.4 s later on the public
+/// model) — and comes back once he has finished, or after 700 ms when nothing follows (a
+/// cough, a chair). The microphone is never touched; only the player's volume moves.
 ///
 /// Inputs, from five threads: the mono mic tap in 10 ms slices (`noteMic`, the tap
 /// thread), what the speaker has queued (`noteOutput` / `noteFlush`, the audio queue),
@@ -19,10 +19,13 @@ import Foundation
 /// Onset: speech energy over the room floor for ≥ 60 ms (six slices), judged inside the
 /// 100 ms tap buffer, while the player has audible output queued (or had within the last
 /// 300 ms — the queue is modelled from the seconds scheduled, so a network burst that
-/// hands the player half a second at once keeps the gate armed until it has played) —
-/// or the ear's words, or Live's transcript of Kevin, each with energy the gate saw in
-/// the last 300 ms, whichever comes first. The gain reaches 0.1 (−20 dB) in three 4 ms
-/// steps.
+/// hands the player half a second at once keeps the gate armed until it has played). Only
+/// the gate starts a duck. The ear's words and Live's transcript of Kevin confirm one and
+/// never start one: the ear's partial is the whole segment, Kevin's last turn included, and
+/// Live's items for him arrive revised and late, so words alone ducked replies he never
+/// interrupted (`wordOnsetsSkipped` counts what they would have started). The gain goes to
+/// 0.5 (−6 dB, `unconfirmedGain`) at once: a cough or a residual-echo leak only takes the
+/// edge off. A confirmation takes it to 0.1 (−20 dB) in two 4 ms steps.
 ///
 /// Confirmation — Live heard Kevin too — in the order it can arrive: the ear's partial
 /// carrying a word Jarhead did not just say (100–200 ms; a partial made only of words
@@ -34,8 +37,8 @@ import Foundation
 /// Release: confirmed, when the mic has been quiet 250 ms (capped at 4 s), a 300 ms ramp
 /// back to 1 and a 500 ms hold-off. Unconfirmed at 700 ms with the mic gone quiet: a
 /// cough — the ramp, and a 1 s hold-off (3 s after two in ten seconds). A mic still hot
-/// at 700 ms is not a cough and not Jarhead's echo (that dropped 20 dB with the
-/// speaker): the deadline extends 100 ms at a time to 1.5 s from the duck — about when
+/// at 700 ms is not a cough and not Jarhead's echo (that dropped with the speaker): the
+/// deadline extends 100 ms at a time to 1.5 s from the duck — about when
 /// Live's own stop lands — then the ramp and the hold-off. After an unconfirmed release
 /// the floor takes the level that tripped the gate, so a fan that switched on ducks once,
 /// not every few seconds (the floor falls again the moment the room is quieter).
@@ -44,8 +47,12 @@ import Foundation
 final class BargeInDuck: @unchecked Sendable {
     static let shared = BargeInDuck()
 
-    /// −20 dB.
+    /// −20 dB: a confirmed duck.
     static let duckGain: Float = 0.1
+    /// −6 dB: where a duck nobody has confirmed yet holds.
+    static let unconfirmedGain: Float = 0.5
+    /// A confirmation's way down from `unconfirmedGain`, 4 ms apart.
+    static let deepenSteps: [Float] = [0.25, duckGain]
     static let sliceSeconds = 0.01
     /// Six 10 ms slices: 60 ms of speech energy.
     static let onsetSlices = 6
@@ -80,7 +87,7 @@ final class BargeInDuck: @unchecked Sendable {
     static let novelWordMinLength = 3
 
     enum Event {
-        /// The gain reached −20 dB; `latencyMs` is from the first hot slice's capture time (or the ear's cue).
+        /// The gain reached the duck (−6 dB); `latencyMs` is from the first hot slice's capture time.
         case ducked(source: String, latencyMs: Double)
         case confirmed(String)
         /// The 700 ms deadline moved on because the mic was still hot; `afterMs` since the duck.
@@ -101,6 +108,9 @@ final class BargeInDuck: @unchecked Sendable {
         var held = 0
         /// Partials refused as confirmation (Jarhead's own words).
         var refusedWords = 0
+        /// Words (the ear's or Live's) that came with recent energy while nothing was ducked:
+        /// what used to start a duck and now only waits for the gate.
+        var wordOnsetsSkipped = 0
     }
 
     private enum State {
@@ -205,8 +215,8 @@ final class BargeInDuck: @unchecked Sendable {
     /// For the mic diag line: empty until something has happened.
     func diagSuffix() -> String {
         let s = currentStats
-        guard s.ducks > 0 else { return "" }
-        return ", duck \(s.ducks) (\(s.confirmed) confirmed, \(s.unconfirmed) unconfirmed, \(s.held) held past 700 ms, \(s.refusedWords) echo partials refused)"
+        guard s.ducks > 0 || s.wordOnsetsSkipped > 0 else { return "" }
+        return ", duck \(s.ducks) (\(s.confirmed) confirmed, \(s.unconfirmed) unconfirmed, \(s.held) held past 700 ms, \(s.refusedWords) echo partials refused, \(s.wordOnsetsSkipped) word onsets skipped)"
     }
 
     // MARK: inputs
@@ -261,9 +271,8 @@ final class BargeInDuck: @unchecked Sendable {
     }
 
     /// Live's transcript of Kevin grew (a new or longer non-final item in the snapshot,
-    /// main queue): the confirmation when the ear is off. With the room still hot and the
-    /// speaker audible it is also an onset — confirmed at once, through any hold-off:
-    /// Live's word outranks the gate's caution.
+    /// main queue): the confirmation when the ear is off. Never an onset: his items arrive
+    /// revised and late, after Jarhead has started. What would have ducked is counted.
     func noteLiveHeardKevin() {
         lock.lock()
         switch state {
@@ -271,24 +280,23 @@ final class BargeInDuck: @unchecked Sendable {
             confirmLocked("live transcript")
         case .idle, .releasing:
             let now = CFAbsoluteTimeGetCurrent()
-            if recentEnergyLocked(), echoCancelled, gain != nil, outputAudibleLocked(now) {
-                duckLocked(source: "live transcript", onsetHost: lastHotHost, confirmed: true)
-            }
+            if recentEnergyLocked(), echoCancelled, gain != nil, outputAudibleLocked(now) { stats.wordOnsetsSkipped += 1 }
         case .ducked:
             break
         }
         lock.unlock()
     }
 
-    /// The ear produced words (a partial that grew), on the ear queue. With a word
-    /// Jarhead did not just say they are an onset (confirmed at once) or the confirmation;
-    /// made only of his words they are left to the gate — residual echo says his words.
+    /// The ear produced words (a partial that grew), on the ear queue. With a word Jarhead
+    /// did not just say they confirm a duck the gate started; made only of his words they
+    /// confirm nothing — residual echo says his words. Never an onset: the partial is the
+    /// whole segment, and Kevin's own last turn is still in it.
     func noteEarWords(_ text: String) {
         lock.lock()
         let novel = hasNovelWordLocked(text)
         switch state {
         case .idle, .releasing:
-            if novel, recentEnergyLocked(), armedLocked() { duckLocked(source: "ear words", onsetHost: hotRun > 0 ? hotSinceHost : lastHotHost, confirmed: true) }
+            if novel, recentEnergyLocked(), armedLocked() { stats.wordOnsetsSkipped += 1 }
         case .ducked(_, _, false):
             if novel {
                 confirmLocked("ear words")
@@ -338,7 +346,7 @@ final class BargeInDuck: @unchecked Sendable {
                 }
                 if hotRun == BargeInDuck.onsetSlices, armedLocked() {
                     switch state {
-                    case .idle, .releasing: duckLocked(source: "gate", onsetHost: hotSinceHost, confirmed: false)
+                    case .idle, .releasing: duckLocked(source: "gate", onsetHost: hotSinceHost)
                     case .ducked: break
                     }
                 }
@@ -393,50 +401,44 @@ final class BargeInDuck: @unchecked Sendable {
         return outputAudibleLocked(now)
     }
 
-    private func duckLocked(source: String, onsetHost: UInt64, confirmed: Bool) {
+    /// The gate heard 60 ms of speech over Jarhead: −6 dB at once, nothing deeper until a
+    /// confirmation (`confirmLocked`). The player's mixer smooths the step over ~20 ms.
+    private func duckLocked(source: String, onsetHost: UInt64) {
         let now = CFAbsoluteTimeGetCurrent()
-        state = .ducked(since: now, onsetHost: onsetHost, confirmed: confirmed)
+        state = .ducked(since: now, onsetHost: onsetHost, confirmed: false)
         generation += 1
         let gen = generation
         stats.ducks += 1
-        if confirmed { stats.confirmed += 1 }
         extendedThisDuck = false
         hotSum = 0
         hotCount = 0
         guard let gain else { return }
-        // Three steps, 4 ms apart: −20 dB within one render cycle or two, without a click.
-        let steps: [Float] = [0.5, 0.25, BargeInDuck.duckGain]
-        for (i, g) in steps.enumerated() {
-            queue.asyncAfter(deadline: .now() + .milliseconds(4 * i)) { [weak self] in
-                guard let self, self.stillCurrent(gen) else { return }
-                gain(g)
-                self.setGain(g)
-                if i == steps.count - 1 {
-                    let nowHost = mach_absolute_time()
-                    let ms = nowHost > onsetHost ? AVAudioTime.seconds(forHostTime: nowHost - onsetHost) * 1000 : 0
-                    self.onEvent?(.ducked(source: source, latencyMs: ms.isFinite ? ms : 0))
-                }
-            }
+        queue.async { [weak self] in
+            guard let self, self.stepDown(BargeInDuck.unconfirmedGain, gen: gen, gain: gain) else { return }
+            let nowHost = mach_absolute_time()
+            let ms = nowHost > onsetHost ? AVAudioTime.seconds(forHostTime: nowHost - onsetHost) * 1000 : 0
+            self.onEvent?(.ducked(source: source, latencyMs: ms.isFinite ? ms : 0))
         }
-        if confirmed {
-            // Already Live's word: release when he has finished.
-            queue.async { [weak self] in
-                self?.onEvent?(.confirmed(source))
-                self?.pollRelease(gen, source: source)
-            }
-        } else {
-            // Nothing follows within 700 ms and the mic is quiet: a cough. Back up, and hold off.
-            queue.asyncAfter(deadline: .now() + BargeInDuck.confirmWindow) { [weak self] in
-                self?.unconfirmedDeadline(gen)
-            }
+        // Nothing follows within 700 ms and the mic is quiet: a cough. Back up, and hold off.
+        queue.asyncAfter(deadline: .now() + BargeInDuck.confirmWindow) { [weak self] in
+            self?.unconfirmedDeadline(gen)
         }
     }
 
+    /// Live heard him too: the rest of the way down, −6 dB to −20 dB in two steps 4 ms apart,
+    /// then release once he has finished.
     private func confirmLocked(_ source: String) {
         guard case .ducked(let since, let onset, false) = state else { return }
         state = .ducked(since: since, onsetHost: onset, confirmed: true)
         stats.confirmed += 1
         let gen = generation
+        if let gain {
+            for (i, g) in BargeInDuck.deepenSteps.enumerated() {
+                let step: () -> Void = { [weak self] in _ = self?.stepDown(g, gen: gen, gain: gain) }
+                // The first step behind the duck's own −6 dB step (FIFO), the next 4 ms later.
+                if i == 0 { queue.async(execute: step) } else { queue.asyncAfter(deadline: .now() + .milliseconds(4 * i), execute: step) }
+            }
+        }
         queue.async { [weak self] in
             self?.onEvent?(.confirmed(source))
             self?.pollRelease(gen, source: source)
@@ -446,6 +448,21 @@ final class BargeInDuck: @unchecked Sendable {
     private func stillCurrent(_ gen: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return gen == generation && gain != nil
+    }
+
+    /// On `queue`: one step of the current duck, only ever down, so no step lifts a duck a
+    /// confirmation has already deepened. False when the duck is over (released, detached).
+    private func stepDown(_ g: Float, gen: Int, gain: (Float) -> Void) -> Bool {
+        lock.lock()
+        guard gen == generation, self.gain != nil else {
+            lock.unlock()
+            return false
+        }
+        let lower = g < currentGain
+        if lower { currentGain = g }
+        lock.unlock()
+        if lower { gain(g) }
+        return true
     }
 
     private func setGain(_ g: Float) {

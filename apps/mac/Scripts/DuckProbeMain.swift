@@ -1,15 +1,17 @@
 import AVFoundation
 import Foundation
 
-// Throwaway harness: the barge-in duck (Audio/AudioEngine.swift `BargeInDuck`) on synthetic
-// tap buffers, and the microphone ranking (`MicRanking`) on this Mac's devices — read-only,
-// nothing is played, recorded, or changed. Not part of the package; compiled only by
+// Throwaway harness: the barge-in duck (Audio/BargeInDuck.swift) on synthetic tap buffers,
+// and the microphone ranking (`MicRanking`) on this Mac's devices — read-only, nothing is
+// played, recorded, or changed. Not part of the package; compiled only by
 // Scripts/duck-probe.sh, which `pnpm jarhead bench` runs for its "barge-in" rows.
 //
 //   DUCK_PROBE_RUNS=3      runs; each run plays the five scenarios below, the speech onset
 //                          0, 30 or 70 ms into a 100 ms buffer in turn
 //   DUCK_PROBE_LIVE_MS=900 when Live's transcript of Kevin first grows, after his onset
 //                          (modelled: no live session is opened here)
+//   DUCK_PROBE_RESIDUAL_S  seconds of the residual round (default 60; 0 skips it; under
+//                          --json it runs only when set, so the bench stays quick)
 //   --json                 the last line is the report the bench reads
 //
 // The scenarios, each with audible output "playing" (noteOutput every 100 ms, as the speaker
@@ -17,19 +19,29 @@ import Foundation
 //   live    Kevin speaks 1.5 s; the ear is off; Live's transcript of him grows at +LIVE_MS and
 //           every 300 ms after; Live stops Jarhead's audio at +1.4 s (its measured stop on
 //           barge-in); the phase leaves `speaking` at +2.6 s (1.2 s after Jarhead's last words)
-//   cough   200 ms of energy, nothing follows
+//   cough   200 ms of energy, nothing follows: a dip to −6 dB, back at 700 ms
 //   ear     Kevin speaks 1.0 s; the ear's partial "open safari" at +200 ms (words Jarhead did
 //           not say); Live stops Jarhead at +1.4 s
 //   echo    200 ms of energy and a partial "check that for you" at +200 ms — Jarhead's own words,
 //           the residual echo case: it must not confirm
 //   phase   Kevin speaks 1.5 s; no ear, no Live transcript; Live stops Jarhead at +1.4 s; only
 //           the phase leaves `speaking`, at +2.6 s
+// An unconfirmed duck holds at −6 dB; live and ear must reach −20 dB within 8 ms of their
+// confirmation (voice PLAN W1.4).
+//
+// Then the word rounds (voice PLAN W1.3): Jarhead audible, the room quiet but for one hot
+// 10 ms slice, and 120 ms later words that are not a barge-in. Each must duck nothing:
+//   stale      the ear's cumulative partial: Kevin's last turn plus Jarhead's own words
+//   revise     the ear revises Kevin's own last turn
+//   late-live  Live's transcript of Kevin grows after Jarhead has started
+// And the residual round (W1.4): Jarhead talks for 60 s over bursty residual echo at −50 dBFS
+// with Kevin silent; at most 1% of his audible speech may sit under −6 dB.
 //
 // Buffers are 100 ms of 48 kHz mono, delivered every 100 ms and stamped "captured" 100 ms
 // before delivery — the tap's own cadence (AVAudioEngine clamps tap buffers to ≥ 100 ms) — so
 // a sample is what the app measures: the first hot 10 ms slice's capture time → the player's
-// gain reaching −20 dB. What it cannot include: the mixer's own render cycle after the volume
-// is set (one quantum, ~5–10 ms at 48 kHz).
+// gain reaching the duck (−6 dB). What it cannot include: the mixer's own render cycle after
+// the volume is set (one quantum, ~5–10 ms at 48 kHz).
 
 @main
 struct DuckProbeMain {
@@ -39,7 +51,8 @@ struct DuckProbeMain {
         let env = ProcessInfo.processInfo.environment
         let runs = max(1, Int(env["DUCK_PROBE_RUNS"] ?? "") ?? 3)
         let liveMs = max(100, Int(env["DUCK_PROBE_LIVE_MS"] ?? "") ?? 900)
-        let probe = DuckProbe(runs: runs, liveMs: liveMs, json: json)
+        let residualSeconds = max(0, Double(env["DUCK_PROBE_RESIDUAL_S"] ?? "") ?? (json ? 0 : 60))
+        let probe = DuckProbe(runs: runs, liveMs: liveMs, residualSeconds: residualSeconds, json: json)
         probe.begin()
         RunLoop.main.run()
     }
@@ -69,6 +82,7 @@ final class DuckProbe: @unchecked Sendable {
 
     private let runs: Int
     private let liveMs: Int
+    private let residualSeconds: Double
     private let json: Bool
     private let duck = BargeInDuck.shared
     private let lock = NSLock()
@@ -79,6 +93,8 @@ final class DuckProbe: @unchecked Sendable {
     private let feeder = DispatchQueue(label: "duck-probe.feeder", qos: .userInteractive)
     private let events = DispatchQueue(label: "duck-probe.events", qos: .userInteractive)
     static let jarheadSaid = "Let me check that for you. Opening the settings now."
+    /// −6 dB: where a duck nobody confirmed holds (voice PLAN W1.4).
+    static let unconfirmedGain: Float = 0.5
     static let phaseLeavesSpeakingMs = 2600
     static let liveStopMs = 1400
     static let earPartialMs = 200
@@ -97,19 +113,28 @@ final class DuckProbe: @unchecked Sendable {
     private var rounds: [Round] = []
     private var failures: [String] = []
     private var pureChecks = (ok: 0, failed: 0)
+    /// Confirmation → the gain at −20 dB, per confirmed round (W1.4: ≤ 8 ms).
+    private var confirmToDeep: [Double] = []
+    /// Ducks the word rounds caused (W1.3: 0), and the residual round's share of speech under −6 dB.
+    private var wordRoundDucks = 0
+    private var residualUnderPct: Double?
+    private var residualDucks = 0
 
     // The round in flight.
     private var current: Round?
     private var duckedAt: Date?
+    private var confirmedAt: Date?
+    private var deepAt: Date?
     private var confirmedBy: String?
     private var releasedWhy: String?
     private var speechEndWall: Date?
     private var pendingEvents = 0
     private var roundTimer: DispatchSourceTimer?
 
-    init(runs: Int, liveMs: Int, json: Bool) {
+    init(runs: Int, liveMs: Int, residualSeconds: Double, json: Bool) {
         self.runs = runs
         self.liveMs = liveMs
+        self.residualSeconds = residualSeconds
         self.json = json
     }
 
@@ -132,6 +157,7 @@ final class DuckProbe: @unchecked Sendable {
             self.lock.lock()
             self.currentGain = gain
             self.minGainSeen = min(self.minGainSeen, gain)
+            if gain <= BargeInDuck.duckGain, self.current != nil, self.deepAt == nil { self.deepAt = Date() }
             self.lock.unlock()
         }
         for run in 0 ..< runs {
@@ -205,6 +231,7 @@ final class DuckProbe: @unchecked Sendable {
             say(String(format: "  ducked by %@ %.0f ms after speech onset (gain %.2f)", source, latencyMs, currentGain))
         case .confirmed(let how):
             confirmedBy = how
+            confirmedAt = Date()
             let sinceDuck = duckedAt.map { Date().timeIntervalSince($0) * 1000 } ?? .nan
             if how == "live transcript" { liveConfirms.append(sinceDuck) }
             if how == "ear words" { earConfirms.append(sinceDuck) }
@@ -239,7 +266,15 @@ final class DuckProbe: @unchecked Sendable {
     }
 
     private func nextRound() {
-        guard !rounds.isEmpty else { return finish() }
+        guard !rounds.isEmpty else {
+            // The word and residual rounds sleep between buffers: off the main run loop.
+            Thread.detachNewThread { [weak self] in
+                guard let self else { return }
+                self.extraRounds()
+                DispatchQueue.main.async { self.finish() }
+            }
+            return
+        }
         let round = rounds.removeFirst()
         duck.resetForHarness()
         duck.noteJarheadSaid(DuckProbe.jarheadSaid)
@@ -248,6 +283,8 @@ final class DuckProbe: @unchecked Sendable {
         minGainSeen = 1
         current = round
         duckedAt = nil
+        confirmedAt = nil
+        deepAt = nil
         confirmedBy = nil
         releasedWhy = nil
         speechEndWall = nil
@@ -358,8 +395,12 @@ final class DuckProbe: @unchecked Sendable {
         let ducked = duckedAt != nil
         let confirmed = confirmedBy
         let why = releasedWhy ?? "never released"
+        let lowest = minGainSeen
+        let confirmWall = confirmedAt
+        let deepWall = deepAt
         lock.unlock()
-        if !ducked { failures.append("\(round.scenario.rawValue) round never ducked") }
+        let name = round.scenario.rawValue
+        if !ducked { failures.append("\(name) round never ducked") }
         switch round.scenario {
         case .live where confirmed != "live transcript":
             failures.append("live round confirmed by \(confirmed ?? "nothing"), not Live's transcript (released: \(why))")
@@ -374,7 +415,175 @@ final class DuckProbe: @unchecked Sendable {
         default:
             break
         }
+        // W1.4: a duck nobody confirmed holds at −6 dB; a confirmation takes it to −20 dB at once.
+        switch round.scenario {
+        case .cough, .echo, .phase:
+            if lowest != DuckProbe.unconfirmedGain {
+                failures.append(String(format: "%@ round dipped to %.1f dB; an unconfirmed duck holds at -6.0 dB", name, 20 * log10(Double(max(lowest, 1e-6)))))
+            }
+        case .live, .ear:
+            if let confirmWall, let deepWall {
+                let ms = deepWall.timeIntervalSince(confirmWall) * 1000
+                confirmToDeep.append(ms)
+                if ms < -1 || ms > 8 {
+                    failures.append(String(format: "%@ round reached -20 dB %.0f ms from its confirmation; it must land within 8 ms after it", name, ms))
+                }
+            } else {
+                failures.append("\(name) round: confirmed \(confirmWall != nil), reached -20 dB \(deepWall != nil)")
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.nextRound() }
+    }
+
+    // MARK: the word rounds and the residual round (voice PLAN W1.3, W1.4)
+
+    static let wordJarhead = "Sure, opening System Settings for you now."
+    static let kevinTurn = "can you open system settings"
+
+    enum WordRound: String, CaseIterable {
+        case stale, revise
+        case lateLive = "late-live"
+    }
+
+    /// One 100 ms buffer of `sliceRMS` (ten 10 ms slices), stamped as the tap would.
+    private func feedSlices(_ sliceRMS: [Double], rng: inout ProbeRNG) {
+        var samples = [Float](repeating: 0, count: framesPerBuffer)
+        let per = framesPerBuffer / sliceRMS.count
+        for (s, level) in sliceRMS.enumerated() {
+            for i in 0 ..< per { samples[s * per + i] = Float(rng.gauss() * level) }
+        }
+        let captured = mach_absolute_time() &- AVAudioTime.hostTime(forSeconds: 0.1)
+        samples.withUnsafeBufferPointer { p in
+            duck.noteMic(mono: p.baseAddress!, frames: samples.count, sampleRate: rate, capturedAt: AVAudioTime(hostTime: captured))
+        }
+    }
+
+    /// The word rounds, then the residual round; on a background thread, sleeping between buffers.
+    private func extraRounds() {
+        var rng = ProbeRNG(state: 7)
+        for round in WordRound.allCases {
+            let ducks = wordRound(round, rng: &rng)
+            let skipped = duck.currentStats.wordOnsetsSkipped
+            lock.lock(); wordRoundDucks += ducks; lock.unlock()
+            if ducks == 0, skipped == 1 {
+                say("word round \(round.rawValue): no duck (1 word onset skipped)")
+            } else {
+                say("word round \(round.rawValue): FAIL \(ducks) duck(s), \(skipped) word onset(s) skipped")
+                lock.lock(); failures.append("word round \(round.rawValue) ducked \(ducks) time(s) and counted \(skipped) skipped word onset(s); the words must only confirm a duck, and count the onset once"); lock.unlock()
+            }
+        }
+        guard residualSeconds > 0 else { return }
+        let (pct, ducks) = residualRound(seconds: residualSeconds, medianDBFS: -50, rng: &rng)
+        lock.lock()
+        residualUnderPct = pct
+        residualDucks = ducks
+        if pct > 1 { failures.append(String(format: "residual round: %.1f%% of Jarhead's audible speech under -6 dB (%d ducks); at most 1%%", pct, ducks)) }
+        lock.unlock()
+        say(String(format: "residual round: %.0f s at -50 dBFS bursty, Kevin silent: %d duck(s), %.1f%% of audible speech under -6 dB", residualSeconds, ducks, pct))
+    }
+
+    /// Jarhead audible, the room quiet but one hot slice, then words that are not a barge-in. Returns the ducks.
+    private func wordRound(_ round: WordRound, rng: inout ProbeRNG) -> Int {
+        let counter = EventCounter()
+        duck.onEvent = { counter.note($0) }
+        duck.resetForHarness()
+        duck.noteJarheadSaid(DuckProbe.wordJarhead)
+        duck.noteVoiceSpeaking(true)
+        // Jarhead audible: 4 s queued at speech level.
+        for _ in 0 ..< 40 { duck.noteOutput(rms: 0.08, seconds: 0.1) }
+        for _ in 0 ..< 5 {
+            feedSlices(Array(repeating: 0.001, count: 10), rng: &rng)
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        // One buffer whose last 10 ms slice is a residual blip at 0.015 (−36.5 dBFS): one hot slice, not an onset.
+        var blip = Array(repeating: 0.001, count: 10)
+        blip[9] = 0.015
+        feedSlices(blip, rng: &rng)
+        Thread.sleep(forTimeInterval: 0.12)
+        switch round {
+        case .stale: duck.noteEarWords("\(DuckProbe.kevinTurn) opening system settings for")
+        case .revise: duck.noteEarWords("can you open the system settings")
+        case .lateLive: duck.noteLiveHeardKevin()
+        }
+        for _ in 0 ..< 25 {
+            feedSlices(Array(repeating: 0.001, count: 10), rng: &rng)
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        return counter.ducks
+    }
+
+    /// Port of the DUCK investigation's E2 sweep (bursty): Jarhead's utterances of syllables, the
+    /// residual echo two slices late, following the player's gain, NLP-clamped 15 dB under the median
+    /// with leaks of 60–200 ms at the median + 3 dB. Kevin silent. Returns (% of audible speech
+    /// slices at a gain under −6 dB, ducks).
+    private func residualRound(seconds: Double, medianDBFS: Double, rng: inout ProbeRNG) -> (Double, Int) {
+        let counter = EventCounter()
+        duck.onEvent = { counter.note($0) }
+        duck.resetForHarness()
+        duck.noteJarheadSaid("Sure, opening System Settings for you now and then I will check the display panel")
+        duck.noteVoiceSpeaking(true)
+        let total = Int(seconds * 100)
+        var env = [Double](repeating: 0, count: total + 400)
+        var talking = [Bool](repeating: false, count: total + 400)
+        var i = 30
+        while i < total {
+            let uttLen = Int(200 + rng.uniform() * 200)
+            var j = i
+            while j < min(i + uttLen, total) {
+                let syl = Int(12 + rng.uniform() * 10)
+                let level = 0.08 * pow(10, rng.gauss() * 5 / 20)
+                for k in 0 ..< syl where j + k < env.count {
+                    env[j + k] = level * sin(.pi * Double(k) / Double(syl))
+                    talking[j + k] = true
+                }
+                j += syl
+                let gap = Int(3 + rng.uniform() * 6)
+                for k in 0 ..< gap where j + k < talking.count { talking[j + k] = true }
+                j += gap
+            }
+            i = j + Int(40 + rng.uniform() * 50)
+        }
+        let scale = pow(10, medianDBFS / 20) / 0.08
+        let room = 0.0008
+        var leakLeft = 0
+        var leakLevel = 0.0
+        var audible = 0
+        var under = 0
+        var mic = 0
+        let start = CFAbsoluteTimeGetCurrent()
+        while mic < total {
+            var acc = 0.0
+            for k in 0 ..< 10 { acc += env[mic + k] * env[mic + k] }
+            duck.noteOutput(rms: (acc / 10).squareRoot(), seconds: 0.1)
+            var slices = [Double](repeating: 0, count: 10)
+            lock.lock()
+            let g = Double(currentGain)
+            lock.unlock()
+            for k in 0 ..< 10 {
+                let t = mic + k
+                var residual = env[max(0, t - 2)] * g * scale * pow(10, rng.gauss() * 6 / 20) * pow(10, -15.0 / 20)
+                if leakLeft == 0, talking[t], rng.uniform() < 0.005 {
+                    leakLeft = Int(6 + rng.uniform() * 14)
+                    leakLevel = pow(10, (medianDBFS + 3 + rng.gauss() * 3) / 20)
+                }
+                if leakLeft > 0 {
+                    leakLeft -= 1
+                    residual = max(residual, leakLevel * g * pow(10, rng.gauss() * 2 / 20))
+                }
+                slices[k] = (residual * residual + room * room).squareRoot()
+                if talking[t], env[t] >= 0.02 {
+                    audible += 1
+                    if g < 0.5 { under += 1 }
+                }
+            }
+            mic += 10
+            feedSlices(slices, rng: &rng)
+            let wait = start + Double(mic) / 100 - CFAbsoluteTimeGetCurrent()
+            if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+        }
+        Thread.sleep(forTimeInterval: 1.2)
+        return (100 * Double(under) / Double(max(1, audible)), counter.ducks)
     }
 
     private func percentile(_ values: [Double], _ p: Double) -> Double {
@@ -389,9 +598,11 @@ final class DuckProbe: @unchecked Sendable {
         lock.lock()
         let s = samples, u = unconfirmedRestores, c = confirmedReleases, e = speechEndToUnity, h = heldRestores, l = liveConfirms, w = earConfirms
         let refused = refusedEchoPartials, min = minGainSeen, names = rankedNames, fails = failures
+        let deep = confirmToDeep, wordDucks = wordRoundDucks, residualPct = residualUnderPct, residualN = residualDucks
         lock.unlock()
         let onsets = runs * Scenario.allCases.count
-        say(String(format: "done: %d ducks of %d onsets; onset → −20 dB median %.0f ms, p95 %.0f ms, max %.0f ms; lowest gain %.2f", s.count, onsets, percentile(s, 50), percentile(s, 95), s.max() ?? .nan, min))
+        say(String(format: "done: %d ducks of %d onsets; onset → duck (−6 dB) median %.0f ms, p95 %.0f ms, max %.0f ms; lowest gain %.2f", s.count, onsets, percentile(s, 50), percentile(s, 95), s.max() ?? .nan, min))
+        if !deep.isEmpty { say(String(format: "  confirmation → −20 dB: median %.1f ms, max %.1f ms", percentile(deep, 50), deep.max() ?? .nan)) }
         if !u.isEmpty { say(String(format: "  cough / echo words, unconfirmed → unity: median %.0f ms after the duck (700 ms + the 300 ms ramp); %d echo partials refused", percentile(u, 50), refused)) }
         if !l.isEmpty { say(String(format: "  Live's transcript confirmed %.0f ms after the duck (modelled at +%d ms from onset)", percentile(l, 50), liveMs)) }
         if !w.isEmpty { say(String(format: "  the ear's words confirmed %.0f ms after the duck", percentile(w, 50))) }
@@ -413,13 +624,41 @@ final class DuckProbe: @unchecked Sendable {
             "lowestGain": Double(min),
             "pureChecksOk": pureChecks.ok,
             "pureChecksFailed": pureChecks.failed,
+            "confirmToDeepMs": r(deep),
+            "wordRoundDucks": wordDucks,
         ]
+        if let residualPct {
+            report["residualUnderMinus6dBPct"] = (residualPct * 100).rounded() / 100
+            report["residualDucks"] = residualN
+        }
         if !fails.isEmpty { report["failures"] = fails }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), let line = String(data: data, encoding: .utf8) {
             print(line)
         }
         let missing = s.count < onsets
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(fails.isEmpty && !missing ? 0 : 2) }
+    }
+}
+
+/// Counts the duck's events for the word and residual rounds (called on the duck's queue).
+final class EventCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func note(_ event: BargeInDuck.Event) {
+        guard case .ducked = event else { return }
+        lock.lock(); count += 1; lock.unlock()
+    }
+    var ducks: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+/// A small deterministic generator, so a round's levels repeat run to run.
+struct ProbeRNG {
+    var state: UInt64
+    mutating func next() -> UInt64 { state = state &* 6364136223846793005 &+ 1442695040888963407; return state }
+    mutating func uniform() -> Double { Double(next() >> 11) / Double(1 << 53) }
+    mutating func gauss() -> Double {
+        let u1 = max(1e-12, uniform()), u2 = uniform()
+        return (-2 * log(u1)).squareRoot() * cos(2 * .pi * u2)
     }
 }
 
