@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
-import { AUTOMATION_GRACE_MS, AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_AUTOMATIONS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, automationKind, type AgentInfo, type AgentStatus, type AudioDeviceInfo, type AudioSettings, type AudioState, type Automation, type AutomationSettings, type BrainKind, type DataPath, type Grant, type LocalServerStatus, type MemorySummary, type MissedWhy, type PermissionInfo, type Permissions, type Phase, type Problem, type SetupStatus, type Snapshot, type WakeSettings, type Weekday } from "@jarhead/protocol";
+import { AUTOMATION_GRACE_MS, AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_AUTOMATIONS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, automationKind, type AgentInfo, type AgentStatus, type AudioDeviceInfo, type AudioSettings, type AudioState, type Automation, type LedgerRow, type LiveAudio, type AutomationSettings, type BrainKind, type DataPath, type Grant, type LocalServerStatus, type MemorySummary, type MissedWhy, type PermissionInfo, type Permissions, type Phase, type Problem, type SetupStatus, type Snapshot, type WakeSettings, type Weekday } from "@jarhead/protocol";
 import { Ledger, REPO_ROOT, clockOf, dataPaths, expandPath, keySource, noLiveModelLine, readConfig, secretsPresent } from "@jarhead/core";
 import { inWords, recipeVerdict } from "./automations-cli.ts";
 import { DEFAULT_MEMORY_MODEL, pickMemoryModel } from "@jarhead/memory";
@@ -67,6 +67,8 @@ interface DaemonRead {
   readonly phase: Phase | undefined;
   readonly audioState: AudioState | undefined;
   readonly audioSettings: AudioSettings | undefined;
+  /** Voice PLAN W1.5: Live's audio this session (absent while no session is open, or from a daemon before the field). */
+  readonly liveAudio: LiveAudio | undefined;
 }
 
 /** A running daemon's first snapshot (`permissions.all`, the problems, the memory summary, the automations); undefined when none answers within 1.5 s. */
@@ -78,8 +80,8 @@ async function daemonRead(socketPath: string): Promise<DaemonRead | undefined> {
     const got = new Promise<DaemonRead | undefined>((resolve) => {
       client.on("message", (m) => {
         if (m.type !== "snapshot") return;
-        const snap = m.snapshot as { phase?: Phase; permissions: Permissions; problems: readonly Problem[]; memory?: MemorySummary; automations?: readonly Automation[]; nextFire?: Snapshot["nextFire"]; settings?: { automations?: AutomationSettings; audio?: AudioSettings }; audioState?: AudioState };
-        resolve({ permissions: snap.permissions.all, problems: snap.problems, ms: Date.now() - t0, memory: snap.memory, automations: snap.automations, nextFire: snap.nextFire, automationSettings: snap.settings?.automations, phase: snap.phase, audioState: snap.audioState, audioSettings: snap.settings?.audio });
+        const snap = m.snapshot as { phase?: Phase; permissions: Permissions; problems: readonly Problem[]; memory?: MemorySummary; automations?: readonly Automation[]; nextFire?: Snapshot["nextFire"]; settings?: { automations?: AutomationSettings; audio?: AudioSettings }; audioState?: AudioState; liveAudio?: LiveAudio };
+        resolve({ permissions: snap.permissions.all, problems: snap.problems, ms: Date.now() - t0, memory: snap.memory, automations: snap.automations, nextFire: snap.nextFire, automationSettings: snap.settings?.automations, phase: snap.phase, audioState: snap.audioState, audioSettings: snap.settings?.audio, liveAudio: snap.liveAudio });
       });
       setTimeout(() => resolve(undefined), 1500);
     });
@@ -1133,6 +1135,9 @@ export interface AudioCheckInput {
   readonly probe: AudioProbeRead | undefined;
   readonly appBuiltAt: number | undefined;
   readonly now: number;
+  /** Voice PLAN W1.5: `snapshot.liveAudio`, and the ledger's newest `audio.playout` row for when no app is connected. */
+  readonly liveAudio?: LiveAudio | undefined;
+  readonly lastPlayout?: AudioPlayoutRow | undefined;
 }
 
 const ASLEEP_PHASES: ReadonlySet<Phase> = new Set<Phase>(["asleep", "paused", "error"]);
@@ -1204,6 +1209,175 @@ export function audioChecks(i: AudioCheckInput): Check[] {
     }
   }
   out.push(leakCheck(i.probe, i.appBuiltAt, i.now));
+  out.push(...playbackChecks(i.state, i.liveAudio, i.lastPlayout, i.now));
+  return out;
+}
+
+// ---- playback (voice PLAN W1.5): the playout cushion, the duck, the output level, Live's arrival.
+
+export type AudioPlayoutRow = Extract<LedgerRow, { type: "audio.playout" }>;
+
+/** The figures one playback report reads: the app's frame (and the daemon's live figures), or the ledger's last session. */
+interface Playback {
+  readonly playout?: AudioState["playout"];
+  readonly duck?: AudioState["duck"];
+  readonly output?: AudioState["output"];
+  /** The row's own name (`audio.playout`), so a ledger row is its own Playback. */
+  readonly liveAudio?: LiveAudio | undefined;
+}
+
+/** The app's frame while it carries the telemetry, else the ledger's last session (`last`), else nothing. */
+function playbackOf(state: AudioState | undefined, live: LiveAudio | undefined, last: AudioPlayoutRow | undefined): { readonly figures: Playback; readonly last?: AudioPlayoutRow } | undefined {
+  if (state && (state.playout || state.duck || state.output)) return { figures: { ...state, liveAudio: live } };
+  if (last) return { figures: last, last };
+  return undefined;
+}
+
+/** The ledger's newest `audio.playout` row over today and the `days - 1` before it; undefined when none. */
+export function readLastPlayout(ledger: { read(at: number): readonly unknown[] }, now: number, days = 7): AudioPlayoutRow | undefined {
+  for (let d = 0; d < days; d++) {
+    let best: AudioPlayoutRow | undefined;
+    for (const row of ledger.read(now - d * 86_400_000) as readonly LedgerRow[]) {
+      if (row.type === "audio.playout" && (!best || row.at >= best.at)) best = row;
+    }
+    if (best) return best;
+  }
+  return undefined;
+}
+
+/** Audible speech in minutes, never under one: the per-minute rules do not fire on a short session's single event. */
+function speechMinutes(p: Playback): number {
+  return Math.max(1, (p.output?.audibleMs ?? 0) / 60_000);
+}
+
+const pct = (v: number): string => `${Math.round(v * 100)}%`;
+const db1 = (x: number): string => x.toFixed(1);
+const db0 = (x: number): string => String(Math.round(x));
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** `playout 0 underruns (zero-cushion would be 4) · queued 121 ms (min 96) · target 120 ms · late max 7 ms · 3 resets · 0 dropped`, as the status line's value. */
+function playoutWords(p: NonNullable<Playback["playout"]>): string {
+  const min = p.queuedMinMs !== undefined ? ` (min ${db0(p.queuedMinMs)})` : "";
+  const dropped = p.droppedChunks > 0 ? `${p.droppedChunks} dropped (${db0(p.droppedMs)} ms)` : "0 dropped";
+  return `${plural(p.underruns, "underrun")} (zero-cushion would be ${p.wouldBeUnderruns}) · queued ${db0(p.queuedMs)} ms${min} · target ${db0(p.targetMs)} ms · late max ${db0(p.lateMaxMs)} ms · ${plural(p.resets, "reset")} · ${dropped}`;
+}
+
+function duckWords(d: NonNullable<Playback["duck"]>): string {
+  const residual = d.residualP50Dbfs !== undefined && d.residualP99Dbfs !== undefined ? ` · residual p50 ${db0(d.residualP50Dbfs)} / p99 ${db0(d.residualP99Dbfs)} dBFS` : "";
+  return `${d.ducks} (${d.gate} gate · ${d.confirmed} confirmed · ${d.unconfirmed} unconfirmed) · ${(d.duckedMs / 1000).toFixed(1)} s ducked, ${(d.deepMs / 1000).toFixed(1)} s deep${residual}`;
+}
+
+function outputWords(o: NonNullable<Playback["output"]>): string {
+  const parts: string[] = [];
+  if (o.rmsDbfs !== undefined) parts.push(`rms ${db1(o.rmsDbfs)} dBFS`);
+  if (o.peakDbfs !== undefined) parts.push(`peak ${db1(o.peakDbfs)} dBFS`);
+  if (o.heardRmsDbfs !== undefined) parts.push(`heard ${db1(o.heardRmsDbfs)} dBFS`);
+  if (parts.length === 0) parts.push("nothing voiced yet");
+  if (o.mixFormat) parts.push(`mix ${o.mixFormat}`);
+  if (o.volume !== undefined) parts.push(`volume ${pct(o.volume)}`);
+  return parts.join(" · ");
+}
+
+/** Live's figures in words. Every figure but the counts is optional in the contract: a part with nothing behind it is left out. */
+function liveWords(l: LiveAudio): string {
+  const parts: string[] = [];
+  if (l.deltaMsP50 !== undefined) parts.push(`${db0(l.deltaMsP50)} ms deltas`);
+  if (l.arrivalP99Ms !== undefined) parts.push(`arrival p99 ${db0(l.arrivalP99Ms)} ms${l.arrivalMaxMs !== undefined ? ` / max ${db0(l.arrivalMaxMs)} ms` : ""}`);
+  if (l.aheadMs !== undefined) parts.push(`ahead ${db0(l.aheadMs)} ms`);
+  if (l.loopDelayMaxMs !== undefined) parts.push(`loop max ${db0(l.loopDelayMaxMs)} ms`);
+  if (l.formatRate !== undefined) parts.push(`${l.formatRate} Hz`);
+  return parts.length ? parts.join(" · ") : plural(l.deltas, "delta");
+}
+
+/** The status block's playback lines: one per object the figures carry. */
+function playbackLines(p: Playback): string[] {
+  const out: string[] = [];
+  const line = (label: string, value: string): void => void out.push(`${STATUS_PAD}${label.padEnd(8)}${value}`);
+  if (p.playout) line("playout", playoutWords(p.playout));
+  if (p.duck) line("duck", duckWords(p.duck));
+  if (p.output) line("output", outputWords(p.output));
+  if (p.liveAudio) line("live", liveWords(p.liveAudio));
+  return out;
+}
+
+/** The session id as the status line shows it: the last twelve characters. */
+function shortSession(id: string): string {
+  return id.length > 12 ? `…${id.slice(-12)}` : id;
+}
+
+/** What `status` passes beside the frame: the daemon's live figures, and the ledger's last session when no app is connected. */
+export interface AudioStatusExtras {
+  readonly liveAudio?: LiveAudio | undefined;
+  readonly lastPlayout?: AudioPlayoutRow | undefined;
+}
+
+/**
+ * The doctor's five playback rows, none required. From the app's frame while it is connected, else from the
+ * ledger's last session (`· last session, 1 h ago`); nothing measured yet adds no row.
+ * - `playout`: more than one underrun per minute of audible speech, or one longer than 80 ms; the fix says
+ *   whether the app's queue (`late max`) or the arrival (`arrival p99`, the network or the daemon) explains it.
+ * - `duck`: more than one unconfirmed duck per minute of audible speech.
+ * - `residual echo`: the mic's p99 while Jarhead is audible and nothing is ducked at -44 dBFS or louder.
+ * - `output level`: heard RMS under -30 dBFS or the volume under 30% (hard to hear); a peak at -1 dBFS or over (the limiter).
+ * - `live arrival`: arrival p99 over 120 ms, the daemon's loop delay over 100 ms, or a rate other than 24 kHz.
+ */
+export function playbackChecks(state: AudioState | undefined, live: LiveAudio | undefined, last: AudioPlayoutRow | undefined, now: number): Check[] {
+  const out: Check[] = [];
+  const add = (c: Omit<Check, "group" | "required">): void => void out.push({ group: "audio", required: false, ...c });
+  // Nothing measured yet (an app before the telemetry, no session on the ledger): no rows, as before the telemetry.
+  const source = playbackOf(state, live, last);
+  if (!source) return out;
+  const p = source.figures;
+  const tail = source.last ? ` · last session, ${agoWords(source.last.at, now)}` : "";
+  const minutes = speechMinutes(p);
+  if (p.playout) {
+    const u = p.playout;
+    const bad = u.underruns / minutes > 1 || u.longestUnderrunMs > 80;
+    const arrival = p.liveAudio?.arrivalP99Ms !== undefined ? ` · arrival p99 ${db0(p.liveAudio.arrivalP99Ms)} ms` : "";
+    const detail = `${plural(u.underruns, "underrun")} (zero-cushion would be ${u.wouldBeUnderruns}) · longest ${db0(u.longestUnderrunMs)} ms · late max ${db0(u.lateMaxMs)} ms${arrival}${tail}`;
+    const arrivalP99 = p.liveAudio?.arrivalP99Ms;
+    const network = arrivalP99 !== undefined && arrivalP99 > u.lateMaxMs;
+    const fix = network
+      ? `Live's audio arrived late (arrival p99 ${db0(arrivalP99)} ms): the network or the daemon, not the app`
+      : `the speaker's queue in the app ran late (late max ${db0(u.lateMaxMs)} ms): the app, not the network`;
+    add({ name: "playout", status: bad ? "warn" : "ok", detail, ...(bad ? { fix } : {}) });
+  }
+  if (p.duck) {
+    const d = p.duck;
+    const bad = d.unconfirmed / minutes > 1;
+    add({
+      name: "duck",
+      status: bad ? "warn" : "ok",
+      detail: `${plural(d.ducks, "duck")} (${d.confirmed} confirmed · ${d.unconfirmed} unconfirmed) · ${(d.duckedMs / 1000).toFixed(1)} s ducked${tail}`,
+      ...(bad ? { fix: "the gate trips on sound nobody said to Jarhead; lower the output volume" } : {}),
+    });
+    if (d.residualP50Dbfs !== undefined && d.residualP99Dbfs !== undefined) {
+      const loud = d.residualP99Dbfs >= -44;
+      const floor = d.echoFloorDbfs !== undefined ? ` · echo floor ${db0(d.echoFloorDbfs)} dBFS` : "";
+      add({ name: "residual echo", status: loud ? "warn" : "ok", detail: `p50 ${db0(d.residualP50Dbfs)} / p99 ${db0(d.residualP99Dbfs)} dBFS${floor}${tail}`, ...(loud ? { fix: "lower the volume, or the gate trips on Jarhead's own echo" } : {}) });
+    } else add({ name: "residual echo", status: "ok", detail: `not measured: no speech with the duck idle yet${tail}` });
+  }
+  if (p.output) {
+    const o = p.output;
+    const parts: string[] = [];
+    if (o.heardRmsDbfs !== undefined) parts.push(`heard ${db1(o.heardRmsDbfs)} dBFS`);
+    if (o.peakDbfs !== undefined) parts.push(`peak ${db1(o.peakDbfs)} dBFS`);
+    if (o.volume !== undefined) parts.push(`volume ${pct(o.volume)}`);
+    if (parts.length === 0) parts.push("nothing voiced yet");
+    let fix: string | undefined;
+    if (o.volume !== undefined && o.volume < 0.3) fix = `raise the output volume; it reads ${pct(o.volume)}`;
+    else if (o.heardRmsDbfs !== undefined && o.heardRmsDbfs < -30) fix = "the voice reaches the speaker quiet; check the duck row and the volume";
+    else if (o.peakDbfs !== undefined && o.peakDbfs >= -1) fix = "the voice peaks at full scale; the playback limiter squeezes it";
+    add({ name: "output level", status: fix ? "warn" : "ok", detail: `${parts.join(" · ")}${tail}`, ...(fix ? { fix } : {}) });
+  }
+  if (p.liveAudio) {
+    const l = p.liveAudio;
+    let fix: string | undefined;
+    if (l.formatRate !== undefined && l.formatRate !== 24_000) fix = `Live echoed ${l.formatRate} Hz, not 24000; the speaker plays at the wrong speed`;
+    else if ((l.arrivalP99Ms ?? 0) > 120) fix = "Live's audio arrives in bursts: the network (Wi-Fi) or the daemon";
+    else if ((l.loopDelayMaxMs ?? 0) > 100) fix = `the daemon's event loop stalled for ${l.loopDelayMaxMs} ms`;
+    add({ name: "live arrival", status: fix ? "warn" : "ok", detail: `${liveWords(l)}${tail}`, ...(fix ? { fix } : {}) });
+  }
   return out;
 }
 
@@ -1215,12 +1389,15 @@ const STATUS_PAD = "             "; // the column every status value starts in (
  * The block: the knobs line, `hears` / `speaks` with their figures, then the guard's counters or
  * the resting line. Without an app: one line, with the profiler's defaults when they were read.
  */
-export function audioStatusLines(state: AudioState | undefined, settings: AudioSettings | undefined, profiler?: AudioProfilerRead): string[] {
+export function audioStatusLines(state: AudioState | undefined, settings: AudioSettings | undefined, profiler?: AudioProfilerRead, extras: AudioStatusExtras = {}): string[] {
   if (!state) {
     const recording = settings?.recording ? " · recording on" : "";
-    if (!profiler) return [`  audio      no app connected${recording}`];
     const device = (d: AudioProfilerDevice | undefined): string => (d ? `${d.name} ${d.rate} Hz` : "none");
-    return [`  audio      no app connected${recording} — defaults: in ${device(profiler.defaultInput)} · out ${device(profiler.defaultOutput)}`];
+    const head = profiler ? `  audio      no app connected${recording} — defaults: in ${device(profiler.defaultInput)} · out ${device(profiler.defaultOutput)}` : `  audio      no app connected${recording}`;
+    const last = extras.lastPlayout;
+    if (!last) return [head];
+    // The last session's playback figures, from the ledger (voice PLAN W1.5).
+    return [head, `${STATUS_PAD}last session${last.sessionId ? ` ${shortSession(last.sessionId)}` : ""} · ${clockWords(last.at)} (the ledger)`, ...playbackLines(last)];
   }
   const since = state.since !== undefined && state.running ? ` · since ${clockWords(state.since)}` : "";
   const lines = [`  audio      voice processing ${voiceProcessingWords(state)}${since}`];
@@ -1233,6 +1410,8 @@ export function audioStatusLines(state: AudioState | undefined, settings: AudioS
     const rest = state.running ? "released at sleep" : state.voiceProcessing ? "voice processing still on after stop" : state.aggregatePresent ? "released · aggregate still present" : "released";
     lines.push(`${STATUS_PAD}recording ${onOff(state.recording)} · guard off · ${rest}${muted}`);
   }
+  // The playback lines (voice PLAN W1.5): the playout cushion, the duck, the output level, Live's arrival.
+  if (state.playout || state.duck || state.output) lines.push(...playbackLines({ ...state, liveAudio: extras.liveAudio }));
   return lines;
 }
 
@@ -1502,6 +1681,8 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
       probe: readAudioProbe(cfg.stateDir),
       appBuiltAt: appBuiltAt(),
       now: Date.now(),
+      liveAudio: daemon?.liveAudio,
+      lastPlayout: daemon?.audioState?.playout ? undefined : readLastPlayout(new Ledger(cfg.stateDir), Date.now()),
     })) add(c);
     if (opts.testAudio) {
       add(

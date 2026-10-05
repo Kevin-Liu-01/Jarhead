@@ -1524,6 +1524,8 @@ public struct AudioOutputInfo: Codable, Equatable {
     public var rmsDbfs: Double?
     public var peakDbfs: Double?
     public var heardRmsDbfs: Double?
+    /// Voiced audio played, in ms: the doctor's per-minute rules divide by it. nil from an app before the field.
+    public var audibleMs: Double?
     public var mixFormat: String?
     public var volume: Double?
 }
@@ -1535,6 +1537,7 @@ extension AudioOutputInfo: SoftTelemetry {
         rmsDbfs = c.soft(.rmsDbfs)
         peakDbfs = c.soft(.peakDbfs)
         heardRmsDbfs = c.soft(.heardRmsDbfs)
+        audibleMs = c.soft(.audibleMs)
         mixFormat = c.soft(.mixFormat)
         volume = c.soft(.volume)
     }
@@ -1544,6 +1547,7 @@ extension AudioOutputInfo: SoftTelemetry {
         putNumber(&o, "rmsDbfs", rmsDbfs)
         putNumber(&o, "peakDbfs", peakDbfs)
         putNumber(&o, "heardRmsDbfs", heardRmsDbfs)
+        putNumber(&o, "audibleMs", audibleMs)
         if let mixFormat { o["mixFormat"] = mixFormat }
         putNumber(&o, "volume", volume)
         return o

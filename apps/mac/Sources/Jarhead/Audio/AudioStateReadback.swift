@@ -11,6 +11,9 @@ struct AudioDeviceFacts: Equatable {
     var rate: Double
     var channels: Int
     var transport: String
+    /// The output side's volume scalar, 0…1, rounded to 0.01 (`kAudioDevicePropertyVolumeScalar`, the main
+    /// element or the mean of the first two channels); nil for an input or a device with no volume control.
+    var volume: Double?
 
     var isBluetooth: Bool { transport == "bluetooth" }
 
@@ -24,7 +27,8 @@ struct AudioDeviceFacts: Equatable {
         let rate = CoreAudioReads.nominalRate(id)
         let channels = CoreAudioReads.channelCount(id, scope: scope)
         let transport = MicInput.transportName(CoreAudioReads.transport(id))
-        return AudioDeviceFacts(name: name, uid: uid, rate: rate, channels: channels, transport: transport)
+        let volume = scope == kAudioObjectPropertyScopeOutput ? CoreAudioReads.volumeScalar(id, scope: scope, channels: channels) : nil
+        return AudioDeviceFacts(name: name, uid: uid, rate: rate, channels: channels, transport: transport, volume: volume)
     }
 
     static func defaultInput() -> AudioDeviceFacts? {
@@ -36,6 +40,85 @@ struct AudioDeviceFacts: Equatable {
         guard let id = CoreAudioReads.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice) else { return nil }
         return read(id: id, scope: kAudioObjectPropertyScopeOutput)
     }
+}
+
+// MARK: - playback telemetry (voice PLAN W1.5)
+
+/// The speaker's playout cushion since the graph started, in the frame's units: milliseconds rounded,
+/// counts as counts. Built from `PlaybackTelemetry` (Playout.swift).
+struct PlayoutReadback: Equatable {
+    var chunks = 0
+    var underruns = 0
+    var underrunMs = 0
+    var longestUnderrunMs = 0
+    /// The zero-cushion policy's count on the same timeline (`PlayoutModel.Stats.wouldBeUnderruns`).
+    var wouldBeUnderruns = 0
+    var resets = 0
+    var targetMs = 0
+    var queuedMs = 0
+    var queuedMinMs: Int?
+    /// The longest wait of a play block on `jarhead.audio`, enqueue to run.
+    var lateMaxMs = 0
+    /// Chunks that arrived while the graph was down, since the last `start()`.
+    var droppedChunks = 0
+    var droppedMs = 0
+}
+
+/// The duck's last event: no words, only where it came from, how deep it went and how it ended.
+struct DuckEventReadback: Equatable {
+    var source: String
+    var confirmed: Bool
+    var depthDb: Double
+    /// The mean level of the hot run that tripped the gate, and the threshold it cleared (nil for a silent level).
+    var runDbfs: Double?
+    var thresholdDbfs: Double?
+    var releasedAfterMs: Int?
+    var reason: String?
+}
+
+/// The barge-in duck since the graph started (`BargeInDuck.telemetry()`); nil on the plain path, where it is detached.
+struct DuckReadback: Equatable {
+    var ducks = 0
+    var gate = 0
+    var confirmed = 0
+    var unconfirmed = 0
+    var held = 0
+    var refusedWords = 0
+    /// Live items for Kevin refused as confirmation (`BargeInDuck.Stats.refusedLive`).
+    var refusedLive = 0
+    var wordOnsetsSkipped = 0
+    /// Time at a gain under 0.9, and at -14 dB or deeper.
+    var duckedMs = 0
+    var deepMs = 0
+    /// The mic's level while Jarhead is audible and the duck idle (where `echoFloor` learns): the residual echo.
+    var residualP50Dbfs: Double?
+    var residualP99Dbfs: Double?
+    var echoFloorDbfs: Double?
+    var last: DuckEventReadback?
+}
+
+/// Jarhead's voice on the way out since the graph started: voiced chunks before the duck (`rms`, `peak`) and
+/// after its gain (`heardRms`), how much was voiced, the main mixer's connection format, the output volume.
+struct OutputReadback: Equatable {
+    var rmsDbfs: Double?
+    var peakDbfs: Double?
+    var heardRmsDbfs: Double?
+    var audibleMs = 0
+    var mixFormat = ""
+    var volume: Double?
+}
+
+/// What the engine hands the state reader at each publish, read under the speaker's and the duck's own locks.
+struct AudioCounters: Equatable {
+    var playout: PlayoutReadback?
+    var duck: DuckReadback?
+    var output: OutputReadback?
+}
+
+/// A level as dBFS rounded to 0.1 (RMS or peak, 0…1); nil for silence or a non-finite level.
+func levelDbfs(_ level: Double) -> Double? {
+    guard level.isFinite, level > 0 else { return nil }
+    return (20 * log10(min(1, level)) * 10).rounded() / 10
 }
 
 /// The words the frame and the Console spell the two states with (C's `SettingsWords` pins them).
@@ -94,6 +177,11 @@ struct AudioStateReadback: Equatable {
     /// whenever the engine object exists on a Mac whose default input ≠ default output, unit or
     /// no unit. A fact to print, never a pin — not on the wire.
     var engineAggregatePresent = false
+    /// Voice PLAN W1.5: the speaker's cushion, the barge-in duck and the output level since the graph
+    /// started (`AudioCounters`); nil before the first graph. `output.volume` is the HAL's, from `speaks`.
+    var playout: PlayoutReadback?
+    var duck: DuckReadback?
+    var output: OutputReadback?
 
     init() {}
 
@@ -194,6 +282,27 @@ enum CoreAudioReads {
         guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, raw) == noErr else { return 0 }
         let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
         return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    /// The device's volume scalar on `scope`: the main element when it has one, else the mean of channels 1
+    /// and 2 (or 1 alone), rounded to 0.01; nil when no element answers. Read-only.
+    static func volumeScalar(_ id: AudioObjectID, scope: AudioObjectPropertyScope, channels: Int) -> Double? {
+        func read(_ element: AudioObjectPropertyElement) -> Double? {
+            var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: scope, mElement: element)
+            guard AudioObjectHasProperty(id, &addr) else { return nil }
+            var value: Float32 = 0
+            var size = UInt32(MemoryLayout<Float32>.size)
+            guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr, value.isFinite else { return nil }
+            return Double(min(1, max(0, value)))
+        }
+        let raw: Double?
+        if let main = read(kAudioObjectPropertyElementMain) {
+            raw = main
+        } else {
+            let each = (1 ... max(1, min(2, channels))).compactMap { read(AudioObjectPropertyElement($0)) }
+            raw = each.isEmpty ? nil : each.reduce(0, +) / Double(each.count)
+        }
+        return raw.map { ($0 * 100).rounded() / 100 }
     }
 
     static func uint32(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> UInt32? {

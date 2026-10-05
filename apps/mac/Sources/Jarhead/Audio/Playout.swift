@@ -154,8 +154,9 @@ final class SpeakerScheduler {
     static let flushRestore: TimeInterval = 0.02
 
     struct Scheduled {
-        /// The chunk as Live sent it (before the fade-in), for the duck and the guard.
+        /// The chunk as Live sent it (before the fade-in), for the duck and the guard; `peak` for the output level.
         let rms: Double
+        let peak: Double
         let seconds: Double
         /// Silence scheduled in front of it.
         let prerollSeconds: Double
@@ -259,10 +260,12 @@ final class SpeakerScheduler {
         _ = samples.withUnsafeMutableBytes { pcm.copyBytes(to: $0, count: frames * 2) }
         let scale = Float(1.0 / 32768.0)
         var energy = 0.0
+        var peak: Float = 0
         for i in 0 ..< frames {
             let s = Float(samples[i]) * scale
             dst[i] = s
             energy += Double(s * s)
+            peak = max(peak, abs(s))
         }
         let plan = model.plan(frames: frames, now: playerNow())
         if plan.fadeIn {
@@ -277,6 +280,115 @@ final class SpeakerScheduler {
         player.scheduleBuffer(buf, completionHandler: nil)
         if !player.isPlaying { player.play() }
         let rate = format.sampleRate
-        return Scheduled(rms: clampLevel((energy / Double(frames)).squareRoot()), seconds: Double(frames) / rate, prerollSeconds: Double(plan.prerollFrames) / rate, plan: plan)
+        return Scheduled(rms: clampLevel((energy / Double(frames)).squareRoot()), peak: clampLevel(Double(peak)), seconds: Double(frames) / rate, prerollSeconds: Double(plan.prerollFrames) / rate, plan: plan)
+    }
+}
+
+/// The speaker's figures for the state frame (voice PLAN W1.5): written on `jarhead.audio` after each
+/// chunk, read on the state reader's queue at each publish, one lock between them. Everything counts
+/// since the graph started (`restart`), except the dropped chunks, which arrive while the graph is
+/// down and count since `start()` (`resetDropped`).
+final class PlaybackTelemetry: @unchecked Sendable {
+    /// A chunk at or above this RMS is voiced (the engine's AUDIBLE_OUTPUT_LEVEL; Live streams near-silence between sentences).
+    static let voicedRMS = 0.02
+
+    private let lock = NSLock()
+    private var stats = PlayoutModel.Stats()
+    private var targetFrames = PlayoutModel.defaultTargetFrames
+    private var lateMaxSeconds = 0.0
+    private var droppedChunks = 0
+    private var droppedSeconds = 0.0
+    private var voicedSeconds = 0.0
+    /// Σ rms² × seconds over voiced chunks, before and after the duck's gain.
+    private var voicedEnergy = 0.0
+    private var heardEnergy = 0.0
+    private var peak = 0.0
+    private var mixFormat = ""
+    /// A graph has run since launch: before that the frame carries no playback objects.
+    private var started = false
+
+    /// A new graph: its counters start at zero; `mixFormat` is the main mixer's connection to the output.
+    func restart(mixFormat: String) {
+        lock.lock()
+        stats = PlayoutModel.Stats()
+        targetFrames = PlayoutModel.defaultTargetFrames
+        lateMaxSeconds = 0
+        voicedSeconds = 0
+        voicedEnergy = 0
+        heardEnergy = 0
+        peak = 0
+        self.mixFormat = mixFormat
+        started = true
+        lock.unlock()
+    }
+
+    /// `start()` (a wake): the dropped count starts over.
+    func resetDropped() {
+        lock.lock()
+        droppedChunks = 0
+        droppedSeconds = 0
+        lock.unlock()
+    }
+
+    /// A play block ran `seconds` after it was enqueued.
+    func noteLate(_ seconds: Double) {
+        guard seconds.isFinite, seconds > 0 else { return }
+        lock.lock()
+        lateMaxSeconds = max(lateMaxSeconds, seconds)
+        lock.unlock()
+    }
+
+    /// A chunk of `seconds` arrived with the graph down.
+    func noteDropped(seconds: Double) {
+        lock.lock()
+        droppedChunks += 1
+        droppedSeconds += max(0, seconds)
+        lock.unlock()
+    }
+
+    /// A chunk went to the player: the cushion's counters after it, and its level before and after `gain`, the
+    /// duck's gain as the chunk is scheduled (it is heard one cushion later, so a duck's edges blur by ~120 ms).
+    func noteScheduled(_ chunk: SpeakerScheduler.Scheduled, model: PlayoutModel, gain: Float) {
+        lock.lock()
+        stats = model.stats
+        targetFrames = model.targetFrames
+        if chunk.rms >= PlaybackTelemetry.voicedRMS, chunk.seconds > 0 {
+            let g = Double(min(1, max(0, gain)))
+            voicedSeconds += chunk.seconds
+            voicedEnergy += chunk.rms * chunk.rms * chunk.seconds
+            heardEnergy += chunk.rms * chunk.rms * g * g * chunk.seconds
+            peak = max(peak, chunk.peak)
+        }
+        lock.unlock()
+    }
+
+    /// The playout and output objects as the frame carries them; nil before the first graph.
+    func readback() -> (playout: PlayoutReadback, output: OutputReadback)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard started else { return nil }
+        let ms = { (frames: Int) -> Int in Int(PlayoutModel.ms(frames).rounded()) }
+        var p = PlayoutReadback()
+        p.chunks = stats.chunks
+        p.underruns = stats.underruns
+        p.underrunMs = ms(stats.underrunFrames)
+        p.longestUnderrunMs = ms(stats.longestUnderrunFrames)
+        p.wouldBeUnderruns = stats.wouldBeUnderruns
+        p.resets = stats.resets
+        p.targetMs = ms(targetFrames)
+        p.queuedMs = ms(stats.queuedFrames)
+        p.queuedMinMs = stats.queuedMinFrames.map(ms)
+        p.lateMaxMs = Int((lateMaxSeconds * 1000).rounded())
+        p.droppedChunks = droppedChunks
+        p.droppedMs = Int((droppedSeconds * 1000).rounded())
+        var o = OutputReadback()
+        o.audibleMs = Int((voicedSeconds * 1000).rounded())
+        o.mixFormat = mixFormat
+        if voicedSeconds > 0 {
+            o.rmsDbfs = levelDbfs((voicedEnergy / voicedSeconds).squareRoot())
+            o.heardRmsDbfs = levelDbfs((heardEnergy / voicedSeconds).squareRoot())
+            o.peakDbfs = levelDbfs(peak)
+        }
+        return (p, o)
     }
 }

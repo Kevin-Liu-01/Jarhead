@@ -772,6 +772,75 @@ private extension AudioStateInfo {
                   hears: r.hears.map(AudioDeviceInfo.init), speaks: r.speaks.map(AudioDeviceInfo.init), tapFormat: r.tapFormat,
                   recording: r.recording, fallback: r.fallback, guardOn: r.guardOn, guardTailMs: r.guardTailMs,
                   guardHeldMs: Int((r.heldSeconds * 1000).rounded()), gated: r.gated, chunks: r.chunks, breakthroughs: r.breakthroughs,
-                  sharedWith: r.sharedWith?.map(MicRouteInfo.processName), inputMuted: r.inputMuted, aggregatePresent: r.aggregatePresent)
+                  sharedWith: r.sharedWith?.map(MicRouteInfo.processName), inputMuted: r.inputMuted, aggregatePresent: r.aggregatePresent,
+                  playout: r.playout.map(AudioPlayoutInfo.init), duck: r.duck.map(AudioDuckInfo.init), output: r.output.map(AudioOutputInfo.init))
+    }
+}
+
+// MARK: - voice PLAN W1.5: the playback telemetry as W2-5's contract spells it (Model/Protocol.swift)
+//
+// The readbacks count in whole milliseconds; the mirrors carry Doubles and write finite numbers only. Each field is
+// set by name, so the mapping never depends on a mirror's declaration order.
+
+private extension AudioPlayoutInfo {
+    init(_ p: PlayoutReadback) {
+        self.init()
+        chunks = p.chunks
+        underruns = p.underruns
+        underrunMs = Double(p.underrunMs)
+        longestUnderrunMs = Double(p.longestUnderrunMs)
+        wouldBeUnderruns = p.wouldBeUnderruns
+        resets = p.resets
+        targetMs = Double(p.targetMs)
+        queuedMs = Double(p.queuedMs)
+        queuedMinMs = p.queuedMinMs.map(Double.init)
+        lateMaxMs = Double(p.lateMaxMs)
+        droppedChunks = p.droppedChunks
+        droppedMs = Double(p.droppedMs)
+    }
+}
+
+private extension AudioDuckLastInfo {
+    init(_ e: DuckEventReadback) {
+        self.init()
+        source = e.source
+        confirmed = e.confirmed
+        depthDb = e.depthDb
+        runDbfs = e.runDbfs
+        thresholdDbfs = e.thresholdDbfs
+        releasedAfterMs = e.releasedAfterMs.map(Double.init)
+        reason = e.reason
+    }
+}
+
+private extension AudioDuckInfo {
+    init(_ d: DuckReadback) {
+        self.init()
+        ducks = d.ducks
+        gate = d.gate
+        confirmed = d.confirmed
+        unconfirmed = d.unconfirmed
+        held = d.held
+        refusedWords = d.refusedWords
+        refusedLive = d.refusedLive
+        wordOnsetsSkipped = d.wordOnsetsSkipped
+        duckedMs = Double(d.duckedMs)
+        deepMs = Double(d.deepMs)
+        residualP50Dbfs = d.residualP50Dbfs
+        residualP99Dbfs = d.residualP99Dbfs
+        echoFloorDbfs = d.echoFloorDbfs
+        last = d.last.map(AudioDuckLastInfo.init)
+    }
+}
+
+private extension AudioOutputInfo {
+    init(_ o: OutputReadback) {
+        self.init()
+        rmsDbfs = o.rmsDbfs
+        peakDbfs = o.peakDbfs
+        heardRmsDbfs = o.heardRmsDbfs
+        audibleMs = Double(o.audibleMs)
+        mixFormat = o.mixFormat.isEmpty ? nil : o.mixFormat
+        volume = o.volume
     }
 }

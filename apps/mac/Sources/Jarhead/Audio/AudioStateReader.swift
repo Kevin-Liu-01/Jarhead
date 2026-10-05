@@ -32,6 +32,8 @@ struct AudioLocalFacts: Equatable {
     var lastUsedInputUID: String?
     /// The graph runs with echo cancellation.
     var echoCancelled = false
+    /// Voice PLAN W1.5: the speaker's and the duck's counters, read at each publish (`AudioStateReader.counters`).
+    var counters: AudioCounters?
 
     /// The guard's own fields: one lock, no HAL.
     mutating func refreshGuard() {
@@ -116,6 +118,13 @@ extension AudioStateReadback {
         inputMuted = h.inputMuted
         aggregatePresent = h.aggregatePresent
         engineAggregatePresent = h.engineAggregatePresent
+        playout = l.counters?.playout
+        duck = l.counters?.duck
+        output = l.counters?.output.map { o in
+            var out = o
+            out.volume = h.speaks?.volume
+            return out
+        }
     }
 }
 
@@ -153,6 +162,8 @@ final class AudioStateReader {
     var onStatus: ((String) -> Void)?
     /// A route verdict that needs a restart. Called on `queue`; the engine hops to its own.
     var onRestart: ((RouteRestart) -> Void)?
+    /// Voice PLAN W1.5: the speaker's and the duck's counters, each under its own lock; called on `queue` at every publish.
+    var counters: (() -> AudioCounters)?
 
     private let router = MicRouter()
     private var local = AudioLocalFacts()
@@ -243,7 +254,13 @@ final class AudioStateReader {
     private func publishFrame(_ reason: String) {
         let now = CFAbsoluteTimeGetCurrent()
         if hal == nil || halDirty || now - halReadAt >= AudioStateReader.halRefresh { readHAL(now) }
-        publish(AudioStateReadback(local: local, hal: hal ?? AudioHALFacts()))
+        publish(readback())
+    }
+
+    /// The frame from the facts held, the counters read fresh.
+    private func readback() -> AudioStateReadback {
+        if let counters { local.counters = counters() }
+        return AudioStateReadback(local: local, hal: hal ?? AudioHALFacts())
     }
 
     private func readHAL(_ now: CFAbsoluteTime) {
@@ -314,7 +331,7 @@ final class AudioStateReader {
 
     private func publishRoute(_ reason: String, ranked: [MicInput], systemDefault: String?) {
         readHAL(CFAbsoluteTimeGetCurrent())
-        let state = AudioStateReadback(local: local, hal: hal ?? AudioHALFacts())
+        let state = readback()
         let route = MicRoute(ranked: ranked, active: local.activeInputUID, systemDefault: systemDefault, explicit: local.preferredInputUID, echoCancelled: local.echoCancelled, running: local.running, state: state)
         let summary = route.summary
         if summary != lastRouteSummary {

@@ -1109,6 +1109,8 @@ export interface AudioOutput {
   readonly rmsDbfs?: number;
   readonly peakDbfs?: number;
   readonly heardRmsDbfs?: number;
+  /** Voiced audio played (chunks at or over the audible level): the doctor's per-minute rules divide by it. Absent from an app before the field. */
+  readonly audibleMs?: number;
   /** The mainMixer-to-output connection: `48000 Hz ×2`. */
   readonly mixFormat?: string;
   /** The default output's volume scalar, 0..1 (HAL); absent when the HAL cannot say. */
@@ -1163,7 +1165,7 @@ function duckOk(value: unknown): boolean {
 const TELEMETRY_CHECKS: readonly (readonly [key: "playout" | "duck" | "output", ok: (value: unknown) => boolean])[] = [
   ["playout", (v) => telemetryOk(v, PLAYOUT_REQUIRED, ["queuedMinMs"])],
   ["duck", duckOk],
-  ["output", (v) => telemetryOk(v, [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "volume"], ["mixFormat"])],
+  ["output", (v) => telemetryOk(v, [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "audibleMs", "volume"], ["mixFormat"])],
 ];
 
 /**

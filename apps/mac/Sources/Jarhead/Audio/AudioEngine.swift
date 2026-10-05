@@ -67,6 +67,8 @@ final class AudioEngine {
     private let stateReader = AudioStateReader()
     /// The speaker path: PCM16 → the player behind the playout cushion. On `queue`.
     private lazy var speaker = SpeakerScheduler(player: player, format: playFormat)
+    /// The speaker's figures for the frame (voice PLAN W1.5): written on `queue`, read on the reader's.
+    private let telemetry = PlaybackTelemetry()
     private var running = false
     /// True between start() and stop(): the graph should be up, and a dead graph
     /// (failed start, device yanked) is retried until it is.
@@ -114,6 +116,11 @@ final class AudioEngine {
         stateReader.onRestart = { [weak self] verdict in
             self?.queue.async { self?.restartForRoute(verdict) }
         }
+        // The playout, duck and output objects ride every frame, each read under its own lock.
+        stateReader.counters = { [telemetry] in
+            let speaker = telemetry.readback()
+            return AudioCounters(playout: speaker?.playout, duck: BargeInDuck.shared.telemetry(), output: speaker?.output)
+        }
         stateReader.start()
     }
 
@@ -128,6 +135,7 @@ final class AudioEngine {
         queue.async {
             self.wanted = true
             self.retryAttempt = 0
+            self.telemetry.resetDropped()
             self.startLocked()
         }
     }
@@ -322,8 +330,14 @@ final class AudioEngine {
     /// (`SpeakerScheduler`): silence in front of the first chunk of a stream, a fade-in after
     /// any silence, contiguous otherwise.
     func play(pcm: Data) {
+        let enqueued = DispatchTime.now().uptimeNanoseconds
         queue.async {
-            guard self.running, self.engine.isRunning else { return }
+            guard self.running, self.engine.isRunning else {
+                self.telemetry.noteDropped(seconds: Double(pcm.count / 2) / self.wireFormat.sampleRate)
+                return
+            }
+            // How long this block waited behind others on the speaker's queue.
+            self.telemetry.noteLate(Double(DispatchTime.now().uptimeNanoseconds &- enqueued) / 1e9)
             var scheduled: SpeakerScheduler.Scheduled?
             self.guardPlayer("schedule") { scheduled = self.speaker.schedule(pcm: pcm) }
             if let scheduled { self.noteSpeaker(scheduled) }
@@ -334,6 +348,7 @@ final class AudioEngine {
     /// pre-roll as a silent stretch, then the chunk. GPT-Live-1 streams silence between
     /// sentences too, so audibility (not arrival) is what arms them. On `queue`.
     private func noteSpeaker(_ chunk: SpeakerScheduler.Scheduled) {
+        telemetry.noteScheduled(chunk, model: speaker.model, gain: BargeInDuck.shared.gainNow)
         if chunk.prerollSeconds > 0 {
             BargeInDuck.shared.noteOutput(rms: 0, seconds: chunk.prerollSeconds)
             EchoGuard.shared.noteOutput(rms: 0, seconds: chunk.prerollSeconds)
@@ -508,6 +523,12 @@ final class AudioEngine {
         // A new stream on a new graph: the cushion's counters start here, the mixer at unity.
         let mixer = engine.mainMixerNode
         try? objcTry { self.speaker.restart(mixer: mixer) }
+        var mixFormat = ""
+        try? objcTry {
+            let f = mixer.outputFormat(forBus: 0)
+            mixFormat = "\(Int(f.sampleRate)) Hz ×\(f.channelCount)"
+        }
+        telemetry.restart(mixFormat: mixFormat)
         // On the plain graph the microphone hears Jarhead at full level: the guard holds the
         // wire while he is audible plus a tail sized for the room and the output's latency, and
         // learns the echo floor only once that latency (plus the tap's 100 ms) has passed — a

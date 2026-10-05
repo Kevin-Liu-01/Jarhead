@@ -50,6 +50,10 @@ import Foundation
 /// not every few seconds (the floor falls again the moment the room is quieter).
 ///
 /// Off without echo cancellation: the gate would hear Jarhead and duck Jarhead.
+///
+/// Telemetry (voice PLAN W1.5, `telemetry()`): the counts by kind, the time spent ducked and deep,
+/// the residual echo (the mic's level in the slices where `echoFloor` learns: Jarhead audible, nothing
+/// ducked) as a 1 dB histogram, and the last duck's figures. All since the last `attach`, numbers only.
 final class BargeInDuck: @unchecked Sendable {
     static let shared = BargeInDuck()
 
@@ -116,6 +120,8 @@ final class BargeInDuck: @unchecked Sendable {
 
     struct Stats {
         var ducks = 0
+        /// Ducks the energy gate started (today every one: the word paths only confirm).
+        var gate = 0
         var confirmed = 0
         var unconfirmed = 0
         /// Unconfirmed ducks held past 700 ms because the mic stayed hot.
@@ -171,6 +177,23 @@ final class BargeInDuck: @unchecked Sendable {
     /// Bumped by every state change that invalidates queued timers.
     private var generation = 0
     private var stats = Stats()
+    // Telemetry since the last attach (voice PLAN W1.5).
+    /// The graph was echo-cancelled at the last attach: the duck was armed, and its figures mean something.
+    private var armedThisGraph = false
+    /// When `currentGain` last moved, and the time accrued under 0.9 and at -14 dB or deeper.
+    private var gainSince: CFAbsoluteTime = 0
+    private var duckedSeconds = 0.0
+    private var deepSeconds = 0.0
+    /// The residual echo, one bin per dB from -120 to 0 dBFS.
+    private var residual = [Int](repeating: 0, count: 121)
+    private var residualCount = 0
+    /// The hot run under way: its summed level, for the level that tripped the gate.
+    private var hotRunSum = 0.0
+    private var lastEvent: DuckEventReadback?
+    /// -14 dB: from here down a duck is deep.
+    static let deepGain = Float(pow(10.0, -14.0 / 20.0))
+    /// Under this the speaker is ducked at all.
+    static let duckedBelow: Float = 0.9
 
     // MARK: wiring
 
@@ -180,11 +203,13 @@ final class BargeInDuck: @unchecked Sendable {
         self.gain = gain
         self.echoCancelled = echoCancelled
         state = .idle
-        currentGain = 1
         generation += 1
         hotRun = 0
         queueEnd = 0
         audibleUntil = 0
+        // A new graph: its figures start here.
+        resetTelemetryLocked()
+        armedThisGraph = echoCancelled
         lock.unlock()
         queue.async { gain(1) }
     }
@@ -195,7 +220,7 @@ final class BargeInDuck: @unchecked Sendable {
         let gain = self.gain
         self.gain = nil
         state = .idle
-        currentGain = 1
+        moveGainLocked(1)
         generation += 1
         queueEnd = 0
         audibleUntil = 0
@@ -207,7 +232,6 @@ final class BargeInDuck: @unchecked Sendable {
     func resetForHarness() {
         lock.lock()
         state = .idle
-        currentGain = 1
         floor = 0.02
         echoFloor = 0
         hotRun = 0
@@ -226,10 +250,88 @@ final class BargeInDuck: @unchecked Sendable {
         liveItem = nil
         liveItemOpenedHost = 0
         generation += 1
-        stats = Stats()
+        resetTelemetryLocked()
+        armedThisGraph = echoCancelled
         let gain = self.gain
         lock.unlock()
         if let gain { queue.async { gain(1) } }
+    }
+
+    /// Counts, time ducked, the residual histogram and the last event back to zero; the gain at unity. Under `lock`.
+    private func resetTelemetryLocked() {
+        stats = Stats()
+        currentGain = 1
+        gainSince = CFAbsoluteTimeGetCurrent()
+        duckedSeconds = 0
+        deepSeconds = 0
+        residual = [Int](repeating: 0, count: residual.count)
+        residualCount = 0
+        hotRunSum = 0
+        lastEvent = nil
+    }
+
+    /// The gain moved: the time at the old one is accrued first. Under `lock`.
+    private func moveGainLocked(_ g: Float) {
+        accrueGainLocked(CFAbsoluteTimeGetCurrent())
+        currentGain = g
+    }
+
+    private func accrueGainLocked(_ now: CFAbsoluteTime) {
+        let dt = max(0, now - gainSince)
+        if currentGain < BargeInDuck.duckedBelow { duckedSeconds += dt }
+        if currentGain <= BargeInDuck.deepGain { deepSeconds += dt }
+        gainSince = now
+    }
+
+    /// The speaker's gain right now (1 when nothing is ducked), for the heard level.
+    var gainNow: Float {
+        lock.lock(); defer { lock.unlock() }
+        return currentGain
+    }
+
+    /// The frame's `duck` object since the last attach; nil when the duck was not armed in this graph (the
+    /// plain path detaches it).
+    func telemetry() -> DuckReadback? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard armedThisGraph else { return nil }
+        accrueGainLocked(CFAbsoluteTimeGetCurrent())
+        var d = DuckReadback()
+        d.ducks = stats.ducks
+        d.gate = stats.gate
+        d.confirmed = stats.confirmed
+        d.unconfirmed = stats.unconfirmed
+        d.held = stats.held
+        d.refusedWords = stats.refusedWords
+        d.refusedLive = stats.refusedLive
+        d.wordOnsetsSkipped = stats.wordOnsetsSkipped
+        d.duckedMs = Int((duckedSeconds * 1000).rounded())
+        d.deepMs = Int((deepSeconds * 1000).rounded())
+        d.residualP50Dbfs = residualPercentileLocked(0.5)
+        d.residualP99Dbfs = residualPercentileLocked(0.99)
+        d.echoFloorDbfs = levelDbfs(echoFloor)
+        d.last = lastEvent
+        return d
+    }
+
+    /// The residual histogram's percentile in dBFS (the bin's centre), nearest rank; nil before any slice.
+    private func residualPercentileLocked(_ p: Double) -> Double? {
+        guard residualCount > 0 else { return nil }
+        let rank = max(1, Int((p * Double(residualCount)).rounded(.up)))
+        var seen = 0
+        for (i, n) in residual.enumerated() {
+            seen += n
+            if seen >= rank { return Double(i - 120) }
+        }
+        return 0
+    }
+
+    /// One residual slice into the histogram. Under `lock`.
+    private func noteResidualLocked(_ rms: Double) {
+        let db = rms > 0 && rms.isFinite ? 20 * log10(min(1, rms)) : -120
+        let bin = min(120, max(0, Int(db.rounded()) + 120))
+        residual[bin] += 1
+        residualCount += 1
     }
 
     var currentStats: Stats {
@@ -375,14 +477,19 @@ final class BargeInDuck: @unchecked Sendable {
             if rms < floor { floor = rms } else { floor += (rms - floor) * 0.0005 }
             if outputAudible, case .idle = state {
                 if rms > echoFloor { echoFloor += (rms - echoFloor) * 0.02 } else { echoFloor *= 0.995 }
+                noteResidualLocked(rms)
             } else if !outputAudible {
                 echoFloor *= 0.999
             }
             let threshold = max(floor * BargeInDuck.floorFactor, BargeInDuck.minimumHotRMS, echoFloor * BargeInDuck.echoFactor)
             let sliceHost = startHost &+ AVAudioTime.hostTime(forSeconds: Double(offset - n) / sampleRate)
             if rms > threshold {
-                if hotRun == 0 { hotSinceHost = sliceHost }
+                if hotRun == 0 {
+                    hotSinceHost = sliceHost
+                    hotRunSum = 0
+                }
                 hotRun += 1
+                hotRunSum += rms
                 lastHotHost = sliceHost &+ AVAudioTime.hostTime(forSeconds: Double(n) / sampleRate)
                 if case .ducked = state {
                     hotSum += rms
@@ -390,7 +497,7 @@ final class BargeInDuck: @unchecked Sendable {
                 }
                 if hotRun == BargeInDuck.onsetSlices, armedLocked() {
                     switch state {
-                    case .idle, .releasing: duckLocked(source: "gate", onsetHost: hotSinceHost)
+                    case .idle, .releasing: duckLocked(source: "gate", onsetHost: hotSinceHost, runRMS: hotRunSum / Double(hotRun), threshold: threshold)
                     case .ducked: break
                     }
                 }
@@ -458,12 +565,14 @@ final class BargeInDuck: @unchecked Sendable {
 
     /// The gate heard 60 ms of speech over Jarhead: −6 dB at once, nothing deeper until a
     /// confirmation (`confirmLocked`). The player's mixer smooths the step over ~20 ms.
-    private func duckLocked(source: String, onsetHost: UInt64) {
+    private func duckLocked(source: String, onsetHost: UInt64, runRMS: Double, threshold: Double) {
         let now = CFAbsoluteTimeGetCurrent()
         state = .ducked(since: now, onsetHost: onsetHost, confirmed: false)
         generation += 1
         let gen = generation
         stats.ducks += 1
+        if source == "gate" { stats.gate += 1 }
+        lastEvent = DuckEventReadback(source: source, confirmed: false, depthDb: BargeInDuck.db(BargeInDuck.unconfirmedGain), runDbfs: levelDbfs(runRMS), thresholdDbfs: levelDbfs(threshold), releasedAfterMs: nil, reason: nil)
         extendedThisDuck = false
         hotSum = 0
         hotCount = 0
@@ -486,6 +595,8 @@ final class BargeInDuck: @unchecked Sendable {
         guard case .ducked(let since, let onset, false) = state else { return }
         state = .ducked(since: since, onsetHost: onset, confirmed: true)
         stats.confirmed += 1
+        lastEvent?.confirmed = true
+        lastEvent?.depthDb = BargeInDuck.db(BargeInDuck.duckGain)
         let gen = generation
         if let gain {
             for (i, g) in BargeInDuck.deepenSteps.enumerated() {
@@ -514,7 +625,7 @@ final class BargeInDuck: @unchecked Sendable {
             return false
         }
         let lower = g < currentGain
-        if lower { currentGain = g }
+        if lower { moveGainLocked(g) }
         lock.unlock()
         if lower { gain(g) }
         return true
@@ -522,8 +633,13 @@ final class BargeInDuck: @unchecked Sendable {
 
     private func setGain(_ g: Float) {
         lock.lock()
-        currentGain = g
+        moveGainLocked(g)
         lock.unlock()
+    }
+
+    /// A gain as dB, to 0.1.
+    static func db(_ g: Float) -> Double {
+        (20 * log10(Double(max(g, 1e-6))) * 10).rounded() / 10
     }
 
     /// On `queue`: the deadline for a duck nobody confirmed — 700 ms, moved on while the
@@ -573,6 +689,8 @@ final class BargeInDuck: @unchecked Sendable {
     /// On `queue`: the 300 ms ramp back to unity, 15 ms a step, and a hold-off after it.
     private func beginRelease(_ why: String, since: CFAbsoluteTime) {
         lock.lock()
+        lastEvent?.releasedAfterMs = Int(((CFAbsoluteTimeGetCurrent() - since) * 1000).rounded())
+        lastEvent?.reason = why
         state = .releasing
         generation += 1
         let gen = generation

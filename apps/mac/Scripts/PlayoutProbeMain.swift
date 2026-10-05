@@ -244,6 +244,8 @@ struct RunResult {
     var latencyP95 = 0.0
     var stats = PlayoutModel.Stats()
     var targetMs = 0.0
+    /// The frame's `playout` and `output` objects as the app would send them (voice PLAN W1.5), the cushion only.
+    var frame: (playout: PlayoutReadback, output: OutputReadback)?
 }
 
 final class OfflineRig {
@@ -343,6 +345,10 @@ struct OfflineProbe {
             if ok { oks += 1; say("gate: \(name) ok (\(detail))") } else { fails.append(name); say("gate: \(name) FAIL (\(detail))") }
         }
         func r(_ t: String, _ p: Policy) -> RunResult { results[t]![p]! }
+        if let f = r("paced", .cushion).frame {
+            let p = f.playout, o = f.output
+            say("frame playout (paced): {\"chunks\":\(p.chunks),\"underruns\":\(p.underruns),\"underrunMs\":\(p.underrunMs),\"longestUnderrunMs\":\(p.longestUnderrunMs),\"wouldBeUnderruns\":\(p.wouldBeUnderruns),\"resets\":\(p.resets),\"targetMs\":\(p.targetMs),\"queuedMs\":\(p.queuedMs),\"queuedMinMs\":\(p.queuedMinMs ?? -1),\"lateMaxMs\":\(p.lateMaxMs),\"droppedChunks\":\(p.droppedChunks),\"droppedMs\":\(p.droppedMs)} output: {\"rmsDbfs\":\(o.rmsDbfs ?? 0),\"peakDbfs\":\(o.peakDbfs ?? 0),\"heardRmsDbfs\":\(o.heardRmsDbfs ?? 0),\"audibleMs\":\(o.audibleMs),\"mixFormat\":\"\(o.mixFormat)\"}")
+        }
         let rb = r("paced + readback ticks", .today)
         check("today reproduces the defect on paced + readback ticks", Double(rb.holes) / minutes >= 3, String(format: "%.1f holes/min", Double(rb.holes) / minutes))
         check("cushion: 0 holes on paced", r("paced", .cushion).holes == 0, "\(r("paced", .cushion).holes) holes")
@@ -358,6 +364,16 @@ struct OfflineProbe {
             check("cushion: underruns equal the rendered holes on \(trace.name)", c.stats.underruns == c.holes, "\(c.stats.underruns) vs \(c.holes)")
             if trace.flushes.isEmpty {
                 check("cushion: wouldBeUnderruns equal today's holes on \(trace.name)", c.stats.wouldBeUnderruns == t.holes, "\(c.stats.wouldBeUnderruns) vs \(t.holes)")
+            }
+            // The frame's objects (voice PLAN W1.5) say what was rendered.
+            if let f = c.frame {
+                let counts = f.playout.underruns == c.holes && f.playout.chunks == c.stats.chunks && f.playout.resets == c.stats.resets
+                    && (!trace.flushes.isEmpty || f.playout.wouldBeUnderruns == t.holes)
+                let level = f.output.rmsDbfs != nil && f.output.heardRmsDbfs == f.output.rmsDbfs && f.output.audibleMs > 0 && f.output.mixFormat == "48000 Hz ×2"
+                check("telemetry: the frame's playout and output objects match the render on \(trace.name)", counts && level,
+                      "underruns \(f.playout.underruns) vs \(c.holes) holes · would be \(f.playout.wouldBeUnderruns) vs today \(t.holes) · rms \(f.output.rmsDbfs ?? .nan) dBFS · \(f.output.audibleMs) ms voiced · mix \(f.output.mixFormat)")
+            } else {
+                check("telemetry: the frame's playout and output objects match the render on \(trace.name)", false, "no readback")
             }
         }
         // The re-prime variant: keep it only if it has less speech-hole time at equal p50 latency.
@@ -412,6 +428,10 @@ struct OfflineProbe {
         var pending: (token: Int, at: Int)?
         var restore: (token: Int, at: Int)?
         var heldArrivals: [Double] = []
+        // The app's telemetry, fed exactly as AudioEngine.noteSpeaker feeds it (no duck here: gain 1).
+        let telemetry = PlaybackTelemetry()
+        let mix = rig.engine.mainMixerNode.outputFormat(forBus: 0)
+        telemetry.restart(mixFormat: "\(Int(mix.sampleRate)) Hz ×\(mix.channelCount)")
         let end = (trace.arrivals.last ?? 0) + 1.5
         let pulls = Int(end / 0.01)
 
@@ -429,6 +449,7 @@ struct OfflineProbe {
                 pending = nil
                 restore = (p.token, k + Int((SpeakerScheduler.flushRestore / 0.01).rounded()))
                 let resumed = rig.speaker.finishFlush(token: p.token, engineRunning: true)
+                for chunk in resumed { telemetry.noteScheduled(chunk, model: rig.speaker.model, gain: 1) }
                 base48 = rig.out.count
                 cuts.append(rig.out.count)
                 let scheduledEnd = rig.speaker.model.scheduledEnd
@@ -470,7 +491,8 @@ struct OfflineProbe {
                     noteStart(start, arrival: arrival)
                     rig.playToday(data)
                 case .cushion:
-                    if rig.speaker.schedule(pcm: data) != nil {
+                    if let scheduled = rig.speaker.schedule(pcm: data) {
+                        telemetry.noteScheduled(scheduled, model: rig.speaker.model, gain: 1)
                         noteStart(rig.speaker.model.scheduledEnd - Int64(chunkFrames), arrival: arrival)
                     } else {
                         heldArrivals.append(arrival)
@@ -498,6 +520,7 @@ struct OfflineProbe {
         case .cushion:
             result.stats = rig.speaker.model.stats
             result.targetMs = PlayoutModel.ms(rig.speaker.model.targetFrames)
+            result.frame = telemetry.readback()
         case .reprime:
             result.stats = reprime.stats
             result.targetMs = PlayoutModel.ms(reprime.targetFrames)

@@ -162,7 +162,7 @@ const DUCK = {
   ducks: 2, gate: 2, confirmed: 2, unconfirmed: 0, held: 0, refusedWords: 1, refusedLive: 0, wordOnsetsSkipped: 3, duckedMs: 900, deepMs: 400,
   residualP50Dbfs: -61, residualP99Dbfs: -49, echoFloorDbfs: -55, last: LAST,
 } satisfies Required<AudioDuck>;
-const OUTPUT = { rmsDbfs: -21.8, peakDbfs: -4.1, heardRmsDbfs: -22, mixFormat: "48000 Hz ×2", volume: 0.62 } satisfies Required<AudioOutput>;
+const OUTPUT = { rmsDbfs: -21.8, peakDbfs: -4.1, heardRmsDbfs: -22, audibleMs: 61_000, mixFormat: "48000 Hz ×2", volume: 0.62 } satisfies Required<AudioOutput>;
 const LIVE = {
   deltas: 640, deltaMsP50: 40, deltaMsMax: 120, arrivalP99Ms: 31, arrivalMaxMs: 182, aheadMs: 0, gatedFrames: 0, loopDelayMaxMs: 12, formatRate: 24000,
 } satisfies Required<LiveAudio>;

@@ -10,6 +10,7 @@ import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN,
 import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, describeHelperTiles, readDock, readRunning, repairDock, restartDock, type DockAudit, type Exec, type RunningApp } from "@jarhead/install";
 import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
+import { AudioTelemetry } from "./audio-telemetry.ts";
 import { ActionObserver, ActingSerializer } from "./observe.ts";
 import { LaneRunner, ThreadAwareRunner, ThreadLog, ThreadScheduler, ThreadTable, type ThreadBrainFactory, type ThreadBrainSpec, type ThreadParent, type ThreadVoice } from "./threads/index.ts";
 import { Automations, keepRecipeTrash, type AutomationExec, type ShellGate, type ShellRunner } from "./automations/index.ts";
@@ -450,6 +451,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private inputLevel = 0;
   /** design12: the app's audio graph as it last read itself back (the `audio-state` frame); undefined while no app is connected. */
   private audioState: AudioState | undefined;
+  /** Voice PLAN W1.5: Live's arrival per session, the rate-limited `audio:` line, the `audio.playout` row at close. */
+  private readonly audioTelemetry = new AudioTelemetry({ now: () => this.now(), log: (line) => log.info(line) });
   private snapshotTimer: NodeJS.Timeout | undefined;
   private tickTimer: NodeJS.Timeout | undefined;
   /** The startup Dock read, armed in start(); cleared by stop(). */
@@ -1990,6 +1993,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.usageSeconds = 0;
       this.contextRatio = undefined;
       this.ledger.append({ at, type: "session.started", sessionId: res.id, voice: this.settings.voice, language: this.settings.language, accent: this.settings.accent, ...(resume ? { resumedFrom: resume.pause.sessionId } : {}) });
+      this.audioTelemetry.open(res.id, res.audio?.format);
       // Grants live with the conversation: a resume continues the chain it left, a new session starts one.
       this.confirmations.beginConversation(resume ? (this.ledger.chainRootOf(resume.pause.sessionId) ?? resume.pause.sessionId) : res.id);
       this.usageBase = { ...this.usageBase, sessions: this.usageBase.sessions + 1 };
@@ -2264,6 +2268,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const current = (): boolean => this.live === live;
     live.on("audio", (pcm) => {
       if (!current()) return;
+      this.audioTelemetry.delta(live.session?.id, pcm.length, this.now() < this.outputGateUntil);
       // After a stop the voice is muted here until Kevin speaks or the gate lapses:
       // the API has no interrupt, so a sentence already in flight is simply not played.
       if (this.now() < this.outputGateUntil) {
@@ -2331,6 +2336,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       // reached session.started has no started row and gets no closed row.
       this.foldUsage(live, usage);
       const id = live.session?.id;
+      // The playback figures first, so the row sits inside the session it describes.
+      const playout = id ? this.audioTelemetry.close(id, this.audioState) : undefined;
+      if (playout) this.ledger.append(playout);
       if (id) this.ledger.append({ at: this.now(), type: "session.closed", sessionId: id, reason, usageSeconds: usage });
       // Its rows are complete: memory reads them at the next quiet tick (never while a session is up).
       if (id) this.memory.sessionClosed(id);
@@ -2538,6 +2546,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const next: AudioState = { ...state, ...(since !== undefined ? { since } : {}) };
     if (before && sameAudioState(before, next)) return;
     this.audioState = next;
+    this.audioTelemetry.frame(next);
     this.scheduleSnapshot();
   }
 
@@ -5837,6 +5846,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       ...this.automations.snapshot(),
       // The app's audio graph as it last read itself back (design12); absent when no app is connected.
       ...(this.audioState ? { audioState: this.audioState } : {}),
+      // Live's audio as this session received it (voice PLAN W1.5); absent while no session is open.
+      ...this.audioTelemetry.snapshotField(),
     };
   }
 
