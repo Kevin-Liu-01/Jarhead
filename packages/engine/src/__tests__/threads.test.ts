@@ -691,7 +691,7 @@ test("one question floor: the first thread's question is spoken with its name, t
     const slackBrain = w.threads.byName("Slack")!;
     assert.equal(slackBrain.tasks.length, 2);
     assert.equal(slackBrain.tasks[1]!.confirmation, true);
-    assert.match(slackBrain.tasks[1]!.dialogue, /Kevin said yes\. Call the same tool again/);
+    assert.match(slackBrain.tasks[1]!.dialogue, /Kevin answered your question: "yes"\. If that is a yes, call the same tool again/);
     assert.equal(named(w, "Slack")!.turns, 2, "a second turn of its own");
     await until(() => engine.snapshot().delegations.find((d) => d.liveId === "item_yes")!.status === "done");
     assert.match(engine.snapshot().delegations.find((d) => d.liveId === "item_yes")!.summary ?? "", /relayed the yes to Slack/);
