@@ -6,7 +6,6 @@ import type { HelloPermissions } from "@jarhead/hands";
 import { classifyLiveError } from "@jarhead/live";
 import type { Problem, ProblemKind } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
-import { answerKeyProbe } from "./key-probe.ts";
 import { FakeLive, RecordingHands, current, settle, world, type World } from "./world.ts";
 
 /**
@@ -15,9 +14,6 @@ import { FakeLive, RecordingHands, current, settle, world, type World } from "./
  * remedy button (`problem.retry`) re-runs that kind's check. Plus the disk preflight
  * (a fake statvfs), the crash report row, and the GPT-Live-1 error classifier.
  */
-
-// These tests read the problem list whole: the start's key check gets OpenAI's 401 in both preload modes.
-answerKeyProbe();
 
 const typed = (w: World): readonly Problem[] => w.engine.typedProblems();
 const ofKind = (w: World, kind: ProblemKind): readonly Problem[] => typed(w).filter((p) => p.kind === kind);

@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import type { LedgerRow } from "@jarhead/protocol";
 import { LiveSession, type SessionConfig, type WebSocketLike } from "@jarhead/live";
 import { Engine } from "../engine.ts";
-import { answerKeyProbe } from "./key-probe.ts";
 import { FakeLive, delegate, frame, nextUtterance, rows, settle, world } from "./world.ts";
 
 /**
@@ -14,9 +13,6 @@ import { FakeLive, delegate, frame, nextUtterance, rows, settle, world } from ".
  * terminated at the deadline, and a watchdog ends anything that slipped through.
  * An interrupt (a spoken "stop") is the one stop that keeps the session.
  */
-
-// A stop and a refused socket are judged by the whole problem list: the start's key check gets OpenAI's 401 in both preload modes.
-answerKeyProbe();
 
 type Row = LedgerRow;
 type Started = Extract<Row, { type: "session.started" }>;

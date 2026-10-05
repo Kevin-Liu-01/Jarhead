@@ -276,33 +276,3 @@ test("the brain runner's redactor reads the state dir's env file, never $HOME/.j
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-test("JARHEAD_TEST_NET=strict: a file that installs answerKeyProbe starts a world() engine with no problem row, its key check reads 'invalid' as on any Mac, and every other off-Mac fetch still throws by name (W2-9)", () => {
-  const { root, env } = canaryHome();
-  try {
-    const script = `
-      import { answerKeyProbe } from "./packages/engine/src/__tests__/key-probe.ts";
-      import { world } from "./packages/engine/src/__tests__/world.ts";
-      answerKeyProbe();
-      const w = world();
-      await w.engine.start();
-      await w.engine.ready();
-      const setup = await w.engine.probeSetup();
-      let other = null;
-      try { await fetch("https://api.openai.com/v1/responses", { method: "POST" }); } catch (e) { other = e.message; }
-      const problems = w.engine.snapshot().problems.map((p) => p.text);
-      await w.engine.stop();
-      console.log(JSON.stringify({ problems, openaiKey: setup.openaiKey, other }));
-      process.exit(0);
-    `;
-    const r = out<{ problems: string[]; openaiKey: string; other: string | null }>(child(script, { ...env, JARHEAD_TEST_NET: "strict" }));
-    assert.deepEqual(r.problems, [], "no 'could not reach api.openai.com' row: the key check was answered on this Mac");
-    assert.equal(r.openaiKey, "invalid", "OpenAI's answer to a key it does not know");
-    assert.equal(r.other, "fetch failed (JARHEAD_TEST_NET=strict: POST https://api.openai.com/v1/responses is off this Mac)");
-    const log = readFileSync(join(root, "net.log"), "utf8");
-    assert.doesNotMatch(log, /\/v1\/models\//, "the key check never reached the preload");
-    assert.match(log, /^\d+ refused POST https:\/\/api\.openai\.com\/v1\/responses$/m);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
