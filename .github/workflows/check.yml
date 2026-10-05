@@ -67,16 +67,19 @@ jobs:
       # never installs, so nothing under /Applications is touched on the runner.
       - run: JARHEAD_BUILD_ONLY=1 JARHEAD_SIGN_IDENTITY=- pnpm build:mac
 
-  # The floor install.sh enforces: Swift 5.10 (Xcode 15.3 and 15.4) on macOS 14. The helper and
-  # the app must build with it, or the floor moves to Xcode 16.
+  # The floor install.sh enforces: Swift 6.0 (the oldest Xcode 16) on macOS 14. The app's SwiftUI uses the
+  # macOS 15 SDK (back-deployed to 14), so Xcode 15 never built it. The helper and the app must build here.
   swift-floor:
-    name: swift build on the floor (macOS 14, Xcode 15.4)
+    name: swift build on the floor (macOS 14, the oldest Xcode 16)
     runs-on: macos-14
     timeout-minutes: 30
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+      - name: pick the oldest Xcode 16 on the runner
+        run: |
+          ls -d /Applications/Xcode_16*.app
+          oldest="$(ls -d /Applications/Xcode_16*.app | sort -V | head -n 1)"
+          echo "DEVELOPER_DIR=$oldest/Contents/Developer" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

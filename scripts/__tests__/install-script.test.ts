@@ -152,17 +152,17 @@ test("pnpm older than 10 is refused before anything runs; the fix puts npm first
   }
 });
 
-test("Swift older than 5.10 is refused before pnpm install; Swift 5.10 passes", { skip }, () => {
+test("Swift older than 6.0 is refused before pnpm install; Swift 6.0 passes", { skip }, () => {
   const s = sandbox();
   try {
     const dir = join(s.root, "fresh");
-    const old = install("/bin/sh", s.home, dir, { swift: "5.9.2" }, { JARHEAD_DRY_RUN: "1" });
+    const old = install("/bin/sh", s.home, dir, { swift: "5.10.1" }, { JARHEAD_DRY_RUN: "1" });
     assert.equal(old.code, 1, old.out);
-    assert.match(old.out, /jarhead: Swift 5\.9 is too old\. Jarhead needs Swift 5\.10 or newer, which comes with Xcode 15\.3 or newer\./);
+    assert.match(old.out, /jarhead: Swift 5\.10 is too old\. Jarhead needs Swift 6\.0 or newer, which comes with Xcode 16 or newer \(Xcode 16 needs macOS 14\.5 or later\)\./);
     assert.deepEqual(commands(old.out), []);
-    const floor = install("/bin/sh", s.home, dir, { swift: "5.10" }, { JARHEAD_DRY_RUN: "1" });
+    const floor = install("/bin/sh", s.home, dir, { swift: "6.0" }, { JARHEAD_DRY_RUN: "1" });
     assert.equal(floor.code, 0, floor.out);
-    assert.match(floor.out, /jarhead: Swift: Apple Swift version 5\.10 \(swiftlang-stub\)/);
+    assert.match(floor.out, /jarhead: Swift: Apple Swift version 6\.0 \(swiftlang-stub\)/);
     // A real toolchain: swift-driver's version on stderr, no newline, ahead of the Swift line. It is left out of the line shown.
     const driver = install("/bin/sh", s.home, dir, { xcrun: `case "$*" in "--find swift") echo /usr/bin/swift;; *) printf 'swift-driver version: 1.148.6 ' >&2; echo "Apple Swift version 6.3.3 (swiftlang-stub)";; esac` }, { JARHEAD_DRY_RUN: "1" });
     assert.equal(driver.code, 0, driver.out);

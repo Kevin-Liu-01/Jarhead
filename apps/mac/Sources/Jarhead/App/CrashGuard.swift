@@ -468,7 +468,7 @@ enum CrashGuard {
         // reports), SA_SIGINFO for the fault address, the previous actions kept for chaining.
         var alt = stack_t()
         alt.ss_size = 256 * 1024
-        alt.ss_sp = malloc(alt.ss_size)
+        alt.ss_sp = malloc(Int(alt.ss_size)) // size_t is UInt in the macOS 14 SDK, Int in 15
         alt.ss_flags = 0
         if alt.ss_sp != nil { sigaltstack(&alt, nil) }
         cgDefaultAction = UnsafeMutablePointer<sigaction>.allocate(capacity: 1)

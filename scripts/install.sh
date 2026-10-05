@@ -12,7 +12,7 @@
 #
 # It runs only on macOS 14 or newer on Apple silicon. It prints its plan before it starts and stops
 # at the first failed check. It never uses sudo. It installs none of the tools it needs: when Xcode's
-# command line tools (Swift 5.10 or newer), Node 24 or pnpm 10 are missing or too old, it prints the
+# command line tools (Swift 6.0 or newer, from Xcode 16), Node 24 or pnpm 10 are missing or too old, it prints the
 # command that fixes it and stops. Outside the checkout it installs one thing,
 # /Applications/Jarhead.app, which pnpm build:mac updates in place. It signs with a code-signing
 # certificate when the keychain has one. Without one it signs ad-hoc, which installs too; the
@@ -87,7 +87,7 @@ stop_on_license() {
 
 plan() {
   say "The plan:"
-  say "  1  check macOS 14+ on Apple silicon, Xcode's command line tools (Swift 5.10+), Node ${NODE_MAJOR_MIN}+, pnpm ${PNPM_MAJOR_MIN}+ and git"
+  say "  1  check macOS 14+ on Apple silicon, Xcode's command line tools (Swift 6.0+), Node ${NODE_MAJOR_MIN}+, pnpm ${PNPM_MAJOR_MIN}+ and git"
   if [ -d "$DIR/.git" ]; then
     say "  2  update $DIR to origin's $REF (a fast-forward, or a rebase of its own commits)"
   else
@@ -120,7 +120,8 @@ check_mac() {
   say "macOS $version on Apple silicon."
 }
 
-# apps/mac/Package.swift asks for swift-tools 5.10, so an older Swift is refused here, before pnpm install.
+# The app's SwiftUI needs the macOS 15 SDK (back-deployed to macOS 14), which comes with Xcode 16 and Swift 6.0,
+# so an older Swift is refused here, before pnpm install. (Package.swift's swift-tools 5.10 is only the manifest's floor.)
 check_xcode() {
   if ! xcode-select -p >/dev/null 2>&1; then
     say "Xcode's command line tools are missing. Install them, then run this again:"
@@ -129,7 +130,7 @@ check_xcode() {
   fi
   if ! swift_path="$(xcrun --find swift 2>&1)"; then
     stop_on_license "$swift_path"
-    say "swift is not on this Mac's toolchain. Install Xcode 15.3 or newer, or its command line tools, then run this again:"
+    say "swift is not on this Mac's toolchain. Install Xcode 16 or newer, or its command line tools, then run this again:"
     say "  xcode-select --install"
     exit 1
   fi
@@ -147,8 +148,8 @@ check_xcode() {
   esac
   swift_major="${swift_version%%.*}"
   swift_minor="${swift_version#*.}"
-  if [ "$swift_major" -lt 5 ] || { [ "$swift_major" -eq 5 ] && [ "$swift_minor" -lt 10 ]; }; then
-    say "Swift $swift_version is too old. Jarhead needs Swift 5.10 or newer, which comes with Xcode 15.3 or newer."
+  if [ "$swift_major" -lt 6 ]; then
+    say "Swift $swift_version is too old. Jarhead needs Swift 6.0 or newer, which comes with Xcode 16 or newer (Xcode 16 needs macOS 14.5 or later)."
     say "Update Xcode, or its command line tools in System Settings > General > Software Update, then run this again."
     exit 1
   fi

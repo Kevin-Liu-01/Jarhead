@@ -380,8 +380,8 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 ## Install and run
 
 The site is [jarhead.kevinliu.studio](https://jarhead.kevinliu.studio) (`site/`, a Next app; `pnpm -C site dev`).
-macOS 14+, Apple silicon, Xcode 15.3 or newer (the sources use Swift 5.10's `nonisolated(unsafe)` and
-`apps/mac/Package.swift` asks for swift-tools 5.10, so an older toolchain is refused before it compiles anything; CI builds with Xcode 16 on macos-15), Node ≥ 24,
+macOS 14+, Apple silicon, Xcode 16 or newer (Xcode 16 needs macOS 14.5 or later; the app's SwiftUI uses the macOS 15 SDK,
+back-deployed to macOS 14, so `scripts/install.sh` refuses a Swift older than 6.0 before it compiles anything; CI builds the floor with the oldest Xcode 16 on macos-14), Node ≥ 24,
 pnpm 10 — `corepack enable` gives you the version `package.json`'s `packageManager` names. An `OPENAI_API_KEY` for the voice; a brain
 you are already signed in to. What running it costs is under [Costs](#costs).
 

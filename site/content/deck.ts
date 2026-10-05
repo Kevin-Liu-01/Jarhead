@@ -202,7 +202,7 @@ export const INSTALL = {
     count: 6,
     items: [
       "macOS 14 or newer on Apple silicon", // README:377
-      "Xcode 15.3 or newer", // README:377
+      "Xcode 16 or newer", // README:383
       "Node 24 or newer and pnpm 10", // README:378-379
       "An OpenAI API key for the voice", // README:379
       "A brain you are already signed in to", // README:379-380
