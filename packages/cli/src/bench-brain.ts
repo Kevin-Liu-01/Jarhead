@@ -9,8 +9,9 @@ import { readConfig, replaceDefaultSink, setLogLevel, type JarheadConfig, type L
 import type { LiveSession } from "@jarhead/live";
 import { ACTING_TOOLS, CodexBrain, parseReflex, probeCodex, type Brain, type BrainResult, type BrainSink, type BrainTask, type CodexProbe, type DelegationTimingsExtra, type RunOutcome, type ToolRunner } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
-import { Engine } from "@jarhead/engine";
+import type { Engine } from "@jarhead/engine";
 import type { Delegation, DelegationStep, Effort } from "@jarhead/protocol";
+import { benchConfig, benchEngine } from "./bench.ts";
 
 /**
  * `pnpm jarhead bench --brain` — the representative-command benchmark
@@ -50,9 +51,13 @@ import type { Delegation, DelegationStep, Effort } from "@jarhead/protocol";
  * open_url, clipboard_*, agent_*, self_*) is answered with an error at the
  * ToolRunner. Read-only file and web tools run for real. The Codex turns run on
  * Kevin's ChatGPT login: the run costs his ChatGPT plan, not dollars — the header
- * says so. When Codex is not signed in the bench REFUSES to run: the engine's
- * `auto` would pick the next brain (Claude Code, then the API keys) and spend real
- * dollars on ten screenshot-carrying turns; `--allow-api-spend` is the override.
+ * says so. Nothing else spends: the Engine is bench.ts's `benchEngine` over
+ * `benchConfig` (a constant key, memory on keywords, the voice probe off, no
+ * helper process, no Dock read). When Codex is not signed in the bench REFUSES
+ * to run: the engine's `auto` would pick the next brain (Claude Code, then the
+ * API keys) and spend real dollars on ten screenshot-carrying turns;
+ * `--allow-api-spend` is the override, and only then does the brain keep the
+ * user's keys.
  * `--effort low|medium` overrides the brain's effort for the run (one flag for an
  * A/B); `--json` prints everything as JSON; `--out FILE` writes it.
  *
@@ -934,14 +939,10 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
     throw new Error(`Codex is not available (${probe?.detail ?? "no probe"}); bench --brain runs on your ChatGPT plan only — the auto brain would spend API dollars. Pass --allow-api-spend to run on it anyway.`);
   }
   const dir = mkdtempSync(join(tmpdir(), "jh-bb-"));
-  const config: JarheadConfig = {
-    ...base,
-    openaiApiKey: base.openaiApiKey || "sk-bench-never-used",
-    brain: "auto",
-    brainEffort: effort,
-    stateDir: join(dir, "state"),
-    socketPath: join(dir, "state", "j.sock"),
-  };
+  // The user's keys stay out (bench.ts `benchConfig`): Codex runs on its own login, a stand-in on
+  // nothing. Only --allow-api-spend without Codex keeps the brain's keys, since that brain needs one.
+  // The hands are in process, so the helper's path is one that does not exist.
+  const config: JarheadConfig = { ...benchConfig(base, dir, { codex: false, fakeHands: true, brainKeys: !standIn && !useCodex }), brainEffort: effort };
 
   // Every log line, timestamped: per-run windows (rollovers, the delegator's own line) come from here.
   // Info lines stay off stdout (the JSON report goes there); warnings and errors still reach stderr.
@@ -971,7 +972,8 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
         (useCodex
           ? lazyBrain("codex", () => new CodexBrain({ runner: engine.runner, probe, stateDir: config.stateDir, socketPath: config.socketPath, ...(base.brainModel.trim() ? { model: base.brainModel.trim() } : {}), effort, spawnImpl: teeSpawn(wire, say) }))
           : undefined));
-  engine = new Engine({ config, connectors: [], ...(brain ? { brain } : {}), makeLive: () => live as unknown as LiveSession, hands });
+  // The bench's Engine (bench.ts): memory on keywords, no Dock shell, the permission read and the voice probe off the network.
+  engine = benchEngine({ config, ...(brain ? { brain } : {}), makeLive: () => live as unknown as LiveSession, hands });
   if (useCodex) codexDetail = probe.detail;
 
   // Every runner call recorded; the tools that could act outside the canned hands answered with an error.

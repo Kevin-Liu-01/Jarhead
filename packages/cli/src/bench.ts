@@ -65,15 +65,16 @@ import { THREAD_TERMINAL, type Delegation, type Snapshot } from "@jarhead/protoc
  * the machine's load and on what is on the display (a busy 1280-px shot is an
  * 800 KB PNG); the header prints the load average so a run can be read in context.
  *
- * It spends nothing (W2-7). The Engine carries a constant key, never the user's, and
- * nothing sends it: Live is a stand-in, the voice key probe is off, and memory runs on
- * keywords and rules in the bench's temp state dir. It never reads the Dock. With fake
- * hands the helper's path does not exist and the permission read is answered in
- * process, so the real helper never starts. `--no-duck` skips the Swift duck probe.
+ * It spends nothing (W2-7). `benchEngine` builds its Engine, and `bench --brain`'s
+ * (bench-brain.ts): a constant key, never the user's, and nothing sends it. Live is a
+ * stand-in, the voice key probe is off, and memory runs on keywords and rules in the
+ * bench's temp state dir. It never reads the Dock. With fake hands the helper's path
+ * does not exist and the permission read is answered in process, so the real helper
+ * never starts. `duck: false` (`--no-duck`) skips the Swift duck probe.
  */
 
 /** One measurement. `unit` is "ms" for every timing row; a "count" row (brain generations spent) is a tally, never read as a latency. */
-interface Sample {
+export interface Sample {
   readonly metric: string;
   readonly value: number;
   readonly unit: SampleUnit;
@@ -321,7 +322,7 @@ export interface BenchOptions {
   readonly json: boolean;
   /** Exit non-zero when an ear row's p95 to dispatch is over its target (250 / 580 ms) with the real helper (default true; `earGate`). */
   readonly gate?: boolean;
-  /** Run the Mac app's duck probe (builds and runs a Swift harness). Default: on, unless the command line says `--no-duck`. A test turns it off. */
+  /** Run the Mac app's duck probe (builds and runs a Swift harness; default true). `--no-duck` turns it off, and so does a test. */
   readonly duck?: boolean;
   /** Where the lines go (default console.log); a test captures them. */
   readonly print?: (line: string) => void;
@@ -389,15 +390,18 @@ export const BENCH_OPENAI_KEY = "sk-bench-never-used";
  * tests' world() builds its own. The stand-in Live, the voice probe being off and memory on
  * keywords mean the constant key rides nothing. With fake hands the helper's path is one that
  * does not exist, so nothing can start the real helper.
+ *
+ * `brainKeys` keeps the user's brain keys and server URL. Only `bench --brain --allow-api-spend`
+ * without Codex passes it: the user chose to run the auto brain on API dollars, and that brain
+ * needs its key. Memory and the voice probe still send nothing (`benchEngine`).
  */
-export function benchConfig(base: JarheadConfig, dir: string, o: { readonly codex: boolean; readonly fakeHands: boolean }): JarheadConfig {
+export function benchConfig(base: JarheadConfig, dir: string, o: { readonly codex: boolean; readonly fakeHands: boolean; readonly brainKeys?: boolean }): JarheadConfig {
   const stateDir = join(dir, "state");
   return {
     ...base,
-    openaiApiKey: BENCH_OPENAI_KEY,
-    anthropicApiKey: undefined,
-    brainApiKey: undefined,
-    brainBaseUrl: undefined,
+    ...(o.brainKeys
+      ? { openaiApiKey: base.openaiApiKey || BENCH_OPENAI_KEY }
+      : { openaiApiKey: BENCH_OPENAI_KEY, anthropicApiKey: undefined, brainApiKey: undefined, brainBaseUrl: undefined }),
     brain: o.codex ? "codex" : "auto",
     stateDir,
     socketPath: join(stateDir, "j.sock"),
@@ -411,19 +415,32 @@ const NO_SHELL: NonNullable<EngineOptions["exec"]> = () => ({ code: 127, stdout:
 /** What the fake helper's `--permissions` says: everything granted, read in process. */
 const FAKE_GRANTS: HelloPermissions = { accessibility: true, screenRecording: true, inputMonitoring: true, fullDiskAccess: true };
 
+/** What a bench chooses for its Engine; `benchEngine` adds the seams that keep it off the network and off the Mac. */
+export type BenchEngineOptions = Omit<EngineOptions, "connectors" | "memory" | "exec" | "probePermissions"> & { readonly config: JarheadConfig };
+
 /**
- * The Engine seams that keep the bench off the network and off the Mac. Memory runs on
- * keywords and rules in the temp state dir: no embedding, no extractor call, no model list.
- * With fake hands: two in-process helpers (the acting one and the reading one, as the real
- * pool has) and the permission read answered in process.
+ * The Engine both benches run on (`bench`, and `bench --brain` in bench-brain.ts), off the
+ * network and off the Mac:
+ * - No connectors.
+ * - Memory on keywords and rules in the temp state dir: no embedding, no extractor call, no
+ *   model list.
+ * - No Dock shell.
+ * - With in-process hands (`hands` given), the permission read answered in process, so the
+ *   helper's `--permissions` never runs.
+ * - The voice probe off. It would check the config's key with api.openai.com, and the
+ *   bench's Live is a stand-in.
  */
-function benchSeams(fakeHands: boolean): Partial<EngineOptions> {
-  return {
+export function benchEngine(o: BenchEngineOptions): Engine {
+  const engine = new Engine({
+    ...o,
     connectors: [],
     memory: { embedder: new KeywordEmbedder(), extractor: new RulesExtractor(), decider: new RulesDecider() },
     exec: NO_SHELL,
-    ...(fakeHands ? { hands: new FakeHands(), backgroundHands: new FakeHands(), probePermissions: async () => FAKE_GRANTS } : {}),
-  };
+    ...(o.hands ? { probePermissions: async () => FAKE_GRANTS } : {}),
+  });
+  // Once W2-1's EngineOptions `probe: false` lands, pass that instead.
+  engine.probeSetup = async () => engine.snapshot().setup;
+  return engine;
 }
 
 /**
@@ -439,7 +456,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
   const dir = mkdtempSync(join(tmpdir(), "jh-bench-"));
   const useFakeHands = opts.fakeHands || !existsSync(base.handsBin);
   const config = benchConfig(base, dir, { codex: opts.codex, fakeHands: useFakeHands });
-  const duck = opts.duck ?? !process.argv.includes("--no-duck");
+  const duck = opts.duck ?? true;
   const live = new FakeLive();
   let engine: Engine;
   const brainState: BrainState = { hold: false, held: undefined, mode: "act", generations: 0, splitResults: [] };
@@ -468,9 +485,8 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       },
     };
   };
-  engine = new Engine({ config, ...benchSeams(useFakeHands), ...(brain ? { brain } : {}), makeLive: () => live as unknown as LiveSession, ...(opts.codex ? {} : { makeThreadBrain }) });
-  // The voice probe is off: it would check the key with api.openai.com, and the bench's key is a stand-in.
-  engine.probeSetup = async () => engine.snapshot().setup;
+  // With fake hands, two in-process helpers, as the real pool has two processes: the acting one and the reading one.
+  engine = benchEngine({ config, ...(brain ? { brain } : {}), makeLive: () => live as unknown as LiveSession, ...(useFakeHands ? { hands: new FakeHands(), backgroundHands: new FakeHands() } : {}), ...(opts.codex ? {} : { makeThreadBrain }) });
   /** For the JSON: what the thread rows saw. */
   const extras: Record<string, unknown> = {};
   const samples: Sample[] = [];
@@ -816,14 +832,36 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
   } finally {
     await Promise.race([engine.stop(), new Promise((r) => setTimeout(r, 8000))]);
   }
+  return benchReport(samples, extras, { codex: opts.codex, realHelper: !useFakeHands, gate: opts.gate ?? true, json: opts.json, print, brain: opts.codex ? engine.brainInfo.detail : "stand-in", load, dir });
+}
 
-  // The table.
+/** How a run was made, for `benchReport`'s verdict and footer. */
+export interface BenchRun {
+  readonly codex: boolean;
+  /** The Swift helper answered. Fake hands are never judged. */
+  readonly realHelper: boolean;
+  /** false is `--no-gate`: the verdict still prints, and the exit is 0. */
+  readonly gate: boolean;
+  readonly json: boolean;
+  readonly print: (line: string) => void;
+  /** The brain line: Codex's detail, or "stand-in". */
+  readonly brain: string;
+  readonly load: string;
+  readonly dir: string;
+}
+
+/**
+ * The table from a run's samples, and what bench() returns. Rows get their targets, the ear
+ * gate judges them, and `ok` is what `pnpm jarhead bench` exits on (main.ts: false is exit 1).
+ * Prints the JSON or the table; both read the one result.
+ */
+export function benchReport(samples: readonly Sample[], extras: Readonly<Record<string, unknown>>, run: BenchRun): BenchResult {
   const targets: Record<string, number> = {
     "tool round trip (frontmost_app)": 80,
     "tool round trip (in delegation)": 80,
     "quick screenshot (2000 px / 1.1 MP)": 120,
     "eyes: pre-warm shot": 120,
-    "delegation → first action": opts.codex ? 1200 : 300,
+    "delegation → first action": run.codex ? 1200 : 300,
     "reflex: utterance end → tool issued (prefired)": 300,
     "ear: partial → dispatch": EAR_DISPATCH_TARGET_MS,
     "ear: careful partial → dispatch": EAR_CAREFUL_DISPATCH_TARGET_MS,
@@ -856,10 +894,13 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
     const target = targets[metric];
     return { metric, unit: mine[0]?.unit ?? "ms", n: values.length, median, p90: percentile(values, 90), p95, max: Math.max(...values), target, pass: target === undefined ? undefined : (judgedAtP95.has(metric) ? p95 : median) <= target };
   });
-  const gate = earGate(rows, { realHelper: !useFakeHands, gate: opts.gate ?? true });
-  if (opts.json) {
-    print(JSON.stringify({ hands: useFakeHands ? "fake" : "helper", brain: opts.codex ? engine.brainInfo.detail : "stand-in", rows, earGate: gate.verdict, ...extras }, null, 2));
-    return { ok: gate.exitCode === 0, rows, extras };
+  const gate = earGate(rows, { realHelper: run.realHelper, gate: run.gate });
+  // One result for both outputs: the JSON and the table can never disagree on the exit.
+  const result: BenchResult = { ok: gate.exitCode === 0, rows, extras };
+  const print = run.print;
+  if (run.json) {
+    print(JSON.stringify({ hands: run.realHelper ? "helper" : "fake", brain: run.brain, rows, earGate: gate.verdict, ...extras }, null, 2));
+    return result;
   }
   const pad = (s: string, n: number): string => s.padEnd(n);
   const num = (v: number): string => (Number.isFinite(v) ? String(Math.round(v)) : "-").padStart(7);
@@ -868,8 +909,8 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
     // Every column is ms, except on a (count) row, where the same columns are tallies.
     print(`  ${pad(r.metric, 46)}${String(r.n).padStart(4)}${num(r.median)} ${num(r.p90)} ${num(r.p95)} ${num(r.max)} ${r.target === undefined ? "       -" : num(r.target)}  ${r.pass === undefined ? "" : r.pass ? "ok" : "MISS"}${judgedAtP95.has(r.metric) ? " (p95)" : ""}${r.unit === "count" ? " (count, not ms)" : ""}`);
   }
-  print(`\n  hands: ${useFakeHands ? "fake" : "Swift helper"}; brain: ${opts.codex ? engine.brainInfo.detail : "stand-in"}; load average ${load}; state dir ${dir}`);
-  if (useFakeHands) print(`  ear gate: not judged with fake hands (run without --fake-hands for the real ${EAR_DISPATCH_TARGET_MS} ms check)\n`);
+  print(`\n  hands: ${run.realHelper ? "Swift helper" : "fake"}; brain: ${run.brain}; load average ${run.load}; state dir ${run.dir}`);
+  if (!run.realHelper) print(`  ear gate: not judged with fake hands (run without --fake-hands for the real ${EAR_DISPATCH_TARGET_MS} ms check)\n`);
   else print(`  ear gate: p95 partial→dispatch and final→dispatch ≤ ${EAR_DISPATCH_TARGET_MS} ms, careful partial→dispatch ≤ ${EAR_CAREFUL_DISPATCH_TARGET_MS} ms (its ${EAR_CAREFUL_MS} ms window is by design) with the real helper: ${gate.verdict}${gate.verdict === "FAIL" && gate.exitCode === 0 ? " (--no-gate, so the exit is 0)" : ""}\n`);
-  return { ok: gate.exitCode === 0, rows, extras };
+  return result;
 }

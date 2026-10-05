@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { JarheadConfig } from "@jarhead/core";
-import { BENCH_OPENAI_KEY, EAR_CAREFUL_DISPATCH_TARGET_MS, EAR_DISPATCH_TARGET_MS, EAR_GATE_METRICS, bench, benchConfig, earGate, type BenchRow } from "../bench.ts";
+import { BENCH_OPENAI_KEY, EAR_CAREFUL_DISPATCH_TARGET_MS, EAR_DISPATCH_TARGET_MS, EAR_GATE_METRICS, bench, benchConfig, benchReport, earGate, type BenchRow, type BenchRun, type Sample } from "../bench.ts";
 
 /**
  * `pnpm jarhead bench --fake-hands`, once, as a smoke test: every row the table promises is
@@ -16,6 +16,7 @@ import { BENCH_OPENAI_KEY, EAR_CAREFUL_DISPATCH_TARGET_MS, EAR_DISPATCH_TARGET_M
 test("bench --fake-hands: the promised rows are measured; the generations row is a count; the thread rows report what they saw", async () => {
   const lines: string[] = [];
   const r = await bench({ runs: 1, codex: false, fakeHands: true, json: true, duck: false, print: (l) => lines.push(l) });
+  assert.equal(r.ok, true, "fake hands are never judged, so the bench exits 0");
   const byMetric = new Map<string, BenchRow>(r.rows.map((row) => [row.metric, row]));
   const names = [...byMetric.keys()];
   // The rows that depend only on the engine's tool path and the CLI's own harness.
@@ -95,6 +96,54 @@ test("RX-10: with the real helper the bench exits 1 when an ear row's p95 is ove
   assert.deepEqual(earGate(earRows(400), { realHelper: false, gate: true }), { verdict: "not judged (fake hands)", exitCode: 0 });
 });
 
+/** n samples of one metric at one value: its median and p95 are that value. */
+function samples(metric: string, value: number, n = 20): Sample[] {
+  return Array.from({ length: n }, () => ({ metric, value, unit: "ms" as const }));
+}
+/** The three ear metrics' samples, a prefire partial at `partial` ms (the fake-hands values otherwise). */
+function earSamples(partial: number): Sample[] {
+  return [...samples("ear: partial → dispatch", partial), ...samples("ear: careful partial → dispatch", 452), ...samples("ear: final → dispatch", 1)];
+}
+/** One benchReport over the samples, its printed lines captured. */
+function report(s: readonly Sample[], o: Partial<BenchRun> = {}): { ok: boolean; lines: string[]; json: { hands: string; earGate: string; rows: BenchRow[]; threads?: unknown } | undefined } {
+  const lines: string[] = [];
+  const r = benchReport(s, { threads: { live: 2 } }, { codex: false, realHelper: true, gate: true, json: false, brain: "stand-in", load: "1.0 1.0 1.0", dir: "/tmp/jh-bench-x", ...o, print: (l) => lines.push(l) });
+  const doc = lines.find((l) => l.startsWith("{"));
+  return { ok: r.ok, lines, json: doc ? (JSON.parse(doc) as { hands: string; earGate: string; rows: BenchRow[] }) : undefined };
+}
+
+test("RX-10 / PF-4: what bench() returns is the gate's exit: ok false on a FAIL with the real helper (main.ts exits 1 on it), in the JSON and in the table alike", () => {
+  // The JSON: a prefire partial at 300 ms is over 250.
+  const failJson = report(earSamples(300), { json: true });
+  assert.equal(failJson.ok, false, "a FAIL is ok: false, which main.ts exits 1 on");
+  assert.equal(failJson.json?.earGate, "FAIL");
+  assert.equal(failJson.json?.hands, "helper");
+  assert.equal(failJson.json?.rows.find((r) => r.metric === "ear: partial → dispatch")?.pass, false);
+  assert.deepEqual(failJson.json?.threads, { live: 2 }, "the run's extras ride the JSON");
+  // The table: the same verdict, and no --no-gate note.
+  const failTable = report(earSamples(300));
+  assert.equal(failTable.ok, false);
+  const gateLine = failTable.lines.find((l) => l.includes("ear gate:"));
+  assert.match(gateLine ?? "", /with the real helper: FAIL\n$/);
+  assert.ok(failTable.lines.some((l) => /ear: partial → dispatch .* MISS \(p95\)/.test(l)), failTable.lines.join("\n"));
+  // --no-gate: the FAIL still prints, and the exit is 0.
+  const noGate = report(earSamples(300), { gate: false });
+  assert.equal(noGate.ok, true);
+  assert.match(noGate.lines.find((l) => l.includes("ear gate:")) ?? "", /FAIL \(--no-gate, so the exit is 0\)/);
+  assert.equal(report(earSamples(300), { gate: false, json: true }).json?.earGate, "FAIL");
+  // Under the targets, and fake hands at any speed: exit 0.
+  const pass = report(earSamples(122), { json: true });
+  assert.equal(pass.ok, true);
+  assert.equal(pass.json?.earGate, "ok");
+  const fake = report(earSamples(300), { realHelper: false, json: true });
+  assert.equal(fake.ok, true);
+  assert.equal(fake.json?.earGate, "not judged (fake hands)");
+  assert.equal(fake.json?.hands, "fake");
+  assert.match(report(earSamples(300), { realHelper: false }).lines.find((l) => l.includes("ear gate:")) ?? "", /not judged with fake hands/);
+  // An ear that never dispatched is not fast: no ear samples with the real helper fails.
+  assert.equal(report(samples("tool round trip (frontmost_app)", 10)).ok, false);
+});
+
 test("W2-7: the bench's config keeps the user's settings and none of their secrets; with fake hands the helper's path does not exist", () => {
   // What readConfig() gives on a Mac with keys in ~/.jarhead/env and a server URL set.
   const base: JarheadConfig = {
@@ -129,4 +178,10 @@ test("W2-7: the bench's config keeps the user's settings and none of their secre
   assert.equal(real.handsBin, "/repo/build/jarhead-hands", "the real helper is what a real-helper run measures");
   assert.equal(real.brain, "codex");
   assert.equal(real.openaiApiKey, BENCH_OPENAI_KEY, "Codex runs on its own login, never on the user's OpenAI key");
+  // `bench --brain --allow-api-spend` without Codex: the user chose the auto brain on API dollars, so its keys stay.
+  const spend = benchConfig(base, "/tmp/jh-bb-1", { codex: false, fakeHands: true, brainKeys: true });
+  assert.deepEqual([spend.openaiApiKey, spend.anthropicApiKey, spend.brainApiKey, spend.brainBaseUrl], ["sk-user", "sk-ant-user", "sk-user", "https://example.com/v1"]);
+  assert.equal(spend.brain, "auto");
+  assert.equal(spend.handsBin, "/tmp/jh-bb-1/no-hands", "the brain bench's hands are in process");
+  assert.equal(benchConfig({ ...base, openaiApiKey: undefined }, "/tmp/jh-bb-1", { codex: false, fakeHands: true, brainKeys: true }).openaiApiKey, BENCH_OPENAI_KEY, "a wake still wants a key");
 });
