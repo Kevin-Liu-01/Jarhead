@@ -1159,15 +1159,21 @@ function duckLastOk(value: unknown): boolean {
   return typeof l["source"] === "string" && typeof l["confirmed"] === "boolean";
 }
 
-/** The duck's check. A malformed `last` costs only itself: it is deleted and the duck's own counts pass. */
-function duckOk(value: unknown): boolean {
+/** What `isAudioState` may shed from a frame it passes: a telemetry object, or only the duck's `last`. */
+export type AudioTelemetryShed = "playout" | "duck" | "duck.last" | "output";
+
+/** The duck's check. A malformed `last` costs only itself: it is deleted (and named in `shed`) and the duck's own counts pass. */
+function duckOk(value: unknown, shed: AudioTelemetryShed[] | undefined): boolean {
   if (!telemetryOk(value, DUCK_REQUIRED, DUCK_OPTIONAL)) return false;
   const d = value as Record<string, unknown>;
-  return d["last"] === undefined || duckLastOk(d["last"]) || Reflect.deleteProperty(d, "last");
+  if (d["last"] === undefined || duckLastOk(d["last"])) return true;
+  if (!Reflect.deleteProperty(d, "last")) return false;
+  shed?.push("duck.last");
+  return true;
 }
 
 /** The telemetry objects an `audio-state` frame may carry, each with its own check. */
-const TELEMETRY_CHECKS: readonly (readonly [key: "playout" | "duck" | "output", ok: (value: unknown) => boolean])[] = [
+const TELEMETRY_CHECKS: readonly (readonly [key: "playout" | "duck" | "output", ok: (value: unknown, shed: AudioTelemetryShed[] | undefined) => boolean])[] = [
   ["playout", (v) => telemetryOk(v, PLAYOUT_REQUIRED, ["queuedMinMs", "lateMaxGraphMs"])],
   ["duck", duckOk],
   ["output", (v) => telemetryOk(v, [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "audibleMs", "volume"], ["mixFormat"])],
@@ -1178,8 +1184,11 @@ const TELEMETRY_CHECKS: readonly (readonly [key: "playout" | "duck" | "output", 
  * and typed; a frame that fails is dropped, never kept. The playback telemetry (`playout`, `duck`, `output`) is
  * checked as strictly, but a malformed one costs only itself: it is deleted from the frame (a parsed object the
  * caller owns) and the rest passes, so the devices, the guard counters and the `audio.guard` row still land.
+ *
+ * `shed`, when given, gets the name of each object deleted (`AudioTelemetryShed`), so the caller can log what a
+ * passing frame lost. Without it the loss is silent: the frame passes and the object is absent.
  */
-export function isAudioState(value: unknown): value is AudioState {
+export function isAudioState(value: unknown, shed?: AudioTelemetryShed[]): value is AudioState {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   const bool = (k: string): boolean => typeof v[k] === "boolean";
@@ -1200,9 +1209,12 @@ export function isAudioState(value: unknown): value is AudioState {
   if (!(device("hears") && device("speaks"))) return false;
   const shared = v["sharedWith"];
   if (!(shared === undefined || (Array.isArray(shared) && shared.every((s) => typeof s === "string")))) return false;
-  // Only a frame that passed sheds anything. A frozen frame that cannot shed is dropped whole.
+  // Only a frame that passed sheds anything. A frozen frame that cannot shed is dropped whole. `shed` names only
+  // what was deleted.
   for (const [key, ok] of TELEMETRY_CHECKS) {
-    if (v[key] !== undefined && !ok(v[key]) && !Reflect.deleteProperty(v, key)) return false;
+    if (v[key] === undefined || ok(v[key], shed)) continue;
+    if (!Reflect.deleteProperty(v, key)) return false;
+    shed?.push(key);
   }
   return true;
 }
@@ -1280,7 +1292,7 @@ export interface Snapshot {
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
 /** `brain.local`: the local server or model needs Kevin — not running, nothing pulled that can call tools, the picked id is gone, a cloud tag, a window too small. Amber, with the command to run in `remedy.copy`. */
 /** `automation.*`: a row fired late or was skipped (`missed`, remedy Run now), an action kind is off in Settings (`blocked`), the wake-brain minutes are spent (`budget`), banners are denied (`notifications`), a watched folder cannot be read (`watch`, remedy Ask), an unattended fire failed (`failed`, SL-15: a red recipe exit is there in the morning; remedy Open Console or Run now; the row's next ok fire clears it). */
-/** `app.version` (APP-3): the app and the daemon were built from different checkouts (their hellos' PROTOCOL_VERSION differ, or a snapshot did not decode). The text says to relaunch, or run pnpm build:mac (`remedy.copy`). Go is refused until it clears. */
+/** `app.version` (APP-3): the app and the daemon were built from different checkouts (their hellos' PROTOCOL_VERSION differ, or a snapshot did not decode). The text says to restart the daemon (the remedy, Restart daemon) and, if the skew stays, to run pnpm build:mac (`remedy.copy`): a respawn fixes a daemon older than the app, only a rebuild fixes an app older than the daemon. Go is refused until it clears. */
 export type ProblemKind =
   | "permission.accessibility" | "permission.screenRecording" | "permission.microphone" | "permission.fullDiskAccess" | "permission.other"
   | "brain.unavailable" | "brain.probe" | "brain.local" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "dock" | "daemon" | "crash" | "other"
@@ -1570,10 +1582,15 @@ export type OverlayCommand =
 // ----------------------------------------------------------------- ledger ---
 
 /**
- * V8 / LM-2: the `session.closed` reason for a session the daemon died in. The next start writes that close with
- * the `usageSeconds` and the `at` of the session's last `session.usage` row (its `session.started` row's `at` and
- * 0 s when it has none). The `at` picks the day file (`Ledger.append`), so the close lands in the day the seconds
- * were billed, however many midnights the restart comes after. That is still an append.
+ * V8 / LM-2: the `session.closed` reason for a session the daemon died in. The next start sweeps the ledger before
+ * it appends anything, and writes that close with:
+ * - `usageSeconds`: the session's last `session.usage` row's (0 s when it has none).
+ * - `at`: the newest `at` the dead daemon wrote, the largest in the newest day file. That is never earlier than any
+ *   row of the session, its last usage row included.
+ *
+ * The `at` picks the day file (`Ledger.append`), so the close lands where a normal close would have: in the dead
+ * daemon's last day, however many midnights the restart comes after. It sits after the session's rows by position
+ * and sorts after them by `at`, so a view that orders by `at` shows the close last. That is still an append.
  */
 export const SESSION_LOST_REASON = "lost";
 
@@ -1586,7 +1603,7 @@ export const SESSION_LOST_REASON = "lost";
  */
 export type LedgerRow =
   | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string; readonly resumedFrom?: string; readonly language?: string; readonly accent?: Accent }
-  /** `reason` is the close's own word (`sleep:said`, Live's), or SESSION_LOST_REASON for a session the daemon died in (its `at` and seconds are its last usage row's). */
+  /** `reason` is the close's own word (`sleep:said`, Live's), or SESSION_LOST_REASON for a session the daemon died in (its seconds are its last usage row's; its `at` is the newest the dead daemon wrote). */
   | { readonly at: number; readonly type: "session.closed"; readonly sessionId: string; readonly reason: string; readonly usageSeconds: number }
   /** V8 / LM-2: the open session's billed seconds so far, coalesced every 60 s and at detach. A daemon that dies with the session open leaves this as its last word. */
   | { readonly at: number; readonly type: "session.usage"; readonly sessionId: string; readonly usageSeconds: number }
