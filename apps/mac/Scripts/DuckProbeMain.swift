@@ -664,7 +664,7 @@ struct ProbeRNG {
 
 // MARK: - V4 · the pure parts (design12 § Verification)
 
-/// Table-driven `check:` lines over `EchoGuardModel`, `EchoGuard` and `VoiceProcessingPolicy`
+/// Table-driven `check:` lines over `EchoGuardModel`, `EchoGuard`, `VoiceProcessingPolicy` and `PlayoutModel`
 /// — nothing played, no microphone, no TCC. Each case returns nil when it holds, else the
 /// mismatch in words; `run` prints `check: <section> · <name> ok | FAIL <why>` and hands the
 /// failures to the duck's tally so `--json` and the exit code carry them.
@@ -677,7 +677,7 @@ struct PureSections {
     /// Hand every failure to the caller; returns (ok, failed).
     static func run(say: (String) -> Void, fail: (String) -> Void) -> (Int, Int) {
         var ok = 0, failed = 0
-        for (section, cases) in [("guard", guardCases()), ("policy", policyCases())] {
+        for (section, cases) in [("guard", guardCases()), ("policy", policyCases()), ("playout", playoutCases())] {
             for c in cases {
                 if let why = c.body() {
                     failed += 1
@@ -900,6 +900,101 @@ struct PureSections {
                 s.speaks?.rate = 48_000
                 let full = s.speaksState == AudioStateWords.fullQuality
                 return off && aec && rec && fb && narrow && full ? nil : "off \(off) aec \(aec) rec \(rec) fb \(fb) narrow \(narrow) full \(full)"
+            }),
+        ]
+    }
+
+    // MARK: voice PLAN W1.1 · the playout cushion
+
+    /// 40 ms chunks, as Live sends them.
+    static let chunk = 960
+
+    static func playoutCases() -> [Case] {
+        let f = chunk
+        let target = PlayoutModel.defaultTargetFrames
+        return [
+            ("the first chunk after a reset gets exactly target frames of pre-roll", {
+                var m = PlayoutModel()
+                let p = m.plan(frames: f, now: 1_000)
+                let ok = p.prerollFrames == target && p.reset && p.fadeIn && !p.underrun && m.scheduledEnd == Int64(1_000 + target + f) && m.stats.resets == 1 && m.stats.underruns == 0
+                return ok ? nil : "\(p), end \(m.scheduledEnd), \(m.stats)"
+            }),
+            ("contiguous chunks get none", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 0)
+                var plans: [PlayoutModel.Plan] = []
+                for k in 1 ... 20 { plans.append(m.plan(frames: f, now: Int64(k * f))) }
+                let ok = plans.allSatisfy { $0 == PlayoutModel.Plan() } && m.stats.underruns == 0 && m.stats.wouldBeUnderruns == 0 && m.stats.queuedFrames == target
+                return ok ? nil : "\(plans.filter { $0 != PlayoutModel.Plan() }.count) chunks planned something, \(m.stats)"
+            }),
+            ("a chunk that lands as the backlog runs out is contiguous", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 0)
+                let p = m.plan(frames: f, now: m.scheduledEnd)
+                return p == PlayoutModel.Plan() && m.stats.underruns == 0 ? nil : "\(p)"
+            }),
+            ("backlog -40 ms counts 1 underrun of 40 ms with a fade-in", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 0)
+                let end = m.scheduledEnd
+                let p = m.plan(frames: f, now: end + 960)
+                let ms = PlayoutModel.ms(m.stats.underrunFrames)
+                let ok = p.underrun && p.gapFrames == 960 && p.fadeIn && p.prerollFrames == 0 && !p.reset && m.stats.underruns == 1 && abs(ms - 40) < 1e-9 && m.scheduledEnd == end + 960 + Int64(f)
+                return ok ? nil : "\(p), \(ms) ms, end \(m.scheduledEnd)"
+            }),
+            ("dry for 0.5 s is a reset, not an underrun; just under it is an underrun", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 0)
+                var n = m
+                let dry = m.plan(frames: f, now: m.scheduledEnd + Int64(PlayoutModel.dryResetFrames))
+                let under = n.plan(frames: f, now: n.scheduledEnd + Int64(PlayoutModel.dryResetFrames - 1))
+                let ok = dry.reset && dry.prerollFrames == target && !dry.underrun && m.stats.underruns == 0 && m.stats.resets == 2 && under.underrun && !under.reset && n.stats.underruns == 1
+                return ok ? nil : "dry \(dry), just under \(under)"
+            }),
+            ("flush resets: the next chunk is primed on the restarted timeline", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 0)
+                _ = m.plan(frames: f, now: 960)
+                m.reset()
+                let p = m.plan(frames: f, now: 0)
+                let ok = p.reset && p.prerollFrames == target && m.scheduledEnd == Int64(target + f) && m.stats.underruns == 0 && m.stats.wouldBeUnderruns == 0 && m.stats.resets == 2
+                return ok ? nil : "\(p), end \(m.scheduledEnd), \(m.stats)"
+            }),
+            ("a nil nowSample is a reset", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 4_800)
+                let p = m.plan(frames: f, now: nil)
+                return p.reset && p.prerollFrames == target && m.scheduledEnd == Int64(target + f) && m.stats.underruns == 0 ? nil : "\(p), end \(m.scheduledEnd)"
+            }),
+            ("target grows to the longest gap + 40 ms, capped at 200 ms, and never shrinks", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 0)
+                _ = m.plan(frames: f, now: m.scheduledEnd + 2_400)
+                let after100 = m.targetFrames
+                _ = m.plan(frames: f, now: m.scheduledEnd + 7_200)
+                let after300 = m.targetFrames
+                _ = m.plan(frames: f, now: m.scheduledEnd + 240)
+                m.reset()
+                let p = m.plan(frames: f, now: 0)
+                let ok = after100 == 2_400 + PlayoutModel.targetMarginFrames && after300 == PlayoutModel.maxTargetFrames && m.targetFrames == PlayoutModel.maxTargetFrames && p.prerollFrames == PlayoutModel.maxTargetFrames && PlayoutModel.ms(PlayoutModel.maxTargetFrames) == 200
+                return ok ? nil : "after 100 ms \(after100), after 300 ms \(after300), then \(m.targetFrames), pre-roll \(p.prerollFrames)"
+            }),
+            ("the shadow counts the zero-cushion holes of a fixed trace (2), the cushion none", {
+                // 40 ms chunks; chunk 4 arrives 40 ms late, chunk 7 80 ms late with 8 and 9 behind it.
+                // Zero cushion by hand: dry at chunk 4 (3840 < 4800) and at chunk 7 (7680 < 8640): 2.
+                let arrivals: [Int64] = [0, 960, 1_920, 2_880, 4_800, 4_800, 5_760, 8_640, 8_640, 8_640, 9_600, 10_560]
+                var m = PlayoutModel()
+                for a in arrivals { _ = m.plan(frames: f, now: a) }
+                return m.stats.wouldBeUnderruns == 2 && m.stats.underruns == 0 && m.stats.queuedMinFrames == 960 ? nil : "\(m.stats)"
+            }),
+            ("the fade ramp is monotonic, finite, inside (0, 1], and ends at 1", {
+                let n = PlayoutModel.fadeFrames
+                let g = (0 ..< n).map { PlayoutModel.fadeGain($0) }
+                let rising = zip(g, g.dropFirst()).allSatisfy { $0 < $1 }
+                let bounded = g.allSatisfy { $0.isFinite && $0 > 0 && $0 <= 1 }
+                let clamped = PlayoutModel.fadeGain(-3) == g[0] && PlayoutModel.fadeGain(n + 7) == 1
+                let ok = n == 120 && rising && bounded && g.last == 1 && clamped && PlayoutModel.ms(n) == 5
+                return ok ? nil : "n \(n), rising \(rising), bounded \(bounded), last \(g.last ?? .nan), clamped \(clamped)"
             }),
         ]
     }

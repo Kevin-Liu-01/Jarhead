@@ -14,7 +14,10 @@ import Foundation
 /// Recording on (`VoiceProcessingPolicy.recording`, `setPolicy`) the plain graph runs
 /// on the ranked microphone and the software echo guard (`EchoGuard`) holds the wire
 /// while he speaks. What the graph is actually doing is read back as an
-/// `AudioStateReadback` (`onAudioState`) — never assumed.
+/// `AudioStateReadback` (`onAudioState`) — never assumed, and never on `jarhead.audio`: that
+/// queue schedules the speaker, so every HAL read runs on `AudioStateReader`'s own queue.
+/// The speaker keeps a playout cushion (`SpeakerScheduler`, `PlayoutModel`) so a late chunk
+/// is absorbed instead of heard as a hole.
 ///
 /// Call `start()` only once microphone permission is known to be granted.
 final class AudioEngine {
@@ -54,13 +57,13 @@ final class AudioEngine {
     private var currentWiring: OutputWiring = .automatic
     private var currentTailMs = 0
     private var currentTapFormat = ""
-    private var lastAudioState: AudioStateReadback?
     private var rebuildPending = false
     /// The private aggregate the unit runs on (probe-only rungs; `PrivateRoute.enabled`).
     private var privateRoute: PrivateRoute?
-    /// Device list / default-input / default-output / mic-client listeners (Core Audio), answering on `queue`.
-    private let router = MicRouter()
-    private var lastRouteSummary = ""
+    /// The frame and the microphone route, read on their own queue (the HAL never runs on `queue`).
+    private let stateReader = AudioStateReader()
+    /// The speaker path: PCM16 → the player behind the playout cushion. On `queue`.
+    private lazy var speaker = SpeakerScheduler(player: player, format: playFormat)
     private var running = false
     /// True between start() and stop(): the graph should be up, and a dead graph
     /// (failed start, device yanked) is retried until it is.
@@ -85,7 +88,7 @@ final class AudioEngine {
     var onStatus: ((String) -> Void)?
     /// design12: the graph's state as a value (`AudioStateReadback`) — on start, stop, route
     /// change, guard edges and every 5 s with the `mic diag` tick, coalesced to changes.
-    /// Called on the audio queue. The app forwards it to the daemon and the island.
+    /// Called on `AudioStateReader`'s queue. The app forwards it to the daemon and the island.
     var onAudioState: ((AudioStateReadback) -> Void)?
 
     var isRunning: Bool { queue.sync { running } }
@@ -95,23 +98,25 @@ final class AudioEngine {
             self?.restartAfterConfigurationChange()
         }
         // The guard's hold beginning or ending is a state the island shows (the mic box dims).
-        // Twice per sentence, on the queue that schedules the sentence's chunks — so only the
-        // guard's own fields are refreshed, never the device tables or the HAL's process list.
+        // Twice per sentence: only the guard's own fields are refreshed, on the reader's queue.
         EchoGuard.shared.onHeldChange = { [weak self] _ in
-            self?.queue.async { self?.publishGuardEdge() }
+            self?.stateReader.refreshCounters("guard")
         }
-        // The device list and the system default input, watched from the start: a
-        // microphone that vanishes mid-session is rebuilt around on the next-ranked one
-        // (`routeChanged`), and the Console's mic picker learns the ranked list.
-        router.onChange = { [weak self] reason in self?.routeChanged(reason) }
-        router.start(on: queue)
-        installRouteRequestObserver()
+        // The device list, the default devices and the process list, watched from the start
+        // on the reader's queue: a microphone that vanishes mid-session is rebuilt around on
+        // the next-ranked one (`restartForRoute`), and the Console's mic picker learns the
+        // ranked list.
+        stateReader.onAudioState = { [weak self] state in self?.onAudioState?(state) }
+        stateReader.onStatus = { [weak self] text in self?.onStatus?(text) }
+        stateReader.onRestart = { [weak self] verdict in
+            self?.queue.async { self?.restartForRoute(verdict) }
+        }
+        stateReader.start()
     }
 
     deinit {
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
-        if let routeRequestObserver { NotificationCenter.default.removeObserver(routeRequestObserver) }
-        router.stop()
+        stateReader.stop()
     }
 
     // MARK: - control
@@ -131,20 +136,38 @@ final class AudioEngine {
         }
     }
 
-    /// Barge-in / stop: drop everything queued for the speaker.
+    /// Barge-in / stop: drop everything queued for the speaker. The mixer fades out first
+    /// (`SpeakerScheduler.flushFade`, 30 ms) so the cut does not click, and comes back 20 ms
+    /// after the drop, under the next stream's pre-roll; a chunk that arrives meanwhile is the
+    /// next reply and plays after it, behind the cushion.
     func flush() {
         queue.async {
             guard self.running else { return }
-            // The player raises (not throws) when the engine has just stopped itself under
-            // it; the engine is about to be restarted anyway, so log and move on.
-            self.guardPlayer("flush") {
-                self.player.stop()
-                if self.engine.isRunning { self.player.play() }
-            }
             // Nothing queued is audible any more: the duck's gate disarms with the backlog,
             // and the echo guard's audible window ends with it.
             BargeInDuck.shared.noteFlush()
             EchoGuard.shared.noteFlush()
+            var token: Int?
+            // The player and the mixer raise (not throw) when the engine has just stopped itself
+            // under them; the engine is about to be restarted anyway, so log and move on.
+            self.guardPlayer("flush") { token = self.speaker.beginFlush() }
+            guard let token else { return }
+            self.queue.asyncAfter(deadline: .now() + SpeakerScheduler.flushFade) { [weak self] in
+                self?.finishFlush(token)
+            }
+        }
+    }
+
+    /// On `queue`: the fade is over — drop the backlog, then whatever arrived meanwhile; the
+    /// mixer comes back once its converter has drained.
+    private func finishFlush(_ token: Int) {
+        var resumed: [SpeakerScheduler.Scheduled] = []
+        guardPlayer("flush") {
+            resumed = self.speaker.finishFlush(token: token, engineRunning: self.running && self.engine.isRunning)
+        }
+        for chunk in resumed { noteSpeaker(chunk) }
+        queue.asyncAfter(deadline: .now() + SpeakerScheduler.flushRestore) { [weak self] in
+            self?.guardPlayer("flush") { self?.speaker.restoreAfterFlush(token: token) }
         }
     }
 
@@ -217,7 +240,7 @@ final class AudioEngine {
             rebuildPending = false
             guard wantedPolicy != runningPolicy else {
                 onStatus?("audio: policy flipped back before the rebuild — the running graph already matches; nothing rebuilt")
-                publishAudioState("policy")
+                stateReader.update(localFacts(), reason: "policy", readHAL: false)
                 return
             }
             winningRung = nil
@@ -243,83 +266,39 @@ final class AudioEngine {
                 self.onStatus?("process input mute \(muted ? "on" : "off") refused: \(error.localizedDescription)")
             }
             EchoGuard.shared.frozen = muted
-            self.publishAudioState(muted ? "muted" : "unmuted")
+            self.stateReader.update(self.localFacts(), reason: muted ? "muted" : "unmuted", readHAL: true)
         }
     }
 
-    /// The frame, read back from the nodes and the HAL. On `queue`.
-    private func readback() -> AudioStateReadback {
+    /// What the graph is, from in-process reads only — the flags, the unit's own properties,
+    /// the guard's counters; the HAL half is `AudioStateReader`'s. On `queue`.
+    private func localFacts() -> AudioLocalFacts {
         let input = engine.inputNode
-        var s = AudioStateReadback()
+        var l = AudioLocalFacts()
         var knobs: VoiceProcessingKnobs.Readback?
         try? objcTry {
-            s.voiceProcessing = input.isVoiceProcessingEnabled
-            if s.voiceProcessing { knobs = VoiceProcessingKnobs.read(input) }
+            l.voiceProcessing = input.isVoiceProcessingEnabled
+            if l.voiceProcessing { knobs = VoiceProcessingKnobs.read(input) }
         }
-        s.running = running
-        s.duckLevel = knobs?.duckLevel
-        s.advancedDucking = knobs?.advanced
-        s.agc = knobs?.agc
-        s.bypassed = knobs?.bypassed
-        s.rung = running ? currentRung : 0
-        s.wiring = running ? currentWiring.description : ""
-        s.hears = hearsFacts(input: input, voiceProcessing: s.voiceProcessing)
-        s.speaks = AudioDeviceFacts.defaultOutput()
-        s.tapFormat = running ? currentTapFormat : ""
-        s.recording = !wantedPolicy.echoCancel
-        s.fallback = running && !s.voiceProcessing && wantedPolicy.echoCancel
-        refreshGuardFields(&s)
-        s.sharedWith = s.hears.flatMap { AudioEngine.deviceID(matching: $0.uid) }.flatMap { AudioProcessObjects.sharingInput(on: $0) }
-        s.inputMuted = AVAudioApplication.shared.isInputMuted
-        s.aggregatePresent = AudioAggregates.present(AudioAggregates.unitPrefix)
-        s.engineAggregatePresent = AudioAggregates.present(AudioAggregates.enginePrefix)
-        return s
-    }
-
-    /// The guard's own fields — one lock, no HAL.
-    private func refreshGuardFields(_ s: inout AudioStateReadback) {
-        let guardStats = EchoGuard.shared.stats
-        s.guardOn = EchoGuard.shared.isAttached
-        s.guardHeld = EchoGuard.shared.isHeld
-        s.guardTailMs = s.guardOn ? currentTailMs : 0
-        s.gated = guardStats.gated
-        s.chunks = guardStats.chunks
-        s.breakthroughs = guardStats.breakthroughs
-        s.heldSeconds = guardStats.heldSeconds
-    }
-
-    /// A hold began or ended: the last frame with the guard's fields refreshed — the device
-    /// tables, the aggregate scans and the process list are read on the tick and on route
-    /// changes only. Without a frame yet, the full read-back. On `queue`.
-    private func publishGuardEdge() {
-        guard var s = lastAudioState else {
-            publishAudioState("guard")
-            return
-        }
-        refreshGuardFields(&s)
-        publish(s, reason: "guard")
-    }
-
-    /// The device the graph hears through: under AEC the system default input (the unit
-    /// follows it); on the plain path the microphone `applyInputDevice` settled on
-    /// (`activeInputUID`); on the private route the ranked mic behind the aggregate.
-    /// Stopped: the default input.
-    private func hearsFacts(input: AVAudioInputNode, voiceProcessing: Bool) -> AudioDeviceFacts? {
-        if running, let route = privateRoute, let id = AudioEngine.deviceID(matching: route.micUID) {
-            return AudioDeviceFacts.read(id: id, scope: kAudioObjectPropertyScopeInput)
-        }
-        if running, !voiceProcessing {
-            // The AU's `CurrentDevice` reads as the engine's own aggregate on a Mac whose default
-            // input ≠ default output (`CADefaultDeviceAggregate-<pid>-n`), so the microphone the
-            // graph was pointed at is the fact: `activeInputUID`, then the AU, then the default.
-            if let uid = activeInputUID, let id = AudioEngine.deviceID(matching: uid) {
-                return AudioDeviceFacts.read(id: id, scope: kAudioObjectPropertyScopeInput)
-            }
-            if let dev = AudioEngine.currentDevice(of: input), let uid = AudioEngine.deviceUID(dev), !uid.hasPrefix(AudioAggregates.enginePrefix) {
-                return AudioDeviceFacts.read(id: dev, scope: kAudioObjectPropertyScopeInput)
-            }
-        }
-        return AudioDeviceFacts.defaultInput()
+        l.running = running
+        l.duckLevel = knobs?.duckLevel
+        l.advancedDucking = knobs?.advanced
+        l.agc = knobs?.agc
+        l.bypassed = knobs?.bypassed
+        l.rung = running ? currentRung : 0
+        l.wiring = running ? currentWiring.description : ""
+        l.tapFormat = running ? currentTapFormat : ""
+        l.recording = !wantedPolicy.echoCancel
+        l.fallback = running && !l.voiceProcessing && wantedPolicy.echoCancel
+        l.tailMs = currentTailMs
+        l.refreshGuard()
+        l.privateRouteMicUID = running ? privateRoute?.micUID : nil
+        l.activeInputUID = activeInputUID
+        l.currentDevice = running && !l.voiceProcessing ? AudioEngine.currentDevice(of: input) : nil
+        l.preferredInputUID = preferredInputUID
+        l.lastUsedInputUID = lastUsedInputUID
+        l.echoCancelled = running && voiceProcessingOn
+        return l
     }
 
     /// The input AU's `kAudioOutputUnitProperty_CurrentDevice`, or nil.
@@ -331,46 +310,28 @@ final class AudioEngine {
         return dev
     }
 
-    /// Publish the frame when it changed. On `queue`.
-    private func publishAudioState(_ reason: String) {
-        publish(readback(), reason: reason)
-    }
-
-    private func publish(_ state: AudioStateReadback, reason: String) {
-        guard state != lastAudioState else { return }
-        lastAudioState = state
-        onAudioState?(state)
-    }
-
-    /// Speaker PCM16 mono 24 kHz from the daemon. Scheduled immediately; the player queues.
+    /// Speaker PCM16 mono 24 kHz from the daemon, scheduled behind the playout cushion
+    /// (`SpeakerScheduler`): silence in front of the first chunk of a stream, a fade-in after
+    /// any silence, contiguous otherwise.
     func play(pcm: Data) {
         queue.async {
             guard self.running, self.engine.isRunning else { return }
-            let frames = pcm.count / 2
-            guard frames > 0, let buf = AVAudioPCMBuffer(pcmFormat: self.playFormat, frameCapacity: AVAudioFrameCount(frames)) else { return }
-            buf.frameLength = AVAudioFrameCount(frames)
-            guard let dst = buf.floatChannelData?[0] else { return }
-            var samples = [Int16](repeating: 0, count: frames)
-            _ = samples.withUnsafeMutableBytes { pcm.copyBytes(to: $0, count: frames * 2) }
-            let scale = Float(1.0 / 32768.0)
-            var energy = 0.0
-            for i in 0 ..< frames {
-                let s = Float(samples[i]) * scale
-                dst[i] = s
-                energy += Double(s * s)
-            }
-            // What the speaker is about to say, for the barge-in duck and the echo guard:
-            // GPT-Live-1 streams silence between sentences too, so audibility (not arrival)
-            // is what arms them.
-            let rms = clampLevel((energy / Double(frames)).squareRoot())
-            let seconds = Double(frames) / self.playFormat.sampleRate
-            BargeInDuck.shared.noteOutput(rms: rms, seconds: seconds)
-            EchoGuard.shared.noteOutput(rms: rms, seconds: seconds)
-            self.guardPlayer("schedule") {
-                self.player.scheduleBuffer(buf, completionHandler: nil)
-                if !self.player.isPlaying { self.player.play() }
-            }
+            var scheduled: SpeakerScheduler.Scheduled?
+            self.guardPlayer("schedule") { scheduled = self.speaker.schedule(pcm: pcm) }
+            if let scheduled { self.noteSpeaker(scheduled) }
         }
+    }
+
+    /// What the speaker is about to say, for the barge-in duck and the echo guard: the
+    /// pre-roll as a silent stretch, then the chunk. GPT-Live-1 streams silence between
+    /// sentences too, so audibility (not arrival) is what arms them. On `queue`.
+    private func noteSpeaker(_ chunk: SpeakerScheduler.Scheduled) {
+        if chunk.prerollSeconds > 0 {
+            BargeInDuck.shared.noteOutput(rms: 0, seconds: chunk.prerollSeconds)
+            EchoGuard.shared.noteOutput(rms: 0, seconds: chunk.prerollSeconds)
+        }
+        BargeInDuck.shared.noteOutput(rms: chunk.rms, seconds: chunk.seconds)
+        EchoGuard.shared.noteOutput(rms: chunk.rms, seconds: chunk.seconds)
     }
 
     // MARK: - engine setup (all on `queue`)
@@ -536,6 +497,9 @@ final class AudioEngine {
         BargeInDuck.shared.attach(echoCancelled: voiceProcessing) { gain in
             try? objcTry { playerNode.volume = gain }
         }
+        // A new stream on a new graph: the cushion's counters start here, the mixer at unity.
+        let mixer = engine.mainMixerNode
+        try? objcTry { self.speaker.restart(mixer: mixer) }
         // On the plain graph the microphone hears Jarhead at full level: the guard holds the
         // wire while he is audible plus a tail sized for the room and the output's latency, and
         // learns the echo floor only once that latency (plus the tap's 100 ms) has passed — a
@@ -551,7 +515,7 @@ final class AudioEngine {
         let formatNote = live.brief == hw.brief ? live.brief : "\(live.brief) (was \(hw.brief) before prepare)"
         onStatus?(AudioEngine.runningLine(mic: formatNote, policy: wantedPolicy, voiceProcessing: voiceProcessing, wiring: wiring, rung: rung, tailMs: currentTailMs))
         if voiceProcessing { logKnobsReadback() }
-        publishRoute("audio running")
+        stateReader.route(localFacts(), reason: "audio running")
     }
 
     /// The knobs as the unit holds them now, in both spellings — the Swift properties and
@@ -671,13 +635,25 @@ final class AudioEngine {
             // stopped itself, and whatever was queued must not replay at the next start.
             self.player.stop()
             if self.engine.isRunning { self.engine.stop() }
+            self.speaker.cancelFlush()
         }
+        if running { logPlayout() }
         releaseVoiceProcessing()
         running = false
         activeInputUID = nil
         currentRung = 0
         currentTapFormat = ""
-        publishRoute("audio stopped")
+        stateReader.route(localFacts(), reason: "audio stopped")
+    }
+
+    /// The cushion's counters for this graph, once at its stop (zero-cushion's count beside them).
+    private func logPlayout() {
+        let st = speaker.model.stats
+        guard st.chunks > 0 else { return }
+        let gap = String(format: "%.0f", PlayoutModel.ms(st.underrunFrames))
+        let longest = String(format: "%.0f", PlayoutModel.ms(st.longestUnderrunFrames))
+        let target = String(format: "%.0f", PlayoutModel.ms(speaker.model.targetFrames))
+        onStatus?("playout: \(st.chunks) chunks, \(st.underruns) underruns (\(gap) ms, longest \(longest) ms; zero-cushion would be \(st.wouldBeUnderruns)), \(st.resets) resets, target \(target) ms")
     }
 
     /// `AVAudioEngineConfigurationChange`: an input or output device changed and the
@@ -810,7 +786,8 @@ final class AudioEngine {
             let energies = channelEnergy.map { String(format: "%.4f", sqrt($0)) }.joined(separator: " ")
             let convert = status == .error ? "ERROR \(error?.localizedDescription ?? "")" : "ok \(out.frameLength) frames"
             onStatus?("mic diag: \(channels) ch, using ch\(chosenChannel), rms per ch [\(energies)], convert \(convert)\(BargeInDuck.shared.diagSuffix())\(EchoGuard.shared.diagSuffix())")
-            queue.async { self.publishAudioState("tick") }
+            // The counters only, on the reader's queue: the speaker's queue never waits on the HAL.
+            stateReader.refreshCounters("tick")
         }
         return status == .error ? nil : out
     }
@@ -917,45 +894,18 @@ final class AudioEngine {
         }
     }
 
-    // MARK: - route changes (Core Audio listeners, on `queue`)
+    // MARK: - route changes (judged on the reader's queue, acted on here)
 
-    private var routeChangeScheduled = false
-    private var routeChangeReasons: [String] = []
-
-    /// The device list or the system default input changed. Bursts (a device arriving
-    /// fires both listeners) are folded into one look 50 ms later.
-    private func routeChanged(_ reason: String) {
-        if !routeChangeReasons.contains(reason) { routeChangeReasons.append(reason) }
-        guard !routeChangeScheduled else { return }
-        routeChangeScheduled = true
-        queue.asyncAfter(deadline: .now() + 0.05) {
-            self.routeChangeScheduled = false
-            let why = self.routeChangeReasons.joined(separator: ", ")
-            self.routeChangeReasons.removeAll()
-            self.applyRouteChange(why)
-        }
-    }
-
-    /// Three things can follow a change: the microphone the graph hears through is gone
-    /// — rebuild on the next-ranked one (an `AVAudioEngineConfigurationChange` usually
-    /// arrives for the same event; `restartPending` folds the two into one restart 0.3 s
-    /// after the first); Kevin's explicit pick came back on the plain path — move to it;
-    /// otherwise only the published route moves. The system default is never written.
-    private func applyRouteChange(_ reason: String) {
-        let inputs = MicInputs.enumerate()
-        let systemDefault = MicInputs.systemDefaultUID()
-        let ranked = MicRanking.rank(inputs, explicit: preferredInputUID, lastUsed: lastUsedInputUID, systemDefault: systemDefault)
-        var restart: String?
-        if running, let active = activeInputUID, !inputs.contains(where: { $0.uid == active }) {
-            restart = "microphone \(MicInputs.name(of: active) ?? active) vanished; rebuilding on \(ranked.first?.name ?? "the system default")"
-        } else if running, !voiceProcessingOn, let explicit = preferredInputUID, activeInputUID != explicit, ranked.first?.uid == explicit {
-            restart = "picked microphone \(ranked.first?.name ?? explicit) is back; moving to it"
-        }
-        publishRoute(reason)
-        guard let restart, wanted, !restartPending else { return }
+    /// A route verdict from `AudioStateReader` (a vanished microphone, the picked one back on
+    /// the plain path), checked again here before anything stops: the graph must still be up
+    /// and still on the microphone the verdict saw. An `AVAudioEngineConfigurationChange`
+    /// usually arrives for the same event; `restartPending` folds the two into one restart
+    /// 0.3 s after the first. The system default is never written. On `queue`.
+    private func restartForRoute(_ verdict: AudioStateReader.RouteRestart) {
+        guard wanted, running, !restartPending, activeInputUID == verdict.activeInputUID else { return }
         restartPending = true
-        onStatus?("mic route: \(restart) — restarting in 0.3 s")
-        if running { stopLocked() }
+        onStatus?("mic route: \(verdict.why) — restarting in 0.3 s")
+        stopLocked()
         try? objcTry { self.engine.reset() }
         queue.asyncAfter(deadline: .now() + 0.3) {
             self.restartPending = false
@@ -964,37 +914,6 @@ final class AudioEngine {
             self.startLocked()
         }
     }
-
-    /// The route as the Console's picker and the ear report it: the ranked list, the
-    /// active device, what the choice follows. Posted on the main queue as
-    /// `.jarheadMicRoute` with plain strings (the Console harness compiles without this
-    /// file) and logged through `onStatus` when it changed. Answers the picker's
-    /// `jarhead.micRoute.request` too, so a Console opened later still gets the list.
-    private func publishRoute(_ reason: String) {
-        let inputs = MicInputs.enumerate()
-        let systemDefault = MicInputs.systemDefaultUID()
-        let ranked = MicRanking.rank(inputs, explicit: preferredInputUID, lastUsed: lastUsedInputUID, systemDefault: systemDefault)
-        let state = readback()
-        let route = MicRoute(ranked: ranked, active: activeInputUID, systemDefault: systemDefault, explicit: preferredInputUID, echoCancelled: running && voiceProcessingOn, running: running, state: state)
-        let summary = route.summary
-        if summary != lastRouteSummary {
-            lastRouteSummary = summary
-            onStatus?("mic route (\(reason)): \(summary)")
-        }
-        let info = route.userInfo
-        DispatchQueue.main.async { NotificationCenter.default.post(name: .jarheadMicRoute, object: nil, userInfo: info) }
-        publish(state, reason: reason)
-    }
-
-    /// The Console's picker asks for the route when it appears (`MicRoute.requestName`).
-    private func installRouteRequestObserver() {
-        routeRequestObserver = NotificationCenter.default.addObserver(forName: MicRoute.requestName, object: nil, queue: nil) { [weak self] _ in
-            guard let self else { return }
-            self.queue.async { self.publishRoute("picker") }
-        }
-    }
-
-    private var routeRequestObserver: NSObjectProtocol?
 
     /// Match a Core Audio device UID, falling back to a literal AudioDeviceID.
     static func deviceID(matching uid: String) -> AudioDeviceID? {
@@ -1216,19 +1135,22 @@ struct MicRoute {
 
 /// Core Audio listeners for the device list, the system default input and output, and
 /// (where the HAL has process objects) the list of processes holding devices; `onChange`
-/// runs on the queue handed to `start`, with a short reason. Bursts are coalesced by the
-/// engine's 50 ms fold (`routeChanged`).
+/// runs on the queue handed to `start`, with a short reason. Bursts are coalesced by
+/// `AudioStateReader` (a 50 ms fold; the process list at most once per 2 s).
 final class MicRouter {
     var onChange: ((String) -> Void)?
     private var queue: DispatchQueue?
     private var block: AudioObjectPropertyListenerBlock?
+
+    /// The process list's reason: another app took or let go of a microphone.
+    static let clientsReason = "mic clients changed"
 
     /// The selectors watched on the system object, with the reason each one gives.
     private static let watched: [(selector: AudioObjectPropertySelector, reason: String)] = [
         (kAudioHardwarePropertyDevices, "device list changed"),
         (kAudioHardwarePropertyDefaultInputDevice, "default input changed"),
         (kAudioHardwarePropertyDefaultOutputDevice, "default output changed"),
-        (kAudioHardwarePropertyProcessObjectList, "mic clients changed"),
+        (kAudioHardwarePropertyProcessObjectList, clientsReason),
     ]
 
     private static func reason(for selector: AudioObjectPropertySelector) -> String {
