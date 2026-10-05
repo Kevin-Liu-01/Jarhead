@@ -494,6 +494,22 @@ test("RAIL-8 (R10, runner half): run_shell keystrokes by osascript read the app 
   assert.equal(seen.find((c) => c.kind === "run_shell")?.app, undefined);
 });
 
+test("RAIL-8 (R10) with the shipped policy: shell keystrokes are judged against the app in front, as the applescript tool's are", async () => {
+  const hands = new DeskHands();
+  hands.frontApp = "1Password";
+  const { runner } = deskRunner(hands);
+  const shell = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
+  assert.equal(shell.result.kind, "needs-confirmation", `run_shell with 1Password in front: ${resultText(shell.result)}`);
+  const wrapped = await runner.run("run_shell", { command: `bash -c "${KEYSTROKE_BY_SHELL.replace(/"/g, '\\"')}"` });
+  assert.equal(wrapped.result.kind, "needs-confirmation", `bash -c with 1Password in front: ${resultText(wrapped.result)}`);
+  const script = await runner.run("applescript", { script: KEYSTROKE_SCRIPT });
+  assert.equal(script.result.kind, "needs-confirmation", `the applescript tool with 1Password in front: ${resultText(script.result)}`);
+
+  hands.frontApp = "Notes";
+  const notes = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
+  assert.equal(notes.result.kind, "text", `run_shell with Notes in front: ${resultText(notes.result)}`);
+});
+
 test("RAIL-8: osascript under any spelling, or with a script the line does not show, reads the app in front and Kevin's hands; a script on the line with no keys reads neither", async () => {
   const hands = new DeskHands();
   hands.frontApp = "1Password";
