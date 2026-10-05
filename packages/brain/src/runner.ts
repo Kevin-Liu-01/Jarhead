@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
-import { HANDS_OFF_APPS, REPO_ROOT, classifyAction, classifyAppleScript, classifyPath, classifyUrl, expandPath, logger, newId, shellCwdReason, type Decision, Ledger } from "@jarhead/core";
+import { HANDS_OFF_APPS, REPO_ROOT, classifyAction, classifyAppleScript, classifyPath, classifyUrl, expandPath, logger, newId, shellCwdReason, type ActionContext, type Decision, Ledger } from "@jarhead/core";
 import type { AgentRegistry } from "@jarhead/agents";
 import { DaemonClient } from "@jarhead/daemon";
-import { ComputerToolset, type ToolResult } from "@jarhead/hands";
+import { ComputerToolset, KEVIN_QUIET_MS, type ToolResult, type UserIdle } from "@jarhead/hands";
 import type { OverlayCommand, Point, Rect } from "@jarhead/protocol";
 import type { BrainSink, BrainTask } from "./brain.ts";
 import { AUTOMATION_LIST_STATES, AUTOMATION_VERBS, armedLine, canonicalArgs, changedLine, describeDraft, draftFromArgs, renderAutomations, renderRecipes, type AutomationListState, type AutomationSource, type AutomationVerb } from "./automations.ts";
@@ -13,7 +13,7 @@ import { describeWindow, editText, listTree, readWindow, realPathOf, searchFiles
 import { SelfEditManager, type SelfEditOptions } from "./selfedit.ts";
 import { BackgroundJobs, DEFAULT_SHELL_TIMEOUT_MS, MAX_SHELL_TIMEOUT_MS, OUTPUT_CAP, SecretRedactor, describeShellResult, runAppleScript, runShell, truncateOutput } from "./shell.ts";
 import { fetchReadable, searchWeb } from "./web.ts";
-import { BrowserTools } from "./browser.ts";
+import { BrowserTools, confirmKey } from "./browser.ts";
 
 /**
  * Executes tool calls by name. Every brain routes every call through here so the
@@ -25,13 +25,18 @@ import { BrowserTools } from "./browser.ts";
  * "confirm" into the needs-confirmation handshake (ConfirmationState in
  * packages/hands), and does the work when the answer is "run". What the pure
  * policy cannot know, the runner supplies: the real path behind a symlink, the
- * working directory of a shell command, the frontmost app for an AppleScript,
- * and — for every gate that reads "what Kevin said" — Kevin's own words only,
- * never the dialogue lines the model spoke. Every text result is passed through
- * the secret redactor before a model reads it.
+ * working directory of a shell command, the frontmost app for an AppleScript or
+ * for keystrokes a shell command sends through osascript, and Kevin's own words
+ * for every gate that reads "what Kevin said", never the dialogue lines the model
+ * spoke. A yes is spent on the action it was said for: the key a question is
+ * registered under carries every argument that changes what runs. Every text
+ * result is passed through the secret redactor before a model reads it.
  */
 
 const log = logger("brain.runner");
+
+/** Words in a script that post keys or clicks, or set a field through accessibility: they land in the app in front. */
+const SCRIPT_INPUT = /\b(keystroke|key ?code|click|set (the )?value|perform action)\b/i;
 
 export interface RunnerOptions {
   readonly toolset: ComputerToolset;
@@ -79,6 +84,11 @@ export interface RunnerOptions {
   readonly brainIsLocal?: (() => boolean) | undefined;
   /** What the tool results call the person Jarhead works for (release F1), read live; default "Kevin". */
   readonly userName?: (() => string) | undefined;
+  /**
+   * Test seam: the action gate the shell and the browser tools ask (default the policy's
+   * `classifyAction`). The path, URL and AppleScript gates are not replaceable.
+   */
+  readonly policy?: ((ctx: ActionContext) => Decision) | undefined;
 }
 
 export type ToolRunnerOptions = RunnerOptions;
@@ -112,6 +122,7 @@ export class ToolRunner {
   private readonly now: () => number;
   private readonly home: string;
   private readonly repoRoot: string;
+  private readonly policy: (ctx: ActionContext) => Decision;
   readonly jobs: BackgroundJobs;
   readonly selfEdit: SelfEditManager;
   /** The browser fast path (page scripting when the browser allows it, accessibility otherwise). */
@@ -132,9 +143,10 @@ export class ToolRunner {
     this.now = opts.now ?? Date.now;
     this.home = opts.home ?? process.env["HOME"] ?? homedir();
     this.repoRoot = opts.repoRoot ?? REPO_ROOT;
+    this.policy = opts.policy ?? classifyAction;
     this.redactor = new SecretRedactor(opts.env ?? process.env, this.home, this.now);
     this.jobs = new BackgroundJobs(opts.stateDir);
-    this.browser = new BrowserTools({ hands: opts.toolset.hands, toolset: opts.toolset, now: this.now, userName: () => this.userName });
+    this.browser = new BrowserTools({ hands: opts.toolset.hands, toolset: opts.toolset, now: this.now, userName: () => this.userName, request: () => this.request, policy: this.policy });
     this.selfEdit = new SelfEditManager({
       repoRoot: opts.repoRoot ?? REPO_ROOT,
       worktreesDir: join(opts.stateDir, "worktrees"),
@@ -441,9 +453,11 @@ export class ToolRunner {
         const prompt = typeof args["prompt"] === "string" ? args["prompt"] : "";
         if (!prompt.trim()) return { kind: "error", message: "agent_start needs a prompt: the first thing to ask the agent" };
         // A coding agent writing in the running checkout is a self-edit without the loop's checks: ask first.
+        // The yes covers this agent, this folder and this prompt.
         const inRepo = [expandPath(cwd, this.home), realPathOf(expandPath(cwd, this.home))].some((p) => p === this.repoRoot || p.startsWith(`${this.repoRoot}/`));
-        if (inRepo && !this.opts.toolset.confirmations.consume("agent_start", { cwd })) {
-          return this.ask(`start a ${tool} session in Jarhead's own checkout (${cwd})`, "agent_start", { cwd }, { verdict: "confirm", reason: "an agent working there changes the running Jarhead outside the self-edit loop; self_edit is the checked way" });
+        const key = confirmKey({ tool, cwd, prompt });
+        if (inRepo && !this.opts.toolset.confirmations.consume("agent_start", key)) {
+          return this.ask(`start a ${tool} session in Jarhead's own checkout (${cwd})`, "agent_start", key, { verdict: "confirm", reason: "an agent working there changes the running Jarhead outside the self-edit loop; self_edit is the checked way" });
         }
         const info = await agents.start(connectorKind, {
           ...(connectorKind === "sessions" ? { tool } : {}),
@@ -620,10 +634,16 @@ export class ToolRunner {
     // The working directory is judged under both spellings: a command run from inside ~/.jarhead reaches env by its bare name.
     const cwdReason = shellCwdReason(cwd, this.home, realPathOf(cwd));
     if (cwdReason) return { kind: "error", message: `refused: ${cwdReason}; it is on the never list` };
-    const confirmed = this.opts.toolset.confirmations.consume("run_shell", { command });
-    const decision = classifyAction({ kind: "run_shell", text: command, confirmed, ownedPids: this.jobs.pids(), scratchRoots: this.scratchRoots(), home: this.home, cwd: realPathOf(cwd), repoRoot: this.repoRoot, userName: this.userName });
+    // Keys and clicks sent through osascript land in the app in front, as the applescript tool's do: the gate learns which, and Kevin's hands hold them.
+    const posts = /\bosascript\b/.test(command) && SCRIPT_INPUT.test(command);
+    const [app, held] = posts ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", undefined];
+    if (held) return held;
+    // A yes covers this command, in this folder, in this mode, with this limit.
+    const key = confirmKey({ command, cwd, background, timeoutMs });
+    const confirmed = this.opts.toolset.confirmations.consume("run_shell", key);
+    const decision = this.policy({ kind: "run_shell", text: command, confirmed, ownedPids: this.jobs.pids(), scratchRoots: this.scratchRoots(), home: this.home, cwd: realPathOf(cwd), repoRoot: this.repoRoot, userName: this.userName, ...(app ? { app } : {}) });
     if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
-    if (decision.verdict === "confirm") return this.ask(`run "${command.slice(0, 80)}"${cwd !== this.home ? ` in ${cwd}` : ""}`, "run_shell", { command }, decision);
+    if (decision.verdict === "confirm") return this.ask(`run "${command.slice(0, 80)}"${cwd !== this.home ? ` in ${cwd}` : ""}${background ? " in the background" : ""}`, "run_shell", key, decision);
     if (background) {
       const job = this.jobs.start(command, cwd, this.opts.env ?? process.env);
       return { kind: "text", text: `started in the background as pid ${job.pid}; its output goes to ${job.logPath} (read_file it). Stop it later with run_shell "kill ${job.pid}".` };
@@ -661,12 +681,14 @@ export class ToolRunner {
     return { kind: "text", text: `${describeWindow(path, w)}\n${w.text}` };
   }
 
-  private writeGate(member: string, path: string): ToolResult | undefined {
+  /** The write gate. `change` is a digest of what is written (the content, or the edit's old and new): the yes covers that change to that file. */
+  private writeGate(member: "write_file" | "edit_file", path: string, change: string): ToolResult | undefined {
     const exists = existsSync(path);
-    const confirmed = this.opts.toolset.confirmations.consume(member, { path });
+    const key = confirmKey({ path, change });
+    const confirmed = this.opts.toolset.confirmations.consume(member, key);
     const decision = this.pathDecision(path, "write", { confirmed, exists, readThisTask: this.readThisTask.has(path) });
     if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
-    if (decision.verdict === "confirm") return this.ask(`${member === "edit_file" ? "edit" : exists ? "overwrite" : "create"} ${path}`, member, { path }, decision);
+    if (decision.verdict === "confirm") return this.ask(`${member === "edit_file" ? "edit" : exists ? "overwrite" : "create"} ${path}`, member, key, decision);
     return undefined;
   }
 
@@ -675,9 +697,9 @@ export class ToolRunner {
     if (!path) return { kind: "error", message: "write_file needs a path" };
     if (typeof args["content"] !== "string") return { kind: "error", message: "write_file needs content (a string)" };
     if (existsSync(path) && statSync(path).isDirectory()) return { kind: "error", message: `${path} is a folder` };
-    const gate = this.writeGate("write_file", path);
-    if (gate) return gate;
     const content = args["content"];
+    const gate = this.writeGate("write_file", path, digest(content));
+    if (gate) return gate;
     writeText(path, content);
     this.readThisTask.add(path);
     return { kind: "text", text: `wrote ${Buffer.byteLength(content)} bytes to ${path}` };
@@ -688,7 +710,7 @@ export class ToolRunner {
     if (!path) return { kind: "error", message: "edit_file needs a path" };
     if (typeof args["old"] !== "string" || typeof args["new"] !== "string") return { kind: "error", message: "edit_file needs old and new (strings)" };
     if (!existsSync(path) || statSync(path).isDirectory()) return { kind: "error", message: `no such file: ${path}` };
-    const gate = this.writeGate("edit_file", path);
+    const gate = this.writeGate("edit_file", path, digest(JSON.stringify([args["old"], args["new"], args["all"] === true])));
     if (gate) return gate;
     const r = editText(path, args["old"], args["new"], args["all"] === true);
     if (!r.ok) return { kind: "error", message: r.reason };
@@ -748,9 +770,10 @@ export class ToolRunner {
   private async appleScript(args: Record<string, unknown>): Promise<ToolResult> {
     const script = String(args["script"] ?? "").trim();
     if (!script) return { kind: "error", message: "applescript needs a script" };
+    // Keystrokes without a named target land in the frontmost app: the gate needs to know which, as the hands' type tool does, and Kevin's hands hold them.
+    const [app, held] = SCRIPT_INPUT.test(script) ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", undefined];
+    if (held) return held;
     const confirmed = this.opts.toolset.confirmations.consume("applescript", { script });
-    // Keystrokes without a named target land in the frontmost app: the gate needs to know which, as the hands' type tool does.
-    const app = /\b(keystroke|key code|click|set value|set the value|perform action)\b/i.test(script) ? await this.frontmostApp() : "";
     const decision = classifyAppleScript({ script, confirmed, ownedPids: this.jobs.pids(), home: this.home, userName: this.userName, ...(app ? { app } : {}) });
     if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
     if (decision.verdict === "confirm") return this.ask(`run an AppleScript (${script.split("\n")[0]?.slice(0, 60) ?? ""}…)`, "applescript", { script }, decision);
@@ -768,6 +791,9 @@ export class ToolRunner {
       return { kind: "error", message: `"${url.slice(0, 80)}" is not a URL` };
     }
     if (u.protocol !== "http:" && u.protocol !== "https:") return { kind: "error", message: `refused: only http and https URLs are opened (got ${u.protocol})` };
+    // The one URL table, as web_fetch and browser_navigate: https from the internet; http or a private host only when Kevin named it.
+    const allowed = classifyUrl({ url: u.toString(), request: this.request, userName: this.userName });
+    if (allowed.verdict !== "run") return { kind: "error", message: `refused: ${allowed.reason}` };
     const r = await runShell({ command: `open ${url}`, argv: ["/usr/bin/open", u.toString()], timeoutMs: 10_000, env: this.opts.env });
     return r.code === 0 ? { kind: "text", text: `opened ${u.toString()} in the default browser` } : { kind: "error", message: describeShellResult(r) };
   }
@@ -780,6 +806,27 @@ export class ToolRunner {
     } catch {
       return "";
     }
+  }
+
+  /**
+   * Kevin's hands win over scripted input too. Keys and clicks sent through osascript
+   * never meet the helper's own busy check, so the runner reads `user_idle` first: his
+   * key, click or scroll within KEVIN_QUIET_MS holds the script. The line reads as the
+   * helper's busy refusal, so a lane retries it quietly once he stops. No helper, no
+   * answer: nothing is held. The helper counts osascript's posts as foreign too, so a
+   * second scripted keystroke right after a first waits out the same quiet window.
+   */
+  private async heldByKevin(): Promise<ToolResult | undefined> {
+    let idle: UserIdle | undefined;
+    try {
+      idle = await this.opts.toolset.hands.request<UserIdle>("user_idle", {}, 1500);
+    } catch {
+      return undefined;
+    }
+    const ms = idle?.foreignMs;
+    if (typeof ms !== "number" || !(ms < KEVIN_QUIET_MS)) return undefined;
+    const who = this.userName;
+    return { kind: "error", message: `held: ${who} is typing (${who} used the keyboard/mouse ${Math.max(0, Math.round(ms))} ms ago). Nothing was sent. Try again once ${who} stops.` };
   }
 
   private async clipboardRead(): Promise<ToolResult> {
@@ -995,6 +1042,11 @@ export class ToolRunner {
     const m = this.opts.toolset.screen.last;
     return m ? n / m.scale : n;
   }
+}
+
+/** A short, stable stand-in for a long argument in a confirmation key. */
+function digest(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }
 
 function isFiniteNumber(v: unknown): v is number {

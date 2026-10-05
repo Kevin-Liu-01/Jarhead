@@ -1,4 +1,4 @@
-import { classifyAction, logger, type Decision } from "@jarhead/core";
+import { classifyAction, classifyUrl, logger, type ActionContext, type Decision } from "@jarhead/core";
 import { NativeRequestError, type AxTreeResult, type BrowserTab, type ComputerToolset, type FindElementResult, type FocusedText, type FrontmostInfo, type NativeHands, type ToolResult } from "@jarhead/hands";
 import type { Point, Rect } from "@jarhead/protocol";
 
@@ -18,7 +18,10 @@ import type { Point, Rect } from "@jarhead/protocol";
  *
  * Every acting call is judged by the policy first (`browser_click` / `browser_type`
  * / `browser_navigate` in packages/core/src/policy.ts): payment and sign-in pages
- * ask, irreversible labels ask, password fields refuse; the reads run.
+ * ask, irreversible labels ask, password fields refuse; the reads run. A navigation
+ * meets the URL table before the page policy (`classifyUrl`, as web_fetch and
+ * open_url do), and `browser_type` with `submit` is one decision: the typing and the
+ * Return that sends it, judged together on the page they land on.
  */
 
 const log = logger("brain.browser");
@@ -44,6 +47,10 @@ export interface BrowserToolsOptions {
   readonly now?: () => number;
   /** What the refusals and questions call the person Jarhead works for, read live; default "Kevin". */
   readonly userName?: (() => string) | undefined;
+  /** Kevin's own words for the task under way, read live: a private host loads only when he named it. Absent = nothing named. */
+  readonly request?: (() => string) | undefined;
+  /** The action gate (default `classifyAction`); the runner passes its own, so a test can stand in for the policy. */
+  readonly policy?: ((ctx: ActionContext) => Decision) | undefined;
 }
 
 interface PageFind {
@@ -106,9 +113,11 @@ function typeScript(text: string): string {
 export class BrowserTools {
   private readonly js = new Map<string, JsState>();
   private readonly now: () => number;
+  private readonly policy: (ctx: ActionContext) => Decision;
 
   constructor(private readonly opts: BrowserToolsOptions) {
     this.now = opts.now ?? Date.now;
+    this.policy = opts.policy ?? classifyAction;
   }
 
   /** The user's name as the refusals and questions say it; "Kevin" when none is wired. */
@@ -268,9 +277,10 @@ export class BrowserTools {
   async type(args: Record<string, unknown>): Promise<ToolResult> {
     const text = String(args["text"] ?? "");
     if (!text) return { kind: "error", message: "browser_type needs text" };
+    const submit = args["submit"] === true;
     const app = await this.target(args["app"]);
     if (!app) return { kind: "error", message: "no scriptable browser is running (Chrome family or Safari)" };
-    const gate = await this.gate("browser_type", app, { text }, { text, focus: true });
+    const gate = await this.gate("browser_type", app, { text, submit }, { text, focus: true, submit });
     if (gate.result) return gate.result;
     const js = await this.jsAvailable(app);
     let typed = false;
@@ -285,11 +295,13 @@ export class BrowserTools {
       const r = await this.opts.toolset.run("type", { text });
       if (r.kind !== "text") return r;
     }
-    if (args["submit"] === true) {
+    if (submit) {
       const r = await this.opts.toolset.run("key", { text: "Return" });
       if (r.kind === "error") return { kind: "error", message: `typed, but Return failed: ${r.message}` };
+      // The hands judge the key again against the app in front. When that asks, the text is in and the Return waits for its own yes.
+      if (r.kind === "needs-confirmation") return { ...r, question: `Typed ${text.length} characters into the page; Return was not pressed. ${r.question}` };
     }
-    return { kind: "text", text: `typed ${text.length} characters into the page${args["submit"] === true ? " and pressed Return" : ""} (${typed ? "through the page" : "through the keyboard"}, ${app})` };
+    return { kind: "text", text: `typed ${text.length} characters into the page${submit ? " and pressed Return" : ""} (${typed ? "through the page" : "through the keyboard"}, ${app})` };
   }
 
   async navigate(args: Record<string, unknown>): Promise<ToolResult> {
@@ -302,6 +314,9 @@ export class BrowserTools {
       return { kind: "error", message: `"${raw.slice(0, 80)}" is not a URL` };
     }
     if (u.protocol !== "http:" && u.protocol !== "https:") return { kind: "error", message: `refused: only http and https URLs are opened (got ${u.protocol})` };
+    // The one URL table, before the page policy: https from the internet; http or a private host only when Kevin named it.
+    const allowed = classifyUrl({ url: u.toString(), request: this.opts.request?.() ?? "", userName: this.userName });
+    if (allowed.verdict !== "run") return { kind: "error", message: `refused: ${allowed.reason}` };
     const app = await this.target(args["app"]);
     if (!app) return { kind: "error", message: "no scriptable browser is running (Chrome family or Safari); use open_url for the default browser" };
     const gate = await this.gate("browser_navigate", app, { url: u.toString() }, { url: u.toString() });
@@ -331,21 +346,27 @@ export class BrowserTools {
 
   /**
    * The policy with what the browser knows: the page's URL (payment / sign-in
-   * pages ask), the control's words, whether the focused field is secure. A
-   * "confirm" becomes the same handshake every other tool uses.
+   * pages ask), the control's words, whether the focused field is secure. With
+   * `submit`, the Return is judged in the same decision, as the key it is, on the
+   * same page: a messaging page asks before anything is typed. A "confirm" becomes
+   * the same handshake every other tool uses, and the yes is spent on these
+   * arguments in this browser on this page.
    */
-  private async gate(kind: "browser_click" | "browser_type" | "browser_navigate", app: string, input: Record<string, unknown>, about: { target?: string | undefined; text?: string | undefined; url?: string | undefined; focus?: boolean }): Promise<{ decision: Decision; result?: ToolResult }> {
+  private async gate(kind: "browser_click" | "browser_type" | "browser_navigate", app: string, input: Record<string, unknown>, about: { target?: string | undefined; text?: string | undefined; url?: string | undefined; focus?: boolean; submit?: boolean }): Promise<{ decision: Decision; result?: ToolResult }> {
     const [page, focused] = await Promise.all([
       about.url ? Promise.resolve(undefined) : this.pageUrl(app),
       about.focus ? this.opts.hands.request<FocusedText>("focused_text", {}, 1500).catch(() => undefined) : Promise.resolve(undefined),
     ]);
     const url = about.url ?? page?.url;
-    const confirmed = this.opts.toolset.confirmations.consume(kind, input);
-    const decision = classifyAction({ kind, app, target: about.target, text: about.text, url, secureField: focused?.secure === true, confirmed, userName: this.userName });
+    const key = confirmKey({ ...input, app, url });
+    const confirmed = this.opts.toolset.confirmations.consume(kind, key);
+    const on = { app, url, secureField: focused?.secure === true, confirmed, userName: this.userName };
+    const typing = this.policy({ kind, target: about.target, text: about.text, ...on });
+    const decision = about.submit ? strictest(typing, this.policy({ kind: "key", text: "Return", ...on })) : typing;
     if (decision.verdict === "run") return { decision };
     if (decision.verdict === "refuse") return { decision, result: { kind: "error", message: `refused: ${decision.reason}` } };
-    const what = kind === "browser_navigate" ? `open ${url}` : kind === "browser_type" ? `type "${(about.text ?? "").slice(0, 60)}" into the page` : `click "${about.target ?? ""}" on the page`;
-    const pending = this.opts.toolset.confirmations.ask(`${what} in ${app}`, kind, input);
+    const what = kind === "browser_navigate" ? `open ${url}` : kind === "browser_type" ? `type "${(about.text ?? "").slice(0, 60)}" into the page${about.submit ? " and press Return" : ""}` : `click "${about.target ?? ""}" on the page`;
+    const pending = this.opts.toolset.confirmations.ask(`${what} in ${app}`, kind, key);
     return { decision, result: { kind: "needs-confirmation", pendingId: pending.id, question: `About to ${what} in ${app}${url && kind !== "browser_navigate" ? ` (${url.slice(0, 80)})` : ""}. ${decision.reason}. Ask ${this.userName} to confirm out loud, then stop; do not retry until ${this.userName} says yes.` } };
   }
 
@@ -370,6 +391,24 @@ export class BrowserTools {
     const b = this.opts.toolset.screen.fromPoints(r.x + r.w, r.y + r.h);
     return { pixels: { x: Math.round(a.x), y: Math.round(a.y), w: Math.round(b.x - a.x), h: Math.round(b.y - a.y), center: { x: Math.round((a.x + b.x) / 2), y: Math.round((a.y + b.y) / 2) } } };
   }
+}
+
+/**
+ * What a yes is spent on: every argument that changes the action, as one string in a
+ * fixed field order. ConfirmationState matches a `text`, `command` or `coordinate`
+ * field on its own, so a key of loose fields would let a yes for one folder, one page
+ * or one Return cover another. One string is matched whole.
+ */
+export function confirmKey(fields: Record<string, unknown>): { readonly action: string } {
+  return { action: JSON.stringify(fields) };
+}
+
+/** Two verdicts on one action: refuse over confirm over run. Two questions are one, with both reasons and no standing yes. */
+function strictest(a: Decision, b: Decision): Decision {
+  const rank = { run: 0, confirm: 1, refuse: 2 } as const;
+  if (rank[a.verdict] !== rank[b.verdict]) return rank[a.verdict] > rank[b.verdict] ? a : b;
+  if (a.verdict !== "confirm" || a.reason === b.reason) return a;
+  return { verdict: "confirm", reason: `${a.reason}; ${b.reason}`, ...(a.hold || b.hold ? { hold: true } : {}) };
 }
 
 function rounded(r: Rect): Rect {
