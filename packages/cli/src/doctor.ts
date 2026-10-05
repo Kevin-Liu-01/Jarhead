@@ -1329,15 +1329,16 @@ export interface BrowserCheckDeps {
  * browser is asked; one that is not running is reported, never launched.
  */
 export async function browserChecks(deps: BrowserCheckDeps): Promise<Check[]> {
-  if (!deps.ask) return [{ group: "hands", name: "browser JS from Apple Events", status: "warn", detail: "not asked. pnpm run doctor --browsers sends each running browser an Apple event.", required: false }];
+  // Not asking is the default, not a fault: the row is ok, so the plain doctor has nothing to warn about here.
+  if (!deps.ask) return [{ group: "hands", name: "browser JS from Apple Events", status: "ok", detail: "Not asked. pnpm run doctor --browsers sends each running browser an Apple event.", required: false }];
   const out: Check[] = [];
   for (const app of DOCTOR_BROWSERS) {
     if (!deps.running(app)) {
-      out.push({ group: "hands", name: `${app} JS from Apple Events`, status: "warn", detail: "not running — not probed", required: false });
+      out.push({ group: "hands", name: `${app} JS from Apple Events`, status: "warn", detail: "Not running. Not probed.", required: false });
       continue;
     }
     const r = await deps.probe(app);
-    out.push({ group: "hands", name: `${app} JS from Apple Events`, status: r.status === "ok" ? "ok" : "warn", detail: r.status === "off" ? `off — ${r.detail}` : r.detail, required: false, fix: r.fix });
+    out.push({ group: "hands", name: `${app} JS from Apple Events`, status: r.status === "ok" ? "ok" : "warn", detail: r.status === "off" ? `Off. ${r.detail}` : r.detail, required: false, fix: r.fix });
   }
   return out;
 }

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Checks scripts/install.sh without running it for real: a syntax pass, shellcheck when it is
-# installed, a dry run that must exit 0 and print the plan and exactly the README's four commands
-# (README:23-29) in order, and greps for what the script must never do. Also checks that the page's
+# installed, a dry run that must exit 0 and print the plan and exactly its four commands in order
+# (README's quick start, with pnpm install leaving out the site's dependencies per decision D6), and
+# greps for what the script must never do. Also checks that the page's
 # own words never claim a download, a .dmg or a cask (facts-product.md §5.1).
 # Run it from the repo root: `sh site/scripts/check-install.sh`.
 set -eu
@@ -49,9 +50,9 @@ open -a Jarhead"
 # git lines are the clone or the update, not README commands; the script installs no tool itself, so nothing else may appear
 actual="$(sed -n 's/^jarhead: \$ //p' "$out" | grep -v -E '^git ' || true)"
 if [ "$actual" = "$expected" ]; then
-  ok "the four README commands, in order"
+  ok "the four commands, in order"
 else
-  bad "commands differ from README:23-29; got:"
+  bad "the commands are not the expected four (README's, with pnpm install --filter '!./site'); got:"
   printf '%s\n' "$actual" >&2
 fi
 if grep -q -E '^jarhead: \$ git clone .*Kevin-Liu-01/Jarhead\.git |^jarhead: \$ git .*-C .* (merge --quiet --ff-only|rebase --quiet) ' "$out"; then

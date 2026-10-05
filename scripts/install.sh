@@ -20,7 +20,8 @@
 #
 # Run it again any time. An existing checkout is fast-forwarded to origin. Commits of its own (a
 # self-edit you applied) are rebased onto origin. Uncommitted changes, or commits that do not rebase
-# cleanly, stop it with a line that says what to do, and the checkout is left as it was.
+# cleanly, stop it with a line that says what to do, and the checkout is left as it was. The two
+# icon strips a build redraws do not count as changes: they go back to the committed copies.
 #
 # Settings go on the sh side of the pipe:
 #
@@ -57,7 +58,8 @@ quote() {
 }
 
 # Every command that changes something goes through run: it is announced on its own jarhead: line
-# first, quoted so it can be pasted, and under JARHEAD_DRY_RUN=1 it is only announced.
+# first, quoted so it can be pasted, and under JARHEAD_DRY_RUN=1 it is only announced. A command
+# printed for you to type puts each argument through quote the same way.
 run() {
   cmdline=""
   for arg in "$@"; do cmdline="$cmdline${cmdline:+ }$(quote "$arg")"; done
@@ -66,13 +68,30 @@ run() {
   "$@"
 }
 
+# The first line of a tool's output that is not blank, so a refusal can say what the tool said.
+first_line() {
+  line="$(printf '%s\n' "$1" | grep -m 1 '[^[:space:]]' || true)"
+  printf '%s' "${line:-nothing}"
+}
+
+# A fresh Xcode whose license is not accepted fails every xcrun and the git shim, saying so on stderr.
+stop_on_license() {
+  case "$1" in
+    *[Ll]icense*)
+      say "Xcode's license is not accepted yet, so its tools refuse to run. Accept it, then run this again:"
+      say "  sudo xcodebuild -license"
+      exit 1
+      ;;
+  esac
+}
+
 plan() {
   say "The plan:"
   say "  1  check macOS 14+ on Apple silicon, Xcode's command line tools (Swift 5.10+), Node ${NODE_MAJOR_MIN}+, pnpm ${PNPM_MAJOR_MIN}+ and git"
   if [ -d "$DIR/.git" ]; then
     say "  2  update $DIR to origin's $REF (a fast-forward, or a rebase of its own commits)"
   else
-    say "  2  git clone $REPO_URL $DIR ($REF)"
+    say "  2  git clone $REPO_URL $(quote "$DIR") ($REF)"
   fi
   say "  3  pnpm install (without the site's dependencies)"
   say "  4  pnpm build:hands"
@@ -108,16 +127,23 @@ check_xcode() {
     say "  xcode-select --install"
     exit 1
   fi
-  if ! xcrun --find swift >/dev/null 2>&1; then
+  if ! swift_path="$(xcrun --find swift 2>&1)"; then
+    stop_on_license "$swift_path"
     say "swift is not on this Mac's toolchain. Install Xcode 15.3 or newer, or its command line tools, then run this again:"
     say "  xcode-select --install"
     exit 1
   fi
-  swift_line="$(xcrun swift --version 2>/dev/null | grep 'Swift version' | head -n 1)"
+  # stderr is kept: when the version cannot be read, what xcrun said instead is the reason. On a
+  # good toolchain stderr is only swift-driver's own version, printed ahead of the Swift line.
+  swift_out="$(xcrun swift --version 2>&1 || true)"
+  swift_line="$(printf '%s\n' "$swift_out" | grep 'Swift version' | head -n 1 | sed 's/^swift-driver version: [^ ]* //')"
   swift_version="$(printf '%s\n' "$swift_line" | sed -n 's/.*Swift version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
   case "$swift_version" in
     [0-9]*.[0-9]*) ;;
-    *) fail "Could not read the Swift version (xcrun swift --version said '$swift_line')." ;;
+    *)
+      stop_on_license "$swift_out"
+      fail "Could not read the Swift version. xcrun swift --version said: $(first_line "$swift_out")"
+      ;;
   esac
   swift_major="${swift_version%%.*}"
   swift_minor="${swift_version#*.}"
@@ -157,10 +183,12 @@ check_node() {
 # pnpm is never installed here. npm comes first in the fix: Node 25 and newer ship no corepack.
 check_pnpm() {
   if have pnpm; then
-    pnpm_version="$(pnpm -v 2>/dev/null || true)"
+    # stderr is kept too: a corepack shim's notice or a broken install says why there is no version.
+    pnpm_out="$(pnpm -v 2>&1 || true)"
+    pnpm_version="$(printf '%s\n' "$pnpm_out" | grep -m 1 -E '^[0-9]+\.[0-9]+' || true)"
     pnpm_major="${pnpm_version%%.*}"
     case "$pnpm_major" in
-      ''|*[!0-9]*) fail "Could not read the pnpm version (pnpm -v said '$pnpm_version')." ;;
+      ''|*[!0-9]*) fail "Could not read the pnpm version. pnpm -v said: $(first_line "$pnpm_out")" ;;
     esac
     if [ "$pnpm_major" -ge "$PNPM_MAJOR_MIN" ]; then
       say "pnpm $pnpm_version."
@@ -199,23 +227,37 @@ fetch() {
   if ! dry; then say "At $(git -C "$DIR" rev-parse --short HEAD)."; fi
 }
 
+# pnpm build:mac redraws two tracked PNGs (scripts/make-icon.ts, the icon strip and its README copy).
+# Where this Mac's Node deflates them to other bytes, the last install left them changed. That is the
+# build's own output, not an edit, so a rerun puts them back instead of stopping on them.
+ICON_STRIPS="apps/mac/Resources/preview-icon-sizes.png
+docs/media/icon-sizes.png"
+
 # An existing checkout. Uncommitted changes stop it before git changes anything. With no commits of
 # its own it fast-forwards. With some (a self-edit Jarhead applied, or yours) they are rebased onto
 # origin's $REF, and a rebase that does not apply cleanly is undone. Every stop is a jarhead: line.
 update() {
-  if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no 2>/dev/null || true)" ]; then
-    say "$DIR has uncommitted changes. Commit or stash them, then run this again:"
-    say "  git -C $DIR stash"
-    exit 1
+  dir_q="$(quote "$DIR")"
+  changed="$(git -C "$DIR" status --porcelain --untracked-files=no 2>/dev/null | cut -c 4- || true)"
+  if [ -n "$changed" ]; then
+    edits="$(printf '%s\n' "$changed" | grep -v -x -F "$ICON_STRIPS" || true)"
+    if [ -n "$edits" ]; then
+      say "$DIR has uncommitted changes. Commit or stash them, then run this again:"
+      say "  git -C $dir_q stash"
+      exit 1
+    fi
+    say "The last build redrew the icon strips. They go back to the committed copies."
+    # shellcheck disable=SC2086 # one path per line, from ICON_STRIPS, none with a space
+    run git -C "$DIR" checkout --quiet HEAD -- $changed || fail "Could not restore the icon strips. See why with: git -C $dir_q status"
   fi
   run git -C "$DIR" fetch --quiet origin "$REF" || fail "Could not fetch $REF from origin. Check the network and JARHEAD_REF, then run this again."
-  run git -C "$DIR" checkout --quiet "$REF" || fail "Could not check out $REF in $DIR. See why with: git -C $DIR status"
+  run git -C "$DIR" checkout --quiet "$REF" || fail "Could not check out $REF in $DIR. See why with: git -C $dir_q status"
   # A dry run fetched nothing, so the last fetch's view of origin stands in for this one's.
   upstream="FETCH_HEAD"
   if dry; then upstream="origin/$REF"; fi
   ahead="$(git -C "$DIR" rev-list --count "$upstream..HEAD" 2>/dev/null || echo 0)"
   if [ "$ahead" = "0" ]; then
-    run git -C "$DIR" merge --quiet --ff-only "$upstream" || fail "Could not fast-forward $DIR to origin's $REF. See why with: git -C $DIR status"
+    run git -C "$DIR" merge --quiet --ff-only "$upstream" || fail "Could not fast-forward $DIR to origin's $REF. See why with: git -C $dir_q status"
     return 0
   fi
   say "$DIR has $ahead commit(s) of its own, a self-edit or yours. They go on top of origin's $REF."
@@ -224,11 +266,15 @@ update() {
   if [ -z "$(git -C "$DIR" config user.email 2>/dev/null || true)" ]; then identity="-c user.name=Jarhead -c user.email=jarhead@localhost"; fi
   # shellcheck disable=SC2086 # the identity is two -c options or nothing
   if run git $identity -C "$DIR" rebase --quiet "$upstream"; then return 0; fi
-  git -C "$DIR" rebase --abort >/dev/null 2>&1 || true
+  # A rebase stopped on a conflict is undone through run, announced like every other change.
+  git_dir="$(git -C "$DIR" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  if [ -n "$git_dir" ] && { [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ]; }; then
+    run git -C "$DIR" rebase --abort || fail "The rebase stopped and could not be undone. See where it stands with: git -C $dir_q status"
+  fi
   say "Those commits do not rebase cleanly onto origin's $REF. The checkout is back as it was. Finish by hand:"
-  say "  cd $DIR && git rebase origin/$REF"
+  say "  cd $dir_q && git rebase $(quote "origin/$REF")"
   say "Or install a fresh copy into another folder:"
-  say "  curl -fsSL https://jarhead.kevinliu.studio/install.sh | JARHEAD_DIR=$DIR-fresh sh"
+  say "  curl -fsSL https://jarhead.kevinliu.studio/install.sh | JARHEAD_DIR=$(quote "$DIR-fresh") sh"
   exit 1
 }
 
@@ -252,7 +298,7 @@ finish() {
   say "Brain (Codex, Claude Code, an API key or a local model), Permissions (sixteen, the seven required first), Wake, Agents, Done."
   say "Then say \"jarhead\", pass Touch ID, talk."
   say "Signing: pnpm build:mac prints the identity it used. Ad-hoc resets the permission grants on every rebuild;"
-  say "a self-signed Code Signing certificate from Keychain Access keeps them. Check with: cd $DIR && pnpm run doctor"
+  say "a self-signed Code Signing certificate from Keychain Access keeps them. Check with: cd $(quote "$DIR") && pnpm run doctor"
   if no_open; then return 0; fi
   # The install renamed new files in under the running app, which keeps the old build until it quits.
   if ! dry && pgrep -x Jarhead >/dev/null 2>&1; then

@@ -28,7 +28,7 @@ jobs:
       # Includes the real ad-hoc install (packages/install adhoc-install.test.ts: codesign into a
       # temp Applications folder, never /Applications) and install.sh against stubs.
       - run: pnpm test
-      # The one-line installer: syntax, a dry run with the four README commands, what it never does.
+      # The one-line installer: syntax, a dry run with its four commands (README's, the site's dependencies left out), what it never does.
       - run: sh site/scripts/check-install.sh
 
   swift:

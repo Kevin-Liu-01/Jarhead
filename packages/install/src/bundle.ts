@@ -237,6 +237,19 @@ export const CODESIGN_VERIFY_ARGS = ["--verify", "--strict", "--deep", "--verbos
  */
 export const CODESIGN_REQUIREMENT_ARGS = ["-d", "-v", "-r-"] as const;
 
+/** `-vv` adds one `Authority=` line (stderr) per certificate in the signing chain, the leaf first. An ad-hoc signature has none and says `Signature=adhoc`. */
+export const CODESIGN_AUTHORITY_ARGS = ["-d", "-vv"] as const;
+
+/**
+ * The certificate that signed, from `codesign -d -vv` output (stdout and stderr together):
+ * the leaf `Authority=` line. Undefined for an ad-hoc signature, an unsigned bundle, or
+ * output codesign could not produce (nothing installed, an unreadable bundle).
+ */
+export function signingAuthority(output: string): string | undefined {
+  if (/^Signature=adhoc$/m.test(output)) return undefined;
+  return output.match(/^Authority=(.+)$/m)?.[1]?.trim() || undefined;
+}
+
 export function requirementHasIdentifier(reqText: string, bundleId: string): boolean {
   const escaped = bundleId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`identifier "${escaped}"`).test(reqText);
@@ -309,6 +322,15 @@ export interface InstallSpec {
   readonly uid: number;
   /** The account's short name, for the not-writable line of a first install (the uid stands in when absent). */
   readonly user?: string;
+  /**
+   * How build-mac.ts signed the stage; absent means an identity. `adhoc`: the keychain listed
+   * no code-signing identity. Over an installed copy an identity signed, that is refused before
+   * anything is written: TCC keyed every grant on that identity, so all of them would reset,
+   * and an identity that stopped being listed is usually an expired or removed certificate,
+   * not a choice. `adhoc-pinned`: JARHEAD_SIGN_IDENTITY=- asked for ad-hoc, which installs over
+   * anything. A first install has nothing to downgrade, so either ad-hoc installs.
+   */
+  readonly signing?: "identity" | "adhoc" | "adhoc-pinned";
 }
 
 /** Every side effect of the install, injectable: build-mac.ts passes the real ones, the tests a recorder. */
@@ -338,7 +360,8 @@ export type InstallOutcome =
 /**
  * Step 5 of `pnpm build:mac`, in order: plan (refuse a symlink / file / other uid /
  * no write bit, a parent directory this account cannot write into, or a snapshot path
- * named `.app` — before anything is written) → first install `cp -R`, else snapshot to `previous` when one was asked for, then rsync in
+ * named `.app`, or an ad-hoc stage over a copy an identity signed, unless ad-hoc was pinned —
+ * before anything is written) → first install `cp -R`, else snapshot to `previous` when one was asked for, then rsync in
  * place (never --inplace; `._*` in the itemized output means -E leaked and the build
  * fails) → verify the INSTALLED copy: strict + deep, the designated requirement's
  * identifier (or, ad-hoc, the signature's; see checkRequirement), a sha256 parity walk
@@ -354,6 +377,21 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
   if (plan.kind === "refuse") return { ok: false, what: `refusing to install: ${plan.reason}`, lines: [plan.hint] };
   if (spec.previous !== undefined && !snapshotNameOk(spec.previous)) {
     return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} is not a .zip archive`, lines: ["LaunchServices registers any directory holding an Info.plist as a bundle — a second Jarhead; snapshot to a .zip archive (build/previous/Jarhead.app.zip)"] };
+  }
+  if (plan.kind === "update" && spec.signing === "adhoc") {
+    const installedSig = io.exec(CODESIGN, [...CODESIGN_AUTHORITY_ARGS, spec.installed]);
+    const authority = signingAuthority(`${installedSig.stdout}\n${installedSig.stderr}`);
+    if (authority !== undefined) {
+      return {
+        ok: false,
+        what: `refusing to install: this build is signed ad-hoc, and ${spec.installed} is signed by "${authority}"`,
+        lines: [
+          "Installing it would reset every permission grant. The keychain listed no code-signing identity, so that certificate has likely expired or been removed.",
+          `See what the keychain has: security find-identity -v -p codesigning. Renew or recreate "${authority}" in Keychain Access, then run pnpm build:mac again.`,
+          "Or install ad-hoc anyway and grant the permissions again: JARHEAD_SIGN_IDENTITY=- pnpm build:mac",
+        ],
+      };
+    }
   }
   const rollback = spec.previous !== undefined ? rollbackLine(spec.previous, spec.installed) : undefined;
   let rollbackOk = false;

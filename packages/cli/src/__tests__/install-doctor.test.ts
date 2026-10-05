@@ -118,22 +118,23 @@ test("doctor app rows against a real ad-hoc signature (codesign runs; LaunchServ
   }
 });
 
-test("doctor browser rows: the plain doctor sends no Apple event and names --browsers; with it, each running browser is asked and one that is not running is never launched", async () => {
+test("doctor browser rows: the plain doctor sends no Apple event, names --browsers and warns about nothing; with it, each running browser is asked and one that is not running is never launched", async () => {
   const asked: string[] = [];
   const plain = await browserChecks({ ask: false, running: () => assert.fail("not even pgrep without --browsers"), probe: async (app) => (asked.push(app), { status: "ok", detail: "on" }) });
   assert.equal(asked.length, 0, "no browser is asked");
   assert.equal(plain.length, 1);
   assert.equal(plain[0]!.name, "browser JS from Apple Events");
-  assert.equal(plain[0]!.status, "warn");
-  assert.match(plain[0]!.detail, /pnpm run doctor --browsers/);
+  assert.equal(plain[0]!.status, "ok", "not asking is the default, so the plain doctor (the one install.sh names) shows no warn here");
+  assert.equal(plain[0]!.detail, "Not asked. pnpm run doctor --browsers sends each running browser an Apple event.");
 
   const rows = await browserChecks({ ask: true, running: (app) => app === "Safari", probe: async (app) => (asked.push(app), { status: "off", detail: "Develop menu setting is off", fix: "Safari › Develop › Allow JavaScript from Apple Events" }) });
   assert.deepEqual(asked, ["Safari"], "only the running browser is asked");
   const r = byName(rows);
   assert.equal(r["Google Chrome JS from Apple Events"]!.status, "warn");
-  assert.match(r["Google Chrome JS from Apple Events"]!.detail, /not running/);
+  assert.equal(r["Google Chrome JS from Apple Events"]!.detail, "Not running. Not probed.");
   assert.equal(r["Safari JS from Apple Events"]!.status, "warn");
-  assert.match(r["Safari JS from Apple Events"]!.detail, /^off/);
+  assert.equal(r["Safari JS from Apple Events"]!.detail, "Off. Develop menu setting is off");
+  for (const row of [...plain, ...rows]) assert.doesNotMatch(row.detail, /\u2014/, `no em dash: ${row.detail}`);
   assert.match(r["Safari JS from Apple Events"]!.fix ?? "", /Allow JavaScript from Apple Events/);
 });
 

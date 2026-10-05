@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -24,6 +24,10 @@ interface Stubs {
   readonly corepack?: boolean;
   /** `xcrun swift --version`'s version. */
   readonly swift?: string;
+  /** Replaces the xcrun stub's body: what a fresh Xcode with no accepted license, or a broken toolchain, does. */
+  readonly xcrun?: string;
+  /** Replaces the pnpm stub's `-v` branch. */
+  readonly pnpmV?: string;
   /** pgrep's exit: 0 when Jarhead is running. */
   readonly pgrep?: number;
 }
@@ -53,10 +57,10 @@ function stubs(root: string, o: Stubs): { bin: string; log: string } {
   };
   const record = `printf '%s\\n' "$(basename "$0") $*" >> '${log}'`;
   put("node", `case "$1" in -v) echo v24.13.0;; esac`);
-  if (o.pnpm !== null) put("pnpm", `case "$1" in -v) echo ${o.pnpm ?? "10.30.0"};; *) ${record};; esac`);
+  if (o.pnpm !== null) put("pnpm", `case "$1" in -v) ${o.pnpmV ?? `echo ${o.pnpm ?? "10.30.0"}`};; *) ${record};; esac`);
   if (o.corepack) put("corepack", record);
   put("xcode-select", `case "$1" in -p) echo /Library/Developer/CommandLineTools;; *) exit 1;; esac`);
-  put("xcrun", `case "$*" in "--find swift") echo /usr/bin/swift;; "swift --version") echo "Apple Swift version ${o.swift ?? "6.0.3"} (swiftlang-stub)";; *) exit 1;; esac`);
+  put("xcrun", o.xcrun ?? `case "$*" in "--find swift") echo /usr/bin/swift;; "swift --version") echo "Apple Swift version ${o.swift ?? "6.0.3"} (swiftlang-stub)";; *) exit 1;; esac`);
   put("pgrep", `${record}\nexit ${o.pgrep ?? 1}`);
   put("open", record);
   return { bin, log };
@@ -74,8 +78,8 @@ function install(shell: string, home: string, dir: string, st: Stubs | { readonl
 
 const commands = (out: string): string[] => out.split("\n").flatMap((l) => (l.startsWith("jarhead: $ ") ? [l.slice("jarhead: $ ".length)] : []));
 
-/** A local origin, the user's checkout of it, and a seed clone that plays upstream. */
-function repos(root: string): { checkout: string; upstream: (file: string, text: string, msg: string) => void; git: (cwd: string, ...args: string[]) => string } {
+/** A local origin, the user's checkout of it (at `name` under root), and a seed clone that plays upstream. */
+function repos(root: string, name = "jarhead"): { checkout: string; upstream: (file: string, text: string, msg: string) => void; git: (cwd: string, ...args: string[]) => string } {
   const env = { HOME: join(root, "home"), PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1" };
   const git = (cwd: string, ...args: string[]): string => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "init.defaultBranch=main", ...args], { cwd, env, encoding: "utf8", stdio: "pipe" }).trim();
   const remote = join(root, "remote", "Kevin-Liu-01", "Jarhead.git");
@@ -87,9 +91,10 @@ function repos(root: string): { checkout: string; upstream: (file: string, text:
   git(seed, "add", "-A");
   git(seed, "commit", "-qm", "upstream v1");
   git(seed, "push", "-q", "origin", "main");
-  const checkout = join(root, "jarhead");
+  const checkout = join(root, name);
   git(root, "clone", "-q", remote, checkout);
   const upstream = (file: string, text: string, msg: string): void => {
+    mkdirSync(dirname(join(seed, file)), { recursive: true });
     writeFileSync(join(seed, file), text);
     git(seed, "add", "-A");
     git(seed, "commit", "-qm", msg);
@@ -158,6 +163,10 @@ test("Swift older than 5.10 is refused before pnpm install; Swift 5.10 passes", 
     const floor = install("/bin/sh", s.home, dir, { swift: "5.10" }, { JARHEAD_DRY_RUN: "1" });
     assert.equal(floor.code, 0, floor.out);
     assert.match(floor.out, /jarhead: Swift: Apple Swift version 5\.10 \(swiftlang-stub\)/);
+    // A real toolchain: swift-driver's version on stderr, no newline, ahead of the Swift line. It is left out of the line shown.
+    const driver = install("/bin/sh", s.home, dir, { xcrun: `case "$*" in "--find swift") echo /usr/bin/swift;; *) printf 'swift-driver version: 1.148.6 ' >&2; echo "Apple Swift version 6.3.3 (swiftlang-stub)";; esac` }, { JARHEAD_DRY_RUN: "1" });
+    assert.equal(driver.code, 0, driver.out);
+    assert.match(driver.out, /^jarhead: Swift: Apple Swift version 6\.3\.3 \(swiftlang-stub\)$/m);
   } finally {
     s.done();
   }
@@ -243,6 +252,114 @@ test("after the install, a running Jarhead gets a quit-and-reopen line instead o
     const quit = install("/bin/sh", s.home, checkout, { pgrep: 1 });
     assert.equal(quit.code, 0, quit.out);
     assert.deepEqual(quit.calls.filter((c) => c.startsWith("open")), ["open -a Jarhead"]);
+  } finally {
+    s.done();
+  }
+});
+
+// The real message an Xcode with no accepted license prints on stderr, exit 69, for every xcrun.
+const LICENSE = "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license.";
+
+test("an Xcode license not yet accepted stops the run on a line that says so and names the fix, not on an empty version", { skip }, () => {
+  const s = sandbox();
+  try {
+    const dir = join(s.root, "fresh");
+    const everywhere = install("/bin/sh", s.home, dir, { xcrun: `echo "${LICENSE}" >&2; exit 69` }, { JARHEAD_DRY_RUN: "1" });
+    assert.equal(everywhere.code, 1, everywhere.out);
+    assert.match(everywhere.out, /jarhead: Xcode's license is not accepted yet, so its tools refuse to run\. Accept it, then run this again:\njarhead:   sudo xcodebuild -license\n$/);
+    assert.doesNotMatch(everywhere.out, /said: ''|said ''|not on this Mac's toolchain/);
+    assert.deepEqual(commands(everywhere.out), []);
+
+    // --find answers from the path cache; the license bites at the first real run.
+    const atRun = install("/bin/sh", s.home, dir, { xcrun: `case "$*" in "--find swift") echo /usr/bin/swift;; *) echo "${LICENSE}" >&2; exit 69;; esac` }, { JARHEAD_DRY_RUN: "1" });
+    assert.equal(atRun.code, 1, atRun.out);
+    assert.match(atRun.out, /jarhead:   sudo xcodebuild -license\n$/);
+  } finally {
+    s.done();
+  }
+});
+
+test("a Swift or pnpm version that cannot be read says what the tool printed instead, stderr included", { skip }, () => {
+  const s = sandbox();
+  try {
+    const dir = join(s.root, "fresh");
+    const swift = install("/bin/sh", s.home, dir, { xcrun: `case "$*" in "--find swift") echo /usr/bin/swift;; *) printf '\\nerror: unable to find utility "swift"\\n' >&2; exit 72;; esac` }, { JARHEAD_DRY_RUN: "1" });
+    assert.equal(swift.code, 1, swift.out);
+    assert.match(swift.out, /jarhead: Could not read the Swift version\. xcrun swift --version said: error: unable to find utility "swift"\n$/);
+
+    const pnpm = install("/bin/sh", s.home, dir, { pnpmV: `echo "ERR_PNPM_UNSUPPORTED_ENGINE  Unsupported environment" >&2; exit 1` }, { JARHEAD_DRY_RUN: "1" });
+    assert.equal(pnpm.code, 1, pnpm.out);
+    assert.match(pnpm.out, /jarhead: Could not read the pnpm version\. pnpm -v said: ERR_PNPM_UNSUPPORTED_ENGINE {2}Unsupported environment\n$/);
+
+    // A shim's notice on stderr ahead of the version still reads as that version.
+    const shim = install("/bin/sh", s.home, dir, { pnpmV: `echo "! Corepack is about to download pnpm" >&2; echo 10.30.0` }, { JARHEAD_DRY_RUN: "1" });
+    assert.equal(shim.code, 0, shim.out);
+    assert.match(shim.out, /^jarhead: pnpm 10\.30\.0\.$/m);
+  } finally {
+    s.done();
+  }
+});
+
+const STRIPS = ["apps/mac/Resources/preview-icon-sizes.png", "docs/media/icon-sizes.png"];
+
+test("a rerun puts back the two icon strips the last build redrew and goes on; any other change still stops it", { skip }, () => {
+  const s = sandbox();
+  try {
+    const { checkout, upstream, git } = repos(s.root);
+    for (const f of STRIPS) upstream(f, `committed ${f}\n`, `add ${f}`);
+    git(checkout, "pull", "-q", "--ff-only");
+    upstream("README.md", "v2\n", "upstream v2");
+    // What pnpm build:mac leaves on a Node whose deflate writes other bytes.
+    for (const f of STRIPS) writeFileSync(join(checkout, f), "redrawn\n");
+    const r = install("/bin/sh", s.home, checkout, {}, { JARHEAD_NO_OPEN: "1" });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /jarhead: The last build redrew the icon strips\. They go back to the committed copies\.\n/);
+    assert.ok(commands(r.out).some((c) => c === `git -C ${checkout} checkout --quiet HEAD -- ${STRIPS.join(" ")}`), r.out);
+    for (const f of STRIPS) assert.equal(readFileSync(join(checkout, f), "utf8"), `committed ${f}\n`);
+    assert.equal(readFileSync(join(checkout, "README.md"), "utf8"), "v2\n", "and the update went on");
+    assert.deepEqual(r.calls, ["pnpm install --filter !./site", "pnpm build:hands", "pnpm build:mac"]);
+
+    // One strip and a real edit: the edit is Kevin's, so nothing is put back and the run stops.
+    writeFileSync(join(checkout, STRIPS[0]!), "redrawn\n");
+    writeFileSync(join(checkout, "README.md"), "half-done\n");
+    const stop = install("/bin/sh", s.home, checkout, {}, { JARHEAD_NO_OPEN: "1" });
+    assert.equal(stop.code, 1, stop.out);
+    assert.match(stop.out, /has uncommitted changes\. Commit or stash them, then run this again:\n/);
+    assert.deepEqual(commands(stop.out), []);
+    assert.equal(readFileSync(join(checkout, STRIPS[0]!), "utf8"), "redrawn\n", "untouched");
+  } finally {
+    s.done();
+  }
+});
+
+test("a JARHEAD_DIR with a space: every printed fix line quotes it so it pastes, and the rebase undo is announced", { skip }, () => {
+  const s = sandbox();
+  try {
+    const { checkout, upstream, git } = repos(s.root, "my jarhead");
+    writeFileSync(join(checkout, "README.md"), "half-done\n");
+    const dirty = install("/bin/sh", s.home, checkout, {}, { JARHEAD_NO_OPEN: "1" });
+    assert.equal(dirty.code, 1, dirty.out);
+    const stash = dirty.out.trimEnd().split("\n").at(-1)!;
+    assert.equal(stash, `jarhead:   git -C '${checkout}' stash`);
+    // Pasted into a shell, it works.
+    execFileSync("/bin/sh", ["-c", stash.slice("jarhead:   ".length)], { env: { HOME: s.home, PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1" }, stdio: "pipe" });
+    assert.equal(git(checkout, "status", "--porcelain"), "", "the pasted stash ran against the right folder");
+
+    selfEdit(git, checkout, "README.md", "mine\n");
+    upstream("README.md", "v2\n", "upstream v2");
+    const clash = install("/bin/sh", s.home, checkout, {}, { JARHEAD_NO_OPEN: "1" });
+    assert.equal(clash.code, 1, clash.out);
+    assert.ok(commands(clash.out).includes(`git -C '${checkout}' rebase --abort`), clash.out);
+    assert.match(clash.out, new RegExp(`jarhead:   cd '${checkout.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}' && git rebase origin/main\n`));
+    assert.equal(clash.out.trimEnd().split("\n").at(-1), `jarhead:   curl -fsSL https://jarhead.kevinliu.studio/install.sh | JARHEAD_DIR='${checkout}-fresh' sh`);
+    assert.ok(!existsSync(join(checkout, ".git", "rebase-merge")) && !existsSync(join(checkout, ".git", "rebase-apply")));
+
+    // A fresh folder with a space: the clone and the doctor line are quoted too.
+    const fresh = join(s.root, "new jarhead");
+    const dry = install("/bin/sh", s.home, fresh, {}, { JARHEAD_DRY_RUN: "1" });
+    assert.equal(dry.code, 0, dry.out);
+    assert.equal(commands(dry.out)[0], `git clone --quiet --filter=blob:none --branch main https://github.com/Kevin-Liu-01/Jarhead.git '${fresh}'`);
+    assert.ok(dry.out.includes(`Check with: cd '${fresh}' && pnpm run doctor\n`), dry.out);
   } finally {
     s.done();
   }
