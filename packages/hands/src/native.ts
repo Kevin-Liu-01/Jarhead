@@ -27,8 +27,12 @@ export interface NativeError {
   readonly message: string;
 }
 
-/** The `type` op's cancel reasons: the client's stop (SIGURG) or the front app changing under the keystrokes. */
-export type TypeCancelReason = "stop" | "focus_moved";
+/**
+ * The `type` op's cancel reasons: the client's stop (SIGURG), Kevin's own key, click or
+ * scroll after the type began (`busy`), or the place the keystrokes land moving to another
+ * app or window, or out of text entry (`focus_moved`). Mirrors HandsWin.swift TypeCancelReason.
+ */
+export type TypeCancelReason = "stop" | "busy" | "focus_moved";
 
 /**
  * `user_idle`: milliseconds since the session's last key press, click, scroll and pointer
@@ -164,7 +168,7 @@ export interface TypeResult {
   readonly field?: string;
   /** A stop landed between two graphemes: `characters` were typed, the rest were not. */
   readonly cancelled?: boolean;
-  /** Why it stopped: Kevin's stop, or the front app changed under the keystrokes (`focus_moved`). Absent on older helpers (a stop). */
+  /** Why it stopped: the client's stop, Kevin's hands (`busy`), or the focus moved (`focus_moved`). Absent on older helpers (a stop). */
   readonly reason?: TypeCancelReason;
 }
 

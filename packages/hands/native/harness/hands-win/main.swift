@@ -50,13 +50,27 @@ final class FakeSession {
     }
 }
 
-/// Where the fake keystrokes land: the front pid and the focused element, both settable.
+/// Where the fake keystrokes land: the front pid and the focused element, both settable. It reads the
+/// way the helper's focusMark does: the focused element first, and the window and role only when the
+/// element is not the watched one. `failing` is an app that cannot say (hung: every read times out).
 final class FakeFocus {
     var pid: Int32? = 100
     var mark: FocusMark? = FocusMark(element: "body", window: "compose", takesText: true)
+    var failing = false
+    /// Focused-element reads, and the window and role reads that follow one only when the element changed.
+    var elementReads = 0
+    var detailReads = 0
+
+    func read(_ base: FocusMark?) -> FocusMark? {
+        elementReads += 1
+        guard !failing, let mark else { return nil }
+        if let base, base.element == mark.element { return base }
+        detailReads += 1
+        return mark
+    }
 
     func watch(expect pid: Int32?) -> FrontWatch {
-        return FrontWatch(pid: pid, focus: mark, readPid: { self.pid }, readFocus: { self.mark })
+        return FrontWatch(pid: pid, focus: mark, readPid: { self.pid }, readFocus: { self.read($0) })
     }
 }
 
@@ -307,6 +321,116 @@ do {
     focus.pid = 300
     check("a stop wins over busy and a moved focus", watch.cancelReason(stopped: true, ledger: &ledger, clock: s.clock) == .stop)
     check("then busy over a moved focus", watch.cancelReason(stopped: false, ledger: &ledger, clock: s.clock) == .busy)
+}
+
+// 16. An op that skips the busy check still reads the ledger. Kevin's key 10 s before a dictation
+//     (nothing read since), then the dictation's 50 keys (ownDriver: its guard and every grapheme
+//     only observe), then the next op's guard: his key is 10 s old, not timed at the dictation's last post.
+do {
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    _ = ledger.busyMs(s.clock)
+    s.advance(ms: 1000)
+    s.foreign(.key)
+    s.advance(ms: 10_000)
+    ledger.observe(s.clock)
+    var watch = TypeWatch(busyCheck: false, front: FakeFocus().watch(expect: 100))
+    let run = typeRun(String(repeating: "e", count: 50), session: s, ledger: &ledger, watch: &watch)
+    check("a dictation after Kevin's key types all 50", run == .done(typed: 50), "\(run)")
+    s.advance(ms: 50)
+    let after = ledger.busyMs(s.clock)
+    check("the guard after a dictation is not held by Kevin's key from 10 s before", after == nil, "busyMs \(String(describing: after))")
+}
+
+// 17. The same for a mouse up between his click and our next one: read there, his click is timed
+//     at his click, so our click 50 ms later is not held by it.
+do {
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    _ = ledger.busyMs(s.clock)
+    s.foreign(.click)
+    s.advance(ms: 5000)
+    ledger.observe(s.clock)
+    s.own(.click, &ledger)
+    s.advance(ms: 50)
+    let after = ledger.busyMs(s.clock)
+    check("a mouse up's read times Kevin's click at his click, not at our next post", after == nil, "busyMs \(String(describing: after))")
+}
+
+// 18. The premise check: an event found by count while the newest of its kind is our own post is
+//     told to the debug hook (Kevin's event masked, or the session counting our posts twice). A plain
+//     foreign event is told too, not as behind our own; our own posts counted once tell nothing.
+do {
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    var told: [(InputKind, Int64, Bool)] = []
+    ledger.onCountedForeign = { told.append(($0, $1, $2)) }
+    _ = ledger.busyMs(s.clock)
+    for _ in 0..<20 {
+        s.own(.key, &ledger)
+        s.advance(ms: 4)
+        _ = ledger.busyMs(s.clock)
+    }
+    check("our own posts counted once tell the hook nothing", told.isEmpty, "\(told)")
+    // Past the own-post slack: a key 4 ms after ours is ours by time, by design.
+    s.advance(ms: 100)
+    s.foreign(.key)
+    s.advance(ms: 3)
+    _ = ledger.busyMs(s.clock)
+    check("a foreign key is told, not as behind our own", told.count == 1 && told[0].1 == 1 && told[0].2 == false, "\(told)")
+    let d = FakeSession()
+    var doubled = HandsLedger()
+    var behind: [Bool] = []
+    doubled.onCountedForeign = { _, _, b in behind.append(b) }
+    _ = doubled.busyMs(d.clock)
+    d.own(.click, &doubled)
+    d.foreign(.click)
+    d.advance(ms: 200)
+    _ = doubled.busyMs(d.clock)
+    check("a count found behind our own post is told as such", behind == [true], "\(behind)")
+}
+
+// 19. An unmoved focus costs one element read per re-read: the window and role are read only when
+//     the element changed.
+do {
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    _ = ledger.busyMs(s.clock)
+    let focus = FakeFocus()
+    var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
+    let run = typeRun(String(repeating: "f", count: 100), session: s, ledger: &ledger, watch: &watch, stepMs: 60)
+    check("an unmoved focus is re-read with the element alone", run == .done(typed: 100) && focus.elementReads >= 99 && focus.detailReads == 0, "\(run) element \(focus.elementReads) detail \(focus.detailReads)")
+}
+
+// 20. A hung app cannot say where its focus is: after two reads that time out the focus is not read
+//     again this type, so it is not slowed to the AX timeout per grapheme. The front app check stays.
+do {
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    _ = ledger.busyMs(s.clock)
+    let focus = FakeFocus()
+    var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
+    focus.failing = true
+    let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch, stepMs: 60, after: { typed in
+        if typed == 150 { focus.pid = 200 }
+    })
+    check("a focus that cannot be read twice running is not read again", focus.elementReads == focusMissLimit, "reads \(focus.elementReads)")
+    check("the front app check stays on after the misses", run == .cancelled(typed: 150, reason: .focusMoved), "\(run)")
+}
+
+// 21. One read that could not say is not the end of the watch: the next good read resets the count.
+do {
+    let focus = FakeFocus()
+    var front = focus.watch(expect: 100)
+    focus.failing = true
+    check("a miss is not a move", !front.check(now: 1))
+    focus.failing = false
+    check("the next read is good", !front.check(now: 1.1))
+    focus.failing = true
+    check("a miss again", !front.check(now: 1.2))
+    focus.failing = false
+    focus.mark = FocusMark(element: "sheet-field", window: "sheet", takesText: true)
+    check("and the watch still sees a move", front.check(now: 1.3))
 }
 
 print("hands-win: \(passed) passed, \(failed) failed")

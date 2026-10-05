@@ -5,7 +5,8 @@ import Foundation
 // The helper never acts while Kevin's hands are on the machine (`busy`), and a `type` stops part way
 // when they land on it or when the place its keystrokes land moves. Those judgments live here as pure
 // code over an injected event clock. The helper feeds them CGEventSource and AX (Input.swift); the
-// headless harness (harness/hands-win-check.swift) feeds them a clock it moves and posts nothing.
+// headless harness (harness/hands-win/main.swift, built and run by harness/hands-win/check.sh) feeds
+// them a clock it moves and posts nothing.
 //
 // The session is read two ways per kind of input (a key press, a click, a scroll; a pointer move is
 // not one, a resting hand jitters):
@@ -15,6 +16,10 @@ import Foundation
 // - By count. The session counts every event of the kind from every source; this process counts its
 //   own posts. Whatever the session counted beyond ours is someone else's, however many of our posts
 //   came after it. That is what a later own post cannot mask.
+//
+// Every read attributes what was counted since the one before it. So an op that skips the busy
+// check (dictation, a mouse up) still reads the ledger: otherwise Kevin's key from long before is
+// found by count at the next read and timed at our newest post, and holds the next op for nothing.
 
 /// Kevin's last key, click or scroll this recent means his hands are on the machine.
 let kevinQuietMs: Double = 1500
@@ -26,6 +31,10 @@ let ownPostSlackSec: TimeInterval = 0.030
 let ownPostSettleSec: TimeInterval = 0.5
 /// How often a `type` re-reads the front app and the focused element between graphemes.
 let frontCheckSec: TimeInterval = 0.050
+/// After this many focus reads in a row that could not say (a hung app times out each one), a `type`
+/// stops re-reading the focus and keeps only the front app check, so it is never slowed to the AX
+/// timeout per grapheme.
+let focusMissLimit = 2
 
 /// The kinds of input that hold the hands.
 enum InputKind: Int, CaseIterable {
@@ -61,6 +70,10 @@ struct HandsLedger {
     private var balance: [Int64?] = [nil, nil, nil]
     /// The newest moment a foreign event found by count can have happened; -1 when none was.
     private(set) var lastCountedForeignAt: TimeInterval = -1
+    /// Told each time the session counted more of a kind than we posted: how many, and whether the
+    /// newest event of the kind is a post of ours by time. That case is Kevin's event masked by our
+    /// next post, or the premise failing (our posts counted twice, or late): the helper logs it.
+    var onCountedForeign: ((InputKind, Int64, Bool) -> Void)?
 
     init() {}
 
@@ -103,12 +116,19 @@ struct HandsLedger {
                 lastCountedForeignAt = max(lastCountedForeignAt, at)
                 newest = max(newest, at)
                 balance[i] = b
+                onCountedForeign?(kind, b - seen, isOwn(kind, eventAt: at))
             } else if b < seen {
                 let last = lastOwnAt[i]
                 if last < 0 || now - last >= ownPostSettleSec { balance[i] = b }
             }
         }
         return newest >= 0 ? newest : nil
+    }
+
+    /// Reads the session without judging it, for an op that skips the busy check: what the session
+    /// counted beyond our posts so far is attributed now, so the posts that follow are not counted against it.
+    mutating func observe(_ clock: EventClock) {
+        _ = newestForeign(clock)
     }
 
     /// Milliseconds since the newest foreign key press, click or scroll; nil when there was none.
@@ -160,6 +180,10 @@ func focusHasMoved(from base: FocusMark, to now: FocusMark) -> Bool {
     return base.takesText && !now.takesText
 }
 
+/// Reads where keystrokes land now. It is handed the mark being watched (nil for a first read): when the
+/// focused element is still that one, it returns the mark as it is, one AX read instead of four.
+typealias FocusReader = (FocusMark?) -> FocusMark?
+
 /// The front app and the focused element during a `type`, re-read at most every `frontCheckSec`
 /// between graphemes. A switch mid-word lands the rest of the text nowhere, not in the new place.
 struct FrontWatch {
@@ -168,11 +192,13 @@ struct FrontWatch {
     /// Where the keystrokes land; nil when accessibility could not say.
     private(set) var focus: FocusMark?
     private let readPid: () -> Int32?
-    private let readFocus: () -> FocusMark?
+    private let readFocus: FocusReader
     private var lastCheckAt: TimeInterval = -1
+    /// Focus reads in a row that could not say; at `focusMissLimit` the focus is no longer re-read.
+    private(set) var focusMisses = 0
     private(set) var moved = false
 
-    init(pid: Int32?, focus: FocusMark?, readPid: @escaping () -> Int32?, readFocus: @escaping () -> FocusMark?) {
+    init(pid: Int32?, focus: FocusMark?, readPid: @escaping () -> Int32?, readFocus: @escaping FocusReader) {
         self.pid = pid
         self.focus = focus
         self.readPid = readPid
@@ -195,7 +221,13 @@ struct FrontWatch {
                 return true
             }
         }
-        if let base = focus, let mark = readFocus(), focusHasMoved(from: base, to: mark) {
+        guard let base = focus, focusMisses < focusMissLimit else { return false }
+        guard let mark = readFocus(base) else {
+            focusMisses += 1
+            return false
+        }
+        focusMisses = 0
+        if focusHasMoved(from: base, to: mark) {
             moved = true
             return true
         }
@@ -216,10 +248,15 @@ struct TypeWatch {
 
     /// Why to stop now, if at all: the client's stop, then Kevin's hands, then the place the keystrokes
     /// land. The op's guard passed before its first post, so a foreign event inside the quiet window now
-    /// came after the op began (or raced its start).
+    /// came after the op began (or raced its start). Without the busy check the ledger is still read,
+    /// once per grapheme, so his keys are attributed as they come and not at the next op's guard.
     mutating func cancelReason(stopped: Bool, ledger: inout HandsLedger, clock: EventClock) -> TypeCancelReason? {
         if stopped { return .stop }
-        if busyCheck, ledger.busyMs(clock) != nil { return .busy }
+        if busyCheck {
+            if ledger.busyMs(clock) != nil { return .busy }
+        } else {
+            ledger.observe(clock)
+        }
         if front.check(now: clock.now()) { return .focusMoved }
         return nil
     }

@@ -116,15 +116,25 @@ func postUnicode(_ units: [UInt16], flags: CGEventFlags = []) -> Bool {
 // our own posts, however many of ours came after it (HandsWin.swift). One younger than
 // `kevinQuietMs` is Kevin's hands on the machine: the op answers `busy` with nothing posted, and a
 // type stops there and says how many characters landed. Pointer moves are not counted: a resting
-// hand jitters. Dictation passes `ownDriver: true`: Kevin is the one typing there. The check lives
-// here, not in the client, because only this process knows every event it posted; an engine-side
-// subtraction guesses.
+// hand jitters. Dictation passes `ownDriver: true`: Kevin is the one typing there, so his keys are
+// read and attributed but hold nothing. The check lives here, not in the client, because only this
+// process knows every event it posted; an engine-side subtraction guesses.
 
 /// What `user_idle` reports for a kind of event the session has never seen (JSON has no Infinity).
 let userIdleNoneMs: Double = 1.0e12
 
 /// Our own posts and the foreign events the session counted beyond them. Worker queue only.
-private var handsLedger = HandsLedger()
+/// With JARHEAD_HANDS_DEBUG=1, every event found by count is logged, and so is the case that
+/// should be rare: one found while the session's newest event of the kind is a post of ours. Many
+/// of those during a run of our own posts with hands off would mean the session counts our posts
+/// twice or late, and every op would be held as busy (the K5 negative control).
+private var handsLedger: HandsLedger = {
+    var ledger = HandsLedger()
+    ledger.onCountedForeign = { kind, n, behindOwn in
+        debugLog("hands-win: \(n) \(kind) event(s) counted beyond our posts\(behindOwn ? "; the newest of the kind is our own post" : "")")
+    }
+    return ledger
+}()
 
 /// A monotonic clock on the same base as the session's event timestamps (mach absolute time).
 func uptimeNow() -> TimeInterval {
@@ -195,9 +205,14 @@ func kevinBusyMs() -> Int? {
 
 /// The two refusals every acting op makes before its first post: Kevin's hands (unless `ownDriver`), then the front app (`expectFront`).
 func guardActing(_ params: Params, busyCheck: Bool = true) throws {
-    if busyCheck, try params.bool("ownDriver") != true, let ms = kevinBusyMs() {
-        // The helper knows no name: the client (native.ts nameBusyMessage) puts the user's in front.
-        throw HandsError.busy("the user used the keyboard/mouse \(ms) ms ago; nothing was posted")
+    if busyCheck, try params.bool("ownDriver") != true {
+        if let ms = kevinBusyMs() {
+            // The helper knows no name: the client (native.ts nameBusyMessage) puts the user's in front.
+            throw HandsError.busy("the user used the keyboard/mouse \(ms) ms ago; nothing was posted")
+        }
+    } else {
+        // Not judged, still read: his events so far are attributed before this op posts its own.
+        handsLedger.observe(sessionClock)
     }
     try requireFront(params)
 }
@@ -383,11 +398,13 @@ private func takesText(role: String?, subrole: String?) -> Bool {
 
 /// The app's own focused element as a FocusMark (the place its keystrokes land), read with the
 /// app element's short timeout so a busy app slows the watch, never hangs it; nil when AX cannot say.
-private func focusMark(inApp app: AXUIElement) -> FocusMark? {
+/// When the focused element is still `base`'s, `base` comes back as it is: one AX read, not four.
+private func focusMark(inApp app: AXUIElement, base: FocusMark?) -> FocusMark? {
     var focusedRef: CFTypeRef?
     guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
           let focused = focusedRef, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
     let element = focused as! AXUIElement
+    if let base, base.element == AnyHashable(element) { return base }
     AXUIElementSetMessagingTimeout(element, 0.25)
     var window: AnyHashable? = nil
     var windowRef: CFTypeRef?
@@ -584,8 +601,8 @@ func opType(_ params: Params) throws -> JSONObject {
         AXUIElementSetMessagingTimeout(app, 0.25)
         return app
     }
-    let readFocus: () -> FocusMark? = { watchApp.flatMap { focusMark(inApp: $0) } }
-    let front = FrontWatch(pid: expectPid, focus: readFocus(), readPid: { frontmostNow()?.pid }, readFocus: readFocus)
+    let readFocus: FocusReader = { base in watchApp.flatMap { focusMark(inApp: $0, base: base) } }
+    let front = FrontWatch(pid: expectPid, focus: readFocus(nil), readPid: { frontmostNow()?.pid }, readFocus: readFocus)
     var session = TypeSession(generation: generation, delayMs: delay, watch: TypeWatch(busyCheck: !ownDriver, front: front))
     var field = target?.describedField
     var via: TypeStrategy = .keystrokes
@@ -608,7 +625,7 @@ func opType(_ params: Params) throws -> JSONObject {
             if let t = target, t.secure { throw passwordRefusal }
             if let t = target { field = t.describedField }
             // The separator moved the focus on purpose: where it landed is the place to watch now.
-            session.watch.front.rebase(readFocus())
+            session.watch.front.rebase(readFocus(nil))
         }
         return nil
     }

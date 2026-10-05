@@ -30,6 +30,13 @@ test("the hands-win decision harness passes: busy by count and by time, an own p
     "Kevin's key mid-type stops it as busy with 50 characters landed",
     "the focus moving to a sheet stops the type as focus_moved with 12 landed",
     "500 own posts counted late never stop the type",
+    // The review's follow-ups: a skipped busy check still reads, the premise is logged, the focus is cheap to re-read.
+    "the guard after a dictation is not held by Kevin's key from 10 s before",
+    "a mouse up's read times Kevin's click at his click, not at our next post",
+    "a count found behind our own post is told as such",
+    "an unmoved focus is re-read with the element alone",
+    "a focus that cannot be read twice running is not read again",
+    "the front app check stays on after the misses",
   ]) {
     assert.ok(r.stdout.split("\n").includes(`ok - ${name}`), `harness case: ${name}\n${r.stdout}`);
   }
@@ -76,5 +83,16 @@ test("RF-9: the busy check reads the ledger (time and count), and every grapheme
   // Dictation (ownDriver) types through Kevin's keys; everything else stops for them.
   assert.match(body(input, "opType"), /TypeWatch\(busyCheck: !ownDriver/);
   // A separator re-bases the focus it moved on purpose.
-  assert.match(body(input, "opType"), /session\.watch\.front\.rebase\(readFocus\(\)\)/);
+  assert.match(body(input, "opType"), /session\.watch\.front\.rebase\(readFocus\(nil\)\)/);
+});
+
+test("a guard that skips the busy check still reads the ledger; the focus re-read is one AX call when nothing moved; count finds reach the debug log", () => {
+  const input = readFileSync(join(native, "Input.swift"), "utf8");
+  // Dictation (ownDriver) and mouse_up judge nothing, but their read attributes Kevin's events before their own posts.
+  before(body(input, "guardActing"), "handsLedger.observe(sessionClock)", "try requireFront(params)", "guardActing");
+  // The focused element is compared with the watched one before its window, role and subrole are read.
+  before(body(input, "focusMark"), "if let base, base.element == AnyHashable(element) { return base }", "kAXWindowAttribute", "focusMark");
+  assert.match(body(input, "opType"), /focusMark\(inApp: \$0, base: base\)/);
+  // The premise check (K5's negative control): every event found by count goes to the helper's debug log.
+  assert.match(input, /ledger\.onCountedForeign = \{[^}]*debugLog\(/);
 });

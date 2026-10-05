@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 import { ComputerToolset } from "../toolset.ts";
 import { FakeHands } from "../fake.ts";
 import { USER_IDLE_NONE_MS, type UserIdle } from "../native.ts";
-import { FocusLease, KEVIN_QUIET_MS, MIN_HOLD_MS, USER_IDLE_POLL_MS, isBusyResult } from "../lease.ts";
+import { FocusLease, KEVIN_QUIET_MS, MIN_HOLD_MS, USER_IDLE_POLL_MS, WAIT_MAX_MS, isBusyResult, type LeaseOutcome } from "../lease.ts";
 
 /**
  * W2-4 (RAIL-13, the lease and fake half): Kevin's hands win over every move the hands make,
  * not only clicks and keys. focus_app, an activating open_app and mouse_move are held while he
  * typed within KEVIN_QUIET_MS, and the lease's own re-front waits out his quiet window for every
- * taker, Jarhead's priority hands too, so no app is pulled over the one he is typing in.
+ * taker, Jarhead's priority hands too, so no app is pulled over the one he is typing in. When he
+ * types through the whole wait the taker is told `busy` and holds nothing: it never acts with his
+ * app in front.
  * The helper's half is packages/hands/native (HandsWin.swift, run by hands-win-native.test.ts).
  */
 
@@ -84,12 +86,14 @@ for (const busyCheck of [true, false]) {
 
     const t0 = clock.t;
     const got = await lease.acquire("jarhead", { priority: true });
-    assert.deepEqual(got, { ok: true, refocused: "Safari" });
+    assert.equal(got.ok, true);
+    assert.equal(got.ok && got.refocused, "Safari");
     const fronts = hands.named("focus_app");
     assert.equal(fronts.length, 1, "one re-front, after the wait");
     const waited = (fronts[0]?.at ?? t0) - t0;
     assert.ok(waited >= KEVIN_QUIET_MS - 200, `the re-front waited for his quiet window (${waited} ms)`);
     assert.ok(waited < KEVIN_QUIET_MS - 200 + 2 * USER_IDLE_POLL_MS, `and no longer (${waited} ms)`);
+    assert.equal(got.ok && got.waitedMs, waited, "the outcome says how long, for the runner's note");
     assert.ok(hands.named("user_idle").length >= 2, "the priority taker read user_idle before its re-front");
     assert.equal(hands.frontApp, "Safari");
   });
@@ -108,24 +112,120 @@ test("no re-front, no wait: a priority taker whose app is already in front never
   assert.equal(hands.named("focus_app").length, 0);
 });
 
-test("Kevin types past the taker's deadline: it holds the lease, re-fronts nothing over him, and says nothing was refocused", async () => {
+/** Jarhead's hands worked in Safari; a thread brought Slack forward, and Kevin types in it without stopping. */
+function typingInSlack(userName?: string): { clock: VirtualClock; hands: AlwaysTyping; lease: FocusLease } {
   const clock = new VirtualClock();
   const hands = new AlwaysTyping();
   hands.now = clock.now;
   hands.kevinActed();
+  const lease = new FocusLease({ hands, now: clock.now, sleep: clock.sleep, ...(userName ? { userName: () => userName } : {}) });
+  hands.frontApp = "Slack";
+  hands.frontPid = 200;
+  lease.activated("Slack", "t_1");
+  lease.rememberFront("jarhead", "Safari");
+  return { clock, hands, lease };
+}
+
+test("Kevin types through the taker's whole quiet wait: busy, the lease is let go, nothing re-fronted, and its next type cannot land in his app", async () => {
+  const { clock, hands, lease } = typingInSlack();
+  const t0 = clock.t;
+  const got = await lease.acquire("jarhead", { priority: true, timeoutMs: 2_000 });
+  assert.deepEqual(got, { ok: false, reason: "Kevin is using the keyboard or mouse", busy: true }, "never ok with his app in front");
+  assert.ok(clock.t - t0 >= 2_000 && clock.t - t0 < 2_000 + 2 * USER_IDLE_POLL_MS, `waited the taker's patience (${clock.t - t0} ms)`);
+  assert.equal(hands.named("focus_app").length, 0, "nothing re-fronted over his typing");
+  assert.equal(lease.holder, undefined, "the screen is not the taker's");
+  assert.equal(lease.info(), undefined);
+  assert.equal(hands.frontApp, "Slack");
+  // The release learned nothing from his app: Safari is still where Jarhead's hands work, so a later hand-over re-fronts it.
+  await clock.sleep(0);
+  assert.equal(lease.appOf("jarhead"), "Safari");
+  // The name in the reason is the user's.
+  const named = typingInSlack("Ada");
+  assert.deepEqual(await named.lease.acquire("jarhead", { priority: true, timeoutMs: 1_000 }), { ok: false, reason: "Ada is using the keyboard or mouse", busy: true });
+});
+
+test("the quiet wait is capped at WAIT_MAX_MS: the main lane's 30 s acquire does not wait 30 s in its re-front", async () => {
+  const { clock, hands, lease } = typingInSlack();
+  const t0 = clock.t;
+  const got = await lease.acquire("jarhead", { priority: true, timeoutMs: 30_000 });
+  assert.equal(got.ok, false);
+  assert.equal(!got.ok && got.busy, true);
+  const waited = clock.t - t0;
+  assert.ok(waited >= WAIT_MAX_MS && waited < WAIT_MAX_MS + 2 * USER_IDLE_POLL_MS, `gave up at WAIT_MAX_MS (${waited} ms)`);
+  assert.equal(hands.named("focus_app").length, 0);
+});
+
+test("the quiet wait is counted from the settle, not from the acquire deadline the gate spent: a thread that waited 7 s for the screen still waits out Kevin's typing and re-fronts", async () => {
+  const clock = new VirtualClock();
+  /** The thread's gate reads him quiet; he starts typing right after it, for 2.5 s. */
+  class TypesAfterGate extends FakeHands {
+    reads = 0;
+    typingUntil = 0;
+    override get userIdle(): UserIdle {
+      this.reads++;
+      if (this.reads === 1) {
+        this.typingUntil = this.now() + 2_500;
+        this.kevinActed();
+        return { keyMs: USER_IDLE_NONE_MS, clickMs: USER_IDLE_NONE_MS, scrollMs: USER_IDLE_NONE_MS, moveMs: USER_IDLE_NONE_MS, foreignMs: USER_IDLE_NONE_MS };
+      }
+      return super.userIdle;
+    }
+  }
+  const hands = new TypesAfterGate();
+  hands.now = clock.now;
+  let lease: FocusLease | undefined = undefined;
+  const t0 = clock.t;
+  const holdUntil = t0 + 7_000;
+  lease = new FocusLease({
+    hands,
+    now: clock.now,
+    sleep: async (ms) => {
+      await clock.sleep(ms);
+      // Jarhead's hands keep the screen busy for 7 s, then let go.
+      if (lease?.holder === "jarhead") {
+        if (clock.t < holdUntil) lease.touch("jarhead");
+        else lease.release("jarhead", "done");
+      }
+      if (clock.t < hands.typingUntil) hands.kevinActed(clock.t);
+    },
+  });
+  hands.frontApp = "Slack";
+  hands.frontPid = 200;
+  lease.activated("Slack", "jarhead");
+  lease.rememberFront("t_1", "Spotify");
+  hands.apps.set("Spotify", 300);
+  assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
+  const got = await lease.acquire("t_1", { priority: false });
+  assert.equal(got.ok, true, `the thread got the screen (${JSON.stringify(got)})`);
+  assert.equal(got.ok && got.refocused, "Spotify", "re-fronted once he paused, past the acquire's own deadline");
+  const front = hands.named("focus_app")[0];
+  assert.ok(front !== undefined && hands.kevinAt !== undefined && front.at >= hands.kevinAt + KEVIN_QUIET_MS, `after his quiet window (front at ${front ? front.at - t0 : "none"}, his last key at ${(hands.kevinAt ?? 0) - t0})`);
+  assert.ok(hands.kevinAt !== undefined && hands.kevinAt >= hands.typingUntil - 2 * USER_IDLE_POLL_MS, "he typed until about 2.5 s after the gate");
+  assert.ok(front !== undefined && front.at - t0 > WAIT_MAX_MS, `later than the acquire's deadline (${front ? front.at - t0 : "none"} ms after it began)`);
+  assert.ok(got.ok && (got.waitedMs ?? 0) >= 2_500, `the outcome says it waited (${got.ok ? got.waitedMs : "?"} ms)`);
+});
+
+test("a stop between the user_idle read and focus_app pulls nothing forward", async () => {
+  const clock = new VirtualClock();
+  const ac = new AbortController();
+  /** He is quiet; the taker is stopped while its re-front reads user_idle. */
+  class StoppedDuringRead extends FakeHands {
+    override get userIdle(): UserIdle {
+      ac.abort();
+      return { keyMs: USER_IDLE_NONE_MS, clickMs: USER_IDLE_NONE_MS, scrollMs: USER_IDLE_NONE_MS, moveMs: USER_IDLE_NONE_MS, foreignMs: USER_IDLE_NONE_MS };
+    }
+  }
+  const hands = new StoppedDuringRead();
+  hands.now = clock.now;
   const lease = new FocusLease({ hands, now: clock.now, sleep: clock.sleep });
   hands.frontApp = "Slack";
   hands.frontPid = 200;
   lease.activated("Slack", "t_1");
   lease.rememberFront("jarhead", "Safari");
-
-  const t0 = clock.t;
-  const got = await lease.acquire("jarhead", { priority: true, timeoutMs: 2_000 });
-  assert.deepEqual(got, { ok: true }, "the screen is Jarhead's; its own ops meet the helper's busy refusal");
-  assert.ok(clock.t - t0 >= 2_000, `waited to the deadline (${clock.t - t0} ms)`);
-  assert.equal(hands.named("focus_app").length, 0, "nothing re-fronted over his typing");
-  assert.equal(lease.holder, "jarhead");
-  assert.equal(lease.info()?.inFlight, 0, "the re-front is over");
+  const got: LeaseOutcome = await lease.acquire("jarhead", { priority: true, signal: ac.signal });
+  assert.deepEqual(got, { ok: false, reason: "cancelled" });
+  assert.equal(hands.named("focus_app").length, 0, "a stopped lane pulls nothing forward");
+  assert.equal(lease.holder, undefined);
   assert.equal(hands.frontApp, "Slack");
 });
 
@@ -183,7 +283,9 @@ test("nothing decided before the wait stands after it: Kevin switched to Mail wh
   lease.activated("Slack", "t_1");
   lease.rememberFront("jarhead", "Safari");
   hands.kevinActed(clock.t - 100);
-  assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
+  const got = await lease.acquire("jarhead", { priority: true });
+  assert.equal(got.ok, true);
+  assert.equal(got.ok && got.refocused, undefined);
   assert.equal(hands.named("focus_app").length, 0, "Mail is his: not covered");
   assert.equal(hands.frontApp, "Mail");
 });
@@ -210,7 +312,7 @@ test("the helper refuses the re-front busy (he typed between user_idle and focus
   hands.kevinActed(clock.t);
   const t0 = clock.t;
   const got = await lease.acquire("jarhead", { priority: true });
-  assert.deepEqual(got, { ok: true, refocused: "Safari" });
+  assert.equal(got.ok && got.refocused, "Safari");
   const fronts = hands.named("focus_app");
   assert.equal(fronts.length, 2, "refused once, then landed");
   assert.ok((fronts[1]?.at ?? 0) - t0 >= KEVIN_QUIET_MS, "the landing re-front came after his quiet window");
@@ -238,8 +340,22 @@ test("a thread's re-front waits for Kevin's quiet window too (he started typing 
   lease.rememberFront("t_1", "Spotify");
   const t0 = clock.t;
   const got = await lease.acquire("t_1", { priority: false });
-  assert.deepEqual(got, { ok: true, refocused: "Spotify" });
+  assert.equal(got.ok && got.refocused, "Spotify");
   const fronts = hands.named("focus_app");
   assert.equal(fronts.length, 1);
   assert.ok((fronts[0]?.at ?? 0) - t0 >= KEVIN_QUIET_MS, `waited for him (${(fronts[0]?.at ?? 0) - t0} ms)`);
+});
+
+test("RF-9: a type Kevin's hands stopped part way says who stopped it and to look first; it is not a busy refusal, so nothing retypes the part that landed", async () => {
+  for (const [userName, who] of [[undefined, "Kevin"], ["Ada", "Ada"]] as const) {
+    const hands = new FakeHands();
+    const ts = new ComputerToolset({ hands, ...(userName ? { userName: () => userName } : {}) });
+    await ts.run("screenshot", {});
+    hands.typeResult = { characters: 50, events: 50, via: "keystrokes", attempts: 1, cancelled: true, reason: "busy", field: "the note in Notes" };
+    const r = await ts.run("type", { text: "a".repeat(200) });
+    assert.equal(r.kind, "text");
+    assert.equal((r as { text: string }).text, `stopped after 50 of 200 characters in the note in Notes. ${who} used the keyboard or mouse, so the rest was not typed. Look at the screen before typing again.`);
+    assert.equal(isBusyResult(r), false, "a runner's busy retry would type the first 50 again");
+    assert.doesNotMatch((r as { text: string }).text, /—/, "no em dash");
+  }
 });
