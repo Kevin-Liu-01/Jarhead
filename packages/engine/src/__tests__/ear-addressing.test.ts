@@ -165,6 +165,153 @@ test("RF-5: Live's delegation 4.5 s after the ear's \"close this window\" is alr
   }
 });
 
+test("RF-5 (in flight): a delegation that lands while the ear's ⌘W is still running joins it: one ⌘W, and nothing is left held", async () => {
+  const w = world();
+  const { engine, hands } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    hands.posted.length = 0;
+    engine.ear("jarhead close this window", true, 1, w.clock.t - 100);
+    await until(() => hands.posted.some((p) => p.op === "key"), 2000);
+    // No wait for the ear's answer: the audit's repro, where the run is not yet remembered.
+    w.clock.t += 4_500;
+    delegate(w, "Jarhead, close this window.", "item_joined");
+    await until(() => engine.snapshot().delegations.find((d) => d.liveId === "item_joined")?.status === "done", 3000);
+    await until(() => rows(w, "reflex").length > 0, 2000);
+    assert.deepEqual(hands.posted.filter((p) => p.op === "key").map((p) => String(p.params["combo"])), ["cmd+w"]);
+    // The delegation had that run: a new request for the same words 10 s later is a new command.
+    w.clock.t += 10_000;
+    nextUtterance(w);
+    delegate(w, "Jarhead, close this window.", "item_next");
+    await until(() => engine.snapshot().delegations.find((d) => d.liveId === "item_next")?.status === "done", 3000);
+    assert.deepEqual(hands.posted.filter((p) => p.op === "key").map((p) => String(p.params["combo"])), ["cmd+w", "cmd+w"]);
+  } finally {
+    await engine.stop();
+  }
+});
+
+/**
+ * The review of W1-2 (2026-10-05). The 30 s hold must not swallow a NEW utterance of the same words: a typed
+ * line is not held (Live is told it is done and does not delegate it), and an ear reflex Live never delegated is
+ * released once the ear hears the same words again and leaves them to Live.
+ */
+test("RF-5 hold: a typed 'press enter' is not held, so a spoken 'press enter' delegated 10 s later presses again", async () => {
+  const w = world();
+  const { engine, hands } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    hands.posted.length = 0;
+    await engine.sayText("press enter");
+    await until(() => hands.posted.some((p) => p.op === "key"), 2000);
+    await settle(50);
+    assert.equal(hands.posted.filter((p) => p.op === "key").length, 1, "the typed line pressed Return");
+    w.clock.t += 10_000;
+    nextUtterance(w);
+    delegate(w, "Jarhead, press enter.", "item_spoken");
+    await until(() => ["done", "failed", "cancelled"].includes(engine.snapshot().delegations.find((d) => d.liveId === "item_spoken")?.status ?? ""), 3000);
+    const d = engine.snapshot().delegations.find((x) => x.liveId === "item_spoken");
+    const keys = hands.posted.filter((p) => p.op === "key").map((p) => String(p.params["combo"]));
+    assert.deepEqual(keys, ["Return", "Return"], `keys ${JSON.stringify(keys)}; spoken delegation ${d?.status} "${d?.summary}"`);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("RF-5 hold: the ear's 'jarhead press enter' that Live never delegated is released when the ear hears 'press enter' again; the new delegation presses", async () => {
+  const w = world();
+  const { engine, hands } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    hands.posted.length = 0;
+    engine.ear("jarhead press enter", true, 1, w.clock.t - 100);
+    await until(() => hands.posted.some((p) => p.op === "key"), 2000);
+    await until(() => rows(w, "reflex").length > 0, 2000);
+    w.clock.t += 12_000;
+    nextUtterance(w);
+    // The ear hears the bare words outside the exchange window: gated (left to Live).
+    engine.ear("press enter", true, 2, w.clock.t - 100);
+    await settle(100);
+    delegate(w, "press enter", "item_new");
+    await until(() => ["done", "failed", "cancelled"].includes(engine.snapshot().delegations.find((d) => d.liveId === "item_new")?.status ?? ""), 3000);
+    const d = engine.snapshot().delegations.find((x) => x.liveId === "item_new");
+    const keys = hands.posted.filter((p) => p.op === "key").map((p) => String(p.params["combo"]));
+    assert.deepEqual(keys, ["Return", "Return"], `keys ${JSON.stringify(keys)}; delegation ${d?.status} "${d?.summary}"`);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("addressing: an unaddressed partial left to Live does not fire when the recogniser re-emits it after Live's delegation ran it", async () => {
+  const w = world();
+  const { engine, hands } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    w.clock.t += 60_000;
+    nextUtterance(w);
+    hands.posted.length = 0;
+    engine.ear("press enter", false, 5, w.clock.t - 100); // a partial, unaddressed: left to Live, not consumed
+    await settle(600);
+    assert.deepEqual(hands.posted.filter((p) => p.op === "key"), [], "room talk: the ear pressed nothing");
+    w.clock.t += 700;
+    delegate(w, "press enter", "item_live");
+    await until(() => engine.snapshot().delegations.find((d) => d.liveId === "item_live")?.status === "done", 3000);
+    await settle(50);
+    w.clock.t += 300; // the recogniser re-emits the same partial within the 1.5 s gap
+    engine.ear("press enter", false, 5, w.clock.t - 50);
+    await settle(700);
+    const keys = hands.posted.filter((p) => p.op === "key").map((p) => String(p.params["combo"]));
+    assert.deepEqual(keys, ["Return"], `keys ${JSON.stringify(keys)}`);
+  } finally {
+    await engine.stop();
+  }
+});
+
+/**
+ * Pinned for W1-1 (engine.ts is its file): the ear gates a bare "start dictating" outside the exchange, and
+ * Live's delegation of it reaches the Delegator's runReflex, which cannot start dictation, so the brain gets a
+ * task. The fix is the engine's: runReflex handles dictate_start and dictate_stop through startDictation and
+ * stopDictation, as runEarReflex does. Drop the todo once that lands.
+ */
+test("addressing: a bare 'start dictating' a minute after the last exchange, which Live delegates, starts dictation", { todo: "W1-1: the engine's Delegator-side runReflex must start and stop dictation" }, async () => {
+  const w = world();
+  const { engine, brain } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    w.clock.t += 60_000;
+    nextUtterance(w);
+    engine.ear("start dictating", true, 3, w.clock.t - 100);
+    await settle(100);
+    delegate(w, "Start dictating.", "item_d");
+    await until(() => ["done", "failed", "cancelled"].includes(engine.snapshot().delegations.find((d) => d.liveId === "item_d")?.status ?? "") || brain.tasks.length > 0, 3000);
+    await settle(100);
+    const d = engine.snapshot().delegations.find((x) => x.liveId === "item_d");
+    assert.equal(engine.isDictating, true, `dictating? delegation ${d?.status} "${d?.summary}"; brain tasks ${brain.tasks.length}`);
+    assert.equal(brain.tasks.length, 0, "no generation for a dictation toggle");
+  } finally {
+    await engine.stop();
+  }
+});
+
 // ------------------------------------------------------------------ the ear alone
 
 interface Harness {
@@ -221,6 +368,53 @@ test("ear: an acting kind fires only when the words name Jarhead or the engine s
   h.ear.hear("page down", true, 5, h.clock.t);
   await tick();
   assert.deepEqual(h.ran, ["press enter", "page down"]);
+});
+
+test("ear: words left to Live need the name from then on, even once the exchange opens; new words after them are judged afresh", async () => {
+  const h = harness();
+  h.ear.hear("press enter", false, 1, h.clock.t);
+  await tick();
+  assert.deepEqual(h.ran, [], "room talk: left to Live");
+  // Live delegated the words (the exchange is open now); the recogniser re-emits and revises the same partial.
+  h.addressed = true;
+  h.ear.hear("press enter", false, 1, h.clock.t);
+  h.ear.hear("press enter please", false, 1, h.clock.t);
+  await tick();
+  assert.deepEqual(h.ran, [], "the same utterance: Live's, not the ear's a second time");
+  h.ear.hear("press enter please jarhead", false, 1, h.clock.t);
+  await tick();
+  assert.deepEqual(h.ran, ["press enter"], "the name makes it the ear's");
+  // A new segment mid-exchange is a new utterance: the bare words act.
+  h.ear.hear("page down", true, 2, h.clock.t);
+  await tick();
+  assert.deepEqual(h.ran, ["press enter", "page down"]);
+});
+
+test("ear: new words the ear does not act on (left to Live, or heard while it holds still) release an older held reflex for the same words", () => {
+  const clock = { t: 1_000_000 };
+  const fired = new FiredReflexes(() => clock.t);
+  let held: string | undefined;
+  const ear = new EarReflexes({
+    now: () => clock.t,
+    enabled: () => true,
+    match: (u) => parseReflex(u),
+    run: async (reflex: Reflex): Promise<ReflexOutcome> => ({ reflex, result: { kind: "text", text: "OK" }, ms: 1, ok: true, dispatchedAt: clock.t }),
+    onStop: () => undefined,
+    addressed: () => false,
+    suppressed: () => held,
+    dictation: { active: () => false, start: () => undefined, stop: () => undefined, type: async () => true, newline: async () => undefined, deleteWord: async () => undefined },
+    fired,
+  });
+  for (const phrase of ["press enter", "close this window"]) {
+    fired.record({ id: phrase, phrase, reflex: parseReflex(phrase)!, source: "ear", earAt: clock.t, matchedAt: clock.t, dispatchedAt: clock.t, doneAt: clock.t, ok: true });
+  }
+  clock.t += 10_000;
+  assert.equal(fired.peek("press enter")?.kind, "done", "held: Live never delegated it");
+  ear.hear("press enter", true, 1, clock.t);
+  assert.equal(fired.peek("press enter"), undefined, "left to Live: the next delegation of these words is theirs");
+  held = "a brain task is running";
+  ear.hear("close this window", true, 2, clock.t);
+  assert.equal(fired.peek("close this window"), undefined, "held still: new words all the same");
 });
 
 test("ear: a screenshot and a circle are Jarhead's own look and need no address; the meta rows (the clock, the voice) do; a stop is still a stop", async () => {

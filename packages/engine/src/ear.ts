@@ -32,7 +32,9 @@ import { addressesJarhead, endsTerminally, normalizeUtterance, parseReflex, type
  * words were for Jarhead and delegates them if so. Jarhead's own look (a screenshot, a
  * circle) acts on nothing of Kevin's and needs no address; "stop" is the engine's to
  * judge, as before. A partial that is not addressed is not consumed: it may still grow
- * into "press enter, jarhead".
+ * into "press enter, jarhead". Those words are Live's from then on: the same words again,
+ * or a revision of them, fire only when they name Jarhead, never because the exchange
+ * opened meanwhile (it opens when Live delegates them, and the ear would run them twice).
  *
  * Words are consumed, never forgotten, while the ear is told to hold still — a
  * stop or pause (`quiesce`), the voice speaking (its own words come back through
@@ -182,6 +184,11 @@ interface Segment {
    * as the name alone ("the slack one" → "stop the slack one").
    */
   pendingStop?: { readonly wordsAtStop: number; readonly timer: NodeJS.Timeout; readonly deadline: number; readonly carried: boolean } | undefined;
+  /**
+   * `consumed` when a matched command here was left to Live (nobody addressed Jarhead). While the
+   * candidate still starts there, it is the same utterance: only the name makes it the ear's.
+   */
+  leftToLive?: number | undefined;
 }
 
 const STOP_WORDS = /^(?:stop|stop it|stop that|cancel|cancel that|never ?mind|hold on|abort|that's enough|quiet|shush|shut up)$/;
@@ -312,9 +319,12 @@ export class EarReflexes {
       this.clearTimer(seg);
       seg.consumed = words.length;
       // A command the grammar would have taken is worth a line at info: a hold that never
-      // lifts (a stuck "speaking" signal) is otherwise invisible in production.
-      if (reflex) log.info(`ear: "${phrase}" matched ${reflex.label} but held (${held}); consumed`);
-      else log.debug(`ear: "${phrase}" held (${held})`);
+      // lifts (a stuck "speaking" signal) is otherwise invisible in production. New words all the
+      // same: an older reflex held for them is not what Live's delegation of these answers.
+      if (reflex) {
+        log.info(`ear: "${phrase}" matched ${reflex.label} but held (${held}); consumed`);
+        this.opts.fired.heardAgain(phrase);
+      } else log.debug(`ear: "${phrase}" held (${held})`);
       return;
     }
     if (!reflex) {
@@ -324,8 +334,11 @@ export class EarReflexes {
       return;
     }
     // Room talk never acts: the words name Jarhead, or the engine says mid-exchange.
-    if (!this.addressedTo(reflex, candidate, phrase)) {
+    if (!this.addressedTo(reflex, seg, candidate, phrase)) {
       this.clearTimer(seg);
+      seg.leftToLive = seg.consumed;
+      // New words: an older reflex held for the same words is not what Live's delegation of these answers.
+      this.opts.fired.heardAgain(phrase);
       // A final is left behind; a partial may still grow into "… jarhead".
       if (isFinal) {
         seg.consumed = words.length;
@@ -440,8 +453,10 @@ export class EarReflexes {
       const doneAt = this.now();
       const did = outcome.did !== undefined ? { did: outcome.did } : {};
       const dispatchedAt = outcome.dispatchedAt ?? matchedAt;
-      // Remembered like an ear reflex: the delegation Live raises for the typed instruction reconciles as done.
-      if (outcome.ok) this.opts.fired.record({ id, phrase, reflex: outcome.reflex ?? reflex, source: "ear", earAt: at, matchedAt, dispatchedAt, doneAt, ok: true, ...did });
+      // Remembered for the window: a delegation Live raises for the typed instruction reconciles as done. Not held
+      // past it (Live is told it is done), so a spoken request with the same words later is a new command.
+      // `shared`: a delegation joined this very run, and has it already.
+      if (outcome.ok) this.opts.fired.record({ id, phrase, reflex: outcome.reflex ?? reflex, source: "typed", earAt: at, matchedAt, dispatchedAt, doneAt, ok: true, ...did, ...(outcome.shared ? { claimed: true } : {}) });
       this.opts.ledger?.({ at: doneAt, type: "reflex", id, phrase, action: reflex.label, source: "typed", earAt: at, matchedAt, dispatchedAt, doneAt, ok: outcome.ok, ...(outcome.dropped ? { dropped: outcome.dropped } : {}), fired: "final", ...did });
       return outcome;
     } catch (e) {
@@ -491,10 +506,16 @@ export class EarReflexes {
     return true;
   }
 
-  /** Whether a matched reflex may act on these words: Jarhead's own look always; anything else only when addressed. */
-  private addressedTo(reflex: Reflex, candidate: string, phrase: string): boolean {
+  /**
+   * Whether a matched reflex may act on these words: Jarhead's own look always; anything else only when
+   * addressed. Words already left to Live (the same span of the segment) need the name: the exchange may
+   * have opened only because Live delegated them.
+   */
+  private addressedTo(reflex: Reflex, seg: Segment, candidate: string, phrase: string): boolean {
     if (UNADDRESSED_KINDS.has(reflex.kind) || this.opts.addressed === undefined) return true;
-    return addressesJarhead(candidate) || this.opts.addressed(phrase);
+    if (addressesJarhead(candidate)) return true;
+    if (seg.leftToLive === seg.consumed) return false;
+    return this.opts.addressed(phrase);
   }
 
   /** Take the segment's words as heard and leave them all behind. */
@@ -503,11 +524,13 @@ export class EarReflexes {
     this.clearPendingStop(seg);
     seg.words = words;
     seg.consumed = words.length;
+    seg.leftToLive = undefined;
     seg.lastAt = now;
   }
 
   private fire(seg: Segment, reflex: Reflex, phrase: string, wordCount: number, earAt: number, matchedAt: number, how: ReflexLedgerRow["fired"], gated = false): void {
     seg.consumed = Math.max(seg.consumed, wordCount);
+    seg.leftToLive = undefined;
     const id = newId("rfx");
     const dispatchedAt = this.now();
     log.info(`ear: "${phrase}" → ${reflex.label} (${how}, ${dispatchedAt - earAt} ms after the app heard it)`);
@@ -523,7 +546,9 @@ export class EarReflexes {
         const did = outcome.did !== undefined ? { did: outcome.did } : {};
         // The outcome's reflex, not the grammar's: a batch hands back one whose `said` is where
         // the words actually landed, and that is what the delegation speaks when it reconciles.
-        if (outcome.ok) this.opts.fired.record({ id, phrase, reflex: outcome.reflex ?? reflex, source: "ear", earAt, matchedAt, dispatchedAt: outcome.dispatchedAt ?? dispatchedAt, doneAt, ok: true, ...did });
+        // `shared`: Live's delegation for the words joined this very run, so it is claimed already
+        // (held unclaimed, it would answer a later utterance of the same words as done).
+        if (outcome.ok) this.opts.fired.record({ id, phrase, reflex: outcome.reflex ?? reflex, source: "ear", earAt, matchedAt, dispatchedAt: outcome.dispatchedAt ?? dispatchedAt, doneAt, ok: true, ...did, ...(outcome.shared ? { claimed: true } : {}) });
         if (outcome.did) log.info(`ear: ${reflex.label} ${outcome.ok ? "done" : "did not apply"} in ${doneAt - dispatchedAt} ms: ${outcome.did.slice(0, 200)}`);
         this.opts.ledger?.({ at: doneAt, type: "reflex", id, phrase, action: reflex.label, source: "ear", earAt, matchedAt, dispatchedAt: outcome.dispatchedAt ?? dispatchedAt, doneAt, ok: outcome.ok, ...(outcome.dropped ? { dropped: outcome.dropped } : {}), fired: how, ...did });
       })
