@@ -128,6 +128,9 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
    * Turn accounting. The CLI runs the user messages it is sent one after another and ends each with exactly one
    * `result`, an interrupted one included (`error_during_execution`, a little after the interrupt). So the n-th
    * result answers the n-th send, and a result that arrives after its asker gave up is recognised by its number.
+   * That holds only while each message is sent to an idle CLI: one queued behind a running turn may be folded into
+   * it (one result for two sends), and an interrupt can be lost (no result at all). A caller that cannot wait for
+   * `settled()` should stop sending on this session and open a new one.
    */
   private sent = 0;
   private answered = 0;
@@ -347,8 +350,10 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
 
   async close(): Promise<void> {
     this.queue.close();
-    // An idle CLI has nothing to interrupt, and one still booting may not answer the request for a while.
-    if (this.turnsInFlight > 0) await this.interrupt(1500);
+    // A session that was never sent anything has no turn to end, and a CLI still booting may not answer an interrupt
+    // for a while. Any other session gets the bounded interrupt: it may be on a turn no send() asked for (a background
+    // task's notification) or on a folded follow-up, which the turn counter does not see.
+    if (this.sent > 0) await this.interrupt(1500);
     const ended = this.consuming ? Promise.race([this.consuming.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 1500))]) : Promise.resolve(true);
     if (!(await ended)) {
       log.warn("claude session did not end on its own; aborting the process");
