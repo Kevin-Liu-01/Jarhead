@@ -170,7 +170,7 @@ test("doctor · Kevin's Mac today: voice processing ok, hears and speaks warn (a
   assert.equal(row(checks, "speaks").detail, "Kevin's AirPods Pro · 16000 Hz ×2 · bluetooth · narrowed while the headset mic is held");
   assert.equal(row(checks, "default input").detail, "Kevin's AirPods Pro · held by Jarhead (the unit follows it)");
   assert.equal(row(checks, "other mic clients").detail, "none");
-  assert.equal(row(checks, "recording").detail, "off · Settings › Audio, ⌥⇧R");
+  assert.equal(row(checks, "recording").detail, "off · Settings › Audio, ⌃⌥R");
   assert.equal(row(checks, "leak").detail, "not measured — apps/mac/Scripts/audio-probe.sh (no session; needs the mic grant)");
   const { text } = render(checks);
   assert.ok(text.includes("  audio\n    ✔ voice processing             on · duck min advanced"), text);
@@ -231,9 +231,9 @@ test("doctor · no app connected: one warning row, then recording from settings.
   const checks = audioChecks({ state: undefined, settings: { recording: true }, phase: undefined, profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.deepEqual(checks.map((c) => [c.name, c.status]), [["audio state", "warn"], ["recording", "warn"], ["leak", "warn"]]);
   assert.equal(row(checks, "audio state").detail, "app not running — the graph's read-back needs Jarhead.app connected");
-  assert.equal(row(checks, "recording").detail, "on · Settings › Audio, ⌥⇧R");
+  assert.equal(row(checks, "recording").detail, "on · Settings › Audio, ⌃⌥R");
   const bare = audioChecks({ state: undefined, settings: undefined, phase: undefined, profiler: undefined, probe: undefined, appBuiltAt: undefined, now: NOW });
-  assert.equal(row(bare, "recording").detail, "off · Settings › Audio, ⌥⇧R", "no settings.json: the default");
+  assert.equal(row(bare, "recording").detail, "off · Settings › Audio, ⌃⌥R", "no settings.json: the default");
 });
 
 test("probe file: one run, { runs }, or a record keyed by mode; the leak row prefers the recording run, fails above −50 dBFS, warns when older than the app build, ok otherwise", () => {

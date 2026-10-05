@@ -1187,7 +1187,7 @@ export function audioChecks(i: AudioCheckInput): Check[] {
       add({ name: "other mic clients", status: besideUnit ? "warn" : "ok", detail: `${sharedWords(s.sharedWith)} · ${besideUnit ? "beside a voice-processing unit" : "sharing the plain mic"}`, ...(besideUnit ? { fix: "turn Recording on so the recorder shares a plain microphone" } : {}) });
     }
   }
-  add({ name: "recording", status: recording ? "warn" : "ok", detail: `${recording ? "on" : "off"} · Settings › Audio, ⌥⇧R`, ...(recording ? { fix: "turn it off after the demo" } : {}) });
+  add({ name: "recording", status: recording ? "warn" : "ok", detail: `${recording ? "on" : "off"} · Settings › Audio, ⌃⌥R`, ...(recording ? { fix: "turn it off after the demo" } : {}) });
   if (s) {
     const asleep = i.phase === undefined || ASLEEP_PHASES.has(i.phase);
     if (!asleep) add({ name: "released at sleep", status: "ok", detail: `awake · voice processing ${onOff(s.voiceProcessing)} — read again after the next sleep` });
