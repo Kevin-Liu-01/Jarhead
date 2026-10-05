@@ -150,7 +150,8 @@ test("F1: another name flows into the threads and the automations — thread_sta
     said.push(live.instructions[0] ?? "");
     assert.equal(said[4], "Sam just circled a region of the screen (100×50 at 10,20). The brain will see the image with the next task; acknowledge briefly if Sam is asking about it.");
     live.instructions.length = 0;
-    engine.ear("start dictating", true, 1, clock.t);
+    // A minute past the last exchange: the ear acts only on words that name Jarhead (W1-2).
+    engine.ear("jarhead start dictating", true, 1, clock.t);
     await settle();
     assert.equal(engine.isDictating, true);
     said.push(live.instructions.find((i) => /dictating/.test(i)) ?? "");

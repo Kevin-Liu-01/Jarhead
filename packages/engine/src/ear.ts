@@ -26,6 +26,14 @@ import { addressesJarhead, endsTerminally, normalizeUtterance, parseReflex, type
  * SegmentedRecognizer asks for no punctuation and rolls its request every 50 s,
  * so a final arrives at the roll, not at the end of a command.
  *
+ * Only words addressed to Jarhead act: the candidate names Jarhead, or the engine says
+ * it is mid-exchange (`addressed`). A video's "hit the like button" or a colleague's
+ * "press enter" is room talk; Live, which hears the room too, decides whether those
+ * words were for Jarhead and delegates them if so. Jarhead's own look (a screenshot, a
+ * circle) acts on nothing of Kevin's and needs no address; "stop" is the engine's to
+ * judge, as before. A partial that is not addressed is not consumed: it may still grow
+ * into "press enter, jarhead".
+ *
  * Words are consumed, never forgotten, while the ear is told to hold still — a
  * stop or pause (`quiesce`), the voice speaking (its own words come back through
  * the microphone when echo cancellation is off), a brain task running, the mic
@@ -132,8 +140,9 @@ export interface EarOptions {
   readonly onSleep?: ((phrase: string) => void) | undefined;
   /**
    * Mid-exchange right now (Jarhead spoke or was spoken to a moment ago): a dismissal
-   * without the name counts then — unless the engine knows these normalised words as
-   * Jarhead's own line back through the microphone.
+   * or an acting command without the name counts then — unless the engine knows these
+   * normalised words as Jarhead's own line back through the microphone. Absent (a
+   * harness with no engine): dismissals need the name, acting kinds are not gated.
    */
   readonly addressed?: ((phrase: string) => boolean) | undefined;
   /** Dictation: `active()` says whether the field is being dictated into right now. */
@@ -176,6 +185,8 @@ interface Segment {
 }
 
 const STOP_WORDS = /^(?:stop|stop it|stop that|cancel|cancel that|never ?mind|hold on|abort|that's enough|quiet|shush|shut up)$/;
+/** Jarhead's own look: it acts on nothing of Kevin's, so room talk may trigger it. Every other kind needs the words addressed. */
+const UNADDRESSED_KINDS: ReadonlySet<Reflex["kind"]> = new Set<Reflex["kind"]>(["screenshot", "circle"]);
 /** With two or more spawned threads live, the WORK cut after a stop word waits this long for a name (the Delegator's fragment path keeps the same figure). */
 export const STOP_NAME_WAIT_MS = 350;
 /**
@@ -310,6 +321,16 @@ export class EarReflexes {
       this.clearTimer(seg);
       // A final that is not a command is left behind; a partial may still grow into one.
       if (isFinal) seg.consumed = words.length;
+      return;
+    }
+    // Room talk never acts: the words name Jarhead, or the engine says mid-exchange.
+    if (!this.addressedTo(reflex, candidate, phrase)) {
+      this.clearTimer(seg);
+      // A final is left behind; a partial may still grow into "… jarhead".
+      if (isFinal) {
+        seg.consumed = words.length;
+        log.info(`ear: "${phrase}" matched ${reflex.label} but nobody addressed Jarhead; left to Live`);
+      }
       return;
     }
     const matchedAt = now;
@@ -468,6 +489,12 @@ export class EarReflexes {
     }, this.carefulMs);
     seg.timer.unref?.();
     return true;
+  }
+
+  /** Whether a matched reflex may act on these words: Jarhead's own look always; anything else only when addressed. */
+  private addressedTo(reflex: Reflex, candidate: string, phrase: string): boolean {
+    if (UNADDRESSED_KINDS.has(reflex.kind) || this.opts.addressed === undefined) return true;
+    return addressesJarhead(candidate) || this.opts.addressed(phrase);
   }
 
   /** Take the segment's words as heard and leave them all behind. */

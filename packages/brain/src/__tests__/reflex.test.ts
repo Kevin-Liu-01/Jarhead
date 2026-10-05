@@ -77,7 +77,8 @@ test("set_voice: 'switch voice to marin' / 'speak with a british accent' are the
     const r = parseReflex(s);
     assert.ok(!r || r.kind !== "set_voice", `${s}: not a voice switch (got ${JSON.stringify(r)})`);
   }
-  assert.equal(parseReflex("switch to marin")!.kind, "open_app", "the app row keeps 'switch to <name>'");
+  assert.notEqual(parseReflex("switch to marin")?.kind, "set_voice", "'switch to <name>' is never the voice row's");
+  assert.equal(parseReflex("switch to safari")!.kind, "open_app", "the app row keeps 'switch to <app>'; a name no app answers to is the brain's (W1-2)");
   assert.equal(parseReflex("use ash"), undefined);
   assert.equal(parseReflex("be marin"), undefined);
   assert.equal(parseReflex("switch voice to bob"), undefined, "no such voice: the brain's");

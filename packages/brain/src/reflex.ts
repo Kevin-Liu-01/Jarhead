@@ -1,3 +1,6 @@
+import { readdirSync, type Dirent } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, classifyAppleScript, logger } from "@jarhead/core";
 import { ACCENTS, VOICES } from "@jarhead/protocol";
 import { ACTING_MEMBERS, type ToolResult } from "@jarhead/hands";
@@ -80,6 +83,11 @@ export interface ReflexContext {
   readonly threadNames?: readonly string[] | undefined;
   /** The clock for "what time is it" (default Date.now). */
   readonly now?: (() => number) | undefined;
+  /**
+   * App names the caller knows are on this Mac right now beyond SEARCH_APPS and the app folders (the
+   * running apps, the front app the ear hints name): a bare "open X" may name these too.
+   */
+  readonly apps?: readonly string[] | undefined;
 }
 
 /** One tool call of an ordered batch, and what it did once it ran ("focused Safari", "clicked the search field"). */
@@ -142,10 +150,22 @@ const POLITE_TAIL = /(?:[,\s]+(?:please|now|for me|thanks|thank you|jarhead|jar 
 export const FILLER_HEAD = /^(?:(?:um+|uh+|erm|hmm+|so|like|okay|ok|alright|all right|hey|yeah|yes|yep|oh|awesome|great|nice|cool|well|basically|actually|anyway|and|then|now)[,.!\s]+)+(?=\S)/i;
 /**
  * An AppleScript that drives the screen rather than an app's dictionary: keystrokes,
- * clicks, activation. The lane runner routes such a script through the screen lease;
- * the speed reader counts it as an acting step.
+ * clicks, activation, and the front browser tab (the page Kevin is reading): setting its
+ * URL, closing it, or switching to another tab. Reads of a tab, and other tabs, are not
+ * screen work. The lane runner routes such a script through the screen lease (the
+ * background lane refuses it); the speed reader counts it as an acting step.
  */
-export const FOCUS_APPLESCRIPT = /\b(keystroke|key code|click|set value|set the value|perform action|activate|open location|reopen|set frontmost)\b/i;
+export const FOCUS_APPLESCRIPT = new RegExp(
+  [
+    String.raw`\b(?:keystroke|key code|click|set value|set the value|perform action|activate|open location|reopen|set frontmost)\b`,
+    String.raw`\bset (?:the )?URL\b[\s\S]*?\b(?:active|current) tab\b`,
+    String.raw`\b(?:active|current) tab\b[\s\S]*?\bset (?:the )?URL\b`,
+    String.raw`\bset (?:the )?URL (?:of )?(?:the )?(?:front document|document 1)\b`,
+    String.raw`\bclose (?:the )?(?:active|current) tab\b`,
+    String.raw`\bset (?:the )?(?:active tab index|current tab)\b`,
+  ].join("|"),
+  "i",
+);
 /** Transcriber tags in the words ("[chuckle]", "(laughs)"): never part of a command. */
 const TAGS = /\s*[[(](?:chuckles?|laughs?|laughter|sighs?|coughs?|inaudible|pause|music|noise|clears throat|crosstalk)[\])]\s*/gi;
 
@@ -204,8 +224,16 @@ const BACK = /^(?:go |navigate )?back$/;
 const FORWARD = /^(?:go |navigate )?forward$/;
 const ZOOM = /^zoom (in|out)$/;
 const ZOOM_RESET = /^(?:reset zoom|actual size|zoom reset)$/;
-const TYPE = /^(?:type|write) (.+)$/;
-const OPEN = /^(?:open|launch|switch to|go to) ([a-z0-9][a-z0-9 .+'/:-]{0,60})$/;
+/** Only "type": "write me a haiku", "write down …" and "write back to her" ask for something to be composed. */
+const TYPE = /^type (.+)$/;
+/**
+ * A first word that makes "type …" a request, not the text: a pronoun or particle object
+ * ("type me a haiku", "type up my notes", "type in hello") or a thing to compose ("type
+ * email to sam"). The whole first word only: "type you're welcome" and "type upstairs" are words.
+ */
+const TYPE_NOT_TEXT = /^(?:me|him|her|us|them|you|down|up|out|in|back|it|code|emails?|repl(?:y|ies)|poems?|haikus?|notes?|messages?|summar(?:y|ies)|essays?)$/;
+/** "open up Safari", "switch over to Slack": the particle is not part of the name. */
+const OPEN = /^(?:open(?: up)?|launch|switch (?:over |back )?to|go to) ([a-z0-9][a-z0-9 .+'/:-]{0,60})$/;
 const CLOSE = /^close (?:this|the|that) (?:window)$/;
 const SHOT = /^(?:take a )?(?:screenshot|screen shot|capture)(?: (?:this|that|the screen|my screen|it))?$/;
 const CIRCLE = /^(?:circle|highlight|outline) (?:that|this|it|here)(?: (?:one|for me))?$/;
@@ -443,16 +471,82 @@ function urlOf(raw: string): string | undefined {
 }
 
 /**
- * The apps a bare "open X" may name: a single capitalised word or two, not a sentence.
- * "sleep" and "bed" never name one: the bare forms are the dismissal's (SLEEP), and a
- * longer "go to sleep mode" / "go to bed early" is the brain's, not a phantom app.
+ * Words no app name carries: a place, a pronoun or possessive ("open your eyes"), a setting
+ * ("switch to dark mode"). "sleep" and "bed" never name one: the bare forms are the
+ * dismissal's (SLEEP), and a longer "go to sleep mode" / "go to bed early" is the brain's.
  */
+const NOT_AN_APP = /\b(?:the|a|an|my|your|his|her|our|their|its|me|you|him|us|them|file|folder|door|window|tab|link|page|it|this|that|website|site|url|settings|sleep|bed|mode|dark|light|wi-?fi|bluetooth|airplane|brightness|volume|wallpaper|do not disturb|night shift)\b/;
+
+/** The shape of an app name: a capitalised word or three, not a sentence, a place or a setting. */
 function appName(raw: string): string | undefined {
   const name = raw.trim().replace(/\s+/g, " ");
   if (!name || name.split(" ").length > 3) return undefined;
-  if (/\b(the|a|my|file|folder|door|window|tab|link|page|it|this|that|website|site|url|settings|sleep|bed)\b/.test(name)) return undefined;
+  if (NOT_AN_APP.test(name.toLowerCase())) return undefined;
   if (/[/:]/.test(name)) return undefined;
   return name.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * The app a bare "open X" names, as macOS spells it, or undefined when nothing on this Mac
+ * answers to X: the caller's names (running apps, ear hints), SEARCH_APPS, then the app
+ * folders. Anything else is the brain's: at 6b3f35f "open up Safari" asked the helper for
+ * "Up Safari" and "switch to dark mode" for "Dark Mode".
+ */
+function knownApp(raw: string, ctx: ReflexContext | undefined): string | undefined {
+  if (!appName(raw)) return undefined;
+  const key = appKey(raw);
+  return ctx?.apps?.find((a) => appKey(a) === key) ?? SEARCH_APPS[key] ?? installedApps().get(key);
+}
+
+function appKey(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** Where macOS keeps apps; each is read one folder deep (Utilities, a vendor's suite). */
+function appFolders(): readonly string[] {
+  return ["/Applications", "/System/Applications", join(homedir(), "Applications")];
+}
+
+/** The app folders' listing is re-read at most once a minute: an app installed now opens by name within one. */
+const INSTALLED_TTL_MS = 60_000;
+let installedCache: { readonly at: number; readonly apps: ReadonlyMap<string, string> } | undefined;
+
+/**
+ * The `.app` bundles in `dirs` (default: the app folders, cached a minute), one folder deep,
+ * keyed by the lowercase name: "textedit" → "TextEdit". A folder that cannot be read is skipped.
+ */
+export function installedApps(dirs?: readonly string[]): ReadonlyMap<string, string> {
+  if (dirs !== undefined) return listApps(dirs);
+  const now = Date.now();
+  if (!installedCache || now - installedCache.at >= INSTALLED_TTL_MS) installedCache = { at: now, apps: listApps(appFolders()) };
+  return installedCache.apps;
+}
+
+function listApps(dirs: readonly string[]): Map<string, string> {
+  const apps = new Map<string, string>();
+  const add = (file: string): void => {
+    const name = file.slice(0, -".app".length);
+    if (name && !apps.has(appKey(name))) apps.set(appKey(name), name);
+  };
+  for (const dir of dirs) {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.name.endsWith(".app")) add(e.name);
+      else if (e.isDirectory() && !e.name.startsWith(".")) {
+        try {
+          for (const inner of readdirSync(join(dir, e.name))) if (inner.endsWith(".app")) add(inner);
+        } catch {
+          // an unreadable vendor folder names no app
+        }
+      }
+    }
+  }
+  return apps;
 }
 
 const key = (kind: ReflexKind, combo: string, said: string, label: string, extra: Partial<Reflex> = {}): Reflex => ({ kind, tool: "key", input: { text: combo }, said, label, prefire: false, idempotent: false, ...extra });
@@ -532,8 +626,10 @@ export function parseReflex(utterance: string, ctx?: ReflexContext): Reflex | un
   if (CIRCLE.test(t)) return { kind: "circle", tool: "circle", input: {}, said: "circled it.", label: "circle that", prefire: true, idempotent: true };
   if ((m = TYPE.exec(t))) {
     // The words as heard, first letter as Kevin would type it; the voice transcript is lowercase.
-    const text = stripHead(utterance).replace(/^(?:type|write)\s+/i, "").replace(/[.!?,;:]+$/, "").replace(POLITE_TAIL, "").replace(/[.!?,;:]+$/, "").trim();
-    if (!text || text.length > 200 || DESCRIBES.test(text.toLowerCase())) return undefined;
+    const text = stripHead(utterance).replace(/^type\s+/i, "").replace(/[.!?,;:]+$/, "").replace(POLITE_TAIL, "").replace(/[.!?,;:]+$/, "").trim();
+    const first = (text.toLowerCase().split(" ")[0] ?? "").replace(/[.!?,;:]+$/, "");
+    // Literal words only: a description, an object or a thing to compose, or a second instruction, is the brain's.
+    if (!text || text.length > 200 || DESCRIBES.test(text.toLowerCase()) || TYPE_NOT_TEXT.test(first) || SEARCH_COMPOUND.test(text)) return undefined;
     return { kind: "type", tool: "type", input: { text }, said: `typed "${text.slice(0, 40)}".`, label: `type ${text.slice(0, 40)}`, prefire: false, idempotent: false };
   }
   if ((m = DOUBLE_CLICK.exec(t))) {
@@ -551,7 +647,7 @@ export function parseReflex(utterance: string, ctx?: ReflexContext): Reflex | un
     // "go to github.com" / "go to hacker news" navigate; "go to Safari" / "open Slack" open the app.
     const url = urlOf(raw) ?? (goTo ? SITES[spokenDots(raw.trim()).toLowerCase()] : undefined);
     if (url) return { kind: "go_to", tool: "go_to", input: { url }, said: `going to ${url.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}.`, label: `go to ${url}`, prefire: false, idempotent: true };
-    const name = appName(raw);
+    const name = knownApp(raw, ctx);
     if (!name) return undefined;
     return { kind: "open_app", tool: "open_app", input: { name }, said: `opened ${name}.`, label: `open ${name}`, prefire: false, idempotent: true };
   }
@@ -879,6 +975,13 @@ export const RECONCILE_THRESHOLD = 0.8;
 /**
  * The fired reflexes of the last few seconds, and the question the slower source
  * asks of them: "did the ear already do these words?"
+ *
+ * Every reflex is remembered for `ttlMs`. One that is not harmless to repeat (a key, a
+ * ⌘W, a click, a typed text) is kept past that until a delegation claims it, or for
+ * `holdMs`: Live's delegation for the same words can land late (Live busy, a loaded
+ * Mac), and at 6b3f35f a delegation 4.5 s after the ear's "close this window" closed a
+ * second window. Past `ttlMs` only the same words reconcile ("done"): a longer request
+ * or other words are a new command, never a partial or a mismatch to undo.
  */
 export class FiredReflexes {
   private readonly fired: FiredReflex[] = [];
@@ -886,6 +989,7 @@ export class FiredReflexes {
   constructor(
     private readonly now: () => number = Date.now,
     private readonly ttlMs = 4000,
+    private readonly holdMs = 30_000,
   ) {}
 
   record(f: FiredReflex): void {
@@ -894,15 +998,19 @@ export class FiredReflexes {
     if (this.fired.length > 20) this.fired.splice(0, this.fired.length - 20);
   }
 
-  /** Every fired reflex still within the window, oldest first. */
+  /** Every fired reflex still remembered (within the window, or held unclaimed), oldest first. */
   recent(): readonly FiredReflex[] {
     this.prune();
     return this.fired;
   }
 
   private prune(): void {
-    const cutoff = this.now() - this.ttlMs;
-    while (this.fired.length && (this.fired[0]?.dispatchedAt ?? 0) < cutoff) this.fired.shift();
+    const now = this.now();
+    const alive = (f: FiredReflex): boolean => {
+      const age = now - f.dispatchedAt;
+      return age <= this.ttlMs || (!f.reflex.idempotent && !f.claimed && age <= this.holdMs);
+    };
+    for (let i = this.fired.length - 1; i >= 0; i--) if (!alive(this.fired[i]!)) this.fired.splice(i, 1);
   }
 
   /**
@@ -934,6 +1042,7 @@ export class FiredReflexes {
     const rank = { done: 3, partial: 2, mismatch: 1 } as const;
     let best: Reconciliation | undefined;
     const better = (c: Reconciliation): boolean => !best || rank[c.kind] > rank[best.kind] || (rank[c.kind] === rank[best.kind] && c.similarity > best.similarity);
+    const now = this.now();
     for (const f of this.fired) {
       if (f.claimed) continue;
       const want = f.phrase;
@@ -943,6 +1052,8 @@ export class FiredReflexes {
         if (better(c)) best = c;
         continue;
       }
+      // Held past the window (non-idempotent, unclaimed): only the same words are the same utterance.
+      if (now - f.dispatchedAt > this.ttlMs) continue;
       // Ends with the phrase, whole words, but says more: the reflex did the tail only.
       if (got.endsWith(` ${want}`)) {
         const c: Reconciliation = { kind: "partial", fired: f, similarity: sim };
@@ -998,6 +1109,8 @@ export interface ReflexRunnerOptions {
   readonly now?: () => number;
   /** The LIVE threads' names from the engine's table, read per match; absent, no thread verb parses. */
   readonly threadNames?: (() => readonly string[]) | undefined;
+  /** App names known right now beyond SEARCH_APPS and the app folders (the running apps, the ear hints' front app), read per match. */
+  readonly apps?: (() => readonly string[]) | undefined;
   /**
    * The engine's answer for a meta reflex that names a pseudo tool (thread_status,
    * thread_list, thread_stop, thread_pause, thread_resume): from the table, no
@@ -1051,20 +1164,23 @@ export class ReflexRunner {
    * it (the ear and the Delegator ask it directly), but nothing here runs it as a tool.
    */
   match(utterance: string, ctx?: ReflexContext): Reflex | undefined {
-    const reflex = parseReflex(utterance, ctx ?? this.context());
+    const reflex = parseReflex(utterance, this.context(ctx));
     return reflex?.kind === "sleep" ? undefined : reflex;
   }
 
   /** The last clause of an utterance that is not a command whole (`parseReflexTail`), with the same names and clock. */
   matchTail(utterance: string, ctx?: ReflexContext): ReturnType<typeof parseReflexTail> {
-    const got = parseReflexTail(utterance, ctx ?? this.context());
+    const got = parseReflexTail(utterance, this.context(ctx));
     return got?.reflex.kind === "sleep" ? undefined : got;
   }
 
-  /** What the grammar needs from the engine right now: the live thread names, the clock. */
-  private context(): ReflexContext {
+  /** What the grammar needs from the engine right now: the live thread names, the clock, the apps it knows. A caller's own `ctx` wins; the apps are added when it has none. */
+  private context(ctx?: ReflexContext): ReflexContext {
+    const apps = ctx?.apps ?? this.opts.apps?.();
+    const extra = apps !== undefined ? { apps } : {};
+    if (ctx) return { ...ctx, ...extra };
     const names = this.opts.threadNames?.();
-    return { ...(names !== undefined ? { threadNames: names } : {}), now: this.now };
+    return { ...(names !== undefined ? { threadNames: names } : {}), now: this.now, ...extra };
   }
 
   private async frontmost(): Promise<string> {
