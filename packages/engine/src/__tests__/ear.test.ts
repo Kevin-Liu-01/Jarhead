@@ -412,6 +412,8 @@ test("FiredReflexes: the same words within the window are done (claimed once); t
   assert.equal(r2?.kind, "mismatch", "same command, materially different words");
   assert.equal(f.reconcile("what is on my screen"), undefined);
   f.record({ id: "c", phrase: "press enter", reflex: parseReflex("press enter")!, source: "ear", earAt: 1, matchedAt: 1, dispatchedAt: 10_400, doneAt: 10_401, ok: true });
+  f.record({ id: "d", phrase: "scroll up", reflex: parseReflex("scroll up")!, source: "ear", earAt: 1, matchedAt: 1, dispatchedAt: 10_400, doneAt: 10_401, ok: true });
   clock.t = 14_500;
-  assert.equal(f.reconcile("press enter"), undefined, "aged out after the window");
+  assert.equal(f.reconcile("scroll up"), undefined, "a harmless one aged out after the window");
+  assert.equal(f.reconcile("press enter")?.kind, "done", "a key is held past the window until a delegation claims it (W1-2, RF-5)");
 });

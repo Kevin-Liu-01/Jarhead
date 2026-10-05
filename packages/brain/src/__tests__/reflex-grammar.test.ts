@@ -54,8 +54,9 @@ const TABLE: ReadonlyArray<readonly [string, string, string, Record<string, unkn
   ["zoom out", "zoom", "key", { text: "cmd+-" }],
   ["close this window", "close_window", "key", { text: "cmd+w" }],
   ["type hello world", "type", "type", { text: "hello world" }],
-  ["write see you tomorrow", "type", "type", { text: "see you tomorrow" }],
+  ["type see you tomorrow", "type", "type", { text: "see you tomorrow" }],
   ["open safari", "open_app", "open_app", { name: "Safari" }],
+  ["open up safari", "open_app", "open_app", { name: "Safari" }],
   ["switch to visual studio code", "open_app", "open_app", { name: "Visual Studio Code" }],
   ["go to slack", "open_app", "open_app", { name: "Slack" }],
   ["go to github.com", "go_to", "go_to", { url: "https://github.com/" }],
@@ -625,4 +626,291 @@ test("every new row passes the policy with verdict run and names nothing irrever
   const refused = await plain.run(plain.match("stop the slack one")!);
   assert.equal(refused.ok, false);
   assert.match((refused.result as { message: string }).message, /unknown tool thread_stop/);
+});
+
+// ---------------------------------------------------------------- W1-2: literal type, known apps, screen scripts, a late delegation
+
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FiredReflexes, installedApps } from "../reflex.ts";
+
+/**
+ * RF-1 (the launch audit, 2026-10-05). The TYPE row was `^(?:type|write) (.+)$` with only DESCRIBES as a guard,
+ * so an ordinary request that starts with "write" or "type" typed its particle or its object into the focused
+ * field and the brain never got the task. These are the brain's: a request, not words to type.
+ */
+const THE_BRAINS_TYPE: readonly string[] = [
+  "jarhead, write me a haiku about cats",
+  "write me a poem",
+  "write him an email saying I'm late",
+  "write code to sort a list",
+  "write down buy milk",
+  "jarhead write down the meeting is at five",
+  "write back to her",
+  "type up my notes",
+  "type out the summary",
+  "type in hello",
+  // A second instruction in the words is a task, not text (the search row refuses the same shape).
+  "type ls -la and press enter",
+  // The bare verb is gone: "write" is how people ask for something to be composed.
+  "write see you tomorrow",
+  "write hello",
+  // A pronoun or particle object, or a content noun, is never the text.
+  "type me a haiku",
+  "type them a note",
+  "type back",
+  "type email to sam",
+  "type a reply",
+  "type the summary",
+  "type poem about rain",
+  "type hello then press enter",
+  // The review of W1-2: the usual ways to say a second instruction ("and hit enter", a comma, no mark at all).
+  "type ls and hit return",
+  "type hello and hit enter",
+  "type hello and submit",
+  "type hello and enter",
+  "type ls and run it",
+  "type hello and save",
+  "type hello, press enter",
+  "type hello, then send it",
+  "type hello press enter",
+  // Where the words go is a target to find first, not text.
+  "type hello into the search box",
+  "type hello in the search field",
+  "type hello in slack",
+  "type I'm in love in vs code",
+];
+
+test("RF-1: a request that starts with write or type is the brain's, never literal fragments typed into the focused field", () => {
+  for (const said of THE_BRAINS_TYPE) {
+    const r = parseReflex(said);
+    assert.equal(r, undefined, `${JSON.stringify(said)} must be the brain's; the reflex would ${r?.kind === "type" ? `type ${JSON.stringify(r.input["text"])}` : `run ${JSON.stringify(r)}`}`);
+  }
+});
+
+test("RF-1: literal words still type by reflex, as Kevin said them", () => {
+  const TYPED: ReadonlyArray<readonly [string, string]> = [
+    ["type hello world", "hello world"],
+    ["Jarhead, type See you tomorrow.", "See you tomorrow"],
+    ["type you're welcome", "you're welcome"],
+    ["type upstairs in five", "upstairs in five"],
+    ["type 42", "42"],
+    ["type outlook is down", "outlook is down"],
+    // A bare "then" or "next", an "and" with no instruction after it, a place that is no field or app: words.
+    ["type see you next week", "see you next week"],
+    ["type I'll call you then", "I'll call you then"],
+    ["type salt and pepper", "salt and pepper"],
+    ["type find and replace", "find and replace"],
+    ["type meet me in the lobby", "meet me in the lobby"],
+    ["type see you on monday", "see you on monday"],
+    ["type thanks, see you soon", "thanks, see you soon"],
+  ];
+  for (const [said, text] of TYPED) {
+    const r = parseReflex(said);
+    assert.equal(r?.kind, "type", said);
+    assert.deepEqual(r?.input, { text }, said);
+    assert.equal(r?.idempotent, false, said);
+  }
+});
+
+test("RF-6: OPEN names a known app only — the particle is stripped, a setting or a phrase is the brain's, never a phantom app", () => {
+  // The audit's three: "Up Safari", "Dark Mode" and "Your Eyes" were sent to the helper as app names.
+  assert.deepEqual(parseReflex("open up Safari")?.input, { name: "Safari" });
+  assert.deepEqual(parseReflex("Jarhead, open up Slack please.")?.input, { name: "Slack" });
+  for (const said of ["switch to dark mode", "open your eyes", "switch to light mode", "go to do not disturb", "open up your heart", "switch over to wifi", "open bluetooth"]) {
+    assert.equal(parseReflex(said, { apps: [] }), undefined, `${said}: not an app`);
+  }
+  // A name no app on this Mac answers to goes to the brain, whatever its shape.
+  assert.equal(parseReflex("open quixotic frobnicator", { apps: [] }), undefined);
+  assert.equal(parseReflex("switch to marin", { apps: [] }), undefined, "a voice name is no app (the voice row wants 'switch voice to marin')");
+  // Known: SEARCH_APPS (as macOS spells them), the caller's names (running apps, the ear hints), the app folders.
+  assert.deepEqual(parseReflex("open chrome")?.input, { name: "Google Chrome" });
+  assert.deepEqual(parseReflex("switch over to vs code")?.input, { name: "Visual Studio Code" });
+  assert.deepEqual(parseReflex("open frobnicator", { apps: ["Frobnicator"] })?.input, { name: "Frobnicator" });
+  assert.deepEqual(parseReflex("switch to quux studio", { apps: ["Quux Studio"] })?.input, { name: "Quux Studio" });
+  assert.deepEqual(parseReflex("open textedit")?.input, { name: "TextEdit" }, "/System/Applications/TextEdit.app, spelled as the folder spells it");
+  // The folders the helper's own open_app searches: CoreServices and its Applications, at the top only.
+  assert.deepEqual(parseReflex("open spotlight")?.input, { name: "Spotlight" }, "/System/Library/CoreServices/Spotlight.app");
+  assert.deepEqual(parseReflex("open keychain access")?.input, { name: "Keychain Access" }, "/System/Library/CoreServices/Applications/Keychain Access.app");
+  // "dock" is Jarhead's home in the notch in its own words, never the Dock's agent app (now a CoreServices name).
+  for (const said of ["go to dock", "open dock", "switch back to dock"]) assert.equal(parseReflex(said), undefined, `${said}: not an app`);
+  // A site is still a site, an address an address.
+  assert.deepEqual(parseReflex("go to github.com")?.input, { url: "https://github.com/" });
+  assert.deepEqual(parseReflex("open up github.com")?.input, { url: "https://github.com/" });
+  // The runner reads the caller's app names per match (the engine's running apps and ear hints), into its own context or a caller's.
+  const { runner } = makeRunner({}, new FakeHands());
+  let apps: readonly string[] = ["Frobnicator"];
+  const reflexes = new ReflexRunner({ runner, frontmostApp: async () => "Finder", apps: () => apps });
+  assert.deepEqual(reflexes.match("open frobnicator")?.input, { name: "Frobnicator" });
+  assert.deepEqual(reflexes.match("open frobnicator", { threadNames: [] })?.input, { name: "Frobnicator" }, "a caller's own context gets the apps too");
+  apps = [];
+  assert.equal(reflexes.match("open frobnicator"), undefined, "it quit: the name is gone");
+});
+
+test("RF-6: installedApps lists the .app bundles of the app folders, one vendor folder deep, by their lowercase name", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-apps-"));
+  try {
+    mkdirSync(join(dir, "Frobnicator.app"));
+    mkdirSync(join(dir, "Vendor Suite", "Quux Studio.app"), { recursive: true });
+    mkdirSync(join(dir, "Not An App"));
+    const apps = installedApps([dir, join(dir, "missing")]);
+    assert.equal(apps.get("frobnicator"), "Frobnicator");
+    assert.equal(apps.get("quux studio"), "Quux Studio");
+    assert.equal(apps.has("not an app"), false);
+    assert.equal(apps.has("vendor suite"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * TH-4 (AppleScript half): a background thread drove Kevin's front browser tab by Apple events —
+ * `set URL of active tab of front window` rewrote the page he was reading. Such a script drives the
+ * screen: the lane runner routes it through the lease (and the background lane refuses it).
+ */
+test("TH-4: FOCUS_APPLESCRIPT reads a script that changes or closes the front page (by target and verb, in any spelling) as screen work; reads of a tab and other tabs stay background-safe", () => {
+  for (const script of [
+    `tell application "Google Chrome" to set URL of active tab of front window to "https://example.com"`,
+    `tell application "Safari" to set URL of current tab of front window to "https://example.com"`,
+    `tell application "Safari" to set the URL of front document to "https://example.com"`,
+    `tell application "Safari" to set URL of document 1 to "https://example.com"`,
+    `tell application "Google Chrome"\n  tell active tab of front window to set URL to "https://example.com"\nend tell`,
+    `tell application "Google Chrome" to close active tab of front window`,
+    `tell application "Safari" to close current tab of window 1`,
+    `tell application "Google Chrome" to set active tab index of front window to 2`,
+    `tell application "Safari" to set current tab of front window to tab 3 of front window`,
+    // The review of W1-2: judged by target and verb, so a brain's other spellings are screen work too.
+    `tell application "Safari" to tell front document to set URL to "https://example.com"`,
+    `tell application "Safari" to tell document 1 to set URL to "https://example.com"`,
+    `tell application "Safari"\n  tell front document\n    set URL to "https://example.com"\n  end tell\nend tell`,
+    `tell application "Google Chrome" to set front window's active tab's URL to "https://example.com"`,
+    `tell application "Google Chrome" to set URL of (active tab of front window) to "https://example.com"`,
+    `tell application "Google Chrome" to close (active tab of front window)`,
+    `tell application "Google Chrome" to tell front window to close active tab`,
+    `tell application "Google Chrome" to execute active tab of front window javascript "location.href='https://example.com'"`,
+    `tell application "Safari" to do JavaScript "history.back()" in document 1`,
+    `tell application "Safari" to do JavaScript "location.href='https://example.com'" in current tab of front window`,
+    `tell application "Google Chrome" to go back active tab of front window`,
+    `tell application "Google Chrome" to reload active tab of front window`,
+    `tell application "Google Chrome" to tell front window to make new tab with properties {URL:"https://example.com"}`,
+    `tell application "Google Chrome" to close front window`,
+    `tell application "Safari" to close document 1`,
+    `tell application "Safari" to close front document`,
+    `tell application "Google Chrome" to set index of window 2 to 1`,
+  ]) assert.ok(FOCUS_APPLESCRIPT.test(script), `screen work: ${script}`);
+  for (const script of [
+    `tell application "Google Chrome" to get URL of active tab of front window`,
+    `tell application "Safari" to return name of current tab of front window`,
+    `tell application "Google Chrome" to get title of every tab of every window`,
+    `tell application "Spotify" to next track`,
+    `tell application "Google Chrome" to set URL of tab 3 of window 2 to "https://example.com"`,
+    `tell application "Safari" to set u to URL of front document`,
+    `tell application "Google Chrome" to set t to front window's active tab's URL`,
+    `tell application "Safari" to do JavaScript "document.title" in tab 2 of window 2`,
+    `tell application "Google Chrome" to close tab 3 of window 2`,
+    `tell application "Google Chrome" to reload tab 2 of window 3`,
+    `tell application "Google Chrome" to get URL of active tab of window 10`,
+  ]) assert.ok(!FOCUS_APPLESCRIPT.test(script), `background-safe: ${script}`);
+});
+
+/**
+ * RF-5: the ear's reflex was remembered 4 s from dispatch. A delegation for the SAME words that landed later
+ * (Live busy, a loaded Mac) found nothing and ran it again: a second ⌘W, a second Return, the text typed twice.
+ * A non-idempotent reflex is now kept until a delegation claims it, or for 30 s; past the 4 s window only the
+ * same words count (never a partial or a mismatch, which would undo or skip something new).
+ */
+test("RF-5: FiredReflexes keeps a non-idempotent reflex until claimed or 30 s; an idempotent one for the 4 s window; past 4 s only the same words reconcile", () => {
+  const clock = { t: 1_000_000 };
+  const fired = new FiredReflexes(() => clock.t, 4000);
+  const at = clock.t;
+  const rec = (id: string, phrase: string): void => {
+    const reflex = parseReflex(phrase)!;
+    fired.record({ id, phrase, reflex, source: "ear", earAt: at, matchedAt: at, dispatchedAt: clock.t, doneAt: clock.t, ok: true });
+  };
+  rec("close", "close this window");
+  rec("scroll", "scroll down");
+  rec("typed", "type hello");
+  clock.t += 4_500;
+  assert.equal(fired.peek("scroll down"), undefined, "a scroll is harmless to repeat: the 4 s window, as before");
+  assert.equal(fired.peek("type goodbye"), undefined, "past 4 s a different text is a new command: no mismatch, so no ⌘Z of the old one");
+  assert.equal(fired.peek("read me the headline close this window"), undefined, "past 4 s a longer request is the brain's whole");
+  const late = fired.reconcile("Jarhead, close this window.");
+  assert.equal(late?.kind, "done", "the late delegation for the same words is already done");
+  assert.equal(late?.fired.id, "close");
+  assert.equal(fired.reconcile("close this window"), undefined, "claimed once: the same words again are a new command");
+  clock.t += 26_000; // 30.5 s after dispatch
+  assert.equal(fired.peek("type hello"), undefined, "unclaimed, it lapses at 30 s");
+  assert.deepEqual(fired.recent().map((f) => f.id), []);
+  // Within the window everything is as it was: a mismatch and a partial still count.
+  rec("typed2", "type hello there");
+  clock.t += 1_000;
+  assert.equal(fired.peek("type hello world")?.kind, "mismatch");
+  rec("scroll2", "scroll down");
+  assert.equal(fired.peek("read me the headline scroll down")?.kind, "partial");
+});
+
+/**
+ * The review of W1-2: the hold must not swallow a new utterance of the same words. A typed line is remembered for the
+ * window only (Live is told it is done and does not delegate it), and the ear's newer hearing of the same words,
+ * left to Live, releases an older held reflex.
+ */
+test("RF-5: a typed reflex keeps the 4 s window only; heardAgain releases a held ear reflex past the window, never within it", () => {
+  const clock = { t: 1_000_000 };
+  const fired = new FiredReflexes(() => clock.t, 4000);
+  const rec = (id: string, phrase: string, source: "ear" | "typed"): void => {
+    fired.record({ id, phrase, reflex: parseReflex(phrase)!, source, earAt: clock.t, matchedAt: clock.t, dispatchedAt: clock.t, doneAt: clock.t, ok: true });
+  };
+  rec("typed", "press enter", "typed");
+  clock.t += 3_000;
+  assert.equal(fired.peek("press enter")?.fired.id, "typed", "within the window a delegation for the typed words is done");
+  clock.t += 2_000;
+  assert.equal(fired.peek("press enter"), undefined, "past it a spoken 'press enter' is a new command");
+
+  rec("ear", "close this window", "ear");
+  clock.t += 2_000;
+  fired.heardAgain("close this window");
+  assert.equal(fired.peek("close this window")?.fired.id, "ear", "within the window the delegation may still be the first utterance's");
+  clock.t += 8_000;
+  fired.heardAgain("open the pod bay doors");
+  assert.equal(fired.peek("close this window")?.kind, "done", "other words release nothing");
+  fired.heardAgain("Close this window.");
+  assert.equal(fired.peek("close this window"), undefined, "the same words heard again past the window: the next delegation is theirs");
+  assert.deepEqual(fired.recent().map((f) => f.id), []);
+});
+
+/**
+ * RF-5 (in flight): the ear's run is remembered only once it answers, so a delegation for the same words that lands
+ * while a key is still running found nothing and pressed it again. The runner joins any reflex that is not harmless
+ * to repeat while one with the same label is in flight, as it already did for a search.
+ */
+test("RF-5: a second run of the same key while the first is in flight joins it (one ⌘W, both shared); a scroll and a later run do not", async () => {
+  const keys: string[] = [];
+  const waiters: (() => void)[] = [];
+  class SlowKeys extends FakeHands {
+    override async request<T>(op: string, params: Record<string, unknown> = {}): Promise<T> {
+      if (op === "key") {
+        keys.push(String(params["combo"]));
+        await new Promise<void>((r) => waiters.push(r));
+      }
+      return super.request<T>(op);
+    }
+  }
+  const { runner } = makeRunner({}, new SlowKeys());
+  const reflexes = new ReflexRunner({ runner, frontmostApp: async () => "Finder" });
+  const ear = reflexes.run(parseReflex("close this window")!);
+  await new Promise((r) => setTimeout(r, 20));
+  const live = reflexes.run(parseReflex("Jarhead, close this window.")!);
+  await new Promise((r) => setTimeout(r, 20));
+  for (const w of waiters.splice(0)) w();
+  const [a, b] = await Promise.all([ear, live]);
+  assert.deepEqual(keys, ["cmd+w"], "one ⌘W");
+  assert.equal(a.shared, true);
+  assert.deepEqual(b, a, "the second caller got the first run's outcome");
+  // Settled: the same words again are a new command.
+  const again = reflexes.run(parseReflex("close this window")!);
+  await new Promise((r) => setTimeout(r, 20));
+  for (const w of waiters.splice(0)) w();
+  assert.equal((await again).shared, undefined);
+  assert.deepEqual(keys, ["cmd+w", "cmd+w"]);
 });
