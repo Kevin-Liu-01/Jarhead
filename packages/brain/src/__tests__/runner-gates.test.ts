@@ -6,7 +6,10 @@
  * Every command that would post keys or clicks if a gate failed is an `echo`, and every
  * AppleScript a `return` of a string, so a regression prints text and types nothing. The
  * agents are a recording fake, the files live under a temp home, and the one open_url
- * here names an address that the gate refuses before `open` could run.
+ * here names an address that the gate refuses before `open` could run. Every shell line
+ * that says `open` runs under a stand-in policy that refuses all of them, and every
+ * AppleScript that loads a page also asks for an administrator password, which the
+ * policy refuses: a regression shows the policy's refusal, and nothing opens.
  *
  * Where W1-6's keyboard-send rule belongs to policy.ts, the plumbing is proved with a
  * stand-in policy through the runner's `policy` seam. The same check with the shipped
@@ -14,13 +17,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyAction, HANDS_OFF_APPS, presenceGated, type ActionContext, type Decision } from "@jarhead/core";
 import { AgentRegistry, type AgentConnector } from "@jarhead/agents";
 import type { StartOptions } from "@jarhead/agents";
-import { ComputerToolset, ConfirmationState, FakeHands as DeskHands, isBusyResult } from "@jarhead/hands";
+import { ComputerToolset, ConfirmationState, FakeHands as DeskHands, NativeRequestError, isBusyResult, isHandsBusyMessage } from "@jarhead/hands";
 import { ToolRunner, resultText } from "../runner.ts";
 import { FakeHands, makeRunner, makeSink, makeTask } from "./fakes.ts";
 
@@ -32,21 +35,32 @@ function fakeHome(): string {
 
 const SLACK = "https://app.slack.com/client/T0123/C0456";
 
-/** Chrome in front on a page; records every op; JavaScript from Apple Events is on. */
+/**
+ * Chrome on a page; records every op. Knobs: `front` (the app in front), `jsOn` (JavaScript
+ * from Apple Events), `noAutomation` (every Apple Event to Chrome fails, so neither the page
+ * URL nor a page script can be read).
+ */
 class Chrome extends FakeHands {
   calls: { op: string; params: Record<string, unknown> }[] = [];
   url = SLACK;
+  front = "Google Chrome";
+  jsOn = true;
+  noAutomation = false;
   override async request<T>(op: string, params: Record<string, unknown> = {}): Promise<T> {
     this.calls.push({ op, params });
+    if (this.noAutomation && (op === "browser_url" || op === "browser_js")) throw new NativeRequestError({ code: "permission_denied", message: "Not authorized to send Apple events to Google Chrome." });
     switch (op) {
       case "frontmost":
-        return { app: "Google Chrome", pid: 7, window: null } as T;
+        return { app: this.front, pid: 7, window: null } as T;
       case "browser_url":
         return { url: this.url, title: "Slack | general" } as T;
       case "browser_js":
+        if (!this.jsOn) return { result: "missing value" } as T;
         return { result: String(params["script"]) === "1+1" ? "2" : JSON.stringify({ ok: true, tag: "div", name: "Message #general" }) } as T;
       case "focused_text":
-        return { role: "AXTextArea", secure: false, app: "Google Chrome" } as T;
+        return { role: "AXTextArea", secure: false, app: this.front } as T;
+      case "type":
+        return { characters: String(params["text"] ?? "").length, events: 1, via: "keys", attempts: 1, verified: true } as T;
       case "browser_navigate":
       case "key":
         return {} as T;
@@ -61,16 +75,25 @@ class Chrome extends FakeHands {
   typed(): number {
     return this.calls.filter((c) => c.op === "browser_js" && String(c.params["script"]) !== "1+1").length;
   }
+  /** Everything that reached the page or the keyboard: page scripts that typed, keystrokes typed, keys pressed. */
+  posted(): string[] {
+    return this.calls.flatMap((c) => (c.op === "browser_js" && String(c.params["script"]) !== "1+1" ? ["page"] : c.op === "type" ? [`type:${JSON.stringify(c.params["text"])}`] : c.op === "key" ? [`key:${String(c.params["combo"])}`] : []));
+  }
 }
 
 const run = (reason: string): Decision => ({ verdict: "run", reason });
 const confirm = (reason: string): Decision => ({ verdict: "confirm", reason });
 
-/** Stands in for W1-6's rule: a Return on a messaging page or in a messaging app sends, and asks. Everything else is the shipped policy. */
+/**
+ * Stands in for W1-6's rule (TRIAGE, the W1-6 / W1-9 contract): a Return, or typing with a line
+ * break, on a messaging page or in a messaging app sends, and asks. Everything else is the
+ * shipped policy.
+ */
 function sendRule(seen: ActionContext[]): (ctx: ActionContext) => Decision {
   return (ctx) => {
     seen.push(ctx);
-    if (ctx.kind === "key" && /^(return|enter)$/i.test(ctx.text ?? "") && presenceGated(ctx.app, ctx.url)) return ctx.confirmed ? run("confirmed") : confirm("that sends the message");
+    const sends = (ctx.kind === "key" && /^(return|enter)$/i.test(ctx.text ?? "")) || (ctx.kind === "type" && /[\r\n]/.test(ctx.text ?? ""));
+    if (sends && presenceGated(ctx.app, ctx.url)) return ctx.confirmed ? run("confirmed") : confirm("that sends the message");
     return classifyAction(ctx);
   };
 }
@@ -160,6 +183,89 @@ test("RAIL-7 (browser): a yes to type on a page covers that text, that page and 
   assert.equal(hands.typed(), 1, "the identical call runs once");
 });
 
+for (const jsOn of [true, false]) {
+  test(`RAIL-1: a line break in browser_type's text is a Return: with no submit, on app.slack.com, JavaScript ${jsOn ? "on" : "off"}, it asks before anything is typed; the yes types it once`, async () => {
+    const hands = new Chrome();
+    hands.jsOn = jsOn;
+    const seen: ActionContext[] = [];
+    const { runner, toolset } = makeRunner({ home: fakeHome(), policy: sendRule(seen) }, hands);
+    runner.attach(makeSink().sink, makeTask("tell the general channel I'm running late"));
+    const args = { text: "running late, start without me\n", app: "Google Chrome" };
+    const asked = await runner.run("browser_type", args);
+    assert.equal(asked.result.kind, "needs-confirmation", resultText(asked.result));
+    assert.match(resultText(asked.result), /line break/, "the question says the line break is a Return");
+    assert.match(resultText(asked.result), /app\.slack\.com/);
+    assert.deepEqual(hands.posted(), [], "nothing typed before the yes");
+    assert.ok(seen.some((c) => c.kind === "key" && c.text === "Return" && c.url === SLACK), "the Return was judged on the page");
+    assert.ok(seen.some((c) => c.kind === "type" && c.text === args.text && c.url === SLACK), "and the typing, as typing with a line break");
+
+    toolset.confirmations.arm(); // Kevin: "yes"
+    const ran = await runner.run("browser_type", args);
+    assert.equal(ran.result.kind, "text", resultText(ran.result));
+    assert.deepEqual(hands.posted(), [jsOn ? "page" : `type:${JSON.stringify(args.text)}`], "typed once, and no extra Return");
+  });
+}
+
+test("RAIL-1: a send when the page address cannot be read (no Automation grant for Chrome) asks; the yes types and presses Return once", async () => {
+  const hands = new Chrome();
+  hands.noAutomation = true;
+  const seen: ActionContext[] = [];
+  const { runner, toolset } = makeRunner({ home: fakeHome(), policy: sendRule(seen) }, hands);
+  runner.attach(makeSink().sink, makeTask("tell the general channel I'm running late"));
+  const args = { text: "running late, start without me", submit: true, app: "Google Chrome" };
+  const asked = await runner.run("browser_type", args);
+  assert.equal(asked.result.kind, "needs-confirmation", resultText(asked.result));
+  assert.match(resultText(asked.result), /the page address could not be read, and Return may send a message/);
+  assert.deepEqual(hands.posted(), [], "nothing typed, no Return");
+  assert.equal(seen.find((c) => c.kind === "key")?.url, undefined, "the Return was judged with no URL, which no rule can match");
+
+  const line = await runner.run("browser_type", { text: "running late\n", app: "Google Chrome" });
+  assert.equal(line.result.kind, "needs-confirmation", `a line break with no page address asks too: ${resultText(line.result)}`);
+  assert.deepEqual(hands.posted(), []);
+
+  const draft = await runner.run("browser_type", { text: "running late", app: "Google Chrome" });
+  assert.equal(draft.result.kind, "text", `typing that sends nothing does not ask: ${resultText(draft.result)}`);
+  hands.calls.length = 0;
+
+  await runner.run("browser_type", args);
+  toolset.confirmations.arm(); // Kevin: "yes"
+  const ran = await runner.run("browser_type", args);
+  assert.equal(ran.result.kind, "text", resultText(ran.result));
+  assert.deepEqual(hands.posted(), [`type:${JSON.stringify(args.text)}`, "key:Return"]);
+});
+
+test("browser_type posts keyboard keys only into a browser that is in front: submit with another app in front, or no page script, is refused before anything is typed", async () => {
+  const browser = (jsOn: boolean): { hands: Chrome; runner: ToolRunner } => {
+    const hands = new Chrome();
+    hands.url = "https://docs.example.com/page";
+    hands.front = "Terminal"; // Chrome is the browser named; Terminal has the keyboard
+    hands.jsOn = jsOn;
+    const { runner } = makeRunner({ home: fakeHome() }, hands);
+    runner.attach(makeSink().sink, makeTask("search the docs"));
+    return { hands, runner };
+  };
+
+  const off = browser(false);
+  const submit = await off.runner.run("browser_type", { text: "rm -rf build", submit: true, app: "Google Chrome" });
+  assert.match(resultText(submit.result), /^error: refused: Terminal is in front, so the keys would land there\. Bring Google Chrome to the front first/);
+  const keys = await off.runner.run("browser_type", { text: "hello", app: "Google Chrome" });
+  assert.match(resultText(keys.result), /^error: refused: Terminal is in front/, "the keyboard fallback types into the app in front");
+  assert.deepEqual(off.hands.posted(), [], "nothing typed, no Return");
+
+  const on = browser(true);
+  const enter = await on.runner.run("browser_type", { text: "hello", submit: true, app: "Google Chrome" });
+  assert.match(resultText(enter.result), /^error: refused: Terminal is in front/, "the Return goes through the keyboard even when the page types");
+  const page = await on.runner.run("browser_type", { text: "hello", app: "Google Chrome" });
+  assert.equal(page.result.kind, "text", `a page script types into Chrome from behind: ${resultText(page.result)}`);
+  assert.deepEqual(on.hands.posted(), ["page"]);
+
+  on.hands.front = "Google Chrome";
+  on.hands.calls.length = 0;
+  const front = await on.runner.run("browser_type", { text: "hello", submit: true, app: "Google Chrome" });
+  assert.equal(front.result.kind, "text", resultText(front.result));
+  assert.deepEqual(on.hands.posted(), ["page", "key:Return"]);
+});
+
 // ------------------------------------------------------------------------ RAIL-9
 
 test("RAIL-9 (R7b): browser_navigate takes the URL table first: a private host nobody named and http from the internet are refused; named, it loads", async () => {
@@ -188,6 +294,66 @@ test("RAIL-9: open_url takes the URL table first: a private host nobody named an
   assert.match(resultText(lan.result), /refused: jh-gates-test\.internal is a private address/);
   const http = await runner.run("open_url", { url: "http://jh-gates-test.invalid/" });
   assert.match(resultText(http.result), /refused: only https/);
+});
+
+/** Stands in for the policy where a gate failure would run `open`: it refuses every command, so nothing opens either way. */
+function nothingRuns(seen: ActionContext[]): (ctx: ActionContext) => Decision {
+  return (ctx) => {
+    seen.push(ctx);
+    return ctx.kind === "run_shell" ? { verdict: "refuse", reason: "stand-in: nothing runs here" } : classifyAction(ctx);
+  };
+}
+
+test("RAIL-9: run_shell's `open` meets the URL table under every spelling: a private host nobody named, file://, http from the internet, other schemes, and a URL fed through xargs, sh -c or osascript are refused first", async () => {
+  const seen: ActionContext[] = [];
+  const { runner } = makeRunner({ home: fakeHome(), policy: nothingRuns(seen) });
+  runner.attach(makeSink().sink, makeTask("what's the weather"));
+  const refused: [string, RegExp][] = [
+    ["open http://192.168.1.1/apply.cgi?action=reboot", /192\.168\.1\.1 is a private address/],
+    ["/usr/bin/open -a Safari 'http://192.168.1.1/'", /192\.168\.1\.1 is a private address/],
+    ["open file:///etc/passwd", /file:\/\/ is what the file tools are for/],
+    ["open http://example.com/", /only https is fetched from the internet/],
+    ["open facetime://+15555550100", /only http and https URLs are opened \(got facetime:\)/],
+    [`sh -c 'open "http://192.168.1.1/"'`, /192\.168\.1\.1 is a private address/],
+    ["echo http://192.168.1.1/ | xargs open", /192\.168\.1\.1 is a private address/],
+    ["u=http://192.168.1.1/; open \"$u\"", /192\.168\.1\.1 is a private address/],
+    ["o''pen http://192.168.1.1/", /192\.168\.1\.1 is a private address/],
+    ["sudo -u kevin open http://10.0.0.1/", /10\.0\.0\.1 is a private address/],
+    [`osascript -e 'open location "http://192.168.1.1/"'`, /192\.168\.1\.1 is a private address/],
+  ];
+  for (const [command, why] of refused) {
+    const r = await runner.run("run_shell", { command });
+    assert.match(resultText(r.result), new RegExp(`^error: refused: ${why.source}`), command);
+  }
+  assert.equal(seen.length, 0, "the URL table answered before the policy");
+  for (const command of ["open https://github.com/", "open -a Safari", "curl -s http://example.com/ > page.html && open page.html", `git commit -m "open http://localhost:3000 to test"`]) {
+    const r = await runner.run("run_shell", { command });
+    assert.match(resultText(r.result), /^error: refused: stand-in/, `${command}: the URL table lets it by`);
+  }
+  runner.attach(makeSink().sink, makeTask("open the router page at 192.168.1.1"));
+  const named = await runner.run("run_shell", { command: "open http://192.168.1.1/" });
+  assert.match(resultText(named.result), /^error: refused: stand-in/, "named, it passes the URL table");
+});
+
+test("RAIL-9: an AppleScript that loads a page meets the URL table: open location, set URL, a URL property, do shell script open; a computed URL cannot be checked", async () => {
+  const { runner } = makeRunner({ home: fakeHome() });
+  runner.attach(makeSink().sink, makeTask("what's the weather"));
+  // The policy refuses this line, so a gate that missed opens nothing either.
+  const ADMIN = '\ndo shell script "true" with administrator privileges';
+  const refused: [string, RegExp][] = [
+    ['open location "http://192.168.1.1/apply.cgi?action=reboot"', /192\.168\.1\.1 is a private address/],
+    ['tell application "Safari" to set URL of document 1 to "http://192.168.1.1/"', /192\.168\.1\.1 is a private address/],
+    ['tell application "Google Chrome" to make new tab at end of tabs of window 1 with properties {URL:"file:///etc/passwd"}', /file:\/\/ is what the file tools are for/],
+    ['do shell script "open http://192.168.1.1/"', /192\.168\.1\.1 is a private address/],
+    ['open location "http://192.168." & "1.1/"', /192\.168\.1\.1 is a private address/],
+    ['set u to "http://192.168.1.1/"\nopen location u', /open location with a computed URL cannot be checked/],
+  ];
+  for (const [script, why] of refused) {
+    const r = await runner.run("applescript", { script: script + ADMIN });
+    assert.match(resultText(r.result), new RegExp(`^error: refused: ${why.source}`), script);
+  }
+  const ok = await runner.run("applescript", { script: `open location "https://github.com/"${ADMIN}` });
+  assert.match(resultText(ok.result), /^error: refused: .*administrator password/, "https passes the URL table and meets the policy");
 });
 
 // ------------------------------------------------------------- RAIL-7, arguments
@@ -295,9 +461,9 @@ const KEYSTROKE_BY_SHELL = `echo osascript -e 'tell application "System Events" 
 /** Says keystroke, as the gates read it; returns a string, so a failed gate types nothing. */
 const KEYSTROKE_SCRIPT = 'return "keystroke"';
 
-function deskRunner(hands: DeskHands, policy?: (ctx: ActionContext) => Decision): { runner: ToolRunner; toolset: ComputerToolset } {
+function deskRunner(hands: DeskHands, policy?: (ctx: ActionContext) => Decision, now?: () => number): { runner: ToolRunner; toolset: ComputerToolset } {
   const toolset = new ComputerToolset({ hands, confirmations: new ConfirmationState() });
-  const runner = new ToolRunner({ toolset, agents: new AgentRegistry([], 0), stateDir: mkdtempSync(join(tmpdir(), "jh-gates-state-")), home: fakeHome(), ...(policy ? { policy } : {}) });
+  const runner = new ToolRunner({ toolset, agents: new AgentRegistry([], 0), stateDir: mkdtempSync(join(tmpdir(), "jh-gates-state-")), home: fakeHome(), ...(policy ? { policy } : {}), ...(now ? { now } : {}) });
   runner.attach(makeSink().sink, makeTask("type it for me"));
   return { runner, toolset };
 }
@@ -328,20 +494,88 @@ test("RAIL-8 (R10, runner half): run_shell keystrokes by osascript read the app 
   assert.equal(seen.find((c) => c.kind === "run_shell")?.app, undefined);
 });
 
-test("RAIL-13 (TS half): while Kevin typed 200 ms ago an applescript or shell keystroke is held, nothing runs, the lanes read it as busy, and a yes stays armed for the retry", async () => {
+test("RAIL-8: osascript under any spelling, or with a script the line does not show, reads the app in front and Kevin's hands; a script on the line with no keys reads neither", async () => {
+  const hands = new DeskHands();
+  hands.frontApp = "1Password";
+  const seen: ActionContext[] = [];
+  const { runner } = deskRunner(hands, nothingRuns(seen));
+  const unseen = [
+    `osa''script -e 'tell application "System Events" to keystroke "x"'`,
+    `osa\\script -e 'tell application "System Events" to keystroke "x"'`,
+    `osascript -e 'tell app "System Events" to key''stroke "x"'`,
+    "osascript /tmp/jh-gates-script.scpt",
+    `osascript -e "$(cat /tmp/jh-gates-script)"`,
+    "osascript < /tmp/jh-gates-script",
+    "/usr/bin/osascript -l JavaScript -",
+  ];
+  for (const command of unseen) {
+    seen.length = 0;
+    const idle = hands.named("user_idle").length;
+    const r = await runner.run("run_shell", { command });
+    assert.match(resultText(r.result), /^error: refused: stand-in/, command);
+    assert.equal(seen.find((c) => c.kind === "run_shell")?.app, "1Password", `${command}: judged against the app in front`);
+    assert.equal(hands.named("user_idle").length, idle + 1, `${command}: Kevin's hands read first`);
+  }
+  seen.length = 0;
+  const reads = { front: hands.named("frontmost").length, idle: hands.named("user_idle").length };
+  const plain = await runner.run("run_shell", { command: `osascript -e 'tell application "Spotify" to playpause'` });
+  assert.match(resultText(plain.result), /^error: refused: stand-in/);
+  assert.equal(seen.find((c) => c.kind === "run_shell")?.app, undefined, "a script on the line with no keys is not judged against the front app");
+  assert.deepEqual({ front: hands.named("frontmost").length, idle: hands.named("user_idle").length }, reads, "and reads nothing");
+});
+
+test("RAIL-7: a yes to a scripted keystroke covers the app that was in front; a yes in a folder reached by a link is not spent once the link points elsewhere", async () => {
+  const hands = new DeskHands();
+  hands.frontApp = "1Password";
+  const seen: ActionContext[] = [];
+  const { runner, toolset } = deskRunner(hands, frontRule(seen));
+  const asked = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
+  assert.equal(asked.result.kind, "needs-confirmation", resultText(asked.result));
+  toolset.confirmations.arm(); // Kevin: "yes", with 1Password in front
+  hands.frontApp = "Bitwarden";
+  const moved = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
+  assert.equal(moved.result.kind, "needs-confirmation", `the yes was said with 1Password in front: ${resultText(moved.result)}`);
+  assert.ok(seen.every((c) => c.confirmed !== true), "the yes was never spent");
+
+  const script = await runner.run("applescript", { script: KEYSTROKE_SCRIPT });
+  assert.equal(script.result.kind, "needs-confirmation", resultText(script.result));
+  toolset.confirmations.arm();
+  hands.frontApp = "1Password";
+  const scriptMoved = await runner.run("applescript", { script: KEYSTROKE_SCRIPT });
+  assert.equal(scriptMoved.result.kind, "needs-confirmation", `the script's yes was said with Bitwarden in front: ${resultText(scriptMoved.result)}`);
+
+  const home = fakeHome();
+  for (const p of ["proj-a", "proj-b"]) mkdirSync(join(home, p, "build"), { recursive: true });
+  symlinkSync(join(home, "proj-a"), join(home, "here"));
+  const { runner: shell, toolset: desk } = makeRunner({ home });
+  shell.attach(makeSink().sink, makeTask("clean the build folder in proj-a"));
+  const args = { command: "rm -rf build", cwd: join(home, "here") };
+  const ask = await shell.run("run_shell", args);
+  assert.equal(ask.result.kind, "needs-confirmation", resultText(ask.result));
+  desk.confirmations.arm(); // a yes while "here" is proj-a
+  unlinkSync(join(home, "here"));
+  symlinkSync(join(home, "proj-b"), join(home, "here"));
+  const retargeted = await shell.run("run_shell", args);
+  assert.equal(retargeted.result.kind, "needs-confirmation", "the same words now name proj-b");
+  assert.ok(existsSync(join(home, "proj-b", "build")), "proj-b/build is still there");
+  assert.ok(existsSync(join(home, "proj-a", "build")));
+});
+
+test("RAIL-13 (TS half): while Kevin typed 200 ms ago an applescript or shell keystroke is held in the helper's own busy words, so a lane retries it with no row; nothing runs; a yes stays armed for the retry", async () => {
   let t = 1_000_000;
   const hands = new DeskHands();
   hands.now = () => t;
   const seen: ActionContext[] = [];
-  const { runner, toolset } = deskRunner(hands, frontRule(seen));
+  const { runner, toolset } = deskRunner(hands, frontRule(seen), () => t);
 
   hands.kevinActed(t - 200);
   const shell = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
   assert.equal(shell.result.kind, "error", resultText(shell.result));
-  assert.match(resultText(shell.result), /^error: held: Kevin is typing/);
-  assert.ok(isBusyResult(shell.result), "a lane retries it silently, as it does the helper's busy refusal");
+  assert.equal(resultText(shell.result), "error: busy: Kevin used the keyboard/mouse 200 ms ago. Nothing was sent. Try again once Kevin stops.");
+  assert.ok(isBusyResult(shell.result), "a lane retries it, as it does the helper's busy refusal");
+  assert.ok(shell.result.kind === "error" && /^busy: /.test(shell.result.message) && isHandsBusyMessage(shell.result.message), "the lanes' quiet sink drops a 'busy: ' step while the retry runs");
   const script = await runner.run("applescript", { script: KEYSTROKE_SCRIPT });
-  assert.match(resultText(script.result), /^error: held: Kevin is typing/);
+  assert.match(resultText(script.result), /^error: busy: Kevin used the keyboard\/mouse 200 ms ago/);
   assert.ok(hands.named("user_idle").length >= 2, "read user_idle before each");
 
   const reads = hands.named("user_idle").length;
@@ -355,14 +589,32 @@ test("RAIL-13 (TS half): while Kevin typed 200 ms ago an applescript or shell ke
   assert.match(resultText(ran.result), /keystroke/, "echo ran");
 
   // A yes said before Kevin touched the keys is still there when he lets go.
+  t += 300;
   hands.frontApp = "1Password";
   const asked = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
   assert.equal(asked.result.kind, "needs-confirmation", resultText(asked.result));
   toolset.confirmations.arm();
   hands.kevinActed(t - 100);
   const held = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
-  assert.match(resultText(held.result), /^error: held: Kevin is typing/);
+  assert.match(resultText(held.result), /^error: busy: Kevin used the keyboard\/mouse/);
   t += 2_000;
   const after = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
   assert.equal(after.result.kind, "text", `the armed yes ran it: ${resultText(after.result)}`);
+});
+
+test("RAIL-13: Jarhead's own scripted keystroke is not Kevin's: the next one runs straight after it, and Kevin's own key after it still holds", async () => {
+  let t = 2_000_000;
+  const hands = new DeskHands();
+  hands.now = () => t;
+  const { runner } = deskRunner(hands, undefined, () => t);
+  const first = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
+  assert.equal(first.result.kind, "text", resultText(first.result));
+  hands.kevinActed(t + 20); // the helper saw System Events' keystroke land, and counts it as foreign
+  t += 200;
+  const second = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
+  assert.equal(second.result.kind, "text", `not held behind its own keystroke: ${resultText(second.result)}`);
+  t += 400;
+  hands.kevinActed(t - 50); // Kevin's own key, after Jarhead's
+  const third = await runner.run("run_shell", { command: KEYSTROKE_BY_SHELL });
+  assert.match(resultText(third.result), /^error: busy: Kevin used the keyboard\/mouse 50 ms ago/);
 });

@@ -38,6 +38,13 @@ const log = logger("brain.runner");
 /** Words in a script that post keys or clicks, or set a field through accessibility: they land in the app in front. */
 const SCRIPT_INPUT = /\b(keystroke|key ?code|click|set (the )?value|perform action)\b/i;
 
+/**
+ * Foreign input this close after Jarhead's own scripted post is that post. The helper
+ * counts System Events' keystrokes as foreign, so without this a second scripted
+ * keystroke would wait out the quiet window behind the first.
+ */
+const OWN_INPUT_SLACK_MS = 100;
+
 export interface RunnerOptions {
   readonly toolset: ComputerToolset;
   readonly agents: AgentRegistry;
@@ -134,6 +141,8 @@ export class ToolRunner {
     return this.opts.userName?.() || "Kevin";
   }
   private lastProgressAt = 0;
+  /** When this runner's last script that posts keys or clicks (applescript, or osascript in run_shell) finished. */
+  private ownInputAt = Number.NEGATIVE_INFINITY;
   /** Screenshots archived during this task, by the sha-256 of their bytes: the same frame twice is one file. */
   private readonly shotsThisTask = new Map<string, string>();
   /** What lives under <stateDir>/shots, kept current as the runner writes (built from disk on first use). */
@@ -632,16 +641,20 @@ export class ToolRunner {
     const background = args["background"] === true;
     const timeoutMs = Math.min(MAX_SHELL_TIMEOUT_MS, Math.max(1000, typeof args["timeout"] === "number" ? args["timeout"] * 1000 : DEFAULT_SHELL_TIMEOUT_MS));
     // The working directory is judged under both spellings: a command run from inside ~/.jarhead reaches env by its bare name.
-    const cwdReason = shellCwdReason(cwd, this.home, realPathOf(cwd));
+    const realCwd = realPathOf(cwd);
+    const cwdReason = shellCwdReason(cwd, this.home, realCwd);
     if (cwdReason) return { kind: "error", message: `refused: ${cwdReason}; it is on the never list` };
+    // `open <url>` is open_url by another door: the same URL table judges it.
+    const url = shellOpenUrlReason(command, this.request, this.userName);
+    if (url) return { kind: "error", message: `refused: ${url}` };
     // Keys and clicks sent through osascript land in the app in front, as the applescript tool's do: the gate learns which, and Kevin's hands hold them.
-    const posts = /\bosascript\b/.test(command) && SCRIPT_INPUT.test(command);
+    const posts = osascriptMayPost(command);
     const [app, held] = posts ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", undefined];
     if (held) return held;
-    // A yes covers this command, in this folder, in this mode, with this limit.
-    const key = confirmKey({ command, cwd, background, timeoutMs });
+    // A yes covers this command, in this folder (both spellings), in this mode, with this limit, and for keystrokes, with this app in front.
+    const key = confirmKey({ command, cwd, realCwd, background, timeoutMs, ...(posts ? { app } : {}) });
     const confirmed = this.opts.toolset.confirmations.consume("run_shell", key);
-    const decision = this.policy({ kind: "run_shell", text: command, confirmed, ownedPids: this.jobs.pids(), scratchRoots: this.scratchRoots(), home: this.home, cwd: realPathOf(cwd), repoRoot: this.repoRoot, userName: this.userName, ...(app ? { app } : {}) });
+    const decision = this.policy({ kind: "run_shell", text: command, confirmed, ownedPids: this.jobs.pids(), scratchRoots: this.scratchRoots(), home: this.home, cwd: realCwd, repoRoot: this.repoRoot, userName: this.userName, ...(app ? { app } : {}) });
     if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
     if (decision.verdict === "confirm") return this.ask(`run "${command.slice(0, 80)}"${cwd !== this.home ? ` in ${cwd}` : ""}${background ? " in the background" : ""}`, "run_shell", key, decision);
     if (background) {
@@ -661,6 +674,7 @@ export class ToolRunner {
         if (last) this.progress(`${command.split(/\s+/)[0]}: ${last}`);
       },
     });
+    if (posts) this.ownInputAt = this.now();
     return { kind: "text", text: describeShellResult(r, undefined, command) };
   }
 
@@ -770,14 +784,21 @@ export class ToolRunner {
   private async appleScript(args: Record<string, unknown>): Promise<ToolResult> {
     const script = String(args["script"] ?? "").trim();
     if (!script) return { kind: "error", message: "applescript needs a script" };
+    // `open location`, `set URL … to` and a `do shell script "open …"` load a page: the same URL table judges it.
+    const url = appleScriptUrlReason(script, this.request, this.userName);
+    if (url) return { kind: "error", message: `refused: ${url}` };
     // Keystrokes without a named target land in the frontmost app: the gate needs to know which, as the hands' type tool does, and Kevin's hands hold them.
-    const [app, held] = SCRIPT_INPUT.test(script) ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", undefined];
+    const posts = SCRIPT_INPUT.test(script) || osascriptMayPost(script);
+    const [app, held] = posts ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", undefined];
     if (held) return held;
-    const confirmed = this.opts.toolset.confirmations.consume("applescript", { script });
+    // A yes covers this script, and for keystrokes, with this app in front.
+    const key = confirmKey({ script, ...(posts ? { app } : {}) });
+    const confirmed = this.opts.toolset.confirmations.consume("applescript", key);
     const decision = classifyAppleScript({ script, confirmed, ownedPids: this.jobs.pids(), home: this.home, userName: this.userName, ...(app ? { app } : {}) });
     if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
-    if (decision.verdict === "confirm") return this.ask(`run an AppleScript (${script.split("\n")[0]?.slice(0, 60) ?? ""}…)`, "applescript", { script }, decision);
+    if (decision.verdict === "confirm") return this.ask(`run an AppleScript (${script.split("\n")[0]?.slice(0, 60) ?? ""}…)`, "applescript", key, decision);
     const r = await runAppleScript(script, { signal: this.signal, env: this.opts.env });
+    if (posts) this.ownInputAt = this.now();
     return { kind: "text", text: describeShellResult(r) };
   }
 
@@ -811,10 +832,12 @@ export class ToolRunner {
   /**
    * Kevin's hands win over scripted input too. Keys and clicks sent through osascript
    * never meet the helper's own busy check, so the runner reads `user_idle` first: his
-   * key, click or scroll within KEVIN_QUIET_MS holds the script. The line reads as the
-   * helper's busy refusal, so a lane retries it quietly once he stops. No helper, no
-   * answer: nothing is held. The helper counts osascript's posts as foreign too, so a
-   * second scripted keystroke right after a first waits out the same quiet window.
+   * key, click or scroll within KEVIN_QUIET_MS holds the script. The answer is the
+   * helper's own busy refusal, word for word in its head (`busy: Kevin used the
+   * keyboard/mouse`), so a lane retries it with no row on the timeline once he stops.
+   * No helper, no answer: nothing is held. The helper counts osascript's posts as
+   * foreign too, so input no later than this runner's own last scripted post (plus
+   * OWN_INPUT_SLACK_MS) is taken as that post and holds nothing.
    */
   private async heldByKevin(): Promise<ToolResult | undefined> {
     let idle: UserIdle | undefined;
@@ -825,8 +848,9 @@ export class ToolRunner {
     }
     const ms = idle?.foreignMs;
     if (typeof ms !== "number" || !(ms < KEVIN_QUIET_MS)) return undefined;
+    if (this.now() - ms <= this.ownInputAt + OWN_INPUT_SLACK_MS) return undefined;
     const who = this.userName;
-    return { kind: "error", message: `held: ${who} is typing (${who} used the keyboard/mouse ${Math.max(0, Math.round(ms))} ms ago). Nothing was sent. Try again once ${who} stops.` };
+    return { kind: "error", message: `busy: ${who} used the keyboard/mouse ${Math.max(0, Math.round(ms))} ms ago. Nothing was sent. Try again once ${who} stops.` };
   }
 
   private async clipboardRead(): Promise<ToolResult> {
@@ -1047,6 +1071,234 @@ export class ToolRunner {
 /** A short, stable stand-in for a long argument in a confirmation key. */
 function digest(text: string): string {
   return createHash("sha256").update(text).digest("hex");
+}
+
+// ------------------------------------------------- what a script line runs
+// Read the way the shell reads a line before it runs it, closely enough to find
+// osascript and open under any spelling. Approximate on purpose: a miss here only
+// leaves the policy's own reading, and a false hit only costs a probe or a URL check.
+
+/** The text with backslash escapes and quote marks read away: `osa''script`, `osa\script` and `"open" "http://…"` read as written. */
+function dequote(text: string): string {
+  return text.replace(/\\(.)/gs, "$1").replace(/["']/g, "");
+}
+
+/** `osascript` as a word, under a path or not, once quotes and backslashes are read away. */
+const OSASCRIPT_WORD = /(?<![\w.-])osascript(?![\w.-])/gi;
+
+/**
+ * Whether a line may post keys or clicks through osascript: osascript is in it, and its
+ * script says keystroke, key code or click, or is not all on the line (a script file,
+ * stdin, a heredoc, a variable or a command substitution). Either way the front app is
+ * read and Kevin's hands hold it.
+ */
+function osascriptMayPost(text: string): boolean {
+  const bare = dequote(text);
+  if (!new RegExp(OSASCRIPT_WORD.source, "i").test(bare)) return false;
+  if (SCRIPT_INPUT.test(bare)) return true;
+  if (/[`$<|]/.test(bare)) return true;
+  for (const m of bare.matchAll(OSASCRIPT_WORD)) {
+    const rest = bare.slice((m.index ?? 0) + m[0].length);
+    if (!/^(?:\s+-(?:[ls]\s*\S+|i))*\s+-e(?:\s|$)/.test(rest)) return true;
+  }
+  return false;
+}
+
+/**
+ * Programs that run the command after them, each with the flags that take the next word
+ * as their value. Their flags (and a duration, for timeout and nice) come first.
+ */
+const SHELL_WRAPPERS: ReadonlyMap<string, RegExp | undefined> = new Map<string, RegExp | undefined>([
+  ["sudo", /^-[ugCDhpRrtU]$/],
+  ["doas", /^-[uC]$/],
+  ["env", /^-[uCSP]$/],
+  ["nice", /^-n$/],
+  ["timeout", /^-[sk]$/],
+  ["gtimeout", /^-[sk]$/],
+  ["xargs", /^-[IJLnPRSsE]$/],
+  ["exec", /^-a$/],
+  ["caffeinate", /^-[tw]$/],
+  ...["command", "nohup", "time", "builtin", "then", "do", "else", "if", "while", "until", "!", "{"].map((w): [string, undefined] => [w, undefined]),
+]);
+const INNER_SHELL = /^(?:ba|z|k|da|fi|c|tc)?sh$/;
+
+/** A line as statements of words: split at `;`, `&`, `|`, `(`, `)`, backticks, `$(` and newlines outside quotes, quotes and backslashes read away. */
+function shellStatements(command: string): string[][] {
+  const out: string[][] = [];
+  let words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: string | undefined;
+  const endWord = (): void => {
+    if (inWord) words.push(word);
+    word = "";
+    inWord = false;
+  };
+  const endStatement = (): void => {
+    endWord();
+    if (words.length) out.push(words);
+    words = [];
+  };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote) {
+      if (ch === quote) quote = undefined;
+      else if (quote === '"' && ch === "\\" && i + 1 < command.length) word += command[++i];
+      else word += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inWord = true;
+    } else if (ch === "\\") {
+      if (i + 1 < command.length) word += command[++i];
+      inWord = true;
+    } else if (ch === "\n" || ch === ";" || ch === "&" || ch === "|" || ch === "(" || ch === ")" || ch === "`") {
+      endStatement();
+    } else if (ch === "$" && command[i + 1] === "(") {
+      endStatement();
+      i++;
+    } else if (/\s/.test(ch)) {
+      endWord();
+    } else {
+      word += ch;
+      inWord = true;
+    }
+  }
+  endStatement();
+  // A substitution inside double quotes is a command too.
+  for (const m of command.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+    const inner = m[1] ?? m[2] ?? "";
+    if (inner.trim() && inner !== command) out.push(...shellStatements(inner));
+  }
+  return out;
+}
+
+/** The program a statement runs, past assignments and wrappers, as its basename; its arguments; whether xargs feeds it. */
+function commandOf(words: readonly string[]): { head: string; args: string[]; xargs: boolean } {
+  let i = 0;
+  let xargs = false;
+  while (i < words.length) {
+    const w = words[i]!;
+    if (/^[A-Za-z_]\w*=/.test(w)) {
+      i++;
+      continue;
+    }
+    const wrapper = baseName(w);
+    if (!SHELL_WRAPPERS.has(wrapper)) break;
+    const takesValue = SHELL_WRAPPERS.get(wrapper);
+    if (wrapper === "xargs") xargs = true;
+    i++;
+    while (i < words.length && (words[i]!.startsWith("-") || /^\d+(?:\.\d+)?[smhd]?$/.test(words[i]!))) {
+      if (takesValue?.test(words[i++]!)) i++;
+    }
+  }
+  return { head: words[i] === undefined ? "" : baseName(words[i]!).toLowerCase(), args: words.slice(i + 1), xargs };
+}
+
+function baseName(word: string): string {
+  return word.slice(word.lastIndexOf("/") + 1);
+}
+
+/**
+ * A URL as a word: a scheme with `://`, or one of the schemes that need no slashes and
+ * run, call or send something. Read in text with its quotes and backslashes gone.
+ */
+const URL_SHAPED = /(?<![\w+.-])(?:[a-z][a-z0-9+.-]+:\/\/|(?:file|javascript|data|mailto|tel|sms|facetime(?:-audio)?):)[^\s;|&<>(){}`]*/gi;
+
+/** Why `open` may not load this URL, by the one URL table; open_url's own words for any scheme but http and https. */
+function openedUrlReason(url: string, request: string, userName: string): string | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined; // not a URL after all; open treats it as a path
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:" && u.protocol !== "file:") return `only http and https URLs are opened (got ${u.protocol})`;
+  const d = classifyUrl({ url, request, userName });
+  return d.verdict === "run" ? undefined : d.reason;
+}
+
+/** The first URL in `text` the URL table refuses, as its reason. */
+function urlsReason(text: string, request: string, userName: string): string | undefined {
+  for (const m of text.matchAll(URL_SHAPED)) {
+    const why = openedUrlReason(m[0], request, userName);
+    if (why) return why;
+  }
+  return undefined;
+}
+
+/**
+ * Why a shell line may not run, when it loads a page open_url would refuse. `open` (any
+ * spelling, behind any wrapper, inside `sh -c`, `eval` or `$(…)`) has its URLs judged.
+ * When its arguments come from elsewhere (xargs, a variable, a substitution), every URL
+ * in the line is judged. An osascript in the line has its scripts read as the
+ * applescript tool's are.
+ */
+function shellOpenUrlReason(command: string, request: string, userName: string, depth = 0): string | undefined {
+  if (depth > 3) return undefined;
+  const substitutes = /[`$]/.test(command);
+  let wholeLine = false;
+  for (const words of shellStatements(command)) {
+    const { head, args, xargs } = commandOf(words);
+    if (head === "open") {
+      const why = urlsReason(args.join(" "), request, userName);
+      if (why) return why;
+      if (xargs || substitutes) wholeLine = true;
+    } else if (head === "eval") {
+      const why = shellOpenUrlReason(args.join(" "), request, userName, depth + 1);
+      if (why) return why;
+    } else if (INNER_SHELL.test(head)) {
+      const c = args.findIndex((a) => /^-\w*c\w*$/.test(a));
+      const inner = c >= 0 ? args[c + 1] : undefined;
+      const why = inner ? shellOpenUrlReason(inner, request, userName, depth + 1) : undefined;
+      if (why) return why;
+    } else if (head === "osascript") {
+      const scripts = args.flatMap((a, i) => (args[i - 1] === "-e" ? [a] : []));
+      const why = scripts.length ? appleScriptUrlReason(scripts.join("\n"), request, userName, depth + 1) : undefined;
+      if (why) return why;
+    }
+  }
+  return wholeLine ? urlsReason(dequote(command), request, userName) : undefined;
+}
+
+/** `"a" & "b"` → `"ab"`, as the policy folds them, so a URL split across literals is one URL. */
+function foldLiterals(script: string): string {
+  let s = script;
+  for (;;) {
+    const next = s.replace(/"((?:[^"\\]|\\.)*)"\s*&\s*"((?:[^"\\]|\\.)*)"/g, '"$1$2"');
+    if (next === s) return s;
+    s = next;
+  }
+}
+
+/**
+ * Why an AppleScript may not run, when it loads a page open_url would refuse: `open location`,
+ * `set URL of … to`, a `URL:` property and `open "<url>"` take one literal URL, which meets the
+ * URL table; a computed one cannot be checked. `do shell script` literals are read as run_shell's.
+ */
+function appleScriptUrlReason(script: string, request: string, userName: string, depth = 0): string | undefined {
+  if (depth > 3) return undefined;
+  const folded = foldLiterals(script);
+  const LITERAL = /^"((?:[^"\\]|\\.)*)"/;
+  for (const m of folded.matchAll(/\b(open location|set\s+(?:the\s+)?URL\s+of\b[^\n]*?\bto|URL\s*:)\s*([^\n]*)/gi)) {
+    const arg = (m[2] ?? "").trim();
+    const lit = LITERAL.exec(arg);
+    const verb = /^open/i.test(m[1] ?? "") ? "open location" : /^set/i.test(m[1] ?? "") ? "set URL" : "a URL property";
+    if (!lit || /^[^,}]*&/.test(arg.slice(lit[0].length))) return `${verb} with a computed URL cannot be checked; make it one literal string, or use open_url`;
+    const why = openedUrlReason(dequote(lit[1] ?? "").trim(), request, userName);
+    if (why) return why;
+  }
+  for (const m of folded.matchAll(/\bopen\s+"((?:[^"\\]|\\.)*)"/gi)) {
+    const why = urlsReason(dequote(m[1] ?? ""), request, userName);
+    if (why) return why;
+  }
+  for (const m of folded.matchAll(/do shell script\s+"((?:[^"\\]|\\.)*)"/g)) {
+    const inner = (m[1] ?? "").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    const why = shellOpenUrlReason(inner, request, userName, depth + 1);
+    if (why) return why;
+  }
+  return undefined;
 }
 
 function isFiniteNumber(v: unknown): v is number {

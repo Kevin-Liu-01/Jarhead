@@ -20,8 +20,10 @@ import type { Point, Rect } from "@jarhead/protocol";
  * / `browser_navigate` in packages/core/src/policy.ts): payment and sign-in pages
  * ask, irreversible labels ask, password fields refuse; the reads run. A navigation
  * meets the URL table before the page policy (`classifyUrl`, as web_fetch and
- * open_url do), and `browser_type` with `submit` is one decision: the typing and the
- * Return that sends it, judged together on the page they land on.
+ * open_url do). `browser_type` that sends (`submit`, or a line break in the text) is
+ * one decision: the typing and the Return, judged together on the page they land on.
+ * A send on a page whose address cannot be read asks. Keys posted through the
+ * keyboard land in the app in front, so they go only to a browser that is in front.
  */
 
 const log = logger("brain.browser");
@@ -30,6 +32,8 @@ const log = logger("brain.browser");
 export const SCRIPTABLE_BROWSERS: readonly string[] = ["Google Chrome", "Safari", "Brave Browser", "Microsoft Edge", "Arc", "Chromium", "Vivaldi", "Opera", "Google Chrome Canary", "Safari Technology Preview"];
 
 const READ_CAP = 30_000;
+/** A line break in typed text: the keyboard presses it as Return (Input.swift), and a chat sends on Return. */
+const LINE_BREAK = /[\r\n]/;
 /** Off is re-probed after this long: Kevin may have turned the menu item on. */
 const OFF_RETRY_MS = 60_000;
 /** On is trusted this long before a re-probe. */
@@ -280,9 +284,14 @@ export class BrowserTools {
     const submit = args["submit"] === true;
     const app = await this.target(args["app"]);
     if (!app) return { kind: "error", message: "no scriptable browser is running (Chrome family or Safari)" };
+    // The Return, and the typing when the page cannot be scripted, go through the keyboard to the app in front.
+    const js = await this.jsAvailable(app);
+    if (submit || !js.ok) {
+      const away = await this.awayFromFront(app);
+      if (away) return away;
+    }
     const gate = await this.gate("browser_type", app, { text, submit }, { text, focus: true, submit });
     if (gate.result) return gate.result;
-    const js = await this.jsAvailable(app);
     let typed = false;
     if (js.ok) {
       const r = await this.runJs<{ ok: boolean; secure?: boolean; reason?: string; tag?: string; name?: string }>(app, typeScript(text));
@@ -292,6 +301,10 @@ export class BrowserTools {
     }
     if (!typed) {
       // No JavaScript, or the page's active element is not a field the script can fill: the keyboard.
+      if (js.ok && !submit) {
+        const away = await this.awayFromFront(app);
+        if (away) return away;
+      }
       const r = await this.opts.toolset.run("type", { text });
       if (r.kind !== "text") return r;
     }
@@ -346,11 +359,13 @@ export class BrowserTools {
 
   /**
    * The policy with what the browser knows: the page's URL (payment / sign-in
-   * pages ask), the control's words, whether the focused field is secure. With
-   * `submit`, the Return is judged in the same decision, as the key it is, on the
-   * same page: a messaging page asks before anything is typed. A "confirm" becomes
-   * the same handshake every other tool uses, and the yes is spent on these
-   * arguments in this browser on this page.
+   * pages ask), the control's words, whether the focused field is secure. Typing
+   * that sends (`submit`, or a line break in the text, which the keyboard presses
+   * as Return) is judged in the same decision as the Return it is, on the same
+   * page: a messaging page asks before anything is typed. A send on a page whose
+   * address could not be read asks too: no rule can tell that page from a chat. A
+   * "confirm" becomes the same handshake every other tool uses, and the yes is
+   * spent on these arguments in this browser on this page.
    */
   private async gate(kind: "browser_click" | "browser_type" | "browser_navigate", app: string, input: Record<string, unknown>, about: { target?: string | undefined; text?: string | undefined; url?: string | undefined; focus?: boolean; submit?: boolean }): Promise<{ decision: Decision; result?: ToolResult }> {
     const [page, focused] = await Promise.all([
@@ -361,13 +376,37 @@ export class BrowserTools {
     const key = confirmKey({ ...input, app, url });
     const confirmed = this.opts.toolset.confirmations.consume(kind, key);
     const on = { app, url, secureField: focused?.secure === true, confirmed, userName: this.userName };
-    const typing = this.policy({ kind, target: about.target, text: about.text, ...on });
-    const decision = about.submit ? strictest(typing, this.policy({ kind: "key", text: "Return", ...on })) : typing;
+    const breaks = kind === "browser_type" && LINE_BREAK.test(about.text ?? "");
+    const sends = about.submit === true || breaks;
+    let decision = this.policy({ kind, target: about.target, text: about.text, ...on });
+    if (sends) {
+      decision = strictest(decision, this.policy({ kind: "key", text: "Return", ...on }));
+      if (breaks) decision = strictest(decision, this.policy({ kind: "type", text: about.text, ...on }));
+      if (!url && !confirmed) decision = strictest(decision, { verdict: "confirm", reason: "the page address could not be read, and Return may send a message" });
+    }
     if (decision.verdict === "run") return { decision };
     if (decision.verdict === "refuse") return { decision, result: { kind: "error", message: `refused: ${decision.reason}` } };
-    const what = kind === "browser_navigate" ? `open ${url}` : kind === "browser_type" ? `type "${(about.text ?? "").slice(0, 60)}" into the page${about.submit ? " and press Return" : ""}` : `click "${about.target ?? ""}" on the page`;
-    const pending = this.opts.toolset.confirmations.ask(`${what} in ${app}`, kind, key);
-    return { decision, result: { kind: "needs-confirmation", pendingId: pending.id, question: `About to ${what} in ${app}${url && kind !== "browser_navigate" ? ` (${url.slice(0, 80)})` : ""}. ${decision.reason}. Ask ${this.userName} to confirm out loud, then stop; do not retry until ${this.userName} says yes.` } };
+    const typed = oneLine(about.text ?? "").slice(0, 60);
+    const what = kind === "browser_navigate" ? `open ${url}` : kind === "browser_type" ? `type "${typed}" into the page${about.submit ? " and press Return" : ""}` : `click "${about.target ?? ""}" on the page`;
+    const lineBreak = breaks ? " The text has a line break. A line break presses Return, which can send it." : "";
+    const pending = this.opts.toolset.confirmations.ask(`${what}${breaks ? ", line break included," : ""} in ${app}`, kind, key);
+    return { decision, result: { kind: "needs-confirmation", pendingId: pending.id, question: `About to ${what} in ${app}${url && kind !== "browser_navigate" ? ` (${url.slice(0, 80)})` : ""}.${lineBreak} ${decision.reason}. Ask ${this.userName} to confirm out loud, then stop; do not retry until ${this.userName} says yes.` } };
+  }
+
+  /**
+   * Keys posted through the keyboard land in the app in front, whatever the page that was
+   * judged. Unless `app` is in front, they stay unposted: the answer says to bring it forward.
+   */
+  private async awayFromFront(app: string): Promise<ToolResult | undefined> {
+    let front: string | undefined;
+    try {
+      front = (await this.opts.hands.request<FrontmostInfo>("frontmost", {}, 1500)).app;
+    } catch {
+      front = undefined;
+    }
+    if (front && sameBrowser(front, app)) return undefined;
+    const where = front ? `${front} is in front, so the keys would land there` : "the app in front could not be read, so the keys could land anywhere";
+    return { kind: "error", message: `refused: ${where}. Bring ${app} to the front first (focus_app), then try again.` };
   }
 
   // -------------------------------------------------------------- geometry
@@ -409,6 +448,18 @@ function strictest(a: Decision, b: Decision): Decision {
   if (rank[a.verdict] !== rank[b.verdict]) return rank[a.verdict] > rank[b.verdict] ? a : b;
   if (a.verdict !== "confirm" || a.reason === b.reason) return a;
   return { verdict: "confirm", reason: `${a.reason}; ${b.reason}`, ...(a.hold || b.hold ? { hold: true } : {}) };
+}
+
+/** One browser by either spelling: "Google Chrome" and "Chrome", "Brave Browser" and "Brave". */
+function sameBrowser(a: string, b: string): boolean {
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  return x === y || ` ${x} `.includes(` ${y} `) || ` ${y} `.includes(` ${x} `);
+}
+
+/** Line breaks and runs of space as one space, for a question that quotes typed text. */
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
 }
 
 function rounded(r: Rect): Rect {
