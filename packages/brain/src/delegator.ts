@@ -284,9 +284,45 @@ export const STOP_NAME_WAIT_MS = 350;
 /** The composite look is raced against this at delegation time; past it the task goes without the preamble. */
 export const LOOK_BUDGET_MS = 300;
 
+/**
+ * The transcript's merge gap (`GAP_MS`, packages/live/src/transcript.ts; @jarhead/live does not export it): a
+ * fragment that starts more than this after Kevin's open utterance ends begins a new one. The spoken-stop check
+ * runs that rule a step ahead of the transcript (`stopWords`). Pinned equal by delegator-utterance.test.ts.
+ */
+export const UTTERANCE_GAP_MS = 1400;
+/** The summary a delegation closes with when its session is gone under it (`dispose`). */
+const SESSION_ENDED = "the voice session ended";
+/** The name `threadSay` gets for Jarhead's own lines (the engine's asides), and the main thread's spoken name (`ThreadFloor`). */
+const JARHEAD_NAME = "Jarhead";
+
 const STOP_PATTERN = /^\s*(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/i;
+/** A stop word that ends the words heard ("… jarhead, stop."): Live closes a fragment with its punctuation or leaves it for the next. */
+const STOP_AT_END = /\b(stop|cancel)\b[.!]?\s*$/i;
+/**
+ * What opens a fragment before its words: the previous utterance's terminal punctuation (Live sends it as the next
+ * fragment's prefix, ". Never mind") and the name ("Jarhead, stop"). Stripped before STOP_PATTERN judges the head.
+ */
+const STOP_LEAD = /^[\s.,!?;:…\-–—]*(?:(?:hey\s+)?jarhead[\s.,!?;:…\-–—]*)?/i;
 /** Every stop word, anywhere in the words heard: where the name that may follow one begins. */
 const STOP_WORDS_ANYWHERE = /\b(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/gi;
+const SEP = String.raw`[\s,.!?;:…\-–—]`;
+/** The verbs a no names ("don't send it"), and what it names them on. */
+const REFUSED_ACT = String.raw`(?:do|send|post|reply|click|press|delete|submit|share|run|open|type|call|buy|pay|book|move|close|go)`;
+const REFUSED_OBJECT = String.raw`(?:it|that|this|them|(?:the|that|this)\s+\w+)`;
+const NEGATION = String.raw`(?:no(?:\s+way)?|nope|nah|negative|not\s+(?:now|yet|that|this|it|today)|(?:don['’]?t|do\s+not|never)(?:\s+${REFUSED_ACT}(?:\s+${REFUSED_OBJECT})?)?)`;
+const REFUSAL_FILLER = String.raw`(?:thanks|thank\s+you|please|sorry|wait|(?:hey\s+)?jarhead|i\s+changed\s+my\s+mind|leave\s+it|skip\s+it)`;
+/**
+ * An utterance that opens with a no ("no", "nope", "don't", "do not", "not now", "never"). Said while a
+ * spawned thread's question is the last thing Kevin was asked, it is his no to that question (`onDelegation`,
+ * path b‴). "No problem" and "no worries" are pleasantries, never a no.
+ */
+export const REFUSAL_HEAD = new RegExp(String.raw`^${SEP}*(?:(?:hey\s+)?jarhead${SEP}+)?(?:no(?!${SEP}+(?:problem|problems|worries|doubt)\b)|nope|nah|negative|not\s+(?:now|yet|that|this|it|today)|don['’]?t|do\s+not|never)\b`, "i");
+/**
+ * An utterance that is a no and nothing else: "no", "no thanks", "no, don't send it", "don't send that",
+ * "not now", "nope, not yet". A no with a request after it ("no, send it to Anna") answers the question and
+ * the rest goes on as a request.
+ */
+export const REFUSAL_PATTERN = new RegExp(String.raw`^${SEP}*(?:(?:hey\s+)?jarhead${SEP}+)?${NEGATION}(?:${SEP}+(?:${NEGATION}|${REFUSAL_FILLER}))*${SEP}*$`, "i");
 /** The thread verbs the grammar answers from the table (packages/brain/src/reflex.ts, `meta: true`). */
 const THREAD_VERBS: ReadonlySet<ReflexKind> = new Set<ReflexKind>(["thread_status", "thread_list", "thread_stop", "thread_pause", "thread_resume"]);
 /** A correction of the running task names another app too ("no, in Chrome"): never a thread of its own. */
@@ -311,6 +347,17 @@ const PER_CLICK_LINE = /^\s*(?:clicking|clicked|pressing|pressed|scrolling|scrol
  * else it carries (the runner's question quotes the command: `run "python edit_file.py"`).
  */
 const ASKS_KEVIN = /\?|\b(?:say yes|confirm|go ahead)\b/i;
+/**
+ * A thread's question said again, in the words the engine asks the main lane's with ("May I …? Say yes."):
+ * "Slack still asks: may I click "Send" in Slack? Say yes." `description` is the root's pending question.
+ */
+function askAgainLine(name: string, description: string | undefined): string {
+  let q = (description ?? "").replace(/\s+/g, " ").trim().replace(/[\s?.!]+$/, "");
+  if (!q) return `${name} is still waiting on your yes.`;
+  if (q.length > 140) q = `${q.slice(0, 140).replace(/\s+\S*$/, "")}…`;
+  if (/^[A-Z][a-z]/.test(q)) q = q[0]!.toLowerCase() + q.slice(1);
+  return `${name} still asks: may I ${q}? Say yes.`;
+}
 /** Every tool the brains have, by name: a spoken line that carries one of these is mechanics, not intent. */
 const TOOL_NAMES: ReadonlySet<string> = new Set(ALL_TOOL_SPECS.map((t) => t.name));
 const SNAKE_TOKENS = /\b[a-z]+(?:_[a-z]+)+\b/g;
@@ -431,13 +478,30 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   private prefired: Prefired | undefined;
   /** Utterances already considered for a prefire (id:text), so a settled utterance is tried once. */
   private prefireSeen = "";
+  /**
+   * The words Live's last delegation carried: the last utterance of its request, and its text then. A
+   * fragment that continues that utterance (the transcript lagging the delegation event, or a second
+   * breath inside the merge gap) adds only what follows. The request's own words are never judged again
+   * as a stop on the task they started ("cancel my three pm meeting" … "thanks").
+   */
+  private delegatedWords: { readonly itemId: string; readonly text: string } | undefined;
+  /**
+   * The root's pending id of the spawned thread's question Kevin moved on from: he asked the brain, or
+   * another thread, for something while it held the floor. It stays on the floor (that thread still
+   * waits on it), but it is no longer the last thing he was asked, so his next yes or no may be for what
+   * was said since. A yes asks it again first; a no goes on as a request. Cleared when it is asked again;
+   * a new question has a new id.
+   */
+  private movedOnFrom: string | undefined;
+  /** The session is gone (`dispose`): records still close, but the engine owns the phase from here. */
+  private disposed = false;
 
   constructor(private readonly opts: DelegatorOptions) {
     super();
     this.now = opts.now ?? Date.now;
     const { live } = opts;
     const onDelegation = (id: string, target: "client" | "responses", offsetMs: number): void => void this.onDelegation(id, target, offsetMs);
-    const onInput = (delta: string): void => this.onInputDelta(delta);
+    const onInput = (delta: string, startMs?: number): void => this.onInputDelta(delta, startMs);
     live.on("delegation", onDelegation);
     live.on("inputTranscript", onInput);
     this.unbind.push(() => live.off("delegation", onDelegation), () => live.off("inputTranscript", onInput));
@@ -466,15 +530,48 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     return last;
   }
 
+  /**
+   * The session this delegator served is gone: the server dropped it, a pause, a sleep, the watchdog.
+   * Nothing it started may outlive it. Every stop verb (Stop, Pause, sleep, a spoken stop) reaches the
+   * NEXT session's delegator, so a turn left running here would act on with nothing able to cut it.
+   * The running turn's signal is aborted, the brain's cancel sent, and its record closes as cancelled.
+   * A draining delegation's wait ends, and its record closes with its brain's own result: its threads
+   * are the scheduler's and carry on, so the record never says they were cancelled. A reflex that ran
+   * ahead and was never adopted closes once it settles. Quiet: nothing is said to a voice that is gone,
+   * and the engine owns its phase across the detach.
+   */
   dispose(): void {
+    this.disposed = true;
     for (const u of this.unbind.splice(0)) u();
     if (this.prefireTimer) clearTimeout(this.prefireTimer);
     this.prefireTimer = undefined;
-    if (this.prefired?.forgetTimer) clearTimeout(this.prefired.forgetTimer);
+    if (this.prefired) this.finishPrefire(this.prefired, SESSION_ENDED);
     if (this.pendingStop) clearTimeout(this.pendingStop.timer);
     this.pendingStop = undefined;
     for (const q of this.commentaryQueue.values()) if (q.timer) clearTimeout(q.timer);
     this.commentaryQueue.clear();
+    const run = this.running;
+    const parked = [...this.parked.values()];
+    this.running = undefined;
+    this.parked.clear();
+    // Oldest first, as cancel() closes them.
+    for (const slot of parked) {
+      slot.cut.abort();
+      this.addStep(slot.delegation.id, { kind: "note", text: `${SESSION_ENDED}; its threads carried on` });
+      this.closeSlot(slot, slot.result ?? { status: "done" });
+    }
+    if (run) {
+      run.abort.abort();
+      run.cut.abort();
+      this.closeSlot(run, { status: "cancelled", summary: SESSION_ENDED });
+    }
+    const ended = [...(run ? ["cancelled the running turn"] : []), ...(parked.length > 0 ? [`closed ${parked.length} draining (threads carry on)`] : [])];
+    if (ended.length > 0) log.info(`${SESSION_ENDED}: ${ended.join("; ")}`);
+    if (run) {
+      void Promise.resolve()
+        .then(() => this.opts.brain.cancel())
+        .catch((e: unknown) => log.warn(`brain cancel after ${SESSION_ENDED}: ${(e as Error).message}`));
+    }
   }
 
   /** The user's name as the lines the voice reads and the Console shows say it; "Kevin" when none is wired. */
@@ -490,16 +587,17 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * live the SPEECH is gated at once and the WORK cut waits STOP_NAME_WAIT_MS for a
    * name — "stop … the slack one" ends Slack alone; a bare stop still ends everything,
    * one beat later. With one thread or none the path is exactly the old one: the cut
-   * on the fragment. A settled utterance may be a reflex: not while the brain runs,
-   * but a draining delegation's hands are the scheduler's and Kevin's own "scroll
-   * down" still lands.
+   * on the fragment. The stop is judged on the utterance this fragment belongs to
+   * (`stopWords`), never glued onto the one before it. A settled utterance may be a
+   * reflex: not while the brain runs, but a draining delegation's hands are the
+   * scheduler's and Kevin's own "scroll down" still lands.
    */
-  private onInputDelta(delta: string): void {
+  private onInputDelta(delta: string, startMs?: number): void {
     this.lastInputAt = Date.now();
     this.sleepAnnouncedAt = undefined; // Kevin is speaking: the idle stretch is over
     const busy = this.running !== undefined || this.parked.size > 0 || (this.opts.threads?.running() ?? 0) > 0;
     if (busy) {
-      const recent = (this.opts.transcript.last("kevin")?.text ?? "") + delta;
+      const recent = this.stopWords(delta, startMs);
       // A stop is waiting for a name: these words may be it ("… the slack one").
       if (this.pendingStop) {
         this.pendingStop.text += delta;
@@ -507,7 +605,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         return;
       }
       const tail = recent.slice(-40);
-      if (STOP_PATTERN.test(tail.trimStart()) || /\b(stop|cancel)\b\s*$/i.test(tail)) {
+      if (STOP_PATTERN.test(tail.replace(STOP_LEAD, "")) || STOP_AT_END.test(tail)) {
         const threads = this.opts.threads;
         const live = threads?.liveNames().length ?? 0;
         // Two or more threads live: the word may be "stop … the slack one". Or the ear just stopped one by name and
@@ -530,6 +628,26 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     // The engine pushes this fragment into the transcript after us; judge the whole
     // utterance once it has been quiet for a moment, not the fragment.
     this.armPrefire(this.opts.prefireQuietMs ?? 180);
+  }
+
+  /**
+   * The words a spoken stop is judged on: the utterance this fragment belongs to, by the
+   * transcript's own rule run one step ahead (the engine adds the fragment after this
+   * listener). The fragment alone when it starts a new utterance: Kevin's last one is
+   * final, Jarhead spoke since, or it starts more than UTTERANCE_GAP_MS after that one
+   * ended. Otherwise the open utterance plus the fragment, less the words Live's last
+   * delegation already carried. The request that started a task is never read again as a
+   * stop on it: "cancel my three pm meeting" … "thanks" is not a cancel. A fragment with no
+   * timing (a test, a replay) continues the open utterance.
+   */
+  private stopWords(delta: string, startMs: number | undefined): string {
+    const items = this.opts.transcript.all();
+    const last = items[items.length - 1];
+    if (!last || last.speaker !== "kevin" || last.final) return delta;
+    if (typeof startMs === "number" && startMs - last.endMs > UTTERANCE_GAP_MS) return delta;
+    const carried = this.delegatedWords;
+    const fresh = carried?.itemId === last.id && last.text.startsWith(carried.text) ? last.text.slice(carried.text.length) : last.text;
+    return fresh + delta;
   }
 
   /**
@@ -848,7 +966,10 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const kevinSince = transcript.since(windowStart, "kevin");
     const requestItems = kevinSince.length > 0 ? kevinSince : [transcript.last("kevin")].filter((x): x is NonNullable<typeof x> => x !== undefined);
     const request = requestItems.map((i) => i.text).join(" ").trim() || `(no transcript yet — ask what ${this.userName} wants)`;
-    const lastText = requestItems[requestItems.length - 1]?.text ?? request;
+    const lastItem = requestItems[requestItems.length - 1];
+    const lastText = lastItem?.text ?? request;
+    // These words are this delegation's: a fragment that continues the utterance adds only what follows (stopWords).
+    if (lastItem) this.delegatedWords = { itemId: lastItem.id, text: lastItem.text };
     // Live rejects non-null delegation ids on appends while a Responses backend
     // owns the task; general session context is the only channel then.
     const appendId = target === "responses" ? null : liveId;
@@ -886,16 +1007,34 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const record = ledger ? (g: { app: string; actionClass: string; until: number }): void => ledger.append({ at: this.now(), type: "grant", chainId: confirmations.conversationId, app: g.app, actionClass: g.actionClass, until: g.until }) : undefined;
     const isYes = YES_PATTERN.test(transcript.last("kevin")?.text ?? "");
 
+    // A spawned thread's question on the floor, and whether it is still the last thing Kevin
+    // was asked: he has not asked the brain, or another thread, for anything since (`movedOnFrom`).
+    const threads = this.opts.threads;
+    const floor = threads ? this.threadFloor() : undefined;
+    const asked = floor ? confirmations.pending?.id : undefined;
+    const movedOn = asked !== undefined && asked === this.movedOnFrom;
+
     // (b) A yes while a spawned thread's question holds the floor: the yes is armed on
     // the root and that thread re-runs its tool on its own brain. The brain's running
-    // turn is not superseded — the yes was never for it.
-    const floor = isYes ? this.threadFloor() : undefined;
-    if (floor && this.opts.threads && confirmations.arm(record) !== undefined) {
+    // turn is not superseded — the yes was never for it. When Kevin moved on since the
+    // question was asked, the yes may be for what was said since ("should I delete the
+    // draft?"): nothing is armed, the question is asked again, and his next yes answers it.
+    if (floor && threads && isYes && movedOn) {
+      const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
+      this.appendIds.set(aside.id, appendId);
+      this.movedOnFrom = undefined;
+      this.addStep(aside.id, { kind: "note", text: `a yes after ${this.userName} moved on from ${floor.name}'s question: nothing armed; the question is asked again`, thread: floor.name });
+      this.sayAside(aside.id, appendId, askAgainLine(floor.name, confirmations.pending?.description));
+      this.closeRecord(aside.id, "done", `asked ${floor.name}'s question again`);
+      log.info(`delegation ${aside.id}: a yes after ${this.userName} moved on; ${floor.name}'s question asked again, nothing armed`);
+      return;
+    }
+    if (floor && threads && isYes && confirmations.arm(record) !== undefined) {
       const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
       this.appendIds.set(aside.id, appendId);
       this.addStep(aside.id, { kind: "note", text: `yes for ${floor.name}'s question; the running task carries on`, thread: floor.name });
       try {
-        await this.opts.threads.resume(floor.id);
+        await threads.resume(floor.id);
         this.closeRecord(aside.id, "done", `relayed the yes to ${floor.name}`);
       } catch (e) {
         this.closeRecord(aside.id, "failed", `could not relay the yes to ${floor.name}: ${(e as Error).message.slice(0, 200)}`);
@@ -903,11 +1042,37 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       return;
     }
 
+    // (b‴) A no while a spawned thread's question is the last thing Kevin was asked: that
+    // thread's answer, as the Console's Deny gives it. The thread cannot go on without the
+    // yes, so it stops ("Slack stopped."), and its question goes with it: no later yes can
+    // land the action he refused. A no and nothing else is answered here; the brain's
+    // running turn is untouched. A no with a request after it ("no, send it to Anna") goes on
+    // as that request. After Kevin moved on, a no may be for what was said since: it goes on
+    // as a request, and the question stays for a yes to ask again.
+    if (floor && threads && asked !== undefined && !isYes && !movedOn && REFUSAL_HEAD.test(lastText)) {
+      const whole = REFUSAL_PATTERN.test(lastText);
+      const aside = whole ? this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems) : undefined;
+      if (aside) this.appendIds.set(aside.id, appendId);
+      let stopped = false;
+      try {
+        stopped = await threads.stopNamed(floor.name);
+      } catch (e) {
+        log.warn(`stop ${floor.name} on ${this.userName}'s no: ${(e as Error).message}`);
+      }
+      // The thread was gone already (or the stop failed): its question still never waits for a later yes.
+      if (!stopped && confirmations.pending?.id === asked) confirmations.dropQuestion();
+      log.info(`${this.userName} said no to ${floor.name}'s question: ${stopped ? `${floor.name} stopped` : "its question dropped"}${aside ? "" : "; the rest goes on as a request"}`);
+      if (aside) {
+        this.addStep(aside.id, { kind: "note", text: `no for ${floor.name}'s question; ${stopped ? `${floor.name} stopped` : "the question dropped"}; the running task carries on`, thread: floor.name });
+        this.closeRecord(aside.id, "done", `${this.userName} said no to ${floor.name}`);
+        return;
+      }
+    }
+
     // (b′) A thread verb — "what is Spotify doing", "what are you doing", "stop the Slack
     // one", "pause Spotify" — is answered from the TABLE as an aside: zero generations,
     // and the running turn is untouched (the same words used to supersede it and cost
     // two generations). Judged on the whole request, then on an addressed last utterance.
-    const threads = this.opts.threads;
     const names = threads?.liveNames() ?? [];
     const verb = threads && !isYes ? this.threadVerb(request, requestItems, lastText, names) : undefined;
     if (threads && verb) {
@@ -932,10 +1097,12 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
     // (b″) Addressed to a live thread by name — "spotify, skip this song", "hey slack …",
     // "tell spotify to …" — is a follow-up turn on THAT thread's own brain, Kevin's circled
-    // marks riding along; the main brain's turn carries on.
+    // marks riding along; the main brain's turn carries on. Kevin moved on from the floor's
+    // question: what that thread says next may ask him something of its own.
     const addressed = threads && names.length > 0 && !isYes ? this.addressedThread(lastText, names) : undefined;
     const thread = addressed ? threads?.byNameLive(addressed.name) : undefined;
     if (threads && addressed && thread) {
+      if (asked !== undefined) this.movedOnFrom = asked;
       const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
       this.appendIds.set(aside.id, appendId);
       const { attachments: marks } = await this.takeMarks();
@@ -980,15 +1147,22 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         this.finish(old.delegation.id, { status: "cancelled", summary: "superseded by a new request" });
       }
       await brain.cancel();
+      // The session went while the old turn let go: nothing new starts on a delegator no stop can reach.
+      if (this.disposed) return;
     }
 
     const armed = isYes ? confirmations.arm(record) : undefined;
     const confirmation = armed !== undefined;
     if (!confirmation && confirmations.pending && !YES_PATTERN.test(request)) {
-      // A different request while a confirmation was pending drops it: a later
-      // "yes" must not fire an action Kevin has moved on from. The question only —
-      // moving on from a question is not a cut, so the standing grants stay.
-      confirmations.dropQuestion();
+      // A different request while a question was pending: a later "yes" must not fire an
+      // action Kevin has moved on from. The main brain's question is dropped (the question
+      // only: moving on from a question is not a cut, so the standing grants stay). A spawned
+      // thread's question stays on the floor, since that thread still waits on it, but the
+      // brain is about to speak: a later yes may be for what it asks, so that yes asks the
+      // thread's question again first (path b). A question asked while this request was on
+      // its way (not `asked`) is the newest thing Kevin heard, and stays as it is.
+      if (!this.threadFloor()) confirmations.dropQuestion();
+      else if (asked !== undefined && confirmations.pending.id === asked) this.movedOnFrom = asked;
     }
 
     const marks = new Marks(this.now);
@@ -1207,10 +1381,14 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     return { name, words };
   }
 
-  /** Jarhead's own line on an aside record (no slot): recorded, then to Live, never gated. */
+  /**
+   * Jarhead's own line on an aside record (no slot): recorded, then to Live, never gated. It is
+   * the answer Kevin just asked for ("what is Spotify doing", read off the table in a few ms), so
+   * it goes at once and is never held in the coalescer behind lines said a moment before.
+   */
   private sayAside(id: string, appendId: string | null, text: string): void {
     this.addStep(id, { kind: "commentary", text });
-    this.queueCommentary(id, appendId, text);
+    this.sendCommentary(appendId, text);
   }
 
   /** The composite look for `notes[0]`, or undefined: no hook, nothing known, or the LOOK_BUDGET_MS bound hit. */
@@ -1485,8 +1663,12 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * on the parent's delegation: never gated, coalesced with the rest, and spoken whether
    * the parent's brain is still running or the delegation is draining (the scheduler
    * formats the line; this only carries it). The commentary channel is the one channel.
+   * A line in Jarhead's own name (JARHEAD_NAME: the engine's aside for a thread verb the
+   * ear answered from the table, the main lane's promoted question) answers what Kevin
+   * just said, so it goes at once, as `sayAside` does. A spawned thread's lines coalesce.
    */
   threadSay(parentId: string, name: string, text: string): void {
+    const send = (liveId: string | null): void => (name === JARHEAD_NAME ? this.sendCommentary(liveId, text) : this.queueCommentary(parentId, liveId, text));
     const slot = this.slot(parentId);
     if (!slot) {
       // The parent's slot is gone — its turn closed and its hands drained, or the thread
@@ -1502,11 +1684,11 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       const liveId = kept ? (this.appendIds.get(parentId) ?? null) : null;
       log.info(`thread ${name}: "${text.slice(0, 60)}" for ${parentId} after its slot closed; spoken through ${liveId ? `delegation ${liveId}` : "the general context"}`);
       if (kept) this.addStep(parentId, { kind: "commentary", text, thread: name });
-      this.queueCommentary(parentId, liveId, text);
+      send(liveId);
       return;
     }
     this.addStep(parentId, { kind: "commentary", text, thread: name });
-    this.queueCommentary(parentId, slot.liveId, text);
+    send(slot.liveId);
   }
 
   /**
@@ -1703,8 +1885,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const now = this.now();
     const queue = this.commentaryQueue.get(id);
     if (windowMs <= 0 || (!queue?.texts.length && now - this.lastCommentaryAt >= windowMs)) {
-      this.lastCommentaryAt = now;
-      for (const chunk of chunkForAppend(text)) this.opts.live.appendCommentary(liveId, chunk);
+      this.sendCommentary(liveId, text, now);
       return;
     }
     const q = queue ?? { liveId, texts: [], timer: undefined };
@@ -1723,8 +1904,13 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     if (q.timer) clearTimeout(q.timer);
     const text = q.texts.join(" ").trim();
     if (!text) return;
-    this.lastCommentaryAt = this.now();
-    for (const chunk of chunkForAppend(text)) this.opts.live.appendCommentary(q.liveId, chunk);
+    this.sendCommentary(q.liveId, text);
+  }
+
+  /** One line to Live now, cut to the append budget; it opens a new coalescing window. */
+  private sendCommentary(liveId: string | null, text: string, at = this.now()): void {
+    this.lastCommentaryAt = at;
+    for (const chunk of chunkForAppend(text)) this.opts.live.appendCommentary(liveId, chunk);
   }
 
   /** A cancelled task says nothing more. */
@@ -1771,6 +1957,6 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       const rel = (v: number | undefined): string => (v === undefined ? "-" : String(v - t.delegatedAt));
       log.info(`delegation ${id} ${finished.status} in ${doneAt - slot.marks.startedAt}ms (speech@${rel(t.speechEndAt)} thinking@${rel(t.firstThinkingAt)} tool@${rel(t.firstToolAt)} action@${rel(t.firstActionAt)} commentary@${rel(t.firstCommentaryAt)}${t.reflex ? " reflex" : ""}${t.toolRoundTripMs?.length ? ` tools ${t.toolRoundTripMs.join("/")}ms` : ""})`);
     }
-    if (!this.running && this.parked.size === 0) this.emit("phase", "idle");
+    if (!this.running && this.parked.size === 0 && !this.disposed) this.emit("phase", "idle");
   }
 }
