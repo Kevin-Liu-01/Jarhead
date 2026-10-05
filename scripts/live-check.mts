@@ -27,22 +27,27 @@
  *   refuses everything else; a WebSocket other than the harness's own is refused. A spawn fence
  *   refuses every child process. Both are recorded in the report.
  *
- * Spend (live): a run refuses without `--i-accept-spend`. `--cap-usd` is $1.00 unless given lower; a
- * value over 1.00 refuses. The cap is the day's total across checks: today's spend in the harness's
- * ledger (`<out>/spend.ndjson`, one line when a check starts and one when it ends; a start with no end
- * counts its whole plan) plus the check's plan must fit under it, or the check is refused. Each check has its own cap in billed
- * seconds; a watchdog terminates the session the moment the larger of the server's meter and the
- * wall clock reaches it, refuses any further session, and presses Stop.
+ * Spend (live): a run refuses without both `--i-accept-spend` and `--cap-usd`, and with a cap over
+ * 1.00. The cap is the day's total across checks: today's spend in the harness's one ledger plus the
+ * check's plan must fit under it, or the check is refused. The ledger is
+ * `<state dir>/live-check/spend.ndjson` (`~/.jarhead` unless JARHEAD_STATE_DIR says otherwise), one
+ * line when a check starts and one when it ends; a start with no end counts its whole plan. It is the
+ * same file whatever `--out` says, so a new checkout or a new report folder starts no new budget, and
+ * the lock beside it (`live.lock`) lets one live check run at a time from any checkout. Each check has
+ * its own cap in billed seconds; a watchdog terminates the session the moment the larger of the
+ * server's meter and the wall clock reaches it, refuses any further session, and presses Stop. A dry
+ * run spends nothing and is never refused for spend: its simulated lines go to
+ * `<out>/spend.dry.ndjson`, for the record only.
  *
  * Every run writes one JSON report (`<out>/<day>/<id>-<name>-<time>.json`) and the engine's log
- * beside it. The exit code is 0 when every hard assertion passed, 1 when one failed, 2 when the run
- * was refused.
+ * beside it; `<out>` (default `build/live-check` in the checkout) also keeps the speech cache. The
+ * exit code is 0 when every hard assertion passed, 1 when one failed, 2 when the run was refused.
  */
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Brain, BrainResult, BrainSink, BrainTask } from "@jarhead/brain";
 import { REPO_ROOT, replaceDefaultSink, type JarheadConfig, type LogLevel } from "@jarhead/core";
@@ -99,8 +104,8 @@ export const PLANS: readonly CheckPlan[] = [
   { id: "LC-3", name: "append-cap", what: "A typed paste of 2,700 characters. Every append within 500 tokens.", capSeconds: 45, ttsUsd: 0 },
   { id: "LC-4", name: "night", what: "Typed \"that's all for now\", three times. The farewell is \"night.\" and the close lands in 1.8 s.", capSeconds: 45, ttsUsd: 0 },
   { id: "LC-5", name: "first-word", what: "Ten typed short questions. Typed send to the first audible frame.", capSeconds: 120, ttsUsd: 0 },
-  { id: "LC-6", name: "spoken-stop", what: "A spoken long story request, then a spoken stop, three times. Nothing reaches the sink inside the gate.", capSeconds: 90, ttsUsd: 0.003 },
-  { id: "LC-7", name: "room-talk", what: "Idle sleep at 1 min; room talk every 15 s. No reply, no delegation, sleep at about 60 s.", capSeconds: 100, ttsUsd: 0.006 },
+  { id: "LC-6", name: "spoken-stop", what: "A spoken long story request, then a spoken stop, three times. Nothing reaches the sink inside the gate, and the story does not come back after it.", capSeconds: 90, ttsUsd: 0.003 },
+  { id: "LC-7", name: "room-talk", what: "Idle sleep at 1 min; room talk every 15 s, commands among it. No reflex, no reply, no delegation, sleep at about 60 s.", capSeconds: 100, ttsUsd: 0.006 },
   { id: "LC-8", name: "drop", what: "A slow canned task; the socket drops; Stop (and Pause, then Go). The brain is cut once.", capSeconds: 90, ttsUsd: 0 },
   { id: "LC-9", name: "delegate", what: "Typed \"Jarhead, scroll down.\" then a haiku. The reflex scrolls; the brain writes; nothing is typed.", capSeconds: 60, ttsUsd: 0 },
   { id: "LC-10", name: "speech-end", what: "Spoken \"Jarhead, what's on my screen?\" five times. Speech end before the delegation.", capSeconds: 75, ttsUsd: 0.003 },
@@ -177,14 +182,17 @@ export function parseArgs(argv: readonly string[]): Args | { readonly error: str
   return { check, mode, acceptSpend, capUsd, out, oversize, keepState, scale };
 }
 
-/** The live run's refusals that need no ledger: --i-accept-spend, and a --cap-usd (default MAX_CAP_USD) in (0, 1.00]. Undefined = allowed. */
+/**
+ * The live run's refusals that need no ledger: --i-accept-spend, and a --cap-usd the operator states, in (0, 1.00].
+ * A dry run needs neither (its cap defaults to MAX_CAP_USD). Undefined = allowed.
+ */
 export function spendFlagsRefusal(args: Pick<Args, "mode" | "acceptSpend" | "capUsd">): string | undefined {
-  if (args.mode === "dry") {
-    if (args.capUsd !== undefined && !(args.capUsd > 0 && args.capUsd <= MAX_CAP_USD)) return `Refused. --cap-usd must be above 0 and at most ${MAX_CAP_USD.toFixed(2)}.`;
-    return undefined;
-  }
-  if (!args.acceptSpend) return `Refused. A live check opens a paid GPT-Live session. Pass --i-accept-spend --cap-usd ${MAX_CAP_USD.toFixed(2)} to run it, or --dry-run to run it offline.`;
-  if (args.capUsd !== undefined && !(args.capUsd > 0 && args.capUsd <= MAX_CAP_USD)) return `Refused. --cap-usd must be above 0 and at most ${MAX_CAP_USD.toFixed(2)}.`;
+  const cap = MAX_CAP_USD.toFixed(2);
+  const badCap = args.capUsd !== undefined && !(args.capUsd > 0 && args.capUsd <= MAX_CAP_USD);
+  if (args.mode === "dry") return badCap ? `Refused. --cap-usd must be above 0 and at most ${cap}.` : undefined;
+  if (!args.acceptSpend) return `Refused. A live check opens a paid GPT-Live session. Pass --i-accept-spend --cap-usd ${cap} to run it, or --dry-run to run it offline.`;
+  if (args.capUsd === undefined) return `Refused. State the day's cap. Pass --i-accept-spend --cap-usd ${cap} (at most ${cap}).`;
+  if (badCap) return `Refused. --cap-usd must be above 0 and at most ${cap}.`;
   return undefined;
 }
 
@@ -210,8 +218,78 @@ export function localDay(at: number = Date.now()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export function spendFile(out: string, mode: Mode): string {
-  return join(out, mode === "live" ? "spend.ndjson" : "spend.dry.ndjson");
+/** Jarhead's state dir as the app reads it: JARHEAD_STATE_DIR, else ~/.jarhead. */
+export function stateDirOf(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  const dir = env["JARHEAD_STATE_DIR"]?.trim() || join(home, ".jarhead");
+  return dir.startsWith("~") ? join(home, dir.slice(1)) : dir;
+}
+
+/** The one live spend ledger, whatever --out says: `<state dir>/live-check/spend.ndjson`. The live lock sits beside it. */
+export function liveSpendFile(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  return join(stateDirOf(env, home), "live-check", "spend.ndjson");
+}
+
+/** A dry run's simulated spend, kept for the record beside its reports. It never gates a run. */
+export function drySpendFile(out: string): string {
+  return join(out, "spend.dry.ndjson");
+}
+
+/** One live check at a time, from any checkout: the lock beside the ledger holds the pid of the run that took it. */
+export function liveLockFile(ledger: string): string {
+  return join(dirname(ledger), "live.lock");
+}
+
+function pidAlive(pid: number): boolean {
+  if (!(pid > 0)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: a process of another user holds the pid; it is alive all the same.
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Take the live lock: created exclusively, so two runs that start together cannot both get it. A lock whose run is
+ * gone (its pid dead, or an empty file older than a few seconds) is stale and is taken over.
+ */
+export function takeLiveLock(lock: string): { readonly ok: true } | { readonly ok: false; readonly pid: number } {
+  mkdirSync(dirname(lock), { recursive: true });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const fd = openSync(lock, "wx");
+      try {
+        writeSync(fd, `${process.pid}\n`);
+      } finally {
+        closeSync(fd);
+      }
+      return { ok: true };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    let text = "";
+    let ageMs = 0;
+    try {
+      text = readFileSync(lock, "utf8").trim();
+      ageMs = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue; // released between the two calls: try again
+    }
+    const pid = Number(text);
+    if (text === "" ? ageMs < 5000 : pidAlive(pid)) return { ok: false, pid: text === "" ? 0 : pid };
+    rmSync(lock, { force: true });
+  }
+  return { ok: false, pid: 0 };
+}
+
+/** Let the lock go, if it is still this run's. */
+export function releaseLiveLock(lock: string): void {
+  try {
+    if (Number(readFileSync(lock, "utf8").trim()) === process.pid) rmSync(lock, { force: true });
+  } catch {
+    // Gone already.
+  }
 }
 
 export function readSpend(file: string): SpendLine[] {
@@ -331,8 +409,21 @@ export interface ServerFrame {
   readonly s: number;
   readonly type: string;
   readonly bytes: number;
-  /** Output audio only: whether the frame is sound. */
+  /** Output audio only: whether the frame is sound, and how many ms of audio it carries. */
   readonly audible?: boolean;
+  readonly audioMs?: number;
+}
+
+/** A frame the engine handed to the speaker (here a record, never played): when, whether it was sound, and its length. */
+export interface SinkFrame {
+  readonly t: number;
+  readonly audible: boolean;
+  readonly ms: number;
+}
+
+/** Milliseconds of PCM16 mono audio at the session's rate. */
+export function pcmMs(pcm: Buffer): number {
+  return (pcm.length / 2 / SAMPLE_RATE) * 1000;
 }
 
 export interface ClientFrame {
@@ -386,12 +477,15 @@ export class Recorder {
   readonly usage: { readonly t: number; readonly s: number; readonly seconds: number }[] = [];
   readonly sessions: SessionRecord[] = [];
   readonly sockets: { readonly t: number; readonly s: number; readonly what: string; readonly code?: number }[] = [];
-  /** Every frame the engine handed to the speaker (here: a counter, never played), and whether the gate held at that moment. */
-  readonly sink: number[] = [];
+  /** Every frame the engine handed to the speaker (here: recorded, never played), with whether it was sound. */
+  readonly sink: SinkFrame[] = [];
   readonly marks: { readonly t: number; readonly name: string; readonly data?: Record<string, unknown> }[] = [];
   readonly events: { readonly t: number; readonly type: string; readonly detail?: string }[] = [];
   readonly phases: { readonly t: number; readonly phase: string }[] = [];
+  /** Every reflex the engine reports as run (the ear's, the delegator's prefire, a typed line's). */
   readonly reflexes: { readonly t: number; readonly label: string; readonly ms: number; readonly prefired: boolean }[] = [];
+  /** Every reflex row the ear wrote, run or not (a reflex that failed on the hands, or one the policy dropped, is here too). */
+  readonly reflexRows: { readonly t: number; readonly action: string; readonly source: string; readonly ok: boolean }[] = [];
   readonly net: NetAttempt[] = [];
   readonly spawns: { readonly t: number; readonly what: string }[] = [];
   /** Spoken lines: when each was fed, and its last audible frame (the speech end the harness knows exactly). */
@@ -419,9 +513,9 @@ export class Recorder {
     return this.marks.filter((m) => m.name === name).map((m) => m.t);
   }
 
-  onServer(s: number, raw: unknown): void {
+  /** `t`: when the frame arrived, stamped before the session dispatched it (so it is never later than what the engine did with it). */
+  onServer(s: number, raw: unknown, t: number = this.t()): void {
     const text = String(raw);
-    const t = this.t();
     let ev: Record<string, unknown>;
     try {
       ev = JSON.parse(text) as Record<string, unknown>;
@@ -435,7 +529,7 @@ export class Recorder {
     switch (type) {
       case "session.output_audio.delta": {
         const pcm = Buffer.from(String(ev["delta"] ?? ""), "base64");
-        frame = { ...frame, audible: rms16(pcm) >= AUDIBLE_RMS };
+        frame = { ...frame, audible: rms16(pcm) >= AUDIBLE_RMS, audioMs: pcmMs(pcm) };
         break;
       }
       case "session.input_transcript.delta":
@@ -519,6 +613,11 @@ export class Recorder {
     return this.server.filter((f) => f.type === "session.output_audio.delta" && f.audible === true && (s === undefined || f.s === s) && f.t >= fromT && f.t < toT);
   }
 
+  /** Milliseconds of sound the engine handed to the speaker in [fromT, toT). */
+  audibleSinkMs(fromT: number, toT: number): number {
+    return this.sink.filter((f) => f.audible && f.t >= fromT && f.t < toT).reduce((a, f) => a + f.ms, 0);
+  }
+
   /** The input delta at which Kevin's words since `fromT`, joined, first match `re` (a word the server split across deltas still counts). */
   heardAt(fromT: number, re: RegExp): TextDelta | undefined {
     let joined = "";
@@ -542,14 +641,16 @@ export class Recorder {
 
 /**
  * The socket the LiveSession talks through: every frame in and out is recorded on its way. `drop()`
- * closes the socket underneath the session, as a network drop does: the session reports
- * `connection_lost` itself.
+ * is a network drop: the session sees an abnormal close (1006) at once and nothing from the server
+ * after it, and reports `connection_lost` itself; the socket underneath is closed so the server ends
+ * the session and its meter.
  */
 class TapSocket implements WebSocketLike {
   private onopen_: ((ev: unknown) => void) | null = null;
   private onmessage_: ((ev: { data: unknown }) => void) | null = null;
   private onerror_: ((ev: unknown) => void) | null = null;
   private onclose_: ((ev: { code: number; reason: string }) => void) | null = null;
+  private dropped = false;
 
   constructor(
     private readonly inner: WebSocketLike,
@@ -569,8 +670,19 @@ class TapSocket implements WebSocketLike {
     this.inner.close(code, reason);
   }
   drop(): void {
+    if (this.dropped) return;
+    this.dropped = true;
     this.rec.sockets.push({ t: this.rec.t(), s: this.s, what: "drop" });
-    this.inner.close(4000, "live-check drop");
+    this.inner.onmessage = null;
+    this.inner.onerror = null;
+    this.inner.onclose = null;
+    try {
+      this.inner.close(4000, "live-check drop");
+    } catch {
+      // Closed already: the session still hears the drop below.
+    }
+    this.rec.sockets.push({ t: this.rec.t(), s: this.s, what: "closed (drop)", code: 1006 });
+    this.onclose_?.({ code: 1006, reason: "" });
   }
   get onopen(): ((ev: unknown) => void) | null {
     return this.onopen_;
@@ -586,9 +698,12 @@ class TapSocket implements WebSocketLike {
     this.onmessage_ = fn;
     this.inner.onmessage = fn
       ? (ev) => {
+          if (this.dropped) return;
+          // Stamped before the session dispatches it: whatever the engine does with the frame (the gate a stop
+          // fragment sets) happens at or after this time. Recorded after, so a hook reads the engine's reaction.
+          const t = this.rec.t();
           fn(ev);
-          // Recorded after the session dispatched it, so a hook reads the engine's reaction (the gate).
-          this.rec.onServer(this.s, ev.data);
+          this.rec.onServer(this.s, ev.data, t);
         }
       : null;
   }
@@ -606,6 +721,7 @@ class TapSocket implements WebSocketLike {
     this.onclose_ = fn;
     this.inner.onclose = fn
       ? (ev) => {
+          if (this.dropped) return;
           this.rec.sockets.push({ t: this.rec.t(), s: this.s, what: `closed ${ev.reason || ""}`.trim(), code: ev.code });
           fn(ev);
         }
@@ -615,17 +731,30 @@ class TapSocket implements WebSocketLike {
 
 // ---- the dry server: GPT-Live, scripted ---------------------------------------------------------
 
+/** Dry only: the stand-in misbehaving on purpose, for the tests that prove a judge catches what it is there to catch. */
+export interface DryFaults {
+  /** It never barges in: a reply plays on over Kevin's speech, and a spoken stop does not end it (LC-6 must fail). */
+  readonly noBargeIn?: boolean;
+  /** When its first reply ends, it sends no output audio for this many wall ms while the meter goes on (LC-1 must fail). */
+  readonly audioHoleMs?: number;
+  /** It delegates a typed line Jarhead already handled, as a model may (LC-9's reconcile, exercised offline). */
+  readonly delegateHandled?: boolean;
+}
+
 /**
  * A stand-in for the GPT-Live server, behind the same WebSocket interface: it answers
  * session.start, bills one second per wall second (`session.usage.updated`), streams output audio
  * continuously (silence between replies), reads the dry synthesizer's mark back as input transcript,
  * barges in on speech, delegates what a request names, speaks what it is told, refuses an append over
  * the 500-token cap with an error, and closes on session.close. It is a fixture for the scenarios,
- * not a model: the live run is the evidence.
+ * not a model: the live run is the evidence. `faults` make it misbehave on purpose (DryFaults).
  */
 class DryServer {
   private seq = 0;
   sessions = 0;
+  /** The audio hole is opened once, after the run's first reply. */
+  holeOpened = false;
+  constructor(readonly faults: DryFaults = {}) {}
   newSocket(): DrySocket {
     this.sessions++;
     return new DrySocket(this, `dry_sess_${this.sessions}`);
@@ -657,6 +786,8 @@ class DrySocket implements WebSocketLike {
   private speaking: { stop: () => void } | undefined;
   private heard: { total: number; received: number; words: string[]; emitted: number; text: string } | undefined;
   private delegationSeq = 0;
+  /** No output audio before this wall time (DryFaults.audioHoleMs). */
+  private holeUntil = 0;
   /** Instruction appends that arrive together are read as one (a typed line chunked into context, then "respond"). */
   private typedBuffer = "";
   private typedTimer: NodeJS.Timeout | undefined;
@@ -751,7 +882,7 @@ class DrySocket implements WebSocketLike {
     this.deliver({ type: "session.started", event_id: this.server.nextId("ev"), session: this.resource() });
     this.meter = setInterval(() => this.deliver({ type: "session.usage.updated", event_id: this.server.nextId("ev"), usage: { seconds: this.billed() } }), 250);
     this.silence = setInterval(() => {
-      if (!this.speaking) this.deliver({ type: "session.output_audio.delta", delta: DrySocket.SILENT });
+      if (!this.speaking && Date.now() >= this.holeUntil) this.deliver({ type: "session.output_audio.delta", delta: DrySocket.SILENT });
     }, DRY_SILENCE_MS);
   }
 
@@ -773,6 +904,11 @@ class DrySocket implements WebSocketLike {
     const stop = (): void => {
       clearInterval(timer);
       if (this.speaking === speaking) this.speaking = undefined;
+      const hole = this.server.faults.audioHoleMs ?? 0;
+      if (hole > 0 && !this.server.holeOpened) {
+        this.server.holeOpened = true;
+        this.holeUntil = Date.now() + hole;
+      }
     };
     const speaking = { stop };
     this.speaking = speaking;
@@ -783,7 +919,7 @@ class DrySocket implements WebSocketLike {
     const mark = readDryMark(chunk);
     if (mark) {
       // Speech: the reply in flight stops a moment later (the server's own barge-in).
-      if (this.speaking) {
+      if (this.speaking && !this.server.faults.noBargeIn) {
         const speaking = this.speaking;
         this.later(150, () => speaking.stop());
       }
@@ -825,11 +961,20 @@ class DrySocket implements WebSocketLike {
       const all = this.typedBuffer;
       this.typedBuffer = "";
       if (!/\btyped\b/.test(all)) return;
-      if (/Jarhead already (did it|answered it|handled it)/.test(all)) return this.say("Done.");
+      if (/Jarhead already (did it|answered it|handled it)/.test(all)) {
+        if (this.server.faults.delegateHandled) this.delegate();
+        return this.say("Done.");
+      }
       const quoted = /typed[^"]*"([\s\S]*)"/.exec(all)?.[1];
       this.kevinSaid(quoted ?? all, "typed");
     }, 30);
     this.timers.add(this.typedTimer);
+  }
+
+  private delegate(afterMs = 20): void {
+    this.delegationSeq++;
+    const id = `dlg_${this.id}_${this.delegationSeq}`;
+    this.later(afterMs, () => this.deliver({ type: "session.delegation.created", event_id: this.server.nextId("ev"), offset_ms: this.vms(), delegation: { id, type: "delegation", target: "client" } }));
   }
 
   /** What the stand-in does with words it was given: delegate a request, speak an answer, or stay quiet for room talk. */
@@ -838,12 +983,7 @@ class DrySocket implements WebSocketLike {
     const addressed = /^(hey )?jarhead\b/i.test(t);
     if (/^(stop|cancel|never mind)\b/i.test(t) || /^jarhead,? stop\b/i.test(t)) return;
     const task = /\b(scroll|haiku|what'?s on my screen|rename|clean up|that'?s all for now|go to sleep)\b/i.test(t);
-    if (task && (addressed || how === "typed" || /that'?s all for now/i.test(t))) {
-      this.delegationSeq++;
-      return this.later(how === "heard" ? 60 : 20, () =>
-        this.deliver({ type: "session.delegation.created", event_id: this.server.nextId("ev"), offset_ms: this.vms(), delegation: { id: `dlg_${this.id}_${this.delegationSeq}`, type: "delegation", target: "client" } }),
-      );
-    }
+    if (task && (addressed || how === "typed" || /that'?s all for now/i.test(t))) return this.delegate(how === "heard" ? 60 : 20);
     if (how === "heard" && !addressed) return;
     if (/long story/i.test(t)) return this.say("", { long: true });
     if (/count slowly to five/i.test(t)) return this.say("One. Two. Three. Four. Five.");
@@ -923,19 +1063,24 @@ function installFences(rec: Recorder, mode: Mode): Fences {
 
 // ---- the key and the synthesizer -----------------------------------------------------------------
 
-/** The OpenAI key for a live run: the environment's, else the one line of the state dir's env file. Nothing else is read from it. */
+/**
+ * The OpenAI key for a live run, by the app's own rule (packages/core/src/env.ts, OWNED_KEYS): the state dir's env
+ * file wins, so a stale key a shell profile exports never shadows the one Setup wrote; the environment's is the
+ * fallback. Only the OPENAI_API_KEY lines are read (the last one wins, as loadEnv reads them).
+ */
 export function readOpenAIKey(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): { readonly key: string; readonly source: string } | undefined {
+  const file = join(stateDirOf(env, home), "env");
+  let fromFile: string | undefined;
+  if (existsSync(file)) {
+    for (const raw of readFileSync(file, "utf8").split("\n")) {
+      const m = /^\s*(?:export\s+)?OPENAI_API_KEY\s*=\s*(.*)$/.exec(raw);
+      const v = m?.[1]?.trim().replace(/^(['"])(.*)\1$/, "$2");
+      if (v) fromFile = v;
+    }
+  }
+  if (fromFile) return { key: fromFile, source: file.startsWith(home) ? `~${file.slice(home.length)}` : file };
   const fromEnv = env["OPENAI_API_KEY"]?.trim();
   if (fromEnv) return { key: fromEnv, source: "the environment" };
-  const dir = env["JARHEAD_STATE_DIR"]?.trim() || join(home, ".jarhead");
-  const file = join(dir.startsWith("~") ? join(home, dir.slice(1)) : dir, "env");
-  if (!existsSync(file)) return undefined;
-  for (const raw of readFileSync(file, "utf8").split("\n")) {
-    const m = /^\s*(?:export\s+)?OPENAI_API_KEY\s*=\s*(.*)$/.exec(raw);
-    if (!m?.[1]) continue;
-    const v = m[1].trim().replace(/^(['"])(.*)\1$/, "$2");
-    if (v) return { key: v, source: file.replace(home, "~") };
-  }
   return undefined;
 }
 
@@ -1143,13 +1288,20 @@ export interface Ctx {
   mark(name: string, data?: Record<string, unknown>): number;
   go(): Promise<void>;
   typed(text: string): Promise<number>;
-  speak(text: string): Promise<{ readonly startT: number; readonly endT: number }>;
+  /**
+   * Feed a spoken line as mic frames. `ear`: also hand its words to the ear the way the app's on-device recognizer
+   * does (engine.ear, as the daemon's socket does): partials as the words are spoken, then a final. The harness has no
+   * app, so without this the ear hears nothing; LC-7 needs it, since the ear is the half of B5 Live never reaches.
+   */
+  speak(text: string, o?: { readonly ear?: boolean }): Promise<{ readonly startT: number; readonly endT: number }>;
   /**
    * The reply to something sent at `sinceT`: until an audible output frame arrives after it, then
    * until none has arrived for `quietWallMs`; at most `maxWallMs` in all. False when no reply came.
    */
   reply(sinceT: number, quietWallMs: number, maxWallMs: number): Promise<boolean>;
   live(): LiveSession | undefined;
+  /** Send one client event on the newest socket as it is, past the engine and the session (it is recorded like any other). */
+  raw(ev: Record<string, unknown>): void;
   /** Close the newest socket underneath its session (the session sees connection_lost). */
   drop(): void;
   phase(): string;
@@ -1159,13 +1311,70 @@ export interface Ctx {
 
 type Scenario = (ctx: Ctx) => Promise<void>;
 
+/** LC-1: the longest a silent session may go between output audio frames before "continuous" is false (VS-26). */
+export const LC1_AUDIO_GAP_MAX_MS = 2000;
+
 const LC5_QUESTIONS = ["What is two plus two?", "What color is the sky on a clear day?", "Name one fruit.", "What day comes after Monday?", "How many legs does a cat have?", "What is the capital of France?", "Say a word that rhymes with cat.", "What is ten minus three?", "Name a planet.", "What sound does a dog make?"];
+
+/**
+ * LC-6, after the gate lapses: how long the harness watches what reaches the speaker, and how much sound may (an
+ * acknowledgement such as "Okay, I'll stop." is about four words; the story going on is far more). A dry run's
+ * stand-in speaks a word every DRY_FRAMES_PER_WORD x DRY_FRAME_MS, so its four words are 80 ms; its watch is at
+ * least 600 ms of wall clock so a story that plays on cannot hide inside a compressed window.
+ */
+export const LC6_AFTER_GATE_WATCH_MS = 4000;
+const DRY_MIN_AFTER_GATE_WATCH_MS = 600;
+export const LC6_ACK_MAX_MS = 1500;
+const ACK_WORDS = 4;
 
 /** The lines a check speaks, synthesized before its session opens (synthesis never runs on billed seconds). */
 const LC6_LINES = ["Jarhead, tell me a long story about the sea.", "Stop, Jarhead."];
 const LC10_LINE = "Jarhead, what's on my screen?";
 
-const ROOM_TALK = ["Did you see the game last night? It went to overtime.", "I think we need more coffee filters, we are almost out.", "My sister is visiting next weekend, she is bringing the dog.", "Okay I'm heading out, goodnight.", "The traffic on the bridge was terrible this morning.", "Can you believe it is already October?", "Let's order pizza tonight from the place on the corner."];
+/**
+ * LC-7's room: talk nobody addresses to Jarhead, in this order, one line every 15 s. Three lines are commands the
+ * reflex grammar takes (a video's "hit the like button", a colleague's "press enter"): the ear must leave them to
+ * Live and Live must let them be (B5, RX-23). Live speaks lines 0 to 3 before the 60 s sleep: two commands among them.
+ */
+export const ROOM_TALK = [
+  "Did you see the game last night? It went to overtime.",
+  "Scroll down a bit.",
+  "Okay I'm heading out, goodnight.",
+  "Hit the like button.",
+  "I think we need more coffee filters, we are almost out.",
+  "Press enter.",
+  "My sister is visiting next weekend, she is bringing the dog.",
+  "Let's order pizza tonight from the place on the corner.",
+] as const;
+
+/** The command-shaped room lines, and the word that shows Live heard each one. */
+export const ROOM_COMMANDS: ReadonlyMap<string, RegExp> = new Map([
+  ["Scroll down a bit.", /\bscroll/i],
+  ["Hit the like button.", /\blike\b/i],
+  ["Press enter.", /\benter\b/i],
+]);
+
+/**
+ * The engine's exchange window (Engine.EXCHANGE_WINDOW_MS): Go, and Jarhead's own words, make the next 8 s
+ * mid-exchange, and a command spoken then may run without the name. Room talk is judged outside it only.
+ */
+const EXCHANGE_WINDOW_MS = Engine.EXCHANGE_WINDOW_MS;
+/** How long past its end a spoken line can still move the ear (the last transcript delta, then the ear's decision). */
+const LINE_SETTLE_MS = 1500;
+/** When the app's recognizer finalizes a line after its last word (Ctx.speak with `ear`). */
+const EAR_FINAL_AFTER_MS = 300;
+/**
+ * LC-7's idle limit in a dry run, in wall ms. The window is the engine's own clock and is not compressed, so a dry
+ * run waits it out before its first command, and the pre-sleep clause (5 s before the limit) comes after two of them.
+ */
+const LC7_DRY_IDLE_MS = EXCHANGE_WINDOW_MS + 10_000;
+
+/** When the exchange window last opened before `at`: Go, or the latest words Jarhead said. */
+function exchangeOpenedAt(rec: Recorder, goT: number, at: number): number {
+  let last = goT;
+  for (const d of rec.outText) if (d.t <= at && d.t > last) last = d.t;
+  return last;
+}
 
 /** LC-3's paste: 2,700 characters, the instruction that proves it was read to the end in its last sentence. */
 export function pasteText(): string {
@@ -1174,6 +1383,27 @@ export function pasteText(): string {
   let body = "";
   while (body.length < 2700 - end.length) body += filler;
   return body.slice(0, 2700 - end.length).trimEnd().padEnd(2700 - end.length, ".") + end;
+}
+
+/**
+ * LC-3 --oversize: one raw append of varied prose, well over the 500-token cap by any tokenizer. It has at least
+ * OVERSIZE_MIN_WORDS words, and a tokenizer gives every word at least one token, so it is at least three times the
+ * cap whatever the real count; at about 4 characters a token it is closer to four times. (A repeated filler line
+ * measured by the harness's own chars/3.2 looked over the cap and was not: a real tokenizer read it as about 490.)
+ */
+export const OVERSIZE_MIN_WORDS = 3 * APPEND_TOKEN_CAP;
+
+export function oversizeText(): string {
+  // Four lists of coprime lengths (12, 11, 13, 7): no sentence repeats before the 12,012th.
+  const who = ["The ferry captain", "A retired teacher", "Our neighbour's cousin", "The night baker", "A surveyor from the county", "The choir director", "Two cyclists", "The harbour pilot", "A beekeeper", "The museum guard", "An apprentice carpenter", "The orchard owner"];
+  const did = ["repainted the blue shutters", "counted forty-one herons", "mended the torn sail", "planted rows of late cabbage", "measured the flooded meadow", "rehearsed an old hymn", "carried lanterns up the hill", "charted the shifting sandbar", "moved six hives to clover", "found a lost umbrella", "planed a warped door"];
+  const when = ["before dawn on Tuesday", "during the long drizzle", "after the market closed", "while the tide turned", "on the coldest morning in March", "just after the bells", "under a copper sky", "between two squalls", "at the end of the harvest", "near midnight", "in the quiet hour after lunch", "as the fog lifted", "on the first warm evening"];
+  const why = ["because nobody else would", "to settle a friendly wager", "for the spring fair", "since the old one had cracked", "so the children could see", "as a favour to the mayor", "to keep a promise"];
+  const lines: string[] = ["This is a test of the append cap, a note far longer than one append may carry."];
+  for (let i = 0; lines.join(" ").split(/\s+/).length < OVERSIZE_MIN_WORDS + 60; i++) {
+    lines.push(`Entry ${i + 1}: ${who[i % who.length]} ${did[i % did.length]} ${when[i % when.length]}, ${why[i % why.length]}.`);
+  }
+  return lines.join(" ");
 }
 
 /** What each check speaks (its synthesis is done, and paid for, before the session opens). */
@@ -1219,9 +1449,10 @@ const SCENARIOS: Record<CheckId, Scenario> = {
     const pasted = await c.typed(pasteText());
     await c.reply(pasted, Math.max(150, c.ms(2500)), c.ms(20_000) + 2000);
     if (c.oversize) {
-      // The premise itself: one raw append over the cap, past the engine, straight to the session.
-      c.mark("oversize");
-      c.live()?.appendInstructions(null, `This is a test of the append cap. ${"Please ignore this filler sentence. ".repeat(80)}`);
+      // The premise itself: one raw append well over the cap, past the engine and the session, straight to the socket.
+      const content = oversizeText();
+      c.mark("oversize", { chars: content.length, words: content.split(/\s+/).length, tokensAt4: Math.ceil(content.length / 4), estimate: estimateTokens(content) });
+      c.raw({ type: "session.instructions.append", event_id: "live_check_oversize", delegation_id: null, content });
       await c.wait(5000);
     }
     c.mark("stop");
@@ -1261,23 +1492,32 @@ const SCENARIOS: Record<CheckId, Scenario> = {
       c.mark("stop.speech", { trial });
       const stop = await c.speak(LC6_LINES[1]!);
       c.mark("stop.spoken", { trial, endT: stop.endT });
-      // The gate's window, whole, before the next trial.
-      await c.waitWall(OUTPUT_GATE_MS + 500);
+      // The gate's window, whole: from Live's stop fragment (the gate mark carries when it came) to its lapse.
+      const gateMark = (): { readonly t: number; readonly name: string; readonly data?: Record<string, unknown> } | undefined => c.rec.marks.find((m) => m.name === "gate" && m.data?.["trial"] === trial);
+      await c.until(() => gateMark() !== undefined, c.ms(6000) + 2000);
+      const fragmentT = Number(gateMark()?.data?.["fragmentT"] ?? c.rec.t());
+      await c.waitWall(fragmentT + OUTPUT_GATE_MS - c.rec.t());
       c.mark("after", { trial, open: c.live()?.currentState === "started", phase: c.phase() });
-      await c.wait(3000);
+      // Then what plays once it lapses: an acknowledgement at most, never the story going on.
+      await c.waitWall(Math.max(c.ms(LC6_AFTER_GATE_WATCH_MS), DRY_MIN_AFTER_GATE_WATCH_MS));
     }
     c.mark("stop");
     await c.engine.pressStop("live-check");
   },
   "LC-7": async (c) => {
     await c.go();
-    c.mark("go");
+    const goT = c.mark("go");
     const deadline = c.rec.t() + Math.max(c.ms(100_000), c.idleMs + 6000);
     let i = 0;
     while (c.rec.t() < deadline && c.phase() !== "asleep") {
       const line = ROOM_TALK[i % ROOM_TALK.length]!;
-      c.mark("room", { i, line });
-      await c.speak(line);
+      const command = ROOM_COMMANDS.has(line);
+      // A command is room talk only outside the exchange window: wait for it to close (live, 15 s apart, it already
+      // has; dry, the window is the engine's own 8 s). The judge still decides per line from what was recorded.
+      if (command) await c.until(() => c.phase() === "asleep" || c.rec.t() - exchangeOpenedAt(c.rec, goT, c.rec.t()) > EXCHANGE_WINDOW_MS + 500, Math.max(0, deadline - c.rec.t()));
+      if (c.phase() === "asleep" || c.rec.t() >= deadline) break;
+      c.mark("room", { i, line, command });
+      await c.speak(line, { ear: true });
       i++;
       const next = c.rec.t() + c.ms(15_000);
       await c.until(() => c.phase() === "asleep", Math.max(0, Math.min(next, deadline) - c.rec.t()));
@@ -1285,7 +1525,9 @@ const SCENARIOS: Record<CheckId, Scenario> = {
     c.mark("end", { phase: c.phase() });
     // Room talk goes on a little after the sleep: nothing reopens.
     if (c.phase() === "asleep") {
-      await c.speak(ROOM_TALK[i % ROOM_TALK.length]!);
+      const line = ROOM_TALK[i % ROOM_TALK.length]!;
+      c.mark("room", { i, line, command: ROOM_COMMANDS.has(line), asleep: true });
+      await c.speak(line, { ear: true });
       await c.wait(2000);
     } else {
       c.mark("stop");
@@ -1387,6 +1629,8 @@ interface Judge {
   readonly wall0: number;
   /** Multiplies the ceilings that time this Mac's own work (a dry run on a slow CI runner); 1 for every live run. */
   readonly slack: number;
+  /** Wall ms per check ms (dry runs compress the check's timeline; 1 live). */
+  readonly scale: number;
   expect(name: string, pass: boolean, value?: unknown, expect?: string, o?: { readonly soft?: boolean }): void;
   metric(name: string, value: unknown): void;
 }
@@ -1399,6 +1643,16 @@ export function percentile(values: readonly number[], p: number): number {
 
 const median = (values: readonly number[]): number => percentile(values, 50);
 const normWord = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
+
+/** Words too common to say whose sentence they came from, and the words of Kevin's own LC-6 lines (an acknowledgement may echo them). */
+const COMMON_WORDS = new Set(
+  "about above after again against also always another anything around away back because been before being below between both came come could didnt does doing done down each even ever every first from going gone good have having here into just keep know last like little long made make many more most much must never next okay once only other over really right said same should some something sorry still story such sure tell than that thats their them then there these they thing think this those though through time told very wait want well were what when where which while will with would yeah your alright stop stopped stopping jarhead".split(" "),
+);
+
+/** The distinctive words of a passage: four letters or more, not common ones. */
+function contentWords(text: string): Set<string> {
+  return new Set(normWord(text).split(" ").filter((w) => w.length >= 4 && !COMMON_WORDS.has(w)));
+}
 const rowsOf = <T extends LedgerRow["type"]>(ledger: readonly LedgerRow[], type: T): Extract<LedgerRow, { type: T }>[] => ledger.filter((r): r is Extract<LedgerRow, { type: T }> => r.type === type);
 
 const JUDGES: Record<CheckId, (j: Judge) => void> = {
@@ -1412,6 +1666,11 @@ const JUDGES: Record<CheckId, (j: Judge) => void> = {
     const maxGap = Math.max(...gaps);
     const audio = inWindow.filter((f) => f.type === "session.output_audio.delta");
     const lastQuarter = audio.filter((f) => f.t >= w1 - (w1 - w0) / 4).length;
+    // Output audio on its own: the meter's frames keep the all-frames gap small even when the audio stops (VS-26).
+    const audioTimes = [w0, ...audio.map((f) => f.t), w1];
+    const audioGaps = audioTimes.slice(1).map((t, i) => t - audioTimes[i]!);
+    const audioGapMax = Math.max(...audioGaps);
+    const audioGapCeil = j.mode === "dry" ? Math.max(LC1_AUDIO_GAP_MAX_MS * j.scale, 4 * DRY_SILENCE_MS) * j.slack : LC1_AUDIO_GAP_MAX_MS;
     const usageTimes = j.rec.usage.filter((u) => u.s === 0).map((u) => u.t);
     const usageGaps = usageTimes.slice(1).map((t, i) => t - usageTimes[i]!);
     j.metric("silenceWindowMs", w1 - w0);
@@ -1419,10 +1678,13 @@ const JUDGES: Record<CheckId, (j: Judge) => void> = {
     j.metric("audioFramesInWindow", audio.length);
     j.metric("frameGapP99Ms", percentile(gaps, 99));
     j.metric("frameGapMaxMs", maxGap);
+    j.metric("outputAudioGapP99Ms", percentile(audioGaps, 99));
+    j.metric("outputAudioGapMaxMs", audioGapMax);
     j.metric("usageIntervalMedianMs", median(usageGaps));
     j.metric("usageIntervalMaxMs", usageGaps.length ? Math.max(...usageGaps) : Number.NaN);
     j.metric("recommendedWatchdogMs", Math.max(5000, 5 * maxGap));
     j.expect("output audio keeps arriving while silent", audio.length > 0 && lastQuarter > 0, { audio: audio.length, lastQuarter }, "audio frames through the whole window");
+    j.expect("no output-audio gap over 2 s while silent (Live's audio is continuous)", audioGapMax <= audioGapCeil, Math.round(audioGapMax), `<= ${Math.round(audioGapCeil)} ms between output_audio.delta frames`);
     j.expect("no server gap over 10 s while silent (a frame watchdog can tell quiet from dead)", maxGap <= 10_000, maxGap, "<= 10000 ms; else V3 needs another liveness signal");
   },
   "LC-2": (j) => {
@@ -1468,6 +1730,13 @@ const JUDGES: Record<CheckId, (j: Judge) => void> = {
   },
   "LC-3": (j) => {
     const paste = j.rec.markT("paste") ?? 0;
+    const probe = j.rec.marks.find((m) => m.name === "oversize")?.data;
+    if (probe) {
+      j.metric("oversizeChars", probe["chars"]);
+      j.metric("oversizeWords", probe["words"]);
+      j.metric("oversizeTokensAt4Chars", probe["tokensAt4"]);
+      j.metric("oversizeTokensEstimate", probe["estimate"]);
+    }
     const end = j.rec.markT("oversize") ?? j.rec.markT("stop");
     const appends = j.rec.client.filter((f) => f.tokens !== undefined && f.t >= paste && (end === undefined || f.t < end));
     const maxTokens = Math.max(0, ...appends.map((f) => f.tokens ?? 0));
@@ -1525,34 +1794,90 @@ const JUDGES: Record<CheckId, (j: Judge) => void> = {
   },
   "LC-6": (j) => {
     const stops = j.rec.marks.filter((m) => m.name === "stop.speech");
+    const stories = j.rec.marks.filter((m) => m.name === "story");
+    const end = j.rec.markT("stop") ?? Number.POSITIVE_INFINITY;
+    const ackMaxMs = j.mode === "dry" ? ACK_WORDS * DRY_FRAMES_PER_WORD * DRY_FRAME_MS : LC6_ACK_MAX_MS;
+    // The gap that ends a run of story audio: a pause between Live's sentences is shorter; dry, a stalled event loop is.
+    const quietMs = j.mode === "dry" ? 300 * j.slack : 1000;
     stops.forEach((m, i) => {
       const trial = i + 1;
+      const storyT = stories[i]?.t ?? 0;
+      // Everything up to the next trial's story (the last trial: up to the closing Stop) belongs to this one.
+      const nextT = stories[i + 1]?.t ?? end;
       const fragment = j.rec.heardAt(m.t, /\bstop\b/i);
       const gate = (j.rec.marks.find((x) => x.name === "gate" && x.data?.["trial"] === trial)?.data?.["gated"] as boolean | undefined) ?? false;
+      // Everything below means something only if the story was sounding on the speaker when the stop came: sound, not
+      // the silent frames Live streams between replies, in the 2 s before Kevin began to say stop.
+      const playingMs = j.rec.audibleSinkMs(Math.max(storyT, m.t - 2000), m.t + 1);
+      j.metric(`trial${trial}.storyAudibleBeforeStopMs`, Math.round(playingMs));
+      j.expect(`trial ${trial}: the story was sounding on the speaker sink when the stop came`, playingMs > 0, Math.round(playingMs), "> 0 ms of sound in the 2 s before the stop");
       j.expect(`trial ${trial}: Live's " Stop" fragment arrived`, fragment !== undefined, fragment?.delta);
+      // Live's own barge-in, unclipped by the gate: the run of story audio still arriving when the stop speech began,
+      // to its first quiet (0 when nothing was arriving then); and the last sound Live sent at all before the next trial.
+      const audible = j.rec.audible(undefined, m.t, nextT);
+      let run: ServerFrame | undefined;
+      for (const f of audible) {
+        if (f.t - (run?.t ?? m.t) >= quietMs) break;
+        run = f;
+      }
+      j.metric(`trial${trial}.bargeInMs`, run ? run.t - m.t : 0);
+      j.metric(`trial${trial}.lastAudibleServerMs`, audible.at(-1) ? audible.at(-1)!.t - m.t : null);
       if (!fragment) return;
-      // The zero below means something only if the story was reaching the speaker when the stop came.
-      const story = j.rec.marks.filter((x) => x.name === "story")[i]?.t ?? 0;
-      const playing = j.rec.sink.filter((t) => t >= story && t < fragment.t).length;
-      j.expect(`trial ${trial}: the story was reaching the speaker sink when the stop came`, playing > 0, playing);
+      j.metric(`trial${trial}.fragmentAfterSpeechMs`, fragment.t - m.t);
       j.expect(`trial ${trial}: the gate is set at the fragment`, gate, gate);
-      const leak = j.rec.sink.filter((t) => t > fragment.t + 50 && t < fragment.t + OUTPUT_GATE_MS).length;
+      // The fragment's time is stamped before the session dispatched it, so the gate the engine set for it runs to at
+      // least fragment.t + OUTPUT_GATE_MS: any frame on the sink before then got past the gate.
+      const gateEnd = fragment.t + OUTPUT_GATE_MS;
+      const leak = j.rec.sink.filter((f) => f.t > fragment.t + 50 && f.t < gateEnd).length;
       j.expect(`trial ${trial}: 0 frames reach the speaker sink inside the gate`, leak === 0, leak, "0 (50 ms tolerance)");
       const after = j.rec.marks.filter((x) => x.name === "after")[i]?.data;
       j.expect(`trial ${trial}: the session stays open`, after?.["open"] === true && after?.["phase"] !== "asleep", after);
-      // Live's own barge-in: the last audible server frame of the story after the stop speech began.
-      const audible = j.rec.audible(undefined, m.t, fragment.t + OUTPUT_GATE_MS);
-      const lastStory = audible.filter((f, k) => k === 0 || f.t - audible[k - 1]!.t < 500).at(-1);
-      j.metric(`trial${trial}.bargeInMs`, lastStory ? lastStory.t - m.t : null);
-      j.metric(`trial${trial}.fragmentAfterSpeechMs`, fragment.t - m.t);
+      // The gate only hides the story for 2.5 s. Once it lapses, the story must not come back: Live stopped it, so at
+      // most a short acknowledgement sounds, and none of the story's words.
+      const afterGateMs = j.rec.audibleSinkMs(gateEnd, nextT);
+      const saidAfter = j.rec.text("out", gateEnd, nextT);
+      j.metric(`trial${trial}.afterGateWatchMs`, Number.isFinite(nextT) ? nextT - gateEnd : null);
+      j.metric(`trial${trial}.afterGateSaid`, saidAfter.slice(0, 200));
+      j.expect(`trial ${trial}: after the gate lapses, at most an acknowledgement reaches the speaker sink`, afterGateMs <= ackMaxMs, Math.round(afterGateMs), `<= ${ackMaxMs} ms of sound until the next trial`);
+      const storyWords = contentWords(j.rec.text("out", storyT, fragment.t));
+      const shared = [...contentWords(saidAfter)].filter((w) => storyWords.has(w));
+      j.expect(`trial ${trial}: none of the story's words after the gate lapses`, storyWords.size > 0 && shared.length === 0, storyWords.size > 0 ? shared : "no story words were heard before the stop", "none shared with what Live said before the stop");
     });
     j.expect("three trials ran", stops.length === 3, stops.length);
   },
   "LC-7": (j) => {
     const go = j.rec.sessions[0]?.startedT ?? j.rec.markT("go") ?? 0;
+    const goMark = j.rec.markT("go") ?? go;
     j.expect("input transcripts arrive (the premise)", j.rec.inText.length > 0, j.rec.inText.length);
     j.expect("no delegation", j.rec.delegations.length === 0, j.rec.delegations.map((d) => d.id));
-    j.expect("no reflex ran", j.rec.reflexes.length === 0, j.rec.reflexes.map((r) => r.label));
+    // Each room line, and whether the exchange window was shut for all of it: from its first word until the ear could
+    // last act on it, more than EXCHANGE_WINDOW_MS after Go and after anything Jarhead said, and Jarhead silent within.
+    const room = j.rec.marks.filter((m) => m.name === "room");
+    // What ran: the engine's reflex events (the ear's, the delegator's prefire on Live's words) and the ear's rows.
+    const reflexes = [...j.rec.reflexes.map((r) => ({ t: r.t, label: r.label })), ...j.rec.reflexRows.map((r) => ({ t: r.t, label: `${r.action} (${r.source} row${r.ok ? "" : ", failed"})` }))];
+    const lines = room.map((m, k) => {
+      const line = String(m.data?.["line"] ?? "");
+      const spoken = j.rec.speech.find((s) => s.text === line && s.startT >= m.t);
+      const endT = spoken?.endT ?? m.t;
+      const until = Math.min(room[k + 1]?.t ?? Number.POSITIVE_INFINITY, endT + LINE_SETTLE_MS * 2);
+      const opened = exchangeOpenedAt(j.rec, goMark, m.t);
+      const saidWithin = j.rec.outText.some((d) => d.t > m.t && d.t <= endT + LINE_SETTLE_MS);
+      const outside = m.data?.["asleep"] === true || (m.t - opened > EXCHANGE_WINDOW_MS && !saidWithin);
+      const heard = j.rec.text("in", m.t, until);
+      const word = ROOM_COMMANDS.get(line);
+      return { line, startT: m.t, until, command: word !== undefined, outside, heard: word ? word.test(heard) : undefined, asleep: m.data?.["asleep"] === true, reflexes: reflexes.filter((r) => r.t >= m.t && r.t < until).map((r) => r.label) };
+    });
+    j.metric("roomLines", lines.map((l) => ({ line: l.line, startT: l.startT, command: l.command, outsideWindow: l.outside, heard: l.heard, asleep: l.asleep, reflexes: l.reflexes })));
+    // A command inside the window may run (Kevin is mid-exchange): only its own reflexes are excused, nothing else.
+    const excused = (t: number): boolean => lines.some((l) => l.command && !l.outside && t >= l.startT && t < l.until);
+    const ran = reflexes.filter((r) => !excused(r.t));
+    j.metric("reflexesInsideTheWindow", reflexes.filter((r) => excused(r.t)).map((r) => r.label));
+    j.expect("no reflex ran on room talk (outside the exchange window)", ran.length === 0, ran.map((r) => r.label));
+    const judged = lines.filter((l) => l.command && l.outside && !l.asleep && l.heard === true);
+    const fedToEar = new Set(j.rec.marks.filter((m) => m.name === "ear.final").map((m) => String(m.data?.["text"] ?? "")));
+    j.expect("command-shaped room talk was heard outside the exchange window (B5 exercised)", judged.length > 0 && judged.every((l) => fedToEar.has(l.line)), judged.map((l) => l.line), ">= 1 command line Live transcribed and the ear was given, while Jarhead was not mid-exchange");
+    const touched = j.acting.calls.filter((c) => judged.some((l) => c.at - j.wall0 >= l.startT && c.at - j.wall0 < l.until)).map((c) => c.op);
+    j.expect("the fake hands did nothing for those commands", touched.length === 0, touched);
     const said = rowsOf(j.ledger, "sleep").filter((r) => r.cause === "said");
     j.expect("no 'said goodnight' sleep row", said.length === 0, said.map((r) => r.phrase));
     const clause = j.rec.client.find((f) => f.type === "session.instructions.append" && /going to sleep in about/.test(f.head ?? ""));
@@ -1613,8 +1938,15 @@ const JUDGES: Record<CheckId, (j: Judge) => void> = {
     const scrollTasks = j.brain.tasks.filter((x) => x.t >= scroll && x.t < haiku);
     j.expect("the scroll never reaches the brain", scrollTasks.length === 0, scrollTasks.map((x) => x.request));
     const dlg = j.snapshot.delegations.filter((d) => d.createdAt - j.wall0 >= scroll && d.createdAt - j.wall0 < haiku);
-    j.metric("scrollDelegations", dlg.map((d) => ({ status: d.status, request: d.request.slice(0, 80) })));
-    j.expect("Live's delegation for it, if any, is done", dlg.every((d) => d.status === "done"), dlg.map((d) => d.status));
+    j.metric("scrollDelegations", dlg.map((d) => ({ status: d.status, summary: d.summary, request: d.request.slice(0, 80) })));
+    j.metric("reconcileExercised", dlg.length > 0);
+    if (dlg.length === 0) j.expect("Live's delegation for it reconciles as already done", false, "not exercised: Live made no delegation for the scroll", "a delegation, done without the brain", { soft: true });
+    else {
+      // Reconciled: done, and never handed to the brain (a canned brain would also say done, so status alone proves nothing).
+      const toBrain = (d: (typeof dlg)[number]): boolean => j.brain.tasks.some((x) => x.delegationId === d.id || x.delegationId === d.liveId);
+      const reconciled = dlg.filter((d) => d.status === "done" && !toBrain(d));
+      j.expect("Live's delegation for it reconciles as already done", reconciled.length === dlg.length, dlg.map((d) => ({ status: d.status, summary: d.summary, toBrain: toBrain(d) })), "done, and never handed to the brain");
+    }
     const ack = j.rec.text("out", scroll, haiku);
     j.expect("the reply acknowledges it", ack.length > 0, ack.slice(0, 120));
     const haikuTask = j.brain.tasks.find((x) => x.t >= haiku && /haiku/i.test(x.request));
@@ -1654,8 +1986,8 @@ const JUDGES: Record<CheckId, (j: Judge) => void> = {
 export interface RunOptions {
   readonly plan: CheckPlan;
   readonly mode: Mode;
-  /** The day's cap; a live run needs it (spendFlagsRefusal), a dry one defaults to MAX_CAP_USD. */
-  readonly capUsd: number;
+  /** The day's cap. A live run is refused without it (spendFlagsRefusal); a dry one defaults to MAX_CAP_USD. */
+  readonly capUsd?: number;
   /** A live run is refused without it, whoever calls (the command line's --i-accept-spend). */
   readonly acceptSpend?: boolean;
   readonly out: string;
@@ -1669,6 +2001,8 @@ export interface RunOptions {
   readonly slack?: number;
   /** Live: the key (readOpenAIKey). Dry: never read. */
   readonly apiKey?: string;
+  /** Dry only: the stand-in misbehaves on purpose, so a test can show a judge failing. A live run with it is refused. */
+  readonly dryFaults?: DryFaults;
   readonly print?: (line: string) => void;
 }
 
@@ -1703,13 +2037,15 @@ export interface Report {
   readonly phases: Recorder["phases"];
   readonly events: Recorder["events"];
   readonly reflexes: Recorder["reflexes"];
+  readonly reflexRows: Recorder["reflexRows"];
   readonly speech: Recorder["speech"];
   readonly brain: { readonly tasks: CannedBrain["tasks"]; readonly cancels: readonly number[]; readonly toolCalls: CannedBrain["toolCalls"] };
   readonly hands: { readonly acting: readonly { readonly t: number; readonly op: string }[]; readonly reading: readonly { readonly t: number; readonly op: string }[] };
   readonly wire: { readonly server: readonly ServerFrame[]; readonly client: readonly ClientFrame[]; readonly inText: readonly TextDelta[]; readonly outText: readonly TextDelta[]; readonly delegations: Recorder["delegations"]; readonly errors: Recorder["errors"]; readonly usage: Recorder["usage"]; readonly sockets: Recorder["sockets"] };
-  readonly sink: readonly number[];
+  readonly sink: readonly SinkFrame[];
   readonly ledger: readonly LedgerRow[];
-  readonly files: { readonly report: string; readonly log: string };
+  /** The spend ledger this run was gated on and wrote to (live: the one ledger in the state dir; dry: beside the reports). */
+  readonly files: { readonly report: string; readonly log: string; readonly spend: string };
 }
 
 /** The checkout's branch and commit, read from .git (no child process): a report names the build it ran on. */
@@ -1760,40 +2096,38 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
   const dayDir = join(opts.out, localDay(startedAt));
   mkdirSync(dayDir, { recursive: true });
   const base = join(dayDir, `${plan.id.toLowerCase()}-${plan.name}-${stamp(startedAt)}${mode === "dry" ? "-dry" : ""}`);
-  const files = { report: `${base}.json`, log: `${base}.log` };
+  // The live ledger is read where the app keeps its state, before the run points JARHEAD_STATE_DIR at a temp dir.
+  const ledgerFile = mode === "live" ? liveSpendFile() : drySpendFile(opts.out);
+  const files = { report: `${base}.json`, log: `${base}.log`, spend: ledgerFile };
   const rec = new Recorder();
-  const ledgerFile = spendFile(opts.out, mode);
+  const capUsd = opts.capUsd ?? (mode === "dry" ? MAX_CAP_USD : Number.NaN);
 
   const refuse = (reason: string): Report => {
     print(reason);
-    const report = emptyReport(plan, mode, runId, startedAt, files, reason, opts.capUsd, checkCapSeconds);
+    const report = emptyReport(plan, mode, runId, startedAt, files, reason, capUsd, checkCapSeconds);
     writeFileSync(files.report, `${JSON.stringify(report, null, 1)}\n`);
     return report;
   };
 
-  // ---- the gates: flags, the key, the day's spend, one live run at a time
+  // ---- the gates: flags, the key, the day's spend, one live run at a time. A dry run spends nothing: never refused.
   const flags = spendFlagsRefusal({ mode, acceptSpend: opts.acceptSpend === true, capUsd: opts.capUsd });
   if (flags) return refuse(flags);
+  if (mode === "live" && opts.dryFaults) return refuse("Refused. Dry faults are for --dry-run only.");
   if (mode === "live" && !opts.apiKey) return refuse("Refused. No OpenAI key: set OPENAI_API_KEY, or put it in ~/.jarhead/env (Setup writes it).");
-  const gate = spendGate(readSpend(ledgerFile), plan, opts.capUsd, { oversize });
-  if (!gate.ok) return refuse(gate.reason);
-  const lock = join(opts.out, `${mode}.lock`);
+  const plannedUsd = planUsd(plan, { oversize });
+  const todayUsd = spentToday(readSpend(ledgerFile)).usd;
   if (mode === "live") {
-    if (existsSync(lock)) {
-      const pid = Number(readFileSync(lock, "utf8").trim());
-      let alive = false;
-      try {
-        if (pid > 0) process.kill(pid, 0);
-        alive = pid > 0;
-      } catch {
-        alive = false;
-      }
-      if (alive) return refuse(`Refused. Another live check is running (pid ${pid}).`);
-    }
-    writeFileSync(lock, `${process.pid}\n`);
+    const gate = spendGate(readSpend(ledgerFile), plan, capUsd, { oversize });
+    if (!gate.ok) return refuse(`${gate.reason} Ledger: ${ledgerFile}.`);
   }
-  appendFileSync(ledgerFile, `${JSON.stringify({ at: startedAt, day: localDay(startedAt), runId, check: plan.id, event: "start", planSeconds: planSeconds(plan, { oversize }), planUsd: gate.planUsd } satisfies SpendLine)}\n`);
-  print(`${plan.id} ${plan.name} (${mode}): plan ${planSeconds(plan, { oversize })} s, ${usd(gate.planUsd)}; today ${usd(gate.todayUsd)} of ${usd(opts.capUsd)}${mode === "dry" ? " (simulated)" : ""}.`);
+  const lock = liveLockFile(ledgerFile);
+  if (mode === "live") {
+    const held = takeLiveLock(lock);
+    if (!held.ok) return refuse(`Refused. Another live check is running (pid ${held.pid}). The lock is ${lock}.`);
+  }
+  mkdirSync(dirname(ledgerFile), { recursive: true });
+  appendFileSync(ledgerFile, `${JSON.stringify({ at: startedAt, day: localDay(startedAt), runId, check: plan.id, event: "start", planSeconds: planSeconds(plan, { oversize }), planUsd: plannedUsd } satisfies SpendLine)}\n`);
+  print(`${plan.id} ${plan.name} (${mode}): plan ${planSeconds(plan, { oversize })} s, ${usd(plannedUsd)}; today ${usd(todayUsd)} of ${usd(capUsd)}${mode === "dry" ? " (simulated)" : ""}.`);
 
   // ---- isolation: a temp state dir, the env of a quiet test launch, the fences
   const stateRoot = mkdtempSync(join(tmpdir(), "jh-live-check-"));
@@ -1835,7 +2169,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
   const brain = new CannedBrain(rec, Math.max(10, 300 * scale));
   const acting = new FakeHands();
   const reading = new FakeHands();
-  const idleMs = plan.id === "LC-7" ? 60_000 * (mode === "dry" ? Math.max(0.1, scale * 2) : 1) : 10 * 60_000;
+  const idleMs = plan.id === "LC-7" ? (mode === "dry" ? Math.max(LC7_DRY_IDLE_MS, 60_000 * scale * 2) : 60_000) : 10 * 60_000;
   const lives: { live: LiveSession; tap: TapSocket | undefined }[] = [];
   try {
     const config: JarheadConfig = {
@@ -1857,7 +2191,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
       handsBin: join(stateRoot, NO_HANDS),
       memoryModel: undefined,
     };
-    const dry = new DryServer();
+    const dry = new DryServer(mode === "dry" ? opts.dryFaults : undefined);
     const RealWebSocket = fences.RealWebSocket;
     const makeLive = (sessionConfig: SessionConfig): LiveSession => {
       if (abort.signal.aborted) throw new Error("live-check: the check is over; no session opens");
@@ -1923,8 +2257,9 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
       automations: { home: stateRoot },
     });
     brain.engine = engine;
-    engine.on("audio", () => void rec.sink.push(rec.t()));
+    engine.on("audio", (pcm: Buffer) => void rec.sink.push({ t: rec.t(), audible: rms16(pcm) >= AUDIBLE_RMS, ms: pcmMs(pcm) }));
     engine.on("reflex", (label, ms, prefired) => void rec.reflexes.push({ t: rec.t(), label, ms, prefired }));
+    engine.on("reflex.fired", (row) => void rec.reflexRows.push({ t: rec.t(), action: row.action, source: row.source, ok: row.ok }));
     let lastPhase = "";
     engine.on("event", (e: EngineEvent) => {
       if (e.type === "levels") return;
@@ -1961,6 +2296,8 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
       return r.pcm;
     };
     const phase = (): string => engine.snapshot().phase;
+    /** The ear's segment ids, one per line fed to it (Ctx.speak with `ear`). */
+    let earSegment = 0;
     const guard = (): void => {
       if (abort.signal.aborted) throw new CheckAborted(capHit ? "the cap" : "the ceiling");
     };
@@ -2013,12 +2350,28 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
         await engine.sayText(text);
         return t;
       },
-      speak: async (text) => {
+      speak: async (text, o = {}) => {
         guard();
         const pcm = await prepare(text);
         const startT = rec.t();
         if (text === LC6_LINES[1]) stopWatch = { trial: rec.marksNamed("stop.speech").length, heard: "" };
-        const endT = await pump.say(pcm);
+        const said = pump.say(pcm);
+        if (o.ear) {
+          // The app's recognizer: a partial as each word is said (its words so far, no closing punctuation), then the
+          // final once the line has ended. One segment per line.
+          const words = text.split(/\s+/).filter(Boolean);
+          const segment = ++earSegment;
+          const stepMs = pcmMs(pcm) / Math.max(1, words.length);
+          for (let k = 1; k <= words.length; k++) {
+            await waitWall(stepMs);
+            engine.ear(words.slice(0, k).join(" ").replace(/[.,!?]+$/, ""), false, segment, Date.now());
+          }
+          await said;
+          await waitWall(EAR_FINAL_AFTER_MS);
+          engine.ear(text, true, segment, Date.now());
+          rec.mark("ear.final", { segment, text });
+        }
+        const endT = await said;
         rec.speech.push({ text, startT, endT, seconds: pcm.length / (SAMPLE_RATE * 2) });
         guard();
         return { startT, endT };
@@ -2034,6 +2387,11 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
         return false;
       },
       live: () => lives.at(-1)?.live,
+      raw: (ev) => {
+        const tap = lives.at(-1)?.tap;
+        if (!tap) throw new Error("no socket to send on");
+        tap.send(JSON.stringify(ev));
+      },
       drop: () => {
         const tap = lives.at(-1)?.tap;
         if (!tap) throw new Error("no socket to drop");
@@ -2105,7 +2463,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
   const ttsSeconds = rec.ttsSeconds();
   const spent = billedSeconds * LIVE_USD_PER_SECOND + (mode === "live" ? ttsSeconds * TTS_USD_PER_SECOND : 0);
   appendFileSync(ledgerFile, `${JSON.stringify({ at: Date.now(), day: localDay(startedAt), runId, check: plan.id, event: "end", billedSeconds, ttsUsd: mode === "live" ? ttsSeconds * TTS_USD_PER_SECOND : 0, usd: spent } satisfies SpendLine)}\n`);
-  if (mode === "live") rmSync(lock, { force: true });
+  if (mode === "live") releaseLiveLock(lock);
 
   const assertions: Assertion[] = [];
   const metrics: Record<string, unknown> = {};
@@ -2123,6 +2481,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
     mode,
     wall0: rec.wall0,
     slack,
+    scale,
     expect: (name, pass, value, expect, o) => void assertions.push({ name, pass, ...(o?.soft ? { soft: true } : {}), ...(value !== undefined ? { value } : {}), ...(expect !== undefined ? { expect } : {}) }),
     metric: (name, value) => void (metrics[name] = value),
   };
@@ -2148,7 +2507,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
     ceilingHit,
     pass,
     final: { phase: snapshot?.phase ?? "", usageSeconds: snapshot?.usageToday?.seconds, runnerAttached: after?.runnerAttached ?? false },
-    spend: { capUsd: opts.capUsd, checkCapSeconds, todayBeforeUsd: gate.todayUsd, planUsd: gate.planUsd, billedSeconds, serverSeconds, ttsSeconds, usd: spent },
+    spend: { capUsd, checkCapSeconds, todayBeforeUsd: todayUsd, planUsd: plannedUsd, billedSeconds, serverSeconds, ttsSeconds, usd: spent },
     assertions,
     metrics,
     isolation: { stateDir, socketPath: join(stateDir, SOCKET_NAME), handsBin: join(stateRoot, NO_HANDS), brain: after?.brainKind ?? "", hands: "FakeHands (fakeHandsSpawn) on both helpers", env: runEnv },
@@ -2159,6 +2518,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
     phases: rec.phases,
     events: rec.events,
     reflexes: rec.reflexes,
+    reflexRows: rec.reflexRows,
     speech: rec.speech,
     brain: { tasks: brain.tasks, cancels: brain.cancels, toolCalls: brain.toolCalls },
     hands: { acting: acting.calls.map((c) => ({ t: c.at - rec.wall0, op: c.op })), reading: reading.calls.map((c) => ({ t: c.at - rec.wall0, op: c.op })) },
@@ -2205,6 +2565,7 @@ function emptyReport(plan: CheckPlan, mode: Mode, runId: string, startedAt: numb
     phases: [],
     events: [],
     reflexes: [],
+    reflexRows: [],
     speech: [],
     brain: { tasks: [], cancels: [], toolCalls: [] },
     hands: { acting: [], reading: [] },
@@ -2228,9 +2589,10 @@ export async function main(argv: readonly string[], print: (line: string) => voi
   const out = args.out ?? (args.mode === "dry" ? join(DEFAULT_OUT, "dry") : DEFAULT_OUT);
   mkdirSync(out, { recursive: true });
   if (args.check === "list") {
-    const today = spentToday(readSpend(spendFile(out, "live")));
+    const ledger = liveSpendFile();
+    const today = spentToday(readSpend(ledger));
     for (const p of PLANS) print(`${p.id.padEnd(6)}${p.name.padEnd(13)}${String(planSeconds(p)).padStart(4)} s  ${usd(planUsd(p))}  ${p.what}`);
-    print(`Planned total ${PLANS.reduce((a, p) => a + planSeconds(p), 0)} s, ${usd(PLANS.reduce((a, p) => a + planUsd(p), 0))}. Today's live checks spent ${usd(today.usd)} in ${today.runs} run(s). Ledger: ${spendFile(out, "live")}.`);
+    print(`Planned total ${PLANS.reduce((a, p) => a + planSeconds(p), 0)} s, ${usd(PLANS.reduce((a, p) => a + planUsd(p), 0))}. Today's live checks spent ${usd(today.usd)} of ${usd(MAX_CAP_USD)} in ${today.runs} run(s). Ledger: ${ledger}.`);
     return 0;
   }
   const plans = args.check === "all" ? PLANS : [findPlan(args.check)].filter((p): p is CheckPlan => p !== undefined);
@@ -2255,7 +2617,7 @@ export async function main(argv: readonly string[], print: (line: string) => voi
   }
   let code = 0;
   for (const plan of plans) {
-    const report = await runCheck({ plan, mode: args.mode, capUsd: args.capUsd ?? MAX_CAP_USD, acceptSpend: args.acceptSpend, out, oversize: args.oversize, keepState: args.keepState, ...(args.scale !== undefined ? { scale: args.scale } : {}), ...(apiKey ? { apiKey } : {}), print });
+    const report = await runCheck({ plan, mode: args.mode, ...(args.capUsd !== undefined ? { capUsd: args.capUsd } : {}), acceptSpend: args.acceptSpend, out, oversize: args.oversize, keepState: args.keepState, ...(args.scale !== undefined ? { scale: args.scale } : {}), ...(apiKey ? { apiKey } : {}), print });
     if (report.refused) return 2;
     if (!report.pass) code = 1;
   }

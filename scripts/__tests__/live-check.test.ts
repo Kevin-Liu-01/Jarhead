@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { LIVE_USD_PER_SECOND, MAX_CAP_USD, PLANS, findPlan, localDay, main, parseArgs, planSeconds, planUsd, readOpenAIKey, readSpend, runCheck, spendFile, spendFlagsRefusal, spendGate, spentToday, type Args, type SpendLine } from "../live-check.mts";
+import { APPEND_TOKEN_CAP, LIVE_USD_PER_SECOND, MAX_CAP_USD, OVERSIZE_MIN_WORDS, PLANS, drySpendFile, findPlan, liveLockFile, liveSpendFile, localDay, main, oversizeText, parseArgs, planSeconds, planUsd, readOpenAIKey, readSpend, releaseLiveLock, runCheck, spendFlagsRefusal, spendGate, spentToday, takeLiveLock, type Args, type SpendLine } from "../live-check.mts";
 
 /**
  * W2-8, the live-check harness: the gates that keep a paid check inside its cap, the watchdog that
@@ -22,6 +22,22 @@ const plan = (name: string) => {
   return p;
 };
 
+/**
+ * Runs `fn` with JARHEAD_STATE_DIR at a fresh temp dir, the state dir the live ledger and its lock live in (the test
+ * preload already points it at one for the whole file; each test gets its own here), and puts the variable back.
+ */
+async function inStateDir<T>(fn: (stateDir: string) => Promise<T> | T): Promise<T> {
+  const saved = process.env["JARHEAD_STATE_DIR"];
+  const dir = out();
+  process.env["JARHEAD_STATE_DIR"] = dir;
+  try {
+    return await fn(dir);
+  } finally {
+    if (saved === undefined) delete process.env["JARHEAD_STATE_DIR"];
+    else process.env["JARHEAD_STATE_DIR"] = saved;
+  }
+}
+
 test("the plan is the triage table: ten checks, their caps, under the $1.00 ceiling", () => {
   assert.deepEqual(
     PLANS.map((p) => `${p.id} ${p.name} ${p.capSeconds}`),
@@ -35,7 +51,7 @@ test("the plan is the triage table: ten checks, their caps, under the $1.00 ceil
   assert.equal(findPlan("LC-11"), undefined, "LC-11 is Kevin's, with no session");
 });
 
-test("a live run refuses without --i-accept-spend, and with a --cap-usd over 1.00 (the default is 1.00)", () => {
+test("a live run refuses without --i-accept-spend, without a --cap-usd, and with a --cap-usd over 1.00", () => {
   const parsed = (argv: string[]): Args => {
     const a = parseArgs(argv);
     assert.ok(!("error" in a), JSON.stringify(a));
@@ -43,7 +59,7 @@ test("a live run refuses without --i-accept-spend, and with a --cap-usd over 1.0
   };
   assert.match(spendFlagsRefusal(parsed(["LC-1"])) ?? "", /--i-accept-spend/);
   assert.match(spendFlagsRefusal(parsed(["LC-1", "--cap-usd", "1.00"])) ?? "", /--i-accept-spend/);
-  assert.equal(spendFlagsRefusal(parsed(["LC-1", "--i-accept-spend"])), undefined, "--cap-usd defaults to $1.00");
+  assert.match(spendFlagsRefusal(parsed(["LC-1", "--i-accept-spend"])) ?? "", /State the day's cap\. Pass --i-accept-spend --cap-usd 1\.00/, "a live run states its cap; there is no default");
   assert.match(spendFlagsRefusal(parsed(["LC-1", "--i-accept-spend", "--cap-usd", "1.01"])) ?? "", /at most 1\.00/);
   assert.match(spendFlagsRefusal(parsed(["LC-1", "--i-accept-spend", "--cap-usd", "0"])) ?? "", /above 0/);
   assert.match(spendFlagsRefusal(parsed(["LC-1", "--i-accept-spend", "--cap-usd", "lots"])) ?? "", /above 0/);
@@ -56,16 +72,65 @@ test("a live run refuses without --i-accept-spend, and with a --cap-usd over 1.0
   for (const s of ["LC-1 --i-accept-spend --cap-usd 1.00 --sneaky"]) assert.ok("error" in parseArgs(s.split(" ")), "an unknown flag refuses");
 });
 
-test("the command line refuses before it reads a key: no flag, a cap over 1.00, an unknown check", async () => {
-  const lines: string[] = [];
-  const dir = out();
-  assert.equal(await main(["LC-1", "--out", dir], (l) => lines.push(l)), 2);
-  assert.match(lines.join("\n"), /opens a paid GPT-Live session/);
-  assert.equal(await main(["LC-1", "--i-accept-spend", "--cap-usd", "2", "--out", dir], (l) => lines.push(l)), 2);
-  assert.equal(await main(["LC-99", "--dry-run", "--out", dir], (l) => lines.push(l)), 2);
-  assert.equal(await main(["list", "--out", dir], (l) => lines.push(l)), 0);
-  assert.match(lines.at(-1) ?? "", /Planned total \d+ s/);
-  assert.ok(!existsSync(spendFile(dir, "live")), "nothing was spent, nothing was written to the spend ledger");
+test("the command line refuses before it reads a key: no flag, no cap, a cap over 1.00, an unknown check", async () => {
+  await inStateDir(async (stateDir) => {
+    const lines: string[] = [];
+    const dir = out();
+    // A key in the state dir: every refusal below comes before it is read.
+    writeFileSync(join(stateDir, "env"), "OPENAI_API_KEY=sk-never-read\n");
+    assert.equal(await main(["LC-1", "--out", dir], (l) => lines.push(l)), 2);
+    assert.match(lines.join("\n"), /opens a paid GPT-Live session/);
+    assert.equal(await main(["LC-1", "--i-accept-spend", "--out", dir], (l) => lines.push(l)), 2);
+    assert.match(lines.at(-1) ?? "", /State the day's cap/, "--i-accept-spend alone is not enough");
+    assert.equal(await main(["LC-1", "--i-accept-spend", "--cap-usd", "2", "--out", dir], (l) => lines.push(l)), 2);
+    assert.equal(await main(["LC-99", "--dry-run", "--out", dir], (l) => lines.push(l)), 2);
+    assert.ok(!lines.some((l) => /^Key: /.test(l)), "no key was read");
+    assert.equal(await main(["list", "--out", dir], (l) => lines.push(l)), 0);
+    assert.match(lines.at(-1) ?? "", /Planned total \d+ s/);
+    assert.ok((lines.at(-1) ?? "").includes(`Ledger: ${join(stateDir, "live-check", "spend.ndjson")}.`), "list names the one ledger, in the state dir");
+    assert.ok(!existsSync(liveSpendFile()), "nothing was spent, nothing was written to the spend ledger");
+  });
+});
+
+test("the live ledger and its lock are one per state dir, whatever --out or the checkout", async () => {
+  const home = out();
+  assert.equal(liveSpendFile({}, home), join(home, ".jarhead", "live-check", "spend.ndjson"));
+  assert.equal(liveSpendFile({ JARHEAD_STATE_DIR: "~/elsewhere" }, home), join(home, "elsewhere", "live-check", "spend.ndjson"));
+  assert.equal(liveLockFile(liveSpendFile({}, home)), join(home, ".jarhead", "live-check", "live.lock"));
+  await inStateDir(async () => {
+    const day = localDay();
+    const ledger = liveSpendFile();
+    mkdirSync(join(ledger, ".."), { recursive: true });
+    writeFileSync(ledger, `${JSON.stringify({ at: 1, day, runId: "x", check: "LC-2", event: "start", planSeconds: 1150, planUsd: 1150 * LIVE_USD_PER_SECOND } satisfies SpendLine)}\n`);
+    // Two report folders, as two checkouts would have: the same day's spend refuses both.
+    for (const dir of [out(), out()]) {
+      const r = await runCheck({ plan: plan("LC-1"), mode: "live", capUsd: 1.0, acceptSpend: true, out: dir, apiKey: "sk-never-used", print: () => undefined });
+      assert.match(r.refused ?? "", /Today's checks spent \$0\.958/, dir);
+      assert.equal(r.files.spend, ledger);
+      assert.equal(r.net.length, 0);
+    }
+    assert.equal(readSpend(ledger).length, 1, "a refused run writes no line");
+  });
+});
+
+test("one live check at a time: the lock is taken exclusively, a live holder refuses the next run, a dead one is taken over", async () => {
+  await inStateDir(async () => {
+    const lock = liveLockFile(liveSpendFile());
+    assert.deepEqual(takeLiveLock(lock), { ok: true });
+    assert.equal(readFileSync(lock, "utf8").trim(), String(process.pid));
+    assert.deepEqual(takeLiveLock(lock), { ok: false, pid: process.pid }, "held by a live process: refused");
+    // A second checkout's run, while this one holds the lock: refused before any engine, key or socket.
+    const r = await runCheck({ plan: plan("LC-9"), mode: "live", capUsd: 1.0, acceptSpend: true, out: out(), apiKey: "sk-never-used", print: () => undefined });
+    assert.match(r.refused ?? "", new RegExp(`Another live check is running \\(pid ${process.pid}\\)`));
+    assert.equal(r.net.length, 0);
+    assert.equal(readSpend(liveSpendFile()).length, 0, "and it wrote no start line");
+    releaseLiveLock(lock);
+    assert.ok(!existsSync(lock), "released");
+    // A run that died holding it: pid 2147483646 is no process.
+    writeFileSync(lock, "2147483646\n");
+    assert.deepEqual(takeLiveLock(lock), { ok: true }, "a stale lock is taken over");
+    releaseLiveLock(lock);
+  });
 });
 
 test("the day's spend: ended runs count what they billed, a run that never ended counts its whole plan, other days nothing", () => {
@@ -93,31 +158,51 @@ test("the day's spend: ended runs count what they billed, a run that never ended
   assert.equal(spendGate(full, plan("LC-3"), 1.0, { day }).ok, false);
 });
 
-test("a live run is refused by the spend ledger, and without a key, before any engine, key or socket", async () => {
-  const dir = out();
-  const day = localDay();
-  writeFileSync(spendFile(dir, "live"), [{ at: 1, day, runId: "x", check: "LC-2", event: "start", planSeconds: 1150, planUsd: 1150 * LIVE_USD_PER_SECOND }].map((l) => JSON.stringify(l)).join("\n") + "\n");
-  const printed: string[] = [];
-  const before = readSpend(spendFile(dir, "live")).length;
-  const r = await runCheck({ plan: plan("LC-1"), mode: "live", capUsd: 1.0, acceptSpend: true, out: dir, apiKey: "sk-never-used", print: (l) => printed.push(l) });
-  assert.match(r.refused ?? "", /Today's checks spent \$0\.958 \(1 run\(s\) never ended.*LC-1 plans \$0\.063/);
-  assert.equal(r.ran, false);
-  assert.equal(r.net.length, 0, "nothing was asked of the network");
-  assert.equal(readSpend(spendFile(dir, "live")).length, before, "a refused run writes no start line");
-  const noAccept = await runCheck({ plan: plan("LC-1"), mode: "live", capUsd: 1.0, out: out(), apiKey: "sk-never-used", print: () => undefined });
-  assert.match(noAccept.refused ?? "", /--i-accept-spend/, "runCheck itself refuses a live run nobody accepted");
-  const noKey = await runCheck({ plan: plan("LC-1"), mode: "live", capUsd: 1.0, acceptSpend: true, out: out(), print: () => undefined });
-  assert.match(noKey.refused ?? "", /No OpenAI key/);
-  assert.ok(existsSync(r.files.report), "a refusal still leaves its report");
+test("a live run is refused by the spend ledger, without a cap, with dry faults, and without a key, before any engine, key or socket", async () => {
+  await inStateDir(async () => {
+    const dir = out();
+    const day = localDay();
+    const ledger = liveSpendFile();
+    mkdirSync(join(ledger, ".."), { recursive: true });
+    writeFileSync(ledger, [{ at: 1, day, runId: "x", check: "LC-2", event: "start", planSeconds: 1150, planUsd: 1150 * LIVE_USD_PER_SECOND }].map((l) => JSON.stringify(l)).join("\n") + "\n");
+    const printed: string[] = [];
+    const before = readSpend(ledger).length;
+    const r = await runCheck({ plan: plan("LC-1"), mode: "live", capUsd: 1.0, acceptSpend: true, out: dir, apiKey: "sk-never-used", print: (l) => printed.push(l) });
+    assert.match(r.refused ?? "", /Today's checks spent \$0\.958 \(1 run\(s\) never ended.*LC-1 plans \$0\.063/);
+    assert.equal(r.ran, false);
+    assert.equal(r.net.length, 0, "nothing was asked of the network");
+    assert.equal(readSpend(ledger).length, before, "a refused run writes no start line");
+    const noAccept = await runCheck({ plan: plan("LC-1"), mode: "live", capUsd: 1.0, out: out(), apiKey: "sk-never-used", print: () => undefined });
+    assert.match(noAccept.refused ?? "", /--i-accept-spend/, "runCheck itself refuses a live run nobody accepted");
+    const noCap = await runCheck({ plan: plan("LC-1"), mode: "live", acceptSpend: true, out: out(), apiKey: "sk-never-used", print: () => undefined });
+    assert.match(noCap.refused ?? "", /State the day's cap/, "runCheck itself refuses a live run with no cap stated");
+    const faults = await runCheck({ plan: plan("LC-1"), mode: "live", capUsd: 1.0, acceptSpend: true, out: out(), apiKey: "sk-never-used", dryFaults: { noBargeIn: true }, print: () => undefined });
+    assert.match(faults.refused ?? "", /Dry faults are for --dry-run only/);
+    const noKey = await runCheck({ plan: plan("LC-1"), mode: "live", capUsd: 1.0, acceptSpend: true, out: out(), print: () => undefined });
+    assert.match(noKey.refused ?? "", /No OpenAI key/);
+    assert.ok(existsSync(r.files.report), "a refusal still leaves its report");
+  });
 });
 
-test("the key is the environment's, else the one OPENAI_API_KEY line of the state dir's env file", () => {
+test("the key follows the app's rule: the state dir's env file wins over the shell, its last OPENAI_API_KEY line wins, the environment is the fallback", () => {
   const home = out();
   mkdirSync(join(home, ".jarhead"));
-  writeFileSync(join(home, ".jarhead", "env"), "ANTHROPIC_API_KEY=sk-ant-other\nexport OPENAI_API_KEY='sk-file-key'\n");
-  assert.deepEqual(readOpenAIKey({ OPENAI_API_KEY: "sk-env-key" }, home), { key: "sk-env-key", source: "the environment" });
-  assert.equal(readOpenAIKey({}, home)?.key, "sk-file-key");
+  writeFileSync(join(home, ".jarhead", "env"), "ANTHROPIC_API_KEY=sk-ant-other\nexport OPENAI_API_KEY='sk-old-file-key'\n# OPENAI_API_KEY=sk-commented\nOPENAI_API_KEY=\"sk-file-key\"\nOPENAI_API_KEY=\n");
+  assert.deepEqual(readOpenAIKey({ OPENAI_API_KEY: "sk-stale-shell-key" }, home), { key: "sk-file-key", source: "~/.jarhead/env" }, "a stale shell export never shadows the key Setup wrote");
+  assert.equal(readOpenAIKey({}, home)?.key, "sk-file-key", "the last non-empty line wins, as loadEnv reads it");
+  assert.deepEqual(readOpenAIKey({ OPENAI_API_KEY: "sk-env-key", JARHEAD_STATE_DIR: join(home, "elsewhere") }, home), { key: "sk-env-key", source: "the environment" }, "no env file: the environment's");
   assert.equal(readOpenAIKey({ JARHEAD_STATE_DIR: join(home, "elsewhere") }, home), undefined, "the state dir named is the one read");
+});
+
+test("LC-3's oversize probe is over the 500-token cap by any tokenizer: at least three words per allowed token", () => {
+  const text = oversizeText();
+  const words = text.split(/\s+/).filter(Boolean);
+  assert.ok(words.length >= OVERSIZE_MIN_WORDS && OVERSIZE_MIN_WORDS >= 3 * APPEND_TOKEN_CAP, `${words.length} words`);
+  // Varied prose, not one line repeated: a tokenizer cannot fold it into a few tokens per repeat.
+  const sentences = text.split(/(?<=\.)\s+/).map((x) => x.replace(/^Entry \d+: /, ""));
+  assert.ok(sentences.length >= 50, `${sentences.length} sentences`);
+  assert.equal(new Set(sentences).size, sentences.length, "no sentence repeats");
+  console.log(`[measure] oversize probe: ${text.length} chars, ${words.length} words, ${sentences.length} sentences`);
 });
 
 test("the cap watchdog terminates the session at the check's cap, refuses another, and the ledger says so", async () => {
@@ -145,10 +230,12 @@ test("the cap watchdog terminates the session at the check's cap, refuses anothe
   assert.equal(r.sessions.filter((s) => s.createdT > cap!.t).length, 0, "no session opens after the cap");
   assert.equal(r.final.phase, "asleep", "and the engine is asleep");
   assert.equal(r.final.runnerAttached, false);
-  const lines = readSpend(spendFile(dir, "dry"));
+  const lines = readSpend(drySpendFile(dir));
+  assert.equal(r.files.spend, drySpendFile(dir));
   assert.deepEqual(lines.map((l) => l.event), ["start", "end"]);
   assert.ok(Math.abs((lines[1]?.billedSeconds ?? 0) - r.spend.billedSeconds) < 1e-9);
-  assert.ok(!existsSync(spendFile(dir, "live")), "a dry run never touches the live ledger");
+  assert.ok(!existsSync(liveSpendFile()), "a dry run never touches the live ledger");
+  assert.ok(!existsSync(liveLockFile(liveSpendFile())), "or takes the live lock");
   assert.equal(globalThis.fetch, fetchBefore, "the fetch fence is gone after the run");
   assert.equal(globalThis.WebSocket, wsBefore, "the WebSocket fence is gone after the run");
 });

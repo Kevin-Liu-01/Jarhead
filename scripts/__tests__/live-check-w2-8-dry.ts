@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { findPlan, runCheck, type Report } from "../live-check.mts";
+import { findPlan, runCheck, type Report, type RunOptions } from "../live-check.mts";
 
 /**
  * One check run dry (W2-8): the scripted GPT-Live stand-in, fake hands, the canned brain, a temp
@@ -13,14 +13,14 @@ import { findPlan, runCheck, type Report } from "../live-check.mts";
 /** The suite's wall-clock allowance (AGENTS.md): x3 on a GitHub runner, x1 on a Mac. */
 const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
 
-export async function dryRun(name: string): Promise<Report> {
+export async function dryRun(name: string, extra: Pick<RunOptions, "dryFaults" | "oversize"> = {}): Promise<Report> {
   const plan = findPlan(name);
   assert.ok(plan, name);
   const out = mkdtempSync(join(tmpdir(), "jh-live-check-dry-"));
   const t0 = Date.now();
-  const r = await runCheck({ plan, mode: "dry", capUsd: 1.0, out, slack: RUNNER_SLACK, print: () => undefined });
+  const r = await runCheck({ plan, mode: "dry", capUsd: 1.0, out, slack: RUNNER_SLACK, ...extra, print: () => undefined });
   const hard = r.assertions.filter((a) => !a.soft);
-  console.log(`[measure] ${plan.id} ${plan.name} dry: ${r.pass ? "pass" : "fail"} ${hard.filter((a) => a.pass).length}/${hard.length} in ${Date.now() - t0} ms; billed ${r.spend.billedSeconds.toFixed(1)} s (simulated)`);
+  console.log(`[measure] ${plan.id} ${plan.name} dry${extra.dryFaults ? ` (faults ${JSON.stringify(extra.dryFaults)})` : ""}: ${r.pass ? "pass" : "fail"} ${hard.filter((a) => a.pass).length}/${hard.length} in ${Date.now() - t0} ms; billed ${r.spend.billedSeconds.toFixed(1)} s (simulated)`);
   assert.equal(r.error, undefined, r.error);
   assert.equal(r.ran, true, `${plan.id} ran to its end`);
   assert.equal(r.capHit, false, "inside its cap");
@@ -41,6 +41,20 @@ export async function dryRun(name: string): Promise<Report> {
   assert.ok(r.wire.server.length > 0 && r.wire.client.length > 0, "the wire was recorded both ways");
   assert.ok(existsSync(r.files.report));
   return r;
+}
+
+/** The assertion of that name (it must exist: a judge that stops judging fails here, not silently). */
+export function assertion(r: Report, name: RegExp): Report["assertions"][number] {
+  const found = r.assertions.filter((a) => name.test(a.name));
+  assert.ok(found.length > 0, `${r.check}: an assertion matching ${name}`);
+  return found[0]!;
+}
+
+/** Every assertion matching `name`, and whether all of them passed. */
+export function assertions(r: Report, name: RegExp): { readonly all: Report["assertions"]; readonly pass: boolean } {
+  const all = r.assertions.filter((a) => name.test(a.name));
+  assert.ok(all.length > 0, `${r.check}: assertions matching ${name}`);
+  return { all, pass: all.every((a) => a.pass) };
 }
 
 /** The hard assertions, all passing (a failing one is named with its value). */
