@@ -61,10 +61,19 @@ export const FAKE_ACTING_OPS: ReadonlySet<string> = new Set(["click", "mouse_dow
 
 /**
  * Ops the helper also holds while Kevin's hands are on the machine, though they post no key or
- * click (Input.swift opMove, Windows.swift opFocusApp, and opOpenApp when it activates): the
- * pointer jumping, or an app pulled over the one he is typing in, is stepping on him too.
+ * click (Input.swift opMove, Windows.swift opFocusApp, opOpenApp when it activates, Browser.swift
+ * opBrowserNavigate, and opBrowserJS when the browser is the front app): the pointer jumping, an
+ * app pulled over the one he is typing in, or the page under his keys replaced or scripted, is
+ * stepping on him too.
  */
-export const FAKE_HELD_OPS: ReadonlySet<string> = new Set(["move", "focus_app", "open_app"]);
+export const FAKE_HELD_OPS: ReadonlySet<string> = new Set(["move", "focus_app", "open_app", "browser_navigate", "browser_js"]);
+
+/** The held ops that are held only sometimes: an open in the background, and a page script in a browser behind the front app. */
+function heldNow(op: string, params: Record<string, unknown>, frontApp: string): boolean {
+  if (op === "open_app") return params["activate"] !== false;
+  if (op === "browser_js") return String(params["app"] ?? "").toLowerCase() === frontApp.toLowerCase();
+  return true;
+}
 
 /**
  * The helper in process, with knobs, behaving as the Swift one does where the lease
@@ -131,7 +140,7 @@ export class FakeHands implements NativeHands {
     this.calls.push({ op, params, at });
     if (this.hold === op && this.release_ === undefined) await new Promise<void>((r) => (this.release_ = r));
     if (FAKE_ACTING_OPS.has(op)) this.guardActing(op, params);
-    else if (FAKE_HELD_OPS.has(op) && !(op === "open_app" && params["activate"] === false)) this.guardActing(op, params);
+    else if (FAKE_HELD_OPS.has(op) && heldNow(op, params, this.frontApp)) this.guardActing(op, params);
     switch (op) {
       case "hello":
         return { version: "fake", pid: 1, permissions: { accessibility: true, screenRecording: true } } as T;

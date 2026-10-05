@@ -84,11 +84,11 @@ test("tool specs are complete and map to zod shapes", () => {
   const shape = zodShape(specByName("scroll")!);
   assert.deepEqual(Object.keys(shape).sort(), ["coordinate", "scroll_amount", "scroll_direction", "text"]);
   const cfg = responsesDelegationConfig({ model: "gpt-5.6-terra", effort: "low" });
-  assert.equal(cfg.responses.tools?.length, ALL_TOOL_SPECS.length + 1);
+  assert.equal(cfg.responses.tools?.length, ALL_TOOL_SPECS.length, "the function tools and nothing hosted (W3-4)");
   assert.match(JSON.stringify(cfg.responses.tools), /Kevin's Mac/, "the default table is the table as written");
   // The user's name: the same table, rendered for Sam — no literal Kevin, the same names in the same order.
   const sam = responsesDelegationConfig({ model: "gpt-5.6-terra", effort: "low", userName: "Sam" });
-  assert.equal(sam.responses.tools?.length, ALL_TOOL_SPECS.length + 1);
+  assert.equal(sam.responses.tools?.length, ALL_TOOL_SPECS.length);
   assert.doesNotMatch(JSON.stringify(sam.responses.tools), /Kevin/);
   assert.doesNotMatch(sam.responses.instructions ?? "", /Kevin/);
   const toolNames = (tools: unknown): string[] => (tools as Array<{ name?: string }>).map((t) => t.name ?? "").filter(Boolean);

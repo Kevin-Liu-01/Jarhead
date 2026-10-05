@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import { AUTOMATION_ACTING_KINDS, AUTOMATION_ACTION_KINDS, AUTOMATION_ACTIONS_MAX, AUTOMATION_FOLDER_WATCHERS_MAX, AUTOMATION_LINE_CHARS, AUTOMATION_POLL_MIN_S, AUTOMATION_WAKE_COOLDOWN_MIN_S, recipeNamed, type AutomationAction, type AutomationActionKind, type AutomationClauses, type AutomationSettings, type AutomationWhen } from "@jarhead/protocol";
-import { REPO_ROOT } from "./env.ts";
+import { REPO_ROOT, envFilePath } from "./env.ts";
 
 /**
  * What Jarhead may do without asking.
@@ -370,9 +370,56 @@ function globRegExp(glob: string, slash = false): RegExp {
   }
 }
 
-/** Which secret store a path or command names, if any. */
-export function secretPathReason(pathOrCommand: string): string | undefined {
+/**
+ * The state dir: JARHEAD_STATE_DIR, else ~/.jarhead, with `home` for a leading ~. The folder of core's one env file
+ * (env.ts envFilePath), the file the redactor strikes values from, so the gates and the redactor agree on it.
+ */
+function stateDirOf(home: string): string {
+  return resolve(dirname(envFilePath(process.env, home)));
+}
+
+/** What the state dir adds to SECRET_PATHS and SECRET_HOLDERS when it is not ~/.jarhead. */
+interface StateDirTables {
+  readonly secrets: ReadonlyArray<{ readonly re: RegExp; readonly what: string }>;
+  readonly holders: ReadonlyArray<{ readonly re: RegExp; readonly dir: string; readonly what: string }>;
+}
+
+let stateDirCache: { readonly key: string; readonly tables: StateDirTables } | undefined;
+
+/**
+ * A state dir elsewhere than ~/.jarhead (JARHEAD_STATE_DIR: the test preload's temp dir, a second daemon's) holds the
+ * same secrets: its env file and the wake gate's passphrase join SECRET_PATHS, and the folder joins SECRET_HOLDERS.
+ * Each is matched by every spelling the gates see: the absolute path, macOS's /private twin, and ~ under the home.
+ * At ~/.jarhead the static entries already say all of it, so production adds nothing.
+ */
+function stateDirTables(stateDir: string, home: string): StateDirTables {
+  const dir = canon(resolve(stateDir));
+  const key = `${dir}\0${home}`;
+  if (stateDirCache?.key === key) return stateDirCache.tables;
+  let tables: StateDirTables = { secrets: [], holders: [] };
+  if (dir !== "/" && dir.toLowerCase() !== canon(resolve(home, ".jarhead")).toLowerCase()) {
+    const h = canon(resolve(home));
+    const under = isInside(dir, h);
+    const shown = under ? `~${dir.slice(h.length)}` : dir;
+    const spellings = [dir, ...(/^\/(var|tmp|etc)(\/|$)/.test(dir) ? [`/private${dir}`] : []), ...(under ? [shown] : [])];
+    const alt = spellings.map(escapeRe).join("|");
+    tables = {
+      secrets: [
+        { re: new RegExp(String.raw`(${alt})/env(\.[\w.-]+)?${END}`, "i"), what: `${shown}/env` },
+        { re: new RegExp(String.raw`(${alt})/wake-auth\.json${END}`, "i"), what: "the wake gate's passphrase file" },
+      ],
+      // The folder itself, `/.`, `/*`, `/**`, or a wildcard anywhere inside it (`/e?v` reaches env without naming it).
+      holders: [{ re: new RegExp(String.raw`(^|[\s"'=])(${alt})(\/?(\.|\*\*?)?|\/[^\s"';|&)]*[*?[][^\s"';|&)]*)(?=$|[\s"';|&)])`, "i"), dir: shown, what: `${shown}, which holds env` }],
+    };
+  }
+  stateDirCache = { key, tables };
+  return tables;
+}
+
+/** Which secret store a path or command names, if any. `home` and `stateDir` are this process's unless a caller knows better. */
+export function secretPathReason(pathOrCommand: string, home: string = homedir(), stateDir: string = stateDirOf(home)): string | undefined {
   for (const { re, what } of SECRET_PATHS) if (re.test(pathOrCommand)) return what;
+  for (const { re, what } of stateDirTables(stateDir, home).secrets) if (re.test(pathOrCommand)) return what;
   return undefined;
 }
 
@@ -388,6 +435,12 @@ const SECRET_HOLDERS: ReadonlyArray<{ readonly re: RegExp; readonly dir: string;
   { re: /~\/Library\/Application Support\/(Google\/Chrome|Chromium|BraveSoftware\/Brave-Browser|Microsoft Edge|Vivaldi|Arc)(\/(Default|Profile \d+|Guest Profile))?\/?(\*\*?)?(?=$|[\s"';|&)])/i, dir: "a browser profile", what: "a browser profile, which holds cookies and saved logins" },
   { re: /~\/Library\/Application Support\/Firefox(\/Profiles(\/[^\s"'/]+)?)?\/?(\*\*?)?(?=$|[\s"';|&)])/i, dir: "a browser profile", what: "a Firefox profile, which holds cookies and saved logins" },
 ];
+
+/** SECRET_HOLDERS and, when the state dir is not ~/.jarhead, the state dir (it holds env). */
+function secretHolders(home: string = homedir()): ReadonlyArray<{ readonly re: RegExp; readonly dir: string; readonly what: string }> {
+  const extra = stateDirTables(stateDirOf(home), home).holders;
+  return extra.length ? [...SECRET_HOLDERS, ...extra] : SECRET_HOLDERS;
+}
 
 /** Commands that only look at a folder's names or size; naming a secret holder to them is fine. */
 const LOOK_ONLY = new Set(["ls", "open", "mkdir", "du", "df", "stat", "tree", "test", "[", "[[", "echo", "printf", "file", "realpath", "readlink", "exa", "eza", "lsd", "dirname", "basename", "cd", "pushd", "pwd", "which", "type", "mdls", "xattr", "GetFileInfo"]);
@@ -463,6 +516,8 @@ export interface PathContext {
   readonly realPath?: string | undefined;
   /** Where writes run without asking, beyond /tmp and ~/.jarhead: the current self-edit worktrees. */
   readonly writableRoots?: readonly string[] | undefined;
+  /** The state dir, when the caller knows it (default JARHEAD_STATE_DIR, else ~/.jarhead): its secrets, ledger, settings and trash are judged as ~/.jarhead's. */
+  readonly stateDir?: string | undefined;
   /** Kevin's own words for this task (never the model's); a folder he named in them is writable for this task. */
   readonly request?: string | undefined;
   readonly confirmed?: boolean | undefined;
@@ -482,31 +537,36 @@ export interface PathContext {
  * over a file the brain has not read this task, or for any deletion, they ask.
  * The ledger is append-only and settings.json carries the wake gate: both ask.
  * The running checkout and anything that runs at login ask whatever he named.
+ * A state dir elsewhere (JARHEAD_STATE_DIR) is one of Jarhead's places with the
+ * same rules; ~/.jarhead keeps them too, so the real install's secrets and
+ * ledger never depend on which state dir a daemon was started with.
  */
 export function classifyPath(ctx: PathContext): Decision {
   const home = ctx.home ?? homedir();
   const who = nameOf(ctx);
   const p = expandPath(ctx.path, home);
   const real = ctx.realPath ? resolve(ctx.realPath) : p;
-  const secret = secretPathReason(p) ?? (real !== p ? secretPathReason(real) : undefined);
+  const stateDir = resolve(ctx.stateDir ?? stateDirOf(home));
+  const secret = secretPathReason(p, home, stateDir) ?? (real !== p ? secretPathReason(real, home, stateDir) : undefined);
   if (secret) return refuse(`${secret} holds secrets; Jarhead never reads or writes it, and ${who} handles it`);
   if (ctx.access === "read") return run(`reading is harmless on ${who}'s own machine`);
-  const stateDir = resolve(home, ".jarhead");
+  // Jarhead's own places: ~/.jarhead, and the state dir when it is elsewhere. Each has a ledger, a settings.json and a trash.
+  const ownDirs = [...new Set([resolve(home, ".jarhead"), stateDir])];
   const targets = real !== p ? [p, real] : [p];
   // The trash (added 2026-09-12): where Kevin's moved conversations and screenshots live. Move-only — whole
   // days move in and out by rename(2), from the engine; no tool writes or deletes there, yes or no. Compared
   // case-folded: APFS is case-insensitive by default, so ~/.jarhead/Trash IS the trash.
-  const trashDir = resolve(stateDir, "trash").toLowerCase();
-  if (targets.some((t) => isUnder(t.toLowerCase(), trashDir))) return refuse(withName(TRASH_REASON, who));
+  const trashDirs = ownDirs.map((d) => resolve(d, "trash").toLowerCase());
+  if (targets.some((t) => trashDirs.some((trash) => isUnder(t.toLowerCase(), trash)))) return refuse(withName(TRASH_REASON, who));
   if (ctx.confirmed) return run(`${who} confirmed ${ctx.access === "delete" ? "deleting" : "writing"} ${p}`);
   if (ctx.access === "delete") return confirm(`deleting ${p} cannot be undone; ask first`);
-  if (targets.some((t) => isUnder(t, resolve(stateDir, "ledger")))) return confirm("the ledger is append-only; writing there needs a yes");
-  if (targets.some((t) => t === resolve(stateDir, "settings.json"))) return confirm("settings.json carries the wake gate and the brain choice; changing it needs a yes");
+  if (targets.some((t) => ownDirs.some((d) => isUnder(t, resolve(d, "ledger"))))) return confirm("the ledger is append-only; writing there needs a yes");
+  if (targets.some((t) => ownDirs.some((d) => canon(t) === canon(resolve(d, "settings.json"))))) return confirm("settings.json carries the wake gate and the brain choice; changing it needs a yes");
   for (const t of targets) {
     const auto = autostartReason(t, home, who);
     if (auto) return confirm(`${auto}; ask first`);
   }
-  const writable = [...tempRoots(home), stateDir, ...(ctx.writableRoots ?? []).map((r) => expandPath(r, home))];
+  const writable = [...tempRoots(home), ...ownDirs, ...(ctx.writableRoots ?? []).map((r) => expandPath(r, home))];
   const repo = expandPath(ctx.repoRoot ?? REPO_ROOT, home);
   if (targets.some((t) => isUnder(t, repo)) && !targets.every((t) => writable.some((r) => isUnder(t, r)))) {
     return confirm(`${p} is inside the running Jarhead checkout; self_edit is the way to change Jarhead, so editing it in place needs a yes`);
@@ -1212,7 +1272,7 @@ function secretSweepReason(norm: string): string | undefined {
     const cmd = commandOf(stmt);
     if (/~\/\.(jarhead|codex|claude)\/[^\s"']*[*?[]/i.test(stmt)) return "a wildcard inside that folder can expand to its secret file";
     if (/(^|[\s"'=])~\/\.[\w-]*[*?[][^\s"']*/.test(stmt)) return "a wildcard over the hidden folders in the home can reach a secret store";
-    for (const holder of SECRET_HOLDERS) {
+    for (const holder of secretHolders()) {
       if (!holder.re.test(stmt)) continue;
       if (/^(cd|pushd)$/.test(cmd) || /\s(-C|--directory(=|\s))\s*["']?~\//.test(s) || /\s-C\s*["']?~\//.test(stmt)) return `commands run from ${holder.what.split(",")[0]} reach its secrets by their bare names; run them from another folder with full paths`;
       if (LOOK_ONLY.has(cmd)) continue;

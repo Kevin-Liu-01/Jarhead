@@ -30,7 +30,6 @@ export interface ResponsesBrainOptions {
   readonly model?: string | undefined;
   readonly effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
   readonly runner: ToolRunner;
-  readonly webSearch?: boolean | undefined;
   /** What the standing orders call the person Jarhead works for (release F1). */
   readonly userName?: string | undefined;
 }
@@ -38,10 +37,14 @@ export interface ResponsesBrainOptions {
 export interface ResponsesConfigOptions {
   readonly model?: string | undefined;
   readonly effort?: ResponsesBrainOptions["effort"] | undefined;
-  readonly webSearch?: boolean | undefined;
   readonly userName?: string | undefined;
 }
 
+/**
+ * Live's delegation to a Responses model, with Jarhead's own tools and nothing hosted: every call comes back to the
+ * ToolRunner, so the policy judges it and the redactor reads its result. (OpenAI's built-in web_search ran on
+ * OpenAI's side, past classifyUrl; the web_search function tool is the search every brain has.)
+ */
 export function responsesDelegationConfig(opts: ResponsesConfigOptions): { type: "responses"; responses: ResponsesDelegationConfig } {
   return {
     type: "responses",
@@ -49,7 +52,7 @@ export function responsesDelegationConfig(opts: ResponsesConfigOptions): { type:
       // Settings.brainModel is "" for "the backend's default"; only a real id overrides.
       model: opts.model || DEFAULT_RESPONSES_MODEL,
       instructions: brainSystemPrompt(opts.userName),
-      tools: [...toolSpecsFor(opts.userName ?? "Kevin").map(toFunctionTool), ...(opts.webSearch === false ? [] : [{ type: "web_search" }])],
+      tools: toolSpecsFor(opts.userName ?? "Kevin").map(toFunctionTool),
       tool_choice: "auto",
       parallel_tool_calls: false,
       reasoning: { effort: opts.effort ?? "low" },
