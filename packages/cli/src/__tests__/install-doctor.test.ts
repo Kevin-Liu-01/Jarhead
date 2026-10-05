@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { installChecks, type Check } from "../doctor.ts";
-import { CODESIGN, LSREGISTER, dictGet, dictSet, parsePlistXml, serializePlistXml, stringAt, type Exec, type TargetProbe } from "@jarhead/install";
+import { browserChecks, installChecks, type Check } from "../doctor.ts";
+import { CODESIGN, LSREGISTER, defaultExec, dictGet, dictSet, parsePlistXml, serializePlistXml, stringAt, type Exec, type TargetProbe } from "@jarhead/install";
+import { ADHOC_BUNDLE_ID, canSignAdhoc, makeStage, signLikeBuildMac } from "../../../install/src/__tests__/adhoc-stage.ts";
 
 /**
  * The doctor's app rows driven by a scripted exec and a scripted stat: they read the
@@ -18,12 +21,12 @@ const INSTALLED = "/Applications/Jarhead.app";
 const dir: TargetProbe = { exists: true, isSymlink: false, isDirectory: true, uid: 501, inode: 103261417, writable: true };
 const ROOTS = ["/Users/kevinliu/.jarhead/worktrees", "/Users/kevinliu/.jarhead/trash", "/Users/kevinliu/.Trash", "/Users/kevinliu/jarvis/build/stage", "/Users/kevinliu/jarvis/build/previous"];
 
-function exec(o: { verifyCode?: number; requirement?: string; dvv?: string; dump?: string; dumpCode?: number; dock?: string; calls?: string[][] }): Exec {
+function exec(o: { verifyCode?: number; requirement?: string; requirementOut?: string; dvv?: string; dump?: string; dumpCode?: number; dock?: string; calls?: string[][] }): Exec {
   return (cmd, args, _opts) => {
     o.calls?.push([cmd, ...args]);
     if (cmd === CODESIGN && args[0] === "-dvv") return { code: 0, stdout: "", stderr: o.dvv ?? "Executable=/Applications/Jarhead.app/Contents/MacOS/Jarhead\nAuthority=Jarhead Local Signing\n" };
     if (cmd === CODESIGN && args[0] === "--verify") return { code: o.verifyCode ?? 0, stdout: "", stderr: o.verifyCode ? "/Applications/Jarhead.app: a sealed resource is missing or invalid" : "/Applications/Jarhead.app: valid on disk\n" };
-    if (cmd === CODESIGN && args[0] === "-d") return { code: 0, stdout: "", stderr: o.requirement ?? 'designated => identifier "com.kevinliu.jarhead" and certificate leaf = H"8b79555ca54ff1c95d3e044805f34d5adac36055"\n' };
+    if (cmd === CODESIGN && args[0] === "-d") return { code: 0, stdout: o.requirementOut ?? "", stderr: o.requirement ?? 'designated => identifier "com.kevinliu.jarhead" and certificate leaf = H"8b79555ca54ff1c95d3e044805f34d5adac36055"\n' };
     if (cmd === LSREGISTER && args[0] === "-dump") return o.dumpCode ? { code: o.dumpCode, stdout: "", stderr: `spawnSync ${LSREGISTER} ETIMEDOUT` } : { code: 0, stdout: o.dump ?? fixture("ls-dump-bundle.txt"), stderr: "" };
     if (cmd === "defaults" && args[0] === "export") return { code: 0, stdout: o.dock ?? fixture("dock-clean.xml"), stderr: "" };
     throw new Error(`unexpected ${cmd} ${args.join(" ")}`);
@@ -66,9 +69,72 @@ test("doctor app rows: two Dock tiles and stale records warn with `pnpm jarhead 
   const wrongId = byName(installChecks({ exec: exec({ requirement: 'designated => identifier "com.kevinliu.jarvis"\n', dump: CLEAN_DUMP }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
   assert.match(wrongId["install"]!.detail, /designated requirement lacks identifier "com.kevinliu.jarhead"/);
 
-  const adhoc = byName(installChecks({ exec: exec({ dvv: "Signature=adhoc\n", dump: CLEAN_DUMP }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
-  assert.equal(adhoc["signing identity"]!.status, "warn");
-  assert.match(adhoc["signing identity"]!.fix ?? "", /Certificate Assistant/);
+});
+
+// What codesign prints for /Applications/Jarhead.app signed ad-hoc (build-mac.ts on a Mac with no
+// identity): -dvv and -d -v on stderr, the implicit cdhash requirement on stdout. No Authority line,
+// no identifier clause in the requirement.
+const ADHOC_SIGNATURE = [
+  "Executable=/Applications/Jarhead.app/Contents/MacOS/Jarhead",
+  "Identifier=com.kevinliu.jarhead",
+  "Format=app bundle with Mach-O thin (arm64)",
+  "CodeDirectory v=20400 size=48212 flags=0x2(adhoc) hashes=1495+7 location=embedded",
+  "Signature=adhoc",
+  "Info.plist entries=21",
+  "TeamIdentifier=not set",
+  "Sealed Resources version=2 rules=13 files=31",
+].join("\n");
+const ADHOC_REQUIREMENT = '# designated => cdhash H"5f0c1b3e9a7d2c4e8b6a0f1d3c5e7a9b2d4f6e8a"\n';
+
+test("doctor app rows on an ad-hoc install: the identity row warns with the certificate fix; the install row is ok, because ad-hoc is the no-identity default build:mac installs", () => {
+  const rows = byName(installChecks({ exec: exec({ dvv: `${ADHOC_SIGNATURE}\nInternal requirements count=0 size=12\n`, requirement: `${ADHOC_SIGNATURE}\n`, requirementOut: ADHOC_REQUIREMENT, dump: CLEAN_DUMP }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
+  assert.equal(rows["signing identity"]!.status, "warn");
+  assert.match(rows["signing identity"]!.detail, /^ad-hoc/);
+  assert.match(rows["signing identity"]!.fix ?? "", /Certificate Assistant/);
+  assert.equal(rows["install"]!.status, "ok", `install row: ${rows["install"]!.detail}`);
+  assert.equal(rows["install"]!.detail, "/Applications/Jarhead.app · inode 103261417 · strict ok · ad-hoc, identifier com.kevinliu.jarhead");
+  assert.equal(rows["install"]!.fix, undefined, "no pnpm build:mac loop");
+
+  // An ad-hoc bundle under another identifier is still a warn, and the row quotes the requirement.
+  const other = ADHOC_SIGNATURE.replace("Identifier=com.kevinliu.jarhead", "Identifier=com.kevinliu.jarvis");
+  const wrong = byName(installChecks({ exec: exec({ dvv: other, requirement: other, requirementOut: ADHOC_REQUIREMENT, dump: CLEAN_DUMP }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
+  assert.equal(wrong["install"]!.status, "warn");
+  assert.match(wrong["install"]!.detail, /^designated requirement lacks identifier "com\.kevinliu\.jarhead": designated => cdhash H"5f0c1b3e/);
+  assert.match(wrong["install"]!.detail, /\(ad-hoc, signed as com\.kevinliu\.jarvis\)$/);
+});
+
+test("doctor app rows against a real ad-hoc signature (codesign runs; LaunchServices and the Dock are stubbed)", { skip: canSignAdhoc() ? false : "needs macOS codesign" }, () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "jh-adhoc-doctor-")));
+  try {
+    const app = makeStage(root, "doctor");
+    signLikeBuildMac(app, undefined);
+    const run: Exec = (cmd, args, opts) => (cmd === CODESIGN ? defaultExec(cmd, args, opts) : { code: 0, stdout: "", stderr: "" });
+    const rows = byName(installChecks({ exec: run, installed: app, bundleId: ADHOC_BUNDLE_ID, uid: process.getuid?.() ?? -1, staleRoots: [], exists: () => true, linkTarget: app }));
+    assert.equal(rows["signing identity"]!.status, "warn", "ad-hoc is a warn on the identity row");
+    assert.equal(rows["install"]!.status, "ok", `install row: ${rows["install"]!.detail} (fix offered: ${rows["install"]!.fix})`);
+    assert.match(rows["install"]!.detail, /strict ok · ad-hoc, identifier com\.example\.jarhead-adhoc-install$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("doctor browser rows: the plain doctor sends no Apple event and names --browsers; with it, each running browser is asked and one that is not running is never launched", async () => {
+  const asked: string[] = [];
+  const plain = await browserChecks({ ask: false, running: () => assert.fail("not even pgrep without --browsers"), probe: async (app) => (asked.push(app), { status: "ok", detail: "on" }) });
+  assert.equal(asked.length, 0, "no browser is asked");
+  assert.equal(plain.length, 1);
+  assert.equal(plain[0]!.name, "browser JS from Apple Events");
+  assert.equal(plain[0]!.status, "warn");
+  assert.match(plain[0]!.detail, /pnpm run doctor --browsers/);
+
+  const rows = await browserChecks({ ask: true, running: (app) => app === "Safari", probe: async (app) => (asked.push(app), { status: "off", detail: "Develop menu setting is off", fix: "Safari › Develop › Allow JavaScript from Apple Events" }) });
+  assert.deepEqual(asked, ["Safari"], "only the running browser is asked");
+  const r = byName(rows);
+  assert.equal(r["Google Chrome JS from Apple Events"]!.status, "warn");
+  assert.match(r["Google Chrome JS from Apple Events"]!.detail, /not running/);
+  assert.equal(r["Safari JS from Apple Events"]!.status, "warn");
+  assert.match(r["Safari JS from Apple Events"]!.detail, /^off/);
+  assert.match(r["Safari JS from Apple Events"]!.fix ?? "", /Allow JavaScript from Apple Events/);
 });
 
 test("doctor app rows: a Dock with no Jarhead pin is a warn that asks Kevin to drag the app once (no fix command — pinning is his); a timed-out Bundle dump warns with the reason", () => {

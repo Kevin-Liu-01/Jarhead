@@ -10,7 +10,7 @@ import { defaultConnectors } from "@jarhead/agents";
 import { EMBED_PREFERENCE, LOCAL_NUM_CTX_MAX, LOCAL_NUM_CTX_MIN, browserJsDoctor, discoverLocalServer, probeCodex, resolveLocalModel, selfEditDoctorRow, serverLabel, suggestedPull } from "@jarhead/brain";
 import { DaemonClient } from "@jarhead/daemon";
 import { NativeHandsProcess, type HelloPermissions } from "@jarhead/hands";
-import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, INSTALLED_APP, JARHEAD_BUNDLE_ID, defaultExec, describeDock, planInstall, probeTarget, requirementHasIdentifier, runHygiene, type Exec, type TargetProbe } from "@jarhead/install";
+import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, INSTALLED_APP, JARHEAD_BUNDLE_ID, checkRequirement, defaultExec, describeDock, planInstall, probeTarget, runHygiene, type Exec, type TargetProbe } from "@jarhead/install";
 
 /**
  * Preflight for the things that fail silently. Exits non-zero only on failures
@@ -226,15 +226,17 @@ export function installChecks(deps: InstallCheckDeps = {}): Check[] {
     } else {
       const verify = exec(CODESIGN, [...CODESIGN_VERIFY_ARGS, installed], { timeoutMs: 8000 });
       const req = exec(CODESIGN, [...CODESIGN_REQUIREMENT_ARGS, installed], { timeoutMs: 8000 });
-      const hasId = requirementHasIdentifier(`${req.stdout}${req.stderr}`, bundleId);
+      // The rule performInstall applies: an identity's requirement names the bundle id; an ad-hoc one is its cdhash, accepted on the signature's own Identifier.
+      const signed = checkRequirement(`${req.stdout}\n${req.stderr}`, bundleId);
       const problems: string[] = [];
       if (verify.code !== 0) problems.push(`codesign --verify --strict --deep failed: ${(verify.stderr || verify.stdout).trim().split("\n")[0] ?? verify.code}`);
-      if (!hasId) problems.push(`designated requirement lacks identifier "${bundleId}"`);
+      if (!signed.ok) problems.push(signed.reason);
+      const signature = signed.ok && signed.adhoc ? `ad-hoc, identifier ${bundleId}` : `requirement identifier ${bundleId}`;
       add({
         group: "app",
         name: "install",
         status: problems.length ? "warn" : "ok",
-        detail: problems.length ? problems.join("; ") : `${installed} · inode ${plan.kind === "update" ? plan.inode : "?"} · strict ok · requirement identifier ${bundleId}`,
+        detail: problems.length ? problems.join("; ") : `${installed} · inode ${plan.kind === "update" ? plan.inode : "?"} · strict ok · ${signature}`,
         required: false,
         fix: problems.length ? rebuild : undefined,
       });
@@ -1300,9 +1302,44 @@ export function probeStdout(error: unknown): string | undefined {
   return undefined;
 }
 
-/** What `doctor` takes from the command line: `--test-audio` shells to the probe (nothing else does). */
+/**
+ * What `doctor` takes from the command line: `--test-audio` shells to the probe (nothing else
+ * does); `--browsers` asks each running browser whether it runs JavaScript from Apple Events.
+ * Unset, `browsers` reads the process's own argv, so `pnpm run doctor --browsers` and `pnpm
+ * jarhead doctor --browsers` both reach it without either entry point naming the flag.
+ */
 export interface DoctorOptions {
   readonly testAudio?: boolean;
+  readonly browsers?: boolean;
+}
+
+export const DOCTOR_BROWSERS = ["Google Chrome", "Safari"] as const;
+
+export interface BrowserCheckDeps {
+  /** `--browsers`: without it nothing is sent to any browser. */
+  readonly ask: boolean;
+  readonly running: (app: string) => boolean;
+  readonly probe: (app: string) => Promise<{ readonly status: "ok" | "warn" | "off"; readonly detail: string; readonly fix?: string | undefined }>;
+}
+
+/**
+ * The browser fast path rows. Asking a browser is an Apple event, and the first one from a
+ * terminal puts up macOS's Automation prompt, so the plain doctor (the one install.sh and
+ * the README recommend) never asks: one row names the flag. With `--browsers` each running
+ * browser is asked; one that is not running is reported, never launched.
+ */
+export async function browserChecks(deps: BrowserCheckDeps): Promise<Check[]> {
+  if (!deps.ask) return [{ group: "hands", name: "browser JS from Apple Events", status: "warn", detail: "not asked. pnpm run doctor --browsers sends each running browser an Apple event.", required: false }];
+  const out: Check[] = [];
+  for (const app of DOCTOR_BROWSERS) {
+    if (!deps.running(app)) {
+      out.push({ group: "hands", name: `${app} JS from Apple Events`, status: "warn", detail: "not running — not probed", required: false });
+      continue;
+    }
+    const r = await deps.probe(app);
+    out.push({ group: "hands", name: `${app} JS from Apple Events`, status: r.status === "ok" ? "ok" : "warn", detail: r.status === "off" ? `off — ${r.detail}` : r.detail, required: false, fix: r.fix });
+  }
+  return out;
 }
 
 export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
@@ -1431,17 +1468,8 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
         add({ group: "hands", name: "Full Disk Access", status: perms.fullDiskAccess ? "ok" : "warn", detail: perms.fullDiskAccess ? `granted ${asThis}` : `not granted ${asThis} — Mail, Safari, Messages and every folder without a prompt of its own fail with EPERM`, required: false, fix: "System Settings → Privacy & Security → Full Disk Access: add /Applications/Jarhead.app (no prompt exists; Setup opens the pane and reveals the app)" });
       }
       add({ group: "hands", name: "other permissions", status: "ok", detail: "microphone, speech, camera, contacts, calendars, reminders, notifications, local network, Automation and the Desktop/Documents/Downloads folders are read by Jarhead.app itself — Setup › Permissions shows them, `jarhead status` prints the app's list", required: false });
-      // The browser fast path: does each running browser allow JavaScript from Apple Events?
-      // A browser that is not running is reported, never launched.
-      for (const app of ["Google Chrome", "Safari"]) {
-        const running = sh("pgrep", ["-x", app]) !== undefined;
-        if (!running) {
-          add({ group: "hands", name: `${app} JS from Apple Events`, status: "warn", detail: "not running — not probed", required: false });
-          continue;
-        }
-        const r = await browserJsDoctor(hands, app);
-        add({ group: "hands", name: `${app} JS from Apple Events`, status: r.status === "ok" ? "ok" : "warn", detail: r.status === "off" ? `off — ${r.detail}` : r.detail, required: false, fix: r.fix });
-      }
+      // The browser fast path, asked only under --browsers (an Apple event per browser).
+      for (const c of await browserChecks({ ask: opts.browsers ?? process.argv.includes("--browsers"), running: (app) => sh("pgrep", ["-x", app]) !== undefined, probe: (app) => browserJsDoctor(hands, app) })) add(c);
     } catch (e) {
       add({ group: "hands", name: "jarhead-hands", status: "fail", detail: (e as Error).message, required: false });
     } finally {
