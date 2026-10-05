@@ -205,7 +205,7 @@ public final class OverlayManager {
         guard !points.isEmpty else { return }
         let box = OverlayGeometry.bounds(points).insetBy(dx: -MarkModeController.padding, dy: -MarkModeController.padding)
         let path = OverlayGeometry.simplify(points, maxPoints: MarkModeController.maxPoints)
-        func r(_ v: CGFloat) -> Double { (v * 2).rounded() / 2 }
+        func r(_ v: CGFloat) -> Double { Double((v * 2).rounded()) / 2 } // explicit: Swift 6.0 finds CGFloat and Double `/` ambiguous
         state.send(.markAdd(rect: Rect(x: r(box.minX), y: r(box.minY), w: r(box.width), h: r(box.height)),
                             path: path.map { Point2(x: r($0.x), y: r($0.y)) }))
         // The mark is on the socket: an Ask that waited for it sends its question now, in order.
