@@ -4,6 +4,15 @@ import Foundation
 // JSON over the socket; every field name matches the TypeScript exactly. Unknown
 // enum values decode to a safe default so a newer daemon never crashes the app.
 
+/// Mirror of PROTOCOL_VERSION (APP-3). The app sends it in its hello and reads the daemon's; a difference, or a
+/// daemon hello without one, means the two were built from different checkouts (`app.version`). Bump it with the
+/// TypeScript constant: contract-additions.test.ts pins the two equal. No daemon sends it yet: W3-3 lands the
+/// daemon's send (server.ts), the app's send and this comparison in one change, since a comparison alone reads every
+/// daemon as a skew.
+public enum ProtocolVersion {
+    public static let current = 1
+}
+
 public enum Phase: String, Codable, CaseIterable {
     case asleep, connecting, listening, speaking, thinking, acting, muted, error, paused
 
@@ -847,6 +856,18 @@ public struct UsageToday: Codable, Equatable {
     public var sessions: Int
 }
 
+/// LM-6: one day of the `ledger.days` reply's `totals` (mirror of LedgerDayTotals), for the Ledger tab's day rows
+/// and month heads. The reply's `days` list stays beside it; a daemon before the field sends the list alone.
+public struct LedgerDayTotals: Codable, Equatable {
+    public var day: String
+    /// The day file's `session.started` rows.
+    public var sessions: Int
+    /// Each session's seconds, once, in the day file of the row that carries them. A session with a `session.closed`
+    /// row (a `LedgerRow.lostReason` close included) counts that row's `usageSeconds`. Only a session with no closed
+    /// row yet counts its last `session.usage` row. Never both: a lost close repeats its last usage row's seconds.
+    public var billedSeconds: Double
+}
+
 /// GPT-Live-1 list price, for the meter. Billed per second.
 public enum LivePrice {
     public static let perMinuteUSD = 0.05
@@ -899,7 +920,12 @@ public struct Problem: Codable, Equatable, Identifiable {
     /// Today: permission.accessibility, permission.screenRecording, permission.microphone,
     /// permission.fullDiskAccess, permission.other, brain.unavailable, brain.probe, brain.local,
     /// voice.limit, voice.connection, voice.key, hands.helper, disk.low, dock, daemon,
-    /// crash, other. `dock` is Jarhead twice in the Dock; its remedy is "Fix the Dock"
+    /// crash, other, automation.missed, automation.blocked, automation.budget,
+    /// automation.notifications, automation.watch, automation.failed (SL-15: an unattended fire
+    /// failed, a red recipe exit there in the morning), app.version (APP-3: the app and the daemon
+    /// are from different builds; the remedy restarts the daemon, and `remedy.copy` is pnpm build:mac
+    /// for a skew that stays, an app older than the daemon).
+    /// `dock` is Jarhead twice in the Dock; its remedy is "Fix the Dock"
     /// (`problem.retry {kind:"dock"}`). `brain.local` is the local server or model needing
     /// Kevin — not running, nothing pulled that can call tools, the picked id gone, a cloud tag,
     /// a window too small: amber, with the command to run in `remedy.copy`.
@@ -1093,7 +1119,7 @@ public struct NextFire: Codable, Equatable {
 }
 
 /// One change on one row (`automation.event`). `kind`: set (automation) · fired (actions, line, ok, detail,
-/// lateMs, presses) · state (state, nextAt, detail) · missed (dueAt, lateMs, skipped, why) · tick (remainingMs).
+/// lateMs, presses, ring) · state (state, nextAt, detail) · missed (dueAt, lateMs, skipped, why) · tick (remainingMs).
 public struct AutomationEvent: Codable, Equatable {
     public var seq: Int
     public var at: Double
@@ -1112,6 +1138,9 @@ public struct AutomationEvent: Codable, Equatable {
     public var skipped: Bool?
     public var why: String?
     public var remainingMs: Double?
+    /// `fired` (SL-14): true when the fire put a ring up, false when it only acted (a routine that opened an app).
+    /// nil from a daemon before the field.
+    public var ring: Bool?
 }
 
 /// A recipe is never deleted: `recipe.trash` stamps `trashedAt` (hidden from pickers, refused as a
@@ -1271,17 +1300,24 @@ public struct AudioStateInfo: Codable, Equatable {
     public var inputMuted: Bool
     public var aggregatePresent: Bool
     public var since: Double?
+    /// Voice PLAN W1.5: the speaker player, the barge-in duck and what reached the speaker, since the graph started.
+    /// nil from a build that does not count them.
+    public var playout: AudioPlayoutInfo?
+    public var duck: AudioDuckInfo?
+    public var output: AudioOutputInfo?
 
     public init(running: Bool = false, voiceProcessing: Bool = false, duckLevel: Int? = nil, advancedDucking: Bool? = nil, agc: Bool? = nil,
                 bypassed: Bool? = nil, rung: Int = 0, wiring: String = "", hears: AudioDeviceInfo? = nil, speaks: AudioDeviceInfo? = nil,
                 tapFormat: String = "", recording: Bool = false, fallback: Bool = false, guardOn: Bool = false, guardTailMs: Int = 0,
                 guardHeldMs: Int? = nil, gated: Int = 0, chunks: Int = 0, breakthroughs: Int = 0, sharedWith: [String]? = nil,
-                inputMuted: Bool = false, aggregatePresent: Bool = false, since: Double? = nil) {
+                inputMuted: Bool = false, aggregatePresent: Bool = false, since: Double? = nil,
+                playout: AudioPlayoutInfo? = nil, duck: AudioDuckInfo? = nil, output: AudioOutputInfo? = nil) {
         self.running = running; self.voiceProcessing = voiceProcessing; self.duckLevel = duckLevel; self.advancedDucking = advancedDucking
         self.agc = agc; self.bypassed = bypassed; self.rung = rung; self.wiring = wiring; self.hears = hears; self.speaks = speaks
         self.tapFormat = tapFormat; self.recording = recording; self.fallback = fallback; self.guardOn = guardOn; self.guardTailMs = guardTailMs
         self.guardHeldMs = guardHeldMs; self.gated = gated; self.chunks = chunks; self.breakthroughs = breakthroughs; self.sharedWith = sharedWith
         self.inputMuted = inputMuted; self.aggregatePresent = aggregatePresent; self.since = since
+        self.playout = playout; self.duck = duck; self.output = output
     }
 
     /// The frame's `state` object: exactly the protocol's AudioState field names, booleans as
@@ -1301,7 +1337,247 @@ public struct AudioStateInfo: Codable, Equatable {
         if let guardHeldMs { o["guardHeldMs"] = guardHeldMs }
         if let sharedWith { o["sharedWith"] = sharedWith }
         if let since { o["since"] = since }
+        if let playout { o["playout"] = playout.json }
+        if let duck { o["duck"] = duck.json }
+        if let output { o["output"] = output.json }
         return o
+    }
+}
+
+// MARK: - Playback telemetry (voice PLAN W1.5: mirrors of AudioPlayout / AudioDuck / AudioDuckLast / AudioOutput /
+// LiveAudio)
+//
+// Numbers and three closed-vocabulary words (the duck's source and reason, the mix format); nothing quotes what
+// Kevin or Jarhead said. Each one decodes field by field: a field this build reads differently (a newer app or
+// daemon) comes back nil or 0. A value that is not an object at all (`"playout": "x"`, `"liveAudio": [1, 2]`)
+// comes back nil where it rides, never a struct of invented zeros. Neither costs the snapshot or the row it rides
+// in. `json` writes finite numbers only (silence is -inf dBFS, which JSONSerialization cannot write) and leaves an
+// absent optional out, so the frame always passes the daemon's isAudioState.
+
+/// The playback telemetry types. Each one's decoder throws when its value is not an object; where one rides
+/// (AudioStateInfo, Snapshot, LedgerRow, AudioDuckInfo), the parent reads it through the `decodeIfPresent` below,
+/// so that throw becomes nil and the parent still decodes.
+protocol SoftTelemetry: Decodable {}
+
+extension KeyedDecodingContainer {
+    /// A telemetry object, or nil when it is absent, null or not an object. Overload resolution prefers this to the
+    /// generic `decodeIfPresent` for a SoftTelemetry type, in the synthesized decoders too.
+    func decodeIfPresent<T: SoftTelemetry>(_ type: T.Type, forKey key: Key) throws -> T? {
+        try? decode(T.self, forKey: key)
+    }
+}
+
+private extension KeyedDecodingContainer {
+    /// One telemetry field, or nil when it is absent or typed differently.
+    func soft<T: Decodable>(_ key: Key) -> T? { (try? decodeIfPresent(T.self, forKey: key)) ?? nil }
+}
+
+/// A required telemetry number as the wire takes it: finite, else 0.
+private func wireNumber(_ value: Double) -> Double { value.isFinite ? value : 0 }
+
+/// An optional telemetry number under `key`, only when it is there and finite.
+private func putNumber(_ o: inout [String: Any], _ key: String, _ value: Double?) {
+    if let value, value.isFinite { o[key] = value }
+}
+
+/// The speaker player since the graph started (mirror of AudioPlayout). `…Ms` are milliseconds of audio.
+public struct AudioPlayoutInfo: Codable, Equatable {
+    public var chunks: Int = 0
+    /// The player ran dry mid-stream: how often, for how long in all, and the longest hole.
+    public var underruns: Int = 0
+    public var underrunMs: Double = 0
+    public var longestUnderrunMs: Double = 0
+    /// The shadow zero-cushion count: the player of before the cushion, in the same session.
+    public var wouldBeUnderruns: Int = 0
+    public var resets: Int = 0
+    public var targetMs: Double = 0
+    public var queuedMs: Double = 0
+    /// nil when nothing was scheduled this window.
+    public var queuedMinMs: Double?
+    public var lateMaxMs: Double = 0
+    /// Arrived while the graph was down.
+    public var droppedChunks: Int = 0
+    public var droppedMs: Double = 0
+}
+
+extension AudioPlayoutInfo: SoftTelemetry {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        chunks = c.soft(.chunks) ?? 0
+        underruns = c.soft(.underruns) ?? 0
+        underrunMs = c.soft(.underrunMs) ?? 0
+        longestUnderrunMs = c.soft(.longestUnderrunMs) ?? 0
+        wouldBeUnderruns = c.soft(.wouldBeUnderruns) ?? 0
+        resets = c.soft(.resets) ?? 0
+        targetMs = c.soft(.targetMs) ?? 0
+        queuedMs = c.soft(.queuedMs) ?? 0
+        queuedMinMs = c.soft(.queuedMinMs)
+        lateMaxMs = c.soft(.lateMaxMs) ?? 0
+        droppedChunks = c.soft(.droppedChunks) ?? 0
+        droppedMs = c.soft(.droppedMs) ?? 0
+    }
+
+    public var json: [String: Any] {
+        var o: [String: Any] = [
+            "chunks": chunks, "underruns": underruns, "underrunMs": wireNumber(underrunMs), "longestUnderrunMs": wireNumber(longestUnderrunMs),
+            "wouldBeUnderruns": wouldBeUnderruns, "resets": resets, "targetMs": wireNumber(targetMs), "queuedMs": wireNumber(queuedMs),
+            "lateMaxMs": wireNumber(lateMaxMs), "droppedChunks": droppedChunks, "droppedMs": wireNumber(droppedMs),
+        ]
+        putNumber(&o, "queuedMinMs", queuedMinMs)
+        return o
+    }
+}
+
+/// The newest duck (mirror of AudioDuckLast). `source`: what started it; `reason`: why it released.
+public struct AudioDuckLastInfo: Codable, Equatable {
+    public var source: String = ""
+    public var confirmed: Bool = false
+    /// -6 unconfirmed, -20 confirmed.
+    public var depthDb: Double = 0
+    public var runDbfs: Double?
+    public var thresholdDbfs: Double?
+    /// nil while it holds.
+    public var releasedAfterMs: Double?
+    public var reason: String?
+}
+
+extension AudioDuckLastInfo: SoftTelemetry {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        source = c.soft(.source) ?? ""
+        confirmed = c.soft(.confirmed) ?? false
+        depthDb = c.soft(.depthDb) ?? 0
+        runDbfs = c.soft(.runDbfs)
+        thresholdDbfs = c.soft(.thresholdDbfs)
+        releasedAfterMs = c.soft(.releasedAfterMs)
+        reason = c.soft(.reason)
+    }
+
+    public var json: [String: Any] {
+        var o: [String: Any] = ["source": source, "confirmed": confirmed, "depthDb": wireNumber(depthDb)]
+        putNumber(&o, "runDbfs", runDbfs)
+        putNumber(&o, "thresholdDbfs", thresholdDbfs)
+        putNumber(&o, "releasedAfterMs", releasedAfterMs)
+        if let reason { o["reason"] = reason }
+        return o
+    }
+}
+
+/// The barge-in duck since the graph started (mirror of AudioDuck): counts by kind, time ducked, the residual echo.
+public struct AudioDuckInfo: Codable, Equatable {
+    public var ducks: Int = 0
+    public var gate: Int = 0
+    public var confirmed: Int = 0
+    public var unconfirmed: Int = 0
+    public var held: Int = 0
+    public var refusedWords: Int = 0
+    public var refusedLive: Int?
+    public var wordOnsetsSkipped: Int = 0
+    /// Time at a gain under 0.9, and at -14 dB or deeper.
+    public var duckedMs: Double = 0
+    public var deepMs: Double = 0
+    /// Mic slices while Jarhead is audible and the duck is idle.
+    public var residualP50Dbfs: Double?
+    public var residualP99Dbfs: Double?
+    public var echoFloorDbfs: Double?
+    public var last: AudioDuckLastInfo?
+}
+
+extension AudioDuckInfo: SoftTelemetry {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ducks = c.soft(.ducks) ?? 0
+        gate = c.soft(.gate) ?? 0
+        confirmed = c.soft(.confirmed) ?? 0
+        unconfirmed = c.soft(.unconfirmed) ?? 0
+        held = c.soft(.held) ?? 0
+        refusedWords = c.soft(.refusedWords) ?? 0
+        refusedLive = c.soft(.refusedLive)
+        wordOnsetsSkipped = c.soft(.wordOnsetsSkipped) ?? 0
+        duckedMs = c.soft(.duckedMs) ?? 0
+        deepMs = c.soft(.deepMs) ?? 0
+        residualP50Dbfs = c.soft(.residualP50Dbfs)
+        residualP99Dbfs = c.soft(.residualP99Dbfs)
+        echoFloorDbfs = c.soft(.echoFloorDbfs)
+        last = c.soft(.last)
+    }
+
+    public var json: [String: Any] {
+        var o: [String: Any] = [
+            "ducks": ducks, "gate": gate, "confirmed": confirmed, "unconfirmed": unconfirmed, "held": held,
+            "refusedWords": refusedWords, "wordOnsetsSkipped": wordOnsetsSkipped, "duckedMs": wireNumber(duckedMs), "deepMs": wireNumber(deepMs),
+        ]
+        if let refusedLive { o["refusedLive"] = refusedLive }
+        putNumber(&o, "residualP50Dbfs", residualP50Dbfs)
+        putNumber(&o, "residualP99Dbfs", residualP99Dbfs)
+        putNumber(&o, "echoFloorDbfs", echoFloorDbfs)
+        if let last { o["last"] = last.json }
+        return o
+    }
+}
+
+/// What reached the speaker (mirror of AudioOutput): voiced chunks before the duck, after its gain, the mixer's
+/// format (`48000 Hz ×2`), the default output's volume scalar (0..1). Every field nil until there is one to read.
+public struct AudioOutputInfo: Codable, Equatable {
+    public var rmsDbfs: Double?
+    public var peakDbfs: Double?
+    public var heardRmsDbfs: Double?
+    public var mixFormat: String?
+    public var volume: Double?
+}
+
+extension AudioOutputInfo: SoftTelemetry {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rmsDbfs = c.soft(.rmsDbfs)
+        peakDbfs = c.soft(.peakDbfs)
+        heardRmsDbfs = c.soft(.heardRmsDbfs)
+        mixFormat = c.soft(.mixFormat)
+        volume = c.soft(.volume)
+    }
+
+    public var json: [String: Any] {
+        var o: [String: Any] = [:]
+        putNumber(&o, "rmsDbfs", rmsDbfs)
+        putNumber(&o, "peakDbfs", peakDbfs)
+        putNumber(&o, "heardRmsDbfs", heardRmsDbfs)
+        if let mixFormat { o["mixFormat"] = mixFormat }
+        putNumber(&o, "volume", volume)
+        return o
+    }
+}
+
+/// The daemon's own counts of the open session's audio (mirror of LiveAudio, `Snapshot.liveAudio`): Live's delta
+/// sizes and arrival times, how far it runs ahead, the frames the output gate dropped, the event loop's worst delay.
+public struct LiveAudioInfo: Codable, Equatable {
+    public var deltas: Int = 0
+    public var deltaMsP50: Double?
+    public var deltaMsMax: Double?
+    public var arrivalP99Ms: Double?
+    public var arrivalMaxMs: Double?
+    public var aheadMs: Double?
+    public var gatedFrames: Int = 0
+    public var loopDelayMaxMs: Double?
+    public var formatRate: Double?
+}
+
+extension LiveAudioInfo: SoftTelemetry {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deltas = c.soft(.deltas) ?? 0
+        deltaMsP50 = c.soft(.deltaMsP50)
+        deltaMsMax = c.soft(.deltaMsMax)
+        arrivalP99Ms = c.soft(.arrivalP99Ms)
+        arrivalMaxMs = c.soft(.arrivalMaxMs)
+        aheadMs = c.soft(.aheadMs)
+        gatedFrames = c.soft(.gatedFrames) ?? 0
+        loopDelayMaxMs = c.soft(.loopDelayMaxMs)
+        formatRate = c.soft(.formatRate)
     }
 }
 
@@ -1341,6 +1617,8 @@ public struct Snapshot: Codable, Equatable {
     public var recipesAsking: [String]?
     /// design12: the app's audio graph as it last read itself back (`audio-state`); absent while no app is connected.
     public var audioState: AudioStateInfo?
+    /// Voice PLAN W1.5: the daemon's own counts of the open session's audio; absent while no session is open.
+    public var liveAudio: LiveAudioInfo?
 
     public var automationRows: [Automation] { automations ?? [] }
     public var liveThreads: [WorkThread] { threads.filter { $0.status.isLive } }
@@ -1804,6 +2082,17 @@ public struct LedgerRow: Codable, Identifiable {
     public var chunks: Int?
     public var breakthroughs: Int?
     public var fallback: Bool?
+    /// Voice PLAN W1.5: the `audio.playout` row at session close, the last playback counters (numbers only).
+    public var playout: AudioPlayoutInfo?
+    public var duck: AudioDuckInfo?
+    public var output: AudioOutputInfo?
+    public var liveAudio: LiveAudioInfo?
+    /// V8 / LM-2: the `session.closed` reason for a session the daemon died in (SESSION_LOST_REASON). The next start
+    /// sweeps before it appends anything and writes that close with the `usageSeconds` of the session's last
+    /// `session.usage` row (sessionId, usageSeconds: the coalesced billed seconds, every 60 s and at detach), 0 s when
+    /// it has none, and the newest `at` the dead daemon wrote (the largest in the newest day file). The `at` picks the
+    /// day file, so the close lands where a normal close would have, and it sorts after the session's last rows.
+    public static let lostReason = "lost"
     /// The row's key: type · at · the first id it carries (item, step, delegation, thread, the wire's own).
     /// An if/else ladder, not a `??` chain inside the interpolation (CI's older Swift).
     public var id: String {
@@ -1825,6 +2114,7 @@ public struct LedgerRow: Codable, Identifiable {
         case rowId = "id"
         case automation, actions, ok, line, lateMs, ms, brainSeconds, state, dueAt, skipped, why, recipe
         case tailMs, heldMs, gated, chunks, breakthroughs, fallback
+        case playout, duck, output, liveAudio
     }
 }
 
