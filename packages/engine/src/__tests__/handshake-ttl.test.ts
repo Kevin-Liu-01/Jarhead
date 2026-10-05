@@ -20,7 +20,6 @@ const named = (w: World, name: string): Thread | undefined => threadsOf(w).find(
 test("TH-1 (TH-ORPHAN-TTL): a yes four minutes after Slack asked re-asks Slack's question on its floor; it never becomes a main-brain task; the next yes sends once", async () => {
   const w = world();
   const { engine, hands } = w;
-  const tick = (): void => (engine as unknown as { tick(): void }).tick();
   try {
     const results: ToolResult[] = [];
     w.threads.script = async (job): Promise<BrainResult> => {
@@ -39,11 +38,14 @@ test("TH-1 (TH-ORPHAN-TTL): a yes four minutes after Slack asked re-asks Slack's
     await until(() => named(w, "Slack")?.status === "waiting-kevin");
     assert.equal(results.length, 1);
 
-    // Four minutes pass. The root ConfirmationState runs on its own clock (engine.ts): move both.
+    // Four minutes pass with no tick: the Mac slept, say. A tick would have asked the question again
+    // before it lapsed (W1-5's keepAsking; threads-launch.test.ts pins that path), so the engine's
+    // own 1 s tick is held for this test. The root ConfirmationState runs on its own clock
+    // (engine.ts): move both.
+    clearInterval((engine as unknown as { tickTimer: NodeJS.Timeout | undefined }).tickTimer);
     w.clock.t += 4 * 60_000;
     const realNow = Date.now;
     (engine.confirmations as unknown as { now: () => number }).now = () => realNow() + 4 * 60_000;
-    tick();
     assert.equal(engine.threads.floorThread()?.name, "Slack", "an expired question still holds its floor");
     assert.equal(engine.desk.holds(named(w, "Slack")!.id), false, "but nothing answerable is held");
 
