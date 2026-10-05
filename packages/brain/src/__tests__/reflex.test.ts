@@ -198,9 +198,7 @@ test("delegator: a reflex finishes the delegation without the brain, a failed re
   assert.deepEqual(d.all()[2]!.steps.map((s) => s.kind), ["tool", "tool", "commentary"]);
 });
 
-test("delegator: a cheap reflex said to Jarhead fires when the utterance has clearly ended, ahead of the delegation, which then adopts its record and only speaks; one not addressed waits for Live", async () => {
-  const live = new FakeLive();
-  const transcript = new Transcript(() => 0);
+test("delegator: a cheap reflex said to Jarhead fires when the utterance has clearly ended, ahead of the delegation, which then adopts its record and only speaks; one not addressed waits for Live", async (t) => {
   const seen: BrainTask[] = [];
   const ran: { label: string; at: number }[] = [];
   let exchange = false;
@@ -213,19 +211,44 @@ test("delegator: a cheap reflex said to Jarhead fires when the utterance has cle
     },
     inExchange: () => exchange,
   };
-  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain: fakeBrain(seen), confirmations: new ConfirmationState(), reflexes, prefireQuietMs: 30, prefireLongQuietMs: 90, commentaryCoalesceMs: 0 });
   const events: string[] = [];
-  d.on("reflex", (label, _ms, prefired) => events.push(`${label}:${prefired}`));
+  let live!: FakeLive;
+  let transcript!: Transcript;
+  let d!: Delegator;
+  const build = (): void => {
+    live = new FakeLive();
+    transcript = new Transcript(() => 0);
+    d = new Delegator({ live: live as unknown as LiveSession, transcript, brain: fakeBrain(seen), confirmations: new ConfirmationState(), reflexes, prefireQuietMs: 30, prefireLongQuietMs: 90, commentaryCoalesceMs: 0 });
+    d.on("reflex", (label, _ms, prefired) => events.push(`${label}:${prefired}`));
+  };
 
   // The engine pushes the fragment after the delegator hears it; the delegator judges the settled utterance.
   const say = (delta: string, s: number, e: number): void => {
     live.emit("inputTranscript", delta, s, e);
     transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
   };
-  say("jarhead", 0, 300);
-  say(" scroll down", 300, 800);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(ran.length, 0, "no full stop: the short quiet window is not enough — a pause mid-sentence looks the same");
+  // The quiet windows are real time (the delegator reads Date.now()). The look at 50 ms proves the short window is
+  // not enough only when it came before the long one (90 ms) had passed. On a loaded Mac a late look proves nothing,
+  // and the opening is played again on a fresh delegator, up to five times.
+  for (let tries = 1; ; tries++) {
+    build();
+    const t0 = Date.now();
+    say("jarhead", 0, 300);
+    say(" scroll down", 300, 800);
+    await new Promise((r) => setTimeout(r, 50));
+    const looked = Date.now() - t0;
+    if (looked < 90) {
+      assert.equal(ran.length, 0, "no full stop: the short quiet window is not enough — a pause mid-sentence looks the same");
+      break;
+    }
+    if (tries === 5) {
+      t.diagnostic(`the short window was not checked: every look came after the long window (the last at ${looked} ms)`);
+      break;
+    }
+    d.dispose();
+    ran.length = 0;
+    events.length = 0;
+  }
   await new Promise((r) => setTimeout(r, 110));
   assert.deepEqual(ran.map((r) => r.label), ["scroll down"], "fired once the long quiet window passed");
   assert.deepEqual(events, ["scroll down:true"]);

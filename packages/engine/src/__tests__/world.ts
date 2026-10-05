@@ -947,6 +947,17 @@ export function rows<T extends { type: string }>(w: World, type: string): T[] {
   return (w.engine.ledger.read(w.clock.t) as unknown as T[]).filter((r) => r.type === type);
 }
 
+/**
+ * A wall-clock bound that holds on a quiet Mac and flakes on a loaded one: the first timing is taken as it came, and
+ * only when it is over `bound` is the same path timed again (`again`, on fresh state), up to `tries` timings in all;
+ * the best is kept. A slow path is slow every time; a loaded Mac's one stall is not. The bound never moves.
+ */
+export async function bestOf(first: number, bound: number, again: () => number | Promise<number>, tries = 5): Promise<number> {
+  let best = first;
+  for (let i = 1; i < tries && !(best < bound); i++) best = Math.min(best, await again());
+  return best;
+}
+
 /** Wait until `cond` holds (polled every 10 ms) or `ms` pass; returns whether it held. */
 export async function until(cond: () => boolean, ms = 2000): Promise<boolean> {
   const t0 = Date.now();
