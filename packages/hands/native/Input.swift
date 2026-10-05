@@ -386,8 +386,9 @@ enum Delivery {
     case failed(String)
     /// Not applicable here (no text field under focus, no permission); not counted as an attempt.
     case skipped(String)
-    /// Stopped between two graphemes: the client's stop, Kevin's hands, or the focus moved.
-    case cancelled(TypeCancelReason)
+    /// Stopped before the cell was done: the client's stop, Kevin's hands, or the focus moved, with
+    /// `landed` of the cell's characters in (graphemes typed; 0 before an insertion or a paste).
+    case cancelled(TypeCancelReason, landed: Int)
 }
 
 /// Whether an element with this role takes typed text (FocusedTarget.isTextField's rule).
@@ -421,9 +422,8 @@ struct TypeSession {
     let generation: sig_atomic_t
     let delayMs: Int
     var watch: TypeWatch
+    /// Key and paste events posted so far. The characters that landed are counted by walkType.
     var events = 0
-    /// Characters delivered so far (for a cancelled result).
-    var typed = 0
     /// Why to stop now, if at all: the stop signal, Kevin's hands, then where the keystrokes land.
     mutating func cancelReason() -> TypeCancelReason? {
         return watch.cancelReason(stopped: typeCancelGeneration != generation, ledger: &handsLedger, clock: sessionClock)
@@ -495,7 +495,7 @@ private func deliverAX(_ cell: String, target: FocusedTarget?, session: inout Ty
     guard trustsReadBack(target) else { return .skipped("a Chromium / Electron field: keystrokes go in directly") }
     guard axCanInsertText(target.element) else { return .skipped("the field does not take accessibility insertion") }
     // The insertion goes to the focused element of whatever is in front: the same check as a keystroke.
-    if let why = session.cancelReason() { return .cancelled(why) }
+    if let why = session.cancelReason() { return .cancelled(why, landed: 0) }
     let before = readBack(target)
     guard axInsertText(cell, into: target.element) else { return .failed("the app refused accessibility insertion") }
     // The set was accepted: whatever the read-back says, something may have landed — never fall through.
@@ -512,14 +512,13 @@ private func deliverKeystrokes(_ cell: String, target: FocusedTarget?, session: 
             guard postUnicode(chunk) else { return false }
             session.events += 1
         }
-        session.typed += 1
         sleepMs(session.delayMs)
         return true
     })
     let posted: Int
     switch run {
-    case .cancelled(_, let why):
-        return .cancelled(why)
+    case .cancelled(let typed, let why):
+        return .cancelled(why, landed: typed)
     case .postFailed(let typed):
         if typed == 0 { return .failed("keyboard events could not be created") }
         return .done(verified: false, note: "keyboard events stopped being created part way")
@@ -536,7 +535,7 @@ private func deliverKeystrokes(_ cell: String, target: FocusedTarget?, session: 
 private func deliverPaste(_ cell: String, target: FocusedTarget?, session: inout TypeSession, keepOnFailure: Bool) -> Delivery {
     let pb = NSPasteboard.general
     // ⌘V lands in the front app: not one Kevin switched to since the caller looked.
-    if let why = session.cancelReason() { return .cancelled(why) }
+    if let why = session.cancelReason() { return .cancelled(why, landed: 0) }
     let saved = onMain { snapshotPasteboard(pb) }
     let before = readBack(target)
     onMain { writeConcealed(pb, cell) }
@@ -556,7 +555,6 @@ private func deliverPaste(_ cell: String, target: FocusedTarget?, session: inout
     default:
         onMain { restorePasteboard(pb, saved) }
     }
-    if case .done = outcome { session.typed += cell.count }
     return outcome
 }
 
@@ -576,8 +574,10 @@ func opType(_ params: Params) throws -> JSONObject {
     case "paste": order = [.paste, .paste]
     default: throw HandsError.badRequest("'strategy' must be auto, ax, keystrokes or paste")
     }
+    // The text's length as the walk counts it (grapheme clusters, a line break one), for a stop's "N of total".
+    let total = typeText(text).count
     if typeCancelGeneration != typeCancelConsumed {
-        return ["characters": 0, "events": 0, "via": TypeStrategy.keystrokes.rawValue, "attempts": 0, "cancelled": true, "reason": TypeCancelReason.stop.rawValue, "field": NSNull()]
+        return ["characters": 0, "total": total, "events": 0, "via": TypeStrategy.keystrokes.rawValue, "attempts": 0, "cancelled": true, "reason": TypeCancelReason.stop.rawValue, "field": NSNull()]
     }
     // Kevin's hands, then the front app — before anything is posted (a mismatch here is an error,
     // like a click's; one that appears mid-text is a cancelled result that says how far it got).
@@ -602,7 +602,7 @@ func opType(_ params: Params) throws -> JSONObject {
         return app
     }
     let readFocus: FocusReader = { base in watchApp.flatMap { focusMark(inApp: $0, base: base) } }
-    let front = FrontWatch(pid: expectPid, focus: readFocus(nil), readPid: { frontmostNow()?.pid }, readFocus: readFocus)
+    let front = FrontWatch(pid: expectPid, focus: readFocus(nil), now: uptimeNow, readPid: { frontmostNow()?.pid }, readFocus: readFocus)
     var session = TypeSession(generation: generation, delayMs: delay, watch: TypeWatch(busyCheck: !ownDriver, front: front))
     var field = target?.describedField
     var via: TypeStrategy = .keystrokes
@@ -611,13 +611,10 @@ func opType(_ params: Params) throws -> JSONObject {
     var anyDelivered = false
     var notes: [String] = []
 
-    func cancelledResult(_ reason: TypeCancelReason) -> JSONObject {
-        return ["characters": session.typed, "events": session.events, "via": via.rawValue, "attempts": attempts, "cancelled": true, "reason": reason.rawValue, "field": orNull(field)]
-    }
     /// A separator key (Return / Tab) moves focus or submits: re-resolve where the next cell lands. Returns why it did not, if it did not.
-    func separator(_ key: Int) throws -> TypeCancelReason? {
+    func separator(_ key: TypeSeparator) throws -> TypeCancelReason? {
         if let why = session.cancelReason() { return why }
-        pressKey(CGKeyCode(key), flags: [])
+        pressKey(CGKeyCode(key == .returnKey ? kVK_Return : kVK_Tab), flags: [])
         session.events += 1
         sleepMs(max(delay, 8))
         if trusted {
@@ -625,62 +622,63 @@ func opType(_ params: Params) throws -> JSONObject {
             if let t = target, t.secure { throw passwordRefusal }
             if let t = target { field = t.describedField }
             // The separator moved the focus on purpose: where it landed is the place to watch now.
-            session.watch.front.rebase(readFocus(nil))
+            session.watch.front.rebase()
         }
         return nil
     }
-
-    let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-    let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
-    for (lineIndex, line) in lines.enumerated() {
-        if lineIndex > 0, let why = try separator(kVK_Return) { return cancelledResult(why) }
-        let cells = line.split(separator: "\t", omittingEmptySubsequences: false)
-        for (cellIndex, cellSub) in cells.enumerated() {
-            if cellIndex > 0, let why = try separator(kVK_Tab) { return cancelledResult(why) }
-            let cell = String(cellSub)
-            if cell.isEmpty { continue }
-            if let why = session.cancelReason() { return cancelledResult(why) }
-            var delivered = false
-            var cellAttempts = 0
-            var failures: [String] = []
-            for (i, strategy) in order.enumerated() where !delivered && cellAttempts < 3 {
-                let last = i == order.count - 1
-                let outcome: Delivery
-                switch strategy {
-                case .ax: outcome = deliverAX(cell, target: target, session: &session)
-                case .keystrokes: outcome = deliverKeystrokes(cell, target: target, session: &session)
-                case .paste: outcome = deliverPaste(cell, target: target, session: &session, keepOnFailure: last || cellAttempts >= 2)
-                }
-                switch outcome {
-                case .skipped(let why):
-                    debugLog("type: \(strategy.rawValue) skipped — \(why)")
-                case .cancelled(let why):
-                    return cancelledResult(why)
-                case .done(let verified, let note):
-                    cellAttempts += 1
-                    attempts += cellAttempts
-                    delivered = true
-                    anyDelivered = true
-                    via = strategy
-                    if !verified { allVerified = false }
-                    if let note, !notes.contains(note) { notes.append(note) }
-                case .failed(let why):
-                    cellAttempts += 1
-                    failures.append("\(strategy.rawValue): \(why)")
-                    debugLog("type: \(strategy.rawValue) failed — \(why)")
-                }
+    /// One cell, through the strategy chain: whole, or stopped with what of it landed.
+    func deliver(_ cell: String) throws -> CellEnd {
+        if let why = session.cancelReason() { return .stopped(why, landed: 0) }
+        var delivered = false
+        var cellAttempts = 0
+        var failures: [String] = []
+        for (i, strategy) in order.enumerated() where !delivered && cellAttempts < 3 {
+            let last = i == order.count - 1
+            let outcome: Delivery
+            switch strategy {
+            case .ax: outcome = deliverAX(cell, target: target, session: &session)
+            case .keystrokes: outcome = deliverKeystrokes(cell, target: target, session: &session)
+            case .paste: outcome = deliverPaste(cell, target: target, session: &session, keepOnFailure: last || cellAttempts >= 2)
             }
-            if !delivered {
+            switch outcome {
+            case .skipped(let why):
+                debugLog("type: \(strategy.rawValue) skipped — \(why)")
+            case .cancelled(let why, let landed):
+                return .stopped(why, landed: landed)
+            case .done(let verified, let note):
+                cellAttempts += 1
                 attempts += cellAttempts
-                // Out of attempts: the whole text goes on the clipboard, concealed, and the failure says so.
-                onMain { writeConcealed(NSPasteboard.general, text) }
-                let tried = failures.isEmpty ? "no strategy applied" : failures.joined(separator: "; ")
-                throw HandsError.internalError("could not type into \(field ?? "the focused field") after \(max(1, cellAttempts)) attempt\(cellAttempts == 1 ? "" : "s") (\(tried)); the text is on the clipboard — one ⌘V in the right field pastes it")
+                delivered = true
+                anyDelivered = true
+                via = strategy
+                if !verified { allVerified = false }
+                if let note, !notes.contains(note) { notes.append(note) }
+            case .failed(let why):
+                cellAttempts += 1
+                failures.append("\(strategy.rawValue): \(why)")
+                debugLog("type: \(strategy.rawValue) failed — \(why)")
             }
         }
+        if !delivered {
+            attempts += cellAttempts
+            // Out of attempts: the whole text goes on the clipboard, concealed, and the failure says so.
+            onMain { writeConcealed(NSPasteboard.general, text) }
+            let tried = failures.isEmpty ? "no strategy applied" : failures.joined(separator: "; ")
+            throw HandsError.internalError("could not type into \(field ?? "the focused field") after \(max(1, cellAttempts)) attempt\(cellAttempts == 1 ? "" : "s") (\(tried)); the text is on the clipboard — one ⌘V in the right field pastes it")
+        }
+        return .whole
+    }
+
+    let walk = try walkType(text, separator: separator, cell: deliver)
+    if let why = walk.stopped {
+        // Kevin's hands before anything went out: the guard's refusal, so the runner may retry it.
+        if stopRefuses(why, landed: walk.landed, events: session.events) {
+            throw HandsError.busy("the user used the keyboard/mouse \(session.watch.busyMs ?? 0) ms ago; nothing was posted")
+        }
+        return ["characters": walk.landed, "total": total, "events": session.events, "via": via.rawValue, "attempts": attempts, "cancelled": true, "reason": why.rawValue, "field": orNull(field)]
     }
     var out: JSONObject = [
-        "characters": text.count,
+        "characters": total,
         "events": session.events,
         "via": via.rawValue,
         "attempts": attempts,

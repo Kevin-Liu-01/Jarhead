@@ -21,11 +21,13 @@ import type { ToolResult } from "./toolset.ts";
  * in the middle of one of its ops (a held `type` finishes first). The one thing the
  * lease itself does to the screen, the re-front, is a `focus_app`: it reads
  * `user_idle` first for every taker, priority too, and waits out his quiet window, so
- * no app is pulled over the one he is typing in. That wait is the taker's patience,
- * at most WAIT_MAX_MS, counted from the moment it got the lease. If he is still
- * typing when it runs out, nothing is re-fronted and the lease is let go: the taker
- * hears `<name> is using the keyboard or mouse` (`busy`), never `ok` with his app in
- * front, where its next `type` or `key` would land once he paused.
+ * no app is pulled over the one he is typing in. A thread waits only what is left of
+ * its acquire, so its tool still waits at most WAIT_MAX_MS in all; Jarhead's own hands
+ * wait their patience afresh from the moment they got the lease, capped at WAIT_MAX_MS
+ * (the main lane's 30 s acquire is spent on the holder, not on Kevin). If he is still
+ * typing when the wait runs out, nothing is re-fronted and the lease is let go: the
+ * taker hears `<name> is using the keyboard or mouse` (`busy`), never `ok` with his
+ * app in front, where its next `type` or `key` would land once he paused.
  *
  * Nothing decided before an await stands after it. The thread's gate and the re-front
  * are helper round trips; a priority taker, a waking holder or a cut can land in the
@@ -112,9 +114,22 @@ export interface FocusLeaseOptions {
 
 /** What the re-front needs from its acquisition: how long the taker waits for Kevin's hands, and its stop. */
 interface RefrontOptions {
-  /** The taker's patience (its acquire timeout), capped at WAIT_MAX_MS from the start of the settle. */
+  /** How long the re-front may wait for Kevin's hands, from the start of the settle (`quietWaitMs`). */
   readonly waitMs: number;
   readonly signal?: AbortSignal | undefined;
+}
+
+/**
+ * How long a taker's re-front waits out Kevin's quiet window, given what is left of its
+ * acquire. A thread (not priority): only what is left, so its tool waits at most its
+ * timeout (WAIT_MAX_MS) in all, the bound README and AGENTS state; with nothing left it
+ * reads `user_idle` once and answers `busy` if his hands are on the machine. Jarhead's
+ * own hands: their patience afresh, capped at WAIT_MAX_MS, since their acquire waited on
+ * the holder (MIN_HOLD_MS, never mid-op), not on him.
+ */
+function quietWaitMs(o: AcquireOptions, leftMs: number): number {
+  if (o.priority) return Math.min(o.timeoutMs ?? WAIT_MAX_MS, WAIT_MAX_MS);
+  return Math.max(0, Math.min(leftMs, WAIT_MAX_MS));
 }
 
 interface Holder {
@@ -270,8 +285,7 @@ export class FocusLease {
             if (prev) log.debug(`${prev.actor} → ${actor}`);
             // Out of the line before the settle: the next in rank may judge the lease free once this one lets go.
             this.waiters.delete(actor);
-            // The gate may have spent the acquire's deadline already: the quiet wait is counted afresh, and capped.
-            return this.settle(actor, gen, { waitMs: Math.min(o.timeoutMs ?? WAIT_MAX_MS, WAIT_MAX_MS), signal: o.signal });
+            return this.settle(actor, gen, { waitMs: quietWaitMs(o, deadline - now), signal: o.signal });
           }
         }
         reason = blocked;

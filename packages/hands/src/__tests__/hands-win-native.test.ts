@@ -37,6 +37,13 @@ test("the hands-win decision harness passes: busy by count and by time, an own p
     "an unmoved focus is re-read with the element alone",
     "a focus that cannot be read twice running is not read again",
     "the front app check stays on after the misses",
+    // The second review: a slow focus read, what a stop says landed, and a stop before anything went out.
+    "a 40 ms focus read is re-armed from its end: about n*4/50 reads, not n",
+    "a focus read slower than 50 ms is a miss: two, then the focus is not read again",
+    "a long type into a slow app ends inside the client's timeout",
+    "an AX-delivered first line, the Return, then busy: the first line plus one",
+    "graphemes, not UTF-16 units: a whole walk counts the text's own length",
+    "and that stop is the guard's refusal, with how long ago his key was",
   ]) {
     assert.ok(r.stdout.split("\n").includes(`ok - ${name}`), `harness case: ${name}\n${r.stdout}`);
   }
@@ -83,7 +90,21 @@ test("RF-9: the busy check reads the ledger (time and count), and every grapheme
   // Dictation (ownDriver) types through Kevin's keys; everything else stops for them.
   assert.match(body(input, "opType"), /TypeWatch\(busyCheck: !ownDriver/);
   // A separator re-bases the focus it moved on purpose.
-  assert.match(body(input, "opType"), /session\.watch\.front\.rebase\(readFocus\(nil\)\)/);
+  assert.match(body(input, "opType"), /session\.watch\.front\.rebase\(\)/);
+});
+
+test("RF-9, second review: the focus re-read runs on the helper's clock, a stop counts what landed by the walk, and a stop before anything went out is the guard's refusal", () => {
+  const input = readFileSync(join(native, "Input.swift"), "utf8");
+  const type = body(input, "opType");
+  // The watch is re-armed from the end of each re-read, on the same clock the ledger reads.
+  assert.match(type, /FrontWatch\(pid: expectPid, focus: readFocus\(nil\), now: uptimeNow,/);
+  // Cells and separators go through the shared walk, which counts every way a cell went in.
+  assert.match(type, /let walk = try walkType\(text, separator: separator, cell: deliver\)/);
+  assert.match(type, /"characters": walk\.landed, "total": total,/);
+  // No deliverer keeps its own count, so none can forget one (the AX path did).
+  assert.doesNotMatch(input, /session\.typed/);
+  // Kevin's hands before anything went out: thrown as busy, which the runner retries silently.
+  before(type, "if stopRefuses(why, landed: walk.landed, events: session.events) {", "throw HandsError.busy(", "opType");
 });
 
 test("a guard that skips the busy check still reads the ledger; the focus re-read is one AX call when nothing moved; count finds reach the debug log", () => {

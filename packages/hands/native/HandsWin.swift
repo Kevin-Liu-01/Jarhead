@@ -29,11 +29,15 @@ let ownPostSlackSec: TimeInterval = 0.030
 /// of ours after it means posts the session never saw (without Accessibility they are dropped), and the
 /// balance re-bases, so those posts never hide a later foreign one.
 let ownPostSettleSec: TimeInterval = 0.5
-/// How often a `type` re-reads the front app and the focused element between graphemes.
+/// How often a `type` re-reads the front app and the focused element between graphemes, counted from
+/// the end of the last re-read, so a slow read never runs before every grapheme.
 let frontCheckSec: TimeInterval = 0.050
-/// After this many focus reads in a row that could not say (a hung app times out each one), a `type`
-/// stops re-reading the focus and keeps only the front app check, so it is never slowed to the AX
-/// timeout per grapheme.
+/// A focus read slower than this is a miss even when it answered: the app's main thread is busy (Mail
+/// syncing, Xcode indexing), and paying that per re-read would stretch a long type past the client's timeout.
+let focusSlowSec: TimeInterval = frontCheckSec
+/// After this many focus reads in a row that missed (no answer, as a hung app times out, or a slow
+/// one), a `type` stops re-reading the focus and keeps only the front app check, so it is never
+/// slowed to the app's pace per grapheme.
 let focusMissLimit = 2
 
 /// The kinds of input that hold the hands.
@@ -184,49 +188,70 @@ func focusHasMoved(from base: FocusMark, to now: FocusMark) -> Bool {
 /// focused element is still that one, it returns the mark as it is, one AX read instead of four.
 typealias FocusReader = (FocusMark?) -> FocusMark?
 
-/// The front app and the focused element during a `type`, re-read at most every `frontCheckSec`
-/// between graphemes. A switch mid-word lands the rest of the text nowhere, not in the new place.
+/// The front app and the focused element during a `type`, re-read between graphemes at most once per
+/// `frontCheckSec` after the last re-read ended. A switch mid-word lands the rest of the text nowhere,
+/// not in the new place.
 struct FrontWatch {
     /// The pid the caller judged the type against (`expectFront`); nil when it gave none.
     let pid: Int32?
     /// Where the keystrokes land; nil when accessibility could not say.
     private(set) var focus: FocusMark?
+    private let now: () -> TimeInterval
     private let readPid: () -> Int32?
     private let readFocus: FocusReader
+    /// When the last re-read ended (not began): the interval never counts a slow read's own time.
     private var lastCheckAt: TimeInterval = -1
-    /// Focus reads in a row that could not say; at `focusMissLimit` the focus is no longer re-read.
+    /// Focus reads in a row that missed; at `focusMissLimit` the focus is no longer re-read.
     private(set) var focusMisses = 0
     private(set) var moved = false
 
-    init(pid: Int32?, focus: FocusMark?, readPid: @escaping () -> Int32?, readFocus: @escaping FocusReader) {
+    init(pid: Int32?, focus: FocusMark?, now: @escaping () -> TimeInterval, readPid: @escaping () -> Int32?, readFocus: @escaping FocusReader) {
         self.pid = pid
         self.focus = focus
+        self.now = now
         self.readPid = readPid
         self.readFocus = readFocus
     }
 
-    /// A separator key (Return, Tab) moved the focus on purpose: where it landed is the place to watch now.
-    mutating func rebase(_ focus: FocusMark?) {
-        self.focus = focus
+    /// Is the focus still re-read this type? Off after `focusMissLimit` misses in a row.
+    var watchesFocus: Bool { focusMisses < focusMissLimit }
+
+    /// A separator key (Return, Tab) moved the focus on purpose: where it landed is the place to watch
+    /// now. Read like a re-read (a slow or failed read is a miss); once the focus watch is off for this
+    /// type it stays off, and nothing is read.
+    mutating func rebase() {
+        guard watchesFocus else { return }
+        focus = timedRead(nil)
+        lastCheckAt = now()
     }
 
-    mutating func check(now: TimeInterval) -> Bool {
+    /// One focus read, counted: no answer, or one slower than `focusSlowSec`, is a miss; a quick answer
+    /// clears the count. A slow answer is still used, since it says where the focus is.
+    private mutating func timedRead(_ base: FocusMark?) -> FocusMark? {
+        let start = now()
+        let mark = readFocus(base)
+        if mark == nil || now() - start > focusSlowSec {
+            focusMisses += 1
+        } else {
+            focusMisses = 0
+        }
+        return mark
+    }
+
+    mutating func check() -> Bool {
         if moved { return true }
         if pid == nil && focus == nil { return false }
-        if lastCheckAt >= 0, now - lastCheckAt < frontCheckSec { return false }
-        lastCheckAt = now
+        if lastCheckAt >= 0, now() - lastCheckAt < frontCheckSec { return false }
+        // Re-armed from the end of this re-read, whatever it costs.
+        defer { lastCheckAt = now() }
         if let pid {
             guard let front = readPid(), front == pid else {
                 moved = true
                 return true
             }
         }
-        guard let base = focus, focusMisses < focusMissLimit else { return false }
-        guard let mark = readFocus(base) else {
-            focusMisses += 1
-            return false
-        }
-        focusMisses = 0
+        guard let base = focus, watchesFocus else { return false }
+        guard let mark = timedRead(base) else { return false }
         if focusHasMoved(from: base, to: mark) {
             moved = true
             return true
@@ -240,6 +265,8 @@ struct TypeWatch {
     /// False for dictation (`ownDriver`): Kevin is the one typing, so his keys are no reason to stop.
     let busyCheck: Bool
     var front: FrontWatch
+    /// How long ago Kevin's key, click or scroll was when the watch last answered `busy`, in ms.
+    private(set) var busyMs: Int?
 
     init(busyCheck: Bool, front: FrontWatch) {
         self.busyCheck = busyCheck
@@ -253,13 +280,24 @@ struct TypeWatch {
     mutating func cancelReason(stopped: Bool, ledger: inout HandsLedger, clock: EventClock) -> TypeCancelReason? {
         if stopped { return .stop }
         if busyCheck {
-            if ledger.busyMs(clock) != nil { return .busy }
+            if let ms = ledger.busyMs(clock) {
+                busyMs = ms
+                return .busy
+            }
         } else {
             ledger.observe(clock)
         }
-        if front.check(now: clock.now()) { return .focusMoved }
+        if front.check() { return .focusMoved }
         return nil
     }
+}
+
+/// A `type` Kevin's hands stopped before any of it went out is the guard's refusal, not a partial
+/// result: nothing was posted, so the runner may retry it silently (an error marked `busy`) and
+/// nothing lands twice. Once a key went out, or a cell went in, it is a partial result that says
+/// how far it got, and a retry would type that part again.
+func stopRefuses(_ reason: TypeCancelReason, landed: Int, events: Int) -> Bool {
+    return reason == .busy && landed == 0 && events == 0
 }
 
 /// How a run of graphemes ended.
@@ -282,4 +320,70 @@ func runGraphemes(_ text: String, cancel: () -> TypeCancelReason?, post: (Charac
         typed += 1
     }
     return .done(typed: typed)
+}
+
+// MARK: - The walk of a type, and what it counts
+
+/// The key a `type` presses between two cells of its text.
+enum TypeSeparator: Equatable {
+    /// A line break (LF, CR LF or CR).
+    case returnKey
+    case tab
+}
+
+/// How one cell's delivery ended.
+enum CellEnd: Equatable {
+    /// The whole cell went in (by accessibility, keystrokes or paste).
+    case whole
+    /// It stopped before the cell was done, with `landed` of its characters in.
+    case stopped(TypeCancelReason, landed: Int)
+}
+
+/// Where a `type`'s walk ended: how many characters went in, and why it stopped, if it did.
+struct TypeWalk: Equatable {
+    var landed = 0
+    var stopped: TypeCancelReason? = nil
+}
+
+/// `text` with every line break as LF, the way `type` reads it.
+func typeText(_ text: String) -> String {
+    return text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+}
+
+/// Walks `text` the way `type` delivers it: cells split on line breaks and tabs, the separator key
+/// pressed between two, an empty cell skipped. `separator` presses one key or says why it did not;
+/// `cell` delivers one cell. Every count is in characters as the text counts them (grapheme
+/// clusters): a cell that went in whole adds all of its characters, whichever way it went, and a
+/// separator pressed adds one. So a stop part way says how much of the text is in.
+func walkType(_ text: String, separator: (TypeSeparator) throws -> TypeCancelReason?, cell: (String) throws -> CellEnd) rethrows -> TypeWalk {
+    var walk = TypeWalk()
+    for (lineIndex, line) in typeText(text).split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+        if lineIndex > 0 {
+            if let why = try separator(.returnKey) {
+                walk.stopped = why
+                return walk
+            }
+            walk.landed += 1
+        }
+        for (cellIndex, sub) in line.split(separator: "\t", omittingEmptySubsequences: false).enumerated() {
+            if cellIndex > 0 {
+                if let why = try separator(.tab) {
+                    walk.stopped = why
+                    return walk
+                }
+                walk.landed += 1
+            }
+            if sub.isEmpty { continue }
+            let text = String(sub)
+            switch try cell(text) {
+            case .whole:
+                walk.landed += text.count
+            case .stopped(let why, let landed):
+                walk.landed += landed
+                walk.stopped = why
+                return walk
+            }
+        }
+    }
+    return walk
 }

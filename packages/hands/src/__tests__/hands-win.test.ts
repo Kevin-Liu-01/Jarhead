@@ -155,7 +155,7 @@ test("the quiet wait is capped at WAIT_MAX_MS: the main lane's 30 s acquire does
   assert.equal(hands.named("focus_app").length, 0);
 });
 
-test("the quiet wait is counted from the settle, not from the acquire deadline the gate spent: a thread that waited 7 s for the screen still waits out Kevin's typing and re-fronts", async () => {
+test("a thread's quiet wait is what is left of its acquire: one that waited 7 s for the screen gives up as busy at 8 s, never later (README: a thread waits at most 8 s)", async () => {
   const clock = new VirtualClock();
   /** The thread's gate reads him quiet; he starts typing right after it, for 2.5 s. */
   class TypesAfterGate extends FakeHands {
@@ -196,12 +196,76 @@ test("the quiet wait is counted from the settle, not from the acquire deadline t
   hands.apps.set("Spotify", 300);
   assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
   const got = await lease.acquire("t_1", { priority: false });
-  assert.equal(got.ok, true, `the thread got the screen (${JSON.stringify(got)})`);
-  assert.equal(got.ok && got.refocused, "Spotify", "re-fronted once he paused, past the acquire's own deadline");
+  assert.deepEqual(got, { ok: false, reason: "Kevin is using the keyboard or mouse", busy: true }, "out of its 8 s with his hands on the machine");
+  const waited = clock.t - t0;
+  assert.ok(waited >= 7_000 && waited <= WAIT_MAX_MS + USER_IDLE_POLL_MS, `the thread's tool waited at most WAIT_MAX_MS in all (${waited} ms)`);
+  assert.equal(hands.named("focus_app").length, 0, "nothing re-fronted over his typing");
+  assert.equal(lease.holder, undefined, "the screen is not the thread's");
+  assert.equal(hands.frontApp, "Slack");
+});
+
+test("a thread that got the screen with nothing left of its acquire reads user_idle once: busy at once if his hands are on the machine", async () => {
+  const clock = new VirtualClock();
+  class StartsTyping extends FakeHands {
+    reads = 0;
+    override get userIdle(): UserIdle {
+      this.reads++;
+      // The gate reads him quiet, then the acquire's time is gone, then he types.
+      if (this.reads === 1) {
+        clock.t += WAIT_MAX_MS;
+        this.kevinActed();
+        return { keyMs: USER_IDLE_NONE_MS, clickMs: USER_IDLE_NONE_MS, scrollMs: USER_IDLE_NONE_MS, moveMs: USER_IDLE_NONE_MS, foreignMs: USER_IDLE_NONE_MS };
+      }
+      return super.userIdle;
+    }
+  }
+  const hands = new StartsTyping();
+  hands.now = clock.now;
+  const lease = new FocusLease({ hands, now: clock.now, sleep: clock.sleep });
+  hands.frontApp = "Slack";
+  hands.frontPid = 200;
+  lease.activated("Slack", "jarhead");
+  lease.rememberFront("t_1", "Spotify");
+  const t0 = clock.t;
+  const got = await lease.acquire("t_1", { priority: false });
+  assert.deepEqual(got, { ok: false, reason: "Kevin is using the keyboard or mouse", busy: true });
+  assert.equal(clock.t - t0, WAIT_MAX_MS, "no wait past the acquire's own");
+  assert.equal(hands.reads, 2, "the gate's read and one re-front read");
+  assert.equal(hands.named("focus_app").length, 0);
+});
+
+test("Jarhead's own hands wait their patience afresh at the re-front: 7 s behind a thread's op, then they still wait out Kevin's typing and re-front", async () => {
+  const clock = new VirtualClock();
+  const hands = new FakeHands();
+  hands.now = clock.now;
+  const t0 = clock.t;
+  const opEnds = t0 + 7_000;
+  let typingUntil = 0;
+  let lease: FocusLease | undefined = undefined;
+  lease = new FocusLease({
+    hands,
+    now: clock.now,
+    sleep: async (ms) => {
+      await clock.sleep(ms);
+      // The thread's op ends 7 s in; Kevin types from then for 2.5 s.
+      if (lease?.holder === "t_1" && clock.t >= opEnds && typingUntil === 0) {
+        lease.endOp("t_1");
+        typingUntil = clock.t + 2_500;
+      }
+      if (clock.t < typingUntil) hands.kevinActed(clock.t);
+    },
+  });
+  hands.frontApp = "Slack";
+  hands.frontPid = 200;
+  lease.rememberFront("t_1", "Slack");
+  lease.rememberFront("jarhead", "Safari");
+  assert.equal((await lease.acquire("t_1", { priority: false })).ok, true);
+  lease.beginOp("t_1");
+  const got = await lease.acquire("jarhead", { priority: true, timeoutMs: 30_000 });
+  assert.equal(got.ok && got.refocused, "Safari", `re-fronted once he paused (${JSON.stringify(got)})`);
   const front = hands.named("focus_app")[0];
-  assert.ok(front !== undefined && hands.kevinAt !== undefined && front.at >= hands.kevinAt + KEVIN_QUIET_MS, `after his quiet window (front at ${front ? front.at - t0 : "none"}, his last key at ${(hands.kevinAt ?? 0) - t0})`);
-  assert.ok(hands.kevinAt !== undefined && hands.kevinAt >= hands.typingUntil - 2 * USER_IDLE_POLL_MS, "he typed until about 2.5 s after the gate");
-  assert.ok(front !== undefined && front.at - t0 > WAIT_MAX_MS, `later than the acquire's deadline (${front ? front.at - t0 : "none"} ms after it began)`);
+  assert.ok(front !== undefined && hands.kevinAt !== undefined && front.at >= hands.kevinAt + KEVIN_QUIET_MS, "after his quiet window");
+  assert.ok(front !== undefined && front.at - t0 > WAIT_MAX_MS, `later than WAIT_MAX_MS after the acquire began (${front ? front.at - t0 : "none"} ms)`);
   assert.ok(got.ok && (got.waitedMs ?? 0) >= 2_500, `the outcome says it waited (${got.ok ? got.waitedMs : "?"} ms)`);
 });
 
@@ -358,4 +422,33 @@ test("RF-9: a type Kevin's hands stopped part way says who stopped it and to loo
     assert.equal(isBusyResult(r), false, "a runner's busy retry would type the first 50 again");
     assert.doesNotMatch((r as { text: string }).text, /—/, "no em dash");
   }
+});
+
+test("RF-9: a type stopped because the focus moved says the focus moved, not that the front app changed, in short sentences", async () => {
+  const hands = new FakeHands();
+  const ts = new ComputerToolset({ hands });
+  await ts.run("screenshot", {});
+  hands.typeResult = { characters: 12, events: 12, via: "keystrokes", attempts: 1, cancelled: true, reason: "focus_moved", field: "the note in Notes" };
+  const r = await ts.run("type", { text: "a".repeat(40) });
+  assert.equal(r.kind, "text");
+  assert.equal((r as { text: string }).text, "stopped after 12 of 40 characters in the note in Notes. The focus moved, so the rest was not typed. Look at the screen before typing again.");
+  assert.doesNotMatch((r as { text: string }).text, /front app changed|—/);
+});
+
+test("RF-9: 'N of total' counts characters as the helper does: the helper's total when it sends one, else grapheme clusters, never UTF-16 units", async () => {
+  const hands = new FakeHands();
+  const ts = new ComputerToolset({ hands });
+  await ts.run("screenshot", {});
+  // An emoji with a skin tone (4 UTF-16 units), e with a combining accent (2), a Return, and "hi": 5 characters.
+  const text = "\u{1F44B}\u{1F3FD}e\u0301\nhi";
+  assert.equal(text.length, 9);
+  hands.typeResult = { characters: 3, events: 3, via: "keystrokes", attempts: 1, cancelled: true, reason: "busy", field: "the note in Notes" };
+  const older = await ts.run("type", { text });
+  assert.match((older as { text: string }).text, /^stopped after 3 of 5 characters in the note in Notes\. /);
+  hands.typeResult = { characters: 3, total: 5, events: 3, via: "keystrokes", attempts: 1, cancelled: true, reason: "busy", field: "the note in Notes" };
+  const current = await ts.run("type", { text });
+  assert.match((current as { text: string }).text, /^stopped after 3 of 5 characters in the note in Notes\. /);
+  hands.typeResult = { characters: 5, events: 6, via: "keystrokes", attempts: 1, verified: true, field: "the note in Notes" };
+  const whole = await ts.run("type", { text });
+  assert.match((whole as { text: string }).text, /^typed 5 characters by keystrokes/);
 });

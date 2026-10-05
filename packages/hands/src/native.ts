@@ -157,7 +157,10 @@ export interface FrontmostInfo {
 
 /** What the helper's `type` op reports back: how the text was delivered and whether it read back. */
 export interface TypeResult {
+  /** Characters (grapheme clusters, a line break or a tab one each) that went in: all of them, or on a stop the ones that landed. */
   readonly characters: number;
+  /** On a stop: the text's own length in the same characters, for "N of total". Absent on older helpers. */
+  readonly total?: number;
   readonly events: number;
   /** The strategy that delivered it (the last one, when several were tried). */
   readonly via: "ax" | "keystrokes" | "paste";

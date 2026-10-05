@@ -52,17 +52,29 @@ final class FakeSession {
 
 /// Where the fake keystrokes land: the front pid and the focused element, both settable. It reads the
 /// way the helper's focusMark does: the focused element first, and the window and role only when the
-/// element is not the watched one. `failing` is an app that cannot say (hung: every read times out).
+/// element is not the watched one. `failing` is an app that cannot say (hung: every read times out);
+/// `readCost` is one that answers slowly (its main thread busy), paid on the clock at every read.
+/// The clock is the session's when a type runs through it, else its own `t`.
 final class FakeFocus {
     var pid: Int32? = 100
     var mark: FocusMark? = FocusMark(element: "body", window: "compose", takesText: true)
     var failing = false
+    var readCost: TimeInterval = 0
     /// Focused-element reads, and the window and role reads that follow one only when the element changed.
     var elementReads = 0
     var detailReads = 0
+    let session: FakeSession?
+    var t: TimeInterval = 0
+
+    init(session: FakeSession? = nil) {
+        self.session = session
+    }
+
+    var now: TimeInterval { session?.t ?? t }
 
     func read(_ base: FocusMark?) -> FocusMark? {
         elementReads += 1
+        if let session { session.t += readCost } else { t += readCost }
         guard !failing, let mark else { return nil }
         if let base, base.element == mark.element { return base }
         detailReads += 1
@@ -70,7 +82,7 @@ final class FakeFocus {
     }
 
     func watch(expect pid: Int32?) -> FrontWatch {
-        return FrontWatch(pid: pid, focus: mark, readPid: { self.pid }, readFocus: { self.read($0) })
+        return FrontWatch(pid: pid, focus: mark, now: { self.now }, readPid: { self.pid }, readFocus: { self.read($0) })
     }
 }
 
@@ -145,7 +157,7 @@ do {
     s.own(.key, &ledger)
     s.advance(ms: 10)
     check("the guard at the type's start is free", ledger.busyMs(s.clock) == nil)
-    let focus = FakeFocus()
+    let focus = FakeFocus(session: s)
     var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
     let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch, after: { typed in
         if typed == 50 { s.foreign(.key) }
@@ -160,7 +172,7 @@ for kind in [InputKind.click, .scroll] {
     let s = FakeSession()
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
-    var watch = TypeWatch(busyCheck: true, front: FakeFocus().watch(expect: 100))
+    var watch = TypeWatch(busyCheck: true, front: FakeFocus(session: s).watch(expect: 100))
     let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch, after: { typed in
         if typed == 7 { s.foreign(kind) }
     })
@@ -173,7 +185,7 @@ do {
     s.lag = 2
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
-    var watch = TypeWatch(busyCheck: true, front: FakeFocus().watch(expect: 100))
+    var watch = TypeWatch(busyCheck: true, front: FakeFocus(session: s).watch(expect: 100))
     let run = typeRun(String(repeating: "b", count: 500), session: s, ledger: &ledger, watch: &watch)
     check("500 own posts counted late never stop the type", run == .done(typed: 500), "\(run)")
     s.drain()
@@ -190,7 +202,7 @@ do {
     s.lag = 1
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
-    var watch = TypeWatch(busyCheck: true, front: FakeFocus().watch(expect: 100))
+    var watch = TypeWatch(busyCheck: true, front: FakeFocus(session: s).watch(expect: 100))
     _ = typeRun(String(repeating: "d", count: 40), session: s, ledger: &ledger, watch: &watch, after: { typed in
         if typed == 20 { s.foreign(.key) }
     })
@@ -213,7 +225,7 @@ do {
     s.advance(ms: 600)
     check("dropped posts are not foreign", ledger.busyMs(s.clock) == nil)
     s.countsOwn = true
-    var watch = TypeWatch(busyCheck: true, front: FakeFocus().watch(expect: 100))
+    var watch = TypeWatch(busyCheck: true, front: FakeFocus(session: s).watch(expect: 100))
     let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch, after: { typed in
         if typed == 20 { s.foreign(.key) }
     })
@@ -234,7 +246,7 @@ do {
     let s = FakeSession()
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
-    let focus = FakeFocus()
+    let focus = FakeFocus(session: s)
     var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
     // 60 ms a grapheme: every one is past the 50 ms re-read, so the count is exact.
     let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch, stepMs: 60, after: { typed in
@@ -248,7 +260,7 @@ do {
     let s = FakeSession()
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
-    let focus = FakeFocus()
+    let focus = FakeFocus(session: s)
     var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
     let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch, after: { typed in
         if typed == 30 { focus.mark = FocusMark(element: "suggestions", window: "compose", takesText: false) }
@@ -271,31 +283,40 @@ do {
     let focus = FakeFocus()
     var front = focus.watch(expect: 100)
     focus.mark = nil
-    check("a focus read that failed is not a move", !front.check(now: 1))
+    focus.t = 1
+    check("a focus read that failed is not a move", !front.check())
 }
 
 // 12. The front app: another pid, or nothing in front, is a move (as before).
 do {
     let focus = FakeFocus()
     var front = focus.watch(expect: 100)
-    check("the expected app in front is no move", !front.check(now: 1))
+    focus.t = 1
+    check("the expected app in front is no move", !front.check())
     focus.pid = 200
-    check("another app within 50 ms is not re-read yet", !front.check(now: 1.02))
-    check("another app in front is a move", front.check(now: 1.06))
+    focus.t = 1.02
+    check("another app within 50 ms is not re-read yet", !front.check())
+    focus.t = 1.06
+    check("another app in front is a move", front.check())
     let none = FakeFocus()
     var empty = none.watch(expect: 100)
     none.pid = nil
-    check("nothing in front is a move", empty.check(now: 1))
+    none.t = 1
+    check("nothing in front is a move", empty.check())
 }
 
 // 13. A separator moves the focus on purpose: the watch re-bases and the type goes on.
 do {
     let focus = FakeFocus()
     var front = focus.watch(expect: 100)
-    check("before the Return", !front.check(now: 1))
+    focus.t = 1
+    check("before the Return", !front.check())
     focus.mark = FocusMark(element: "reply", window: "thread", takesText: true)
-    front.rebase(focus.mark)
-    check("after the Return, the new place is the one watched", !front.check(now: 1.1))
+    focus.t = 1.1
+    front.rebase()
+    check("the re-base reads where the Return landed", front.focus?.element == AnyHashable("reply"))
+    focus.t = 1.2
+    check("after the Return, the new place is the one watched", !front.check())
 }
 
 // 14. Dictation (ownDriver): Kevin is the one typing; his keys do not stop his words.
@@ -303,7 +324,7 @@ do {
     let s = FakeSession()
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
-    var watch = TypeWatch(busyCheck: false, front: FakeFocus().watch(expect: 100))
+    var watch = TypeWatch(busyCheck: false, front: FakeFocus(session: s).watch(expect: 100))
     let run = typeRun(String(repeating: "c", count: 40), session: s, ledger: &ledger, watch: &watch, after: { typed in
         if typed % 10 == 0 { s.foreign(.key) }
     })
@@ -316,7 +337,7 @@ do {
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
     s.foreign(.key)
-    let focus = FakeFocus()
+    let focus = FakeFocus(session: s)
     var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
     focus.pid = 300
     check("a stop wins over busy and a moved focus", watch.cancelReason(stopped: true, ledger: &ledger, clock: s.clock) == .stop)
@@ -334,7 +355,7 @@ do {
     s.foreign(.key)
     s.advance(ms: 10_000)
     ledger.observe(s.clock)
-    var watch = TypeWatch(busyCheck: false, front: FakeFocus().watch(expect: 100))
+    var watch = TypeWatch(busyCheck: false, front: FakeFocus(session: s).watch(expect: 100))
     let run = typeRun(String(repeating: "e", count: 50), session: s, ledger: &ledger, watch: &watch)
     check("a dictation after Kevin's key types all 50", run == .done(typed: 50), "\(run)")
     s.advance(ms: 50)
@@ -396,7 +417,7 @@ do {
     let s = FakeSession()
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
-    let focus = FakeFocus()
+    let focus = FakeFocus(session: s)
     var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
     let run = typeRun(String(repeating: "f", count: 100), session: s, ledger: &ledger, watch: &watch, stepMs: 60)
     check("an unmoved focus is re-read with the element alone", run == .done(typed: 100) && focus.elementReads >= 99 && focus.detailReads == 0, "\(run) element \(focus.elementReads) detail \(focus.detailReads)")
@@ -408,7 +429,7 @@ do {
     let s = FakeSession()
     var ledger = HandsLedger()
     _ = ledger.busyMs(s.clock)
-    let focus = FakeFocus()
+    let focus = FakeFocus(session: s)
     var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
     focus.failing = true
     let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch, stepMs: 60, after: { typed in
@@ -423,14 +444,124 @@ do {
     let focus = FakeFocus()
     var front = focus.watch(expect: 100)
     focus.failing = true
-    check("a miss is not a move", !front.check(now: 1))
+    focus.t = 1
+    check("a miss is not a move", !front.check())
     focus.failing = false
-    check("the next read is good", !front.check(now: 1.1))
+    focus.t = 1.1
+    check("the next read is good", !front.check())
     focus.failing = true
-    check("a miss again", !front.check(now: 1.2))
+    focus.t = 1.2
+    check("a miss again", !front.check())
     focus.failing = false
     focus.mark = FocusMark(element: "sheet-field", window: "sheet", takesText: true)
-    check("and the watch still sees a move", front.check(now: 1.3))
+    focus.t = 1.3
+    check("and the watch still sees a move", front.check())
+}
+
+// 22. A focus read that answers in 40 ms (a busy app, but under the slow mark): the next re-read is
+//     50 ms after this one ended, not after it began, so 200 graphemes 4 ms apart pay about
+//     200 * 4 / 50 reads, not one before every grapheme.
+do {
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    _ = ledger.busyMs(s.clock)
+    let focus = FakeFocus(session: s)
+    focus.readCost = 0.040
+    var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
+    let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch)
+    let bound = 200 * 4 / 50 + 2
+    check("a 40 ms focus read is re-armed from its end: about n*4/50 reads, not n", run == .done(typed: 200) && focus.elementReads <= bound && focus.elementReads >= bound / 2, "\(run) reads \(focus.elementReads), bound \(bound)")
+}
+
+// 23. The review's probe: every focus read answers, but takes 60 ms. Slow reads are misses, so after
+//     two the focus is not read again this type; 200 characters end well inside the client's timeout
+//     (toolset.ts: 6000 + 15 ms a character), and the front app check stays on.
+do {
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    _ = ledger.busyMs(s.clock)
+    let focus = FakeFocus(session: s)
+    focus.readCost = 0.060
+    var watch = TypeWatch(busyCheck: true, front: focus.watch(expect: 100))
+    let t0 = s.t
+    let run = typeRun(longText, session: s, ledger: &ledger, watch: &watch)
+    let ms = (s.t - t0) * 1000
+    check("a focus read slower than 50 ms is a miss: two, then the focus is not read again", run == .done(typed: 200) && focus.elementReads == focusMissLimit, "\(run) reads \(focus.elementReads)")
+    check("a long type into a slow app ends inside the client's timeout", ms < 6000 + 15 * 200 && ms < 200 * 4 + 500, "\(Int(ms)) ms")
+    let s2 = FakeSession()
+    var ledger2 = HandsLedger()
+    _ = ledger2.busyMs(s2.clock)
+    let slow = FakeFocus(session: s2)
+    slow.readCost = 0.060
+    var watch2 = TypeWatch(busyCheck: true, front: slow.watch(expect: 100))
+    let switched = typeRun(longText, session: s2, ledger: &ledger2, watch: &watch2, after: { typed in
+        if typed == 150 { slow.pid = 200 }
+    })
+    check("after slow reads turn the focus watch off, an app switch still stops the type", { if case .cancelled(let n, .focusMoved) = switched { return n >= 150 && n <= 150 + 13 } else { return false } }(), "\(switched)")
+}
+
+// 24. What a stop says landed counts every way a cell went in, and every separator pressed.
+//     'Hello\nWorld' into a Cocoa field: 'Hello' goes in by accessibility (whole, no key posted),
+//     the Return is pressed, and Kevin's click stops the type before 'World': 6 characters, not 0.
+do {
+    var pressed: [TypeSeparator] = []
+    var cells: [String] = []
+    let walk = walkType("Hello\nWorld", separator: { key in
+        pressed.append(key)
+        return nil
+    }, cell: { cell in
+        cells.append(cell)
+        return cells.count == 1 ? .whole : .stopped(.busy, landed: 0)
+    })
+    check("an AX-delivered first line, the Return, then busy: the first line plus one", walk == TypeWalk(landed: 6, stopped: .busy) && pressed == [.returnKey], "\(walk) \(pressed)")
+    // Busy at the separator's own check: the Return was not pressed, so the first line alone.
+    let atSeparator = walkType("Hello\nWorld", separator: { _ in .busy }, cell: { _ in .whole })
+    check("busy at the Return's check: the first line alone", atSeparator == TypeWalk(landed: 5, stopped: .busy), "\(atSeparator)")
+    // Counted as the text counts characters: an emoji with a skin tone, and e with a combining accent, are one each.
+    let text = "👋🏽e\u{301}\tok"
+    let whole = walkType(text, separator: { _ in nil }, cell: { _ in .whole })
+    check("graphemes, not UTF-16 units: a whole walk counts the text's own length", whole == TypeWalk(landed: 5, stopped: nil) && typeText(text).count == 5 && text.utf16.count == 9, "\(whole) utf16 \(text.utf16.count)")
+    let crlf = walkType("a\r\nb\rc", separator: { _ in nil }, cell: { _ in .whole })
+    check("CR LF and CR are one Return each", crlf == TypeWalk(landed: 5, stopped: nil) && typeText("a\r\nb\rc").count == 5, "\(crlf)")
+    // Keystrokes part way through the second line: the first line, the Return, and the two graphemes typed.
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    _ = ledger.busyMs(s.clock)
+    var watch = TypeWatch(busyCheck: true, front: FakeFocus(session: s).watch(expect: 100))
+    let keyed = walkType("Hello\nWorld", separator: { _ in
+        s.own(.key, &ledger)
+        s.advance(ms: 8)
+        return nil
+    }, cell: { cell in
+        let second = cell == "World"
+        switch typeRun(cell, session: s, ledger: &ledger, watch: &watch, after: { typed in
+            if second && typed == 2 { s.foreign(.click) }
+        }) {
+        case .done: return .whole
+        case .cancelled(let typed, let why): return .stopped(why, landed: typed)
+        case .postFailed(let typed): return .stopped(.stop, landed: typed)
+        }
+    })
+    check("Kevin's click two graphemes into the second line: 5 + 1 + 2 landed", keyed == TypeWalk(landed: 8, stopped: .busy), "\(keyed)")
+}
+
+// 25. Kevin's hands before anything of the type went out: the guard's refusal (an error marked busy,
+//     retried silently), not a partial "stopped after 0". Once a key went out it is a partial result.
+do {
+    let s = FakeSession()
+    var ledger = HandsLedger()
+    _ = ledger.busyMs(s.clock)
+    var watch = TypeWatch(busyCheck: true, front: FakeFocus(session: s).watch(expect: 100))
+    // His key lands between the guard and the first grapheme (the focus being resolved).
+    s.foreign(.key)
+    s.advance(ms: 30)
+    let run = typeRun("hello", session: s, ledger: &ledger, watch: &watch)
+    check("a key of his before the first grapheme stops the type with nothing typed", run == .cancelled(typed: 0, reason: .busy), "\(run)")
+    check("and that stop is the guard's refusal, with how long ago his key was", stopRefuses(.busy, landed: 0, events: 0) && watch.busyMs == 30, "busyMs \(String(describing: watch.busyMs))")
+    check("a stop after a key went out is a partial result", !stopRefuses(.busy, landed: 1, events: 1))
+    check("a stop after the Return alone was pressed is a partial result", !stopRefuses(.busy, landed: 1, events: 1) && !stopRefuses(.busy, landed: 0, events: 1))
+    check("a cell inserted by accessibility (no key posted) is a partial result", !stopRefuses(.busy, landed: 5, events: 0))
+    check("the client's stop and a moved focus before anything went out are not refusals", !stopRefuses(.stop, landed: 0, events: 0) && !stopRefuses(.focusMoved, landed: 0, events: 0))
 }
 
 print("hands-win: \(passed) passed, \(failed) failed")
