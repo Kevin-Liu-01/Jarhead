@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { addLogSink } from "@jarhead/core";
 import type { Brain } from "@jarhead/brain";
 import type { LedgerRow } from "@jarhead/protocol";
-import { delegate, rows, settle, until, world, type World } from "./world.ts";
+import { delegate, rows, until, world, type World } from "./world.ts";
 
 /**
  * The two latency stamps that make "speech end → first visible action" measurable
@@ -60,7 +60,8 @@ test("timings: speechEndAt is the triggering utterance's end on the session's st
     const live = w.live;
     const s = live.nowMs; // 1000 on the session timeline
     delegate(w, "jarhead find the save button and press it", "item_1"); // one fragment [s, s+900], then the delegation at s+900
-    await settle(60);
+    // Until it closes, never a fixed sleep: a busy Mac takes longer than 60 ms to run four tools (BL-11).
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_1")?.status === "done");
 
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_1");
     assert.ok(d, "the delegation exists");
@@ -113,7 +114,7 @@ test("timings: with no acting tool nothing is stamped as an action, and speechEn
     await engine.wake("test");
     // Live delegates with nothing heard yet (a hand-off before the transcript caught up).
     live.emit("delegation", "item_bare", "client", live.nowMs);
-    await settle(60);
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_bare")?.status === "done");
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_bare");
     assert.ok(d);
     assert.equal(d.status, "done");
@@ -145,7 +146,7 @@ test("timings: a thread's steps land on ITS OWN delegation (threadId) with their
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
     delegate(w, "jarhead tell ben on slack and play focus on spotify", "item_1");
-    await settle();
+    assert.ok(await until(() => brain.tasks.length === 1), "the main brain has the task (the runner is attached)");
     const kevinBefore = lastKevinAt();
     const started = await engine.runner.run("thread_start", { name: "Spotify", task: "play Focus" });
     assert.equal(started.result.kind, "text");

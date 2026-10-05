@@ -1,13 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readConfig, type JarheadConfig } from "@jarhead/core";
+import type { JarheadConfig } from "@jarhead/core";
 import type { Brain } from "@jarhead/brain";
 import type { LocalServerStatus, Problem, ProblemKind } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
-import { FakeMemoryService, delegate, fakeLocalServer, localModel, localNone, localStatus, noShell, settle, until, world as fullWorld } from "./world.ts";
+import { FakeMemoryService, delegate, fakeLocalServer, localModel, localNone, localStatus, noShell, settle, tempDir, testConfig, until, world as fullWorld } from "./world.ts";
 
 /** Every engine here runs over the memory stand-in: the real service would build an OpenAI embedder over a fake key (no network in tests). */
 const fakeMemory = (): { memory: { service: FakeMemoryService } } => ({ memory: { service: new FakeMemoryService() } });
@@ -51,24 +50,13 @@ interface World {
 
 /** A state dir, a fake codex, an empty HOME (no ~/.claude), no keys, no server URL. */
 function world(brain: JarheadConfig["brain"], signedIn: boolean, opts: { brokenCodex?: boolean; brainModel?: string } = {}): World {
-  const dir = mkdtempSync(join(tmpdir(), "jh-select-"));
+  const dir = tempDir("jh-select-");
   const home = join(dir, "home");
   mkdirSync(home);
   const saved = { HOME: process.env["HOME"], CODEX_HOME: process.env["CODEX_HOME"] };
   process.env["HOME"] = home;
   process.env["CODEX_HOME"] = codexHome(dir, signedIn);
-  const config: JarheadConfig = {
-    ...readConfig(),
-    brain,
-    brainModel: opts.brainModel ?? "",
-    brainBaseUrl: undefined,
-    anthropicApiKey: undefined,
-    claudeBin: undefined,
-    codexBin: fakeCodex(dir, opts.brokenCodex ?? false),
-    handsBin: join(dir, "no-hands"),
-    stateDir: join(dir, "state"),
-    socketPath: join(dir, "state", "j.sock"),
-  };
+  const config = testConfig(dir, { brain, brainModel: opts.brainModel ?? "", codexBin: fakeCodex(dir, opts.brokenCodex ?? false) });
   return {
     dir,
     config,

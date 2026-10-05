@@ -1,6 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addLogSink } from "@jarhead/core";
@@ -48,6 +49,101 @@ async function until(check: () => boolean, ms = 3_000, what = "condition"): Prom
     await sleep(5);
   }
 }
+
+/** CI=1 (GitHub sets CI=true): the read ceilings below are absolute. */
+const ABSOLUTE = /^(1|true)$/i.test(process.env["CI"] ?? "");
+
+/** One timed try: what the read returned, how long it took, and the reference it is judged against. */
+interface Try<T> {
+  readonly result: T;
+  readonly ms: number;
+  readonly refMs: number;
+}
+
+/**
+ * A wall-clock ceiling on a read. Under CI it is absolute: `absMs` × RUNNER_SLACK, one
+ * try. On a Mac it is relative to the measured read: `ratio` × the reference timed beside it, never
+ * under `absMs`, and a try over it gets two more. A Mac running sixteen test files stalls one try,
+ * not three, and a Mac slow for everyone is slow for the reference too. A real regression (a whole
+ * file read for one page, an assembled 48 MB line, a parse that never yields) still overshoots by
+ * the ratio.
+ */
+async function withinCeiling<T>(what: string, absMs: number, ratio: number, once: () => Promise<Try<T>>): Promise<Try<T> & { ceiling: number }> {
+  let last: (Try<T> & { ceiling: number }) | undefined;
+  for (let i = 0; i < (ABSOLUTE ? 1 : 3); i += 1) {
+    const t = await once();
+    last = { ...t, ceiling: ABSOLUTE ? absMs * RUNNER_SLACK : Math.max(absMs, Math.round(ratio * t.refMs)) };
+    if (last.ms < last.ceiling) return last;
+  }
+  assert.fail(`${what} under ${last!.ceiling} ms (${last!.ms} ms; ${judged(last!)})`);
+}
+
+/** How a try was judged, for the [measure] lines and the failure message. */
+function judged(t: Try<unknown> & { ceiling: number }): string {
+  return ABSOLUTE ? `ceiling ${t.ceiling} ms, absolute` : `ceiling ${t.ceiling} ms, reference ${t.refMs} ms`;
+}
+
+/**
+ * The reference for a read: `[from, to)` of `path` read in 1 MiB chunks, split into lines and each
+ * line JSON-parsed, with no transcript parser. What any reader of those bytes pays, now, on this
+ * Mac. Free under CI, where the ceilings do not use it.
+ */
+async function referenceRead(path: string, from: number, to: number): Promise<number> {
+  if (ABSOLUTE) return 0;
+  const t0 = performance.now();
+  const fh = await open(path, "r");
+  try {
+    const chunk = Buffer.allocUnsafe(Math.min(MiB, Math.max(1, to - from)));
+    const lines = new LineAssembler();
+    for (let pos = from; pos < to; ) {
+      const { bytesRead } = await fh.read(chunk, 0, Math.min(chunk.length, to - pos), pos);
+      if (bytesRead === 0) break;
+      for (const line of lines.push(chunk.subarray(0, bytesRead), pos)) {
+        try {
+          if (line.skippedBytes === undefined) JSON.parse(line.text);
+        } catch {
+          // The first line of a span that starts mid-line is torn; parsing it is still the work.
+        }
+      }
+      pos += bytesRead;
+    }
+  } finally {
+    await fh.close();
+  }
+  return ms(t0);
+}
+
+/**
+ * The poll's list() calls, and the "poll stuck" lines each one drew. A busy Mac can hold a real
+ * list() past pollStuckMs too, and the poll abandons it in its turn: the rule is one line per stuck
+ * call, never two for one call and never one for a call that had settled.
+ */
+function pollCalls(c: SessionsConnector): { calls: { settled: boolean; lines: number }[]; strays: () => number; stuckLine: () => void } {
+  const calls: { settled: boolean; lines: number }[] = [];
+  let strays = 0;
+  const list = c.list.bind(c);
+  c.list = async () => {
+    const call = { settled: false, lines: 0 };
+    calls.push(call);
+    try {
+      return await list();
+    } finally {
+      call.settled = true;
+    }
+  };
+  return {
+    calls,
+    strays: () => strays,
+    // The line is said before the next tick's list() starts, so the newest call is the one abandoned.
+    stuckLine: () => {
+      const open = calls.at(-1);
+      if (open && !open.settled) open.lines += 1;
+      else strays += 1;
+    },
+  };
+}
+
+const STUCK = /poll stuck for \d+ s; abandoning it/;
 
 /** Generated once, shared by the tests below (about two seconds, 100 MB). */
 let big: { claude: ReturnType<typeof bigClaude>; codex: ReturnType<typeof bigCodex> } | undefined;
@@ -260,12 +356,16 @@ test("subscribe: three quiet simulated minutes emit zero changes; a session that
   bigCodex(other.rolloutPath, 8 * 1024, { id: "01a0c002-0000-7000-8000-00000000c002", hugeLineBytes: 0, startAt: gen.lastAt + 60_000 });
   let now = gen.lastAt + 120_000;
   const lines: string[] = [];
+  let polls: ReturnType<typeof pollCalls> | undefined;
   const unsink = addLogSink((level, scope, message) => {
-    if (scope === "agents.sessions" && level === "info") lines.push(message);
+    if (scope !== "agents.sessions" || level !== "info") return;
+    lines.push(message);
+    if (STUCK.test(message)) polls?.stuckLine();
   });
   try {
     const c = new SessionsConnector({ home, ...pinned(home), processes: async () => [codexProc([id])], now: () => now, processCacheMs: 0, pollMs: 15, pollQuietMs: 15, pollStuckMs: 120, maxAgeDays: 100_000 });
     await c.list();
+    polls = pollCalls(c);
     const changes: AgentInfo[] = [];
     const gone: string[] = [];
     const stop = c.subscribe((a) => changes.push(a), (goneId) => gone.push(goneId));
@@ -286,9 +386,11 @@ test("subscribe: three quiet simulated minutes emit zero changes; a session that
     // One scan hangs for ever: the poll abandons it after pollStuckMs, says so once, and goes on.
     const realScan = c.claude.scan.bind(c.claude);
     let hung = 0;
+    let hungCall: { settled: boolean; lines: number } | undefined;
     c.claude.scan = () => {
       if (hung === 0) {
         hung += 1;
+        hungCall = polls?.calls.at(-1);
         return new Promise(() => undefined);
       }
       return realScan();
@@ -300,7 +402,13 @@ test("subscribe: three quiet simulated minutes emit zero changes; a session that
     now += 1_000;
     appendFileSync(paths.rolloutPath, `${JSON.stringify({ timestamp: new Date(now).toISOString(), ordinal: 9_000, type: "event_msg", payload: { type: "task_started", turn_id: "tz" } })}\n`);
     await until(() => changes.some((a) => a.id === `sessions:codex:${id}`), 3_000, "a change after the stuck tick was abandoned");
-    assert.equal(lines.filter((l) => /poll stuck for \d+ s; abandoning it/.test(l)).length, 1, `one info line: ${lines.join(" | ")}`);
+    // One info line per stuck call: the hung one is said once, and a real list() a busy Mac held past pollStuckMs is said once too.
+    const said = lines.filter((l) => STUCK.test(l));
+    assert.equal(hungCall?.settled, false, "the hung list() never settled");
+    assert.equal(hungCall?.lines, 1, `the hung call is said once: ${said.join(" | ")}`);
+    assert.equal(polls.strays(), 0, "no line for a call that had settled");
+    assert.deepEqual(polls.calls.filter((x) => x.lines > 1), [], "no call is said twice");
+    assert.equal(said.length, polls.calls.filter((x) => x.lines === 1).length, `one line per stuck call: ${said.join(" | ")}`);
     stop();
     await c.closeAll();
   } finally {
@@ -339,18 +447,26 @@ test("subscribe with the real clock: a list() that never settles is abandoned at
   const paths = codexHome(home, id);
   bigCodex(paths.rolloutPath, 6 * 1024, { id, hugeLineBytes: 0, startAt: Date.now() - 600_000 });
   const lines: string[] = [];
+  let polls: ReturnType<typeof pollCalls> | undefined;
   const unsink = addLogSink((level, scope, message) => {
-    if (scope === "agents.sessions" && level === "info") lines.push(message);
+    if (scope !== "agents.sessions" || level !== "info") return;
+    lines.push(message);
+    if (STUCK.test(message)) polls?.stuckLine();
   });
   try {
     // No `now` here: Date.now, as in production, drives the watchdog.
     const c = new SessionsConnector({ home, ...pinned(home), processes: async () => [codexProc([id])], processCacheMs: 0, pollMs: 15, pollQuietMs: 15, pollStuckMs: 100, maxAgeDays: 100_000 });
     const agentId = `sessions:codex:${id}`;
     assert.equal((await c.list()).find((a) => a.id === agentId)?.status, "idle", "task_complete closed the last turn ten minutes ago");
+    polls = pollCalls(c);
     const realScan = c.claude.scan.bind(c.claude);
     let hung = 0;
+    let hungCall: { settled: boolean; lines: number } | undefined;
     c.claude.scan = () => {
-      if (hung++ === 0) return new Promise(() => undefined);
+      if (hung++ === 0) {
+        hungCall = polls?.calls.at(-1);
+        return new Promise(() => undefined);
+      }
       return realScan();
     };
     const changes: AgentInfo[] = [];
@@ -360,7 +476,68 @@ test("subscribe with the real clock: a list() that never settles is abandoned at
     appendFileSync(paths.rolloutPath, `${codexLine(Date.now(), "event_msg", { type: "task_started", turn_id: "tz" })}\n`);
     await until(() => changes.some((a) => a.id === agentId && a.status === "working"), 3_000, "a change once the stuck tick was abandoned");
     measure("stuck poll abandoned with Date.now (pollStuckMs 100)", `${ms(t0)} ms until the next tick delivered; production POLL_STUCK_MS 60 s`);
-    assert.equal(lines.filter((l) => /poll stuck for \d+ s; abandoning it/.test(l)).length, 1, `one info line: ${lines.join(" | ")}`);
+    // Said once for the hung call; a real list() that a busy Mac held past 100 ms is abandoned and said once in its turn.
+    const said = lines.filter((l) => STUCK.test(l));
+    assert.equal(hungCall?.settled, false, "the hung list() never settled");
+    assert.equal(hungCall?.lines, 1, `the hung call is said once: ${said.join(" | ")}`);
+    assert.equal(polls.strays(), 0, "no line for a call that had settled");
+    assert.deepEqual(polls.calls.filter((x) => x.lines > 1), [], "no call is said twice");
+    assert.equal(said.length, polls.calls.filter((x) => x.lines === 1).length, `one line per stuck call: ${said.join(" | ")}`);
+    stop();
+    await c.closeAll();
+  } finally {
+    unsink();
+  }
+});
+
+test("subscribe on a busy Mac: a real list() slower than pollStuckMs after the hung one is abandoned in its turn and said once; the lines count the stuck calls, one each", async () => {
+  // The auditors' repro (refute-4-1): the second scan takes 160 ms, as one does when sixteen test files share the Mac.
+  const home = mkdtempSync(join(ROOT, "home-slow-"));
+  const id = "01a0c004-0000-7000-8000-00000000c004";
+  const paths = codexHome(home, id);
+  bigCodex(paths.rolloutPath, 6 * 1024, { id, hugeLineBytes: 0, startAt: Date.now() - 600_000 });
+  const lines: string[] = [];
+  let polls: ReturnType<typeof pollCalls> | undefined;
+  const unsink = addLogSink((level, scope, message) => {
+    if (scope === "agents.sessions" && level === "info" && STUCK.test(message)) {
+      lines.push(message);
+      polls?.stuckLine();
+    }
+  });
+  try {
+    const c = new SessionsConnector({ home, ...pinned(home), processes: async () => [codexProc([id])], processCacheMs: 0, pollMs: 15, pollQuietMs: 15, pollStuckMs: 100, maxAgeDays: 100_000 });
+    const agentId = `sessions:codex:${id}`;
+    await c.list();
+    polls = pollCalls(c);
+    const realScan = c.claude.scan.bind(c.claude);
+    let scans = 0;
+    let hungCall: { settled: boolean; lines: number } | undefined;
+    let slowCall: { settled: boolean; lines: number } | undefined;
+    c.claude.scan = () => {
+      scans += 1;
+      if (scans === 1) {
+        hungCall = polls?.calls.at(-1);
+        return new Promise(() => undefined);
+      }
+      if (scans === 2) {
+        slowCall = polls?.calls.at(-1);
+        return sleep(160).then(() => realScan());
+      }
+      return realScan();
+    };
+    const changes: AgentInfo[] = [];
+    const stop = c.subscribe((a) => changes.push(a));
+    await until(() => scans >= 1, 1_000, "the hanging scan");
+    appendFileSync(paths.rolloutPath, `${codexLine(Date.now(), "event_msg", { type: "task_started", turn_id: "tz" })}\n`);
+    await until(() => changes.some((a) => a.id === agentId && a.status === "working"), 3_000, "a change once both stuck ticks were abandoned");
+    await until(() => slowCall?.settled === true, 1_000, "the slow scan to finish late");
+    assert.equal(hungCall?.lines, 1, "the hung call is said once");
+    assert.equal(slowCall?.lines, 1, "the slow call is said once, though it settled later");
+    assert.equal(polls.strays(), 0);
+    assert.deepEqual(polls.calls.filter((x) => x.lines > 1), []);
+    // At least these two; a later real list() that a busier Mac also held past 100 ms is one more call and one more line.
+    assert.ok(lines.length >= 2, lines.join(" | "));
+    assert.equal(lines.length, polls.calls.filter((x) => x.lines === 1).length, `one line per stuck call: ${lines.join(" | ")}`);
     stop();
     await c.closeAll();
   } finally {
@@ -494,13 +671,18 @@ test("parser: a 48 MB single line is never assembled — skipped as one line wit
   const gen = hugeLine(path, 48 * MiB);
   assert.ok(gen.bytes > 48 * MiB);
   const rss0 = process.memoryUsage().rss;
-  const t0 = performance.now();
-  const page = await readTailPage(path, codex, 60);
-  const took = ms(t0);
-  const grew = process.memoryUsage().rss - rss0;
-  measure("48 MB single line: tail page", `${took} ms, RSS +${Math.round(grew / MiB)} MB, ${page.bytesRead / MiB | 0} MB read`);
-  assert.ok(took < 300 * RUNNER_SLACK, `under ${300 * RUNNER_SLACK} ms (${took} ms)`);
-  assert.ok(grew < 64 * MiB, `RSS growth under 64 MB (+${Math.round(grew / MiB)} MB)`);
+  let grew: number | undefined;
+  // Judged against reading the file once and parsing its lines (the huge one skipped): the page reads its doubling slices, so a few times that.
+  const t = await withinCeiling("the tail page across a 48 MB line", 300, 8, async () => {
+    const t0 = performance.now();
+    const result = await readTailPage(path, codex, 60);
+    const took = ms(t0);
+    grew ??= process.memoryUsage().rss - rss0;
+    return { result, ms: took, refMs: await referenceRead(path, 0, gen.bytes) };
+  });
+  const page = t.result;
+  measure("48 MB single line: tail page", `${t.ms} ms (${judged(t)}), RSS +${Math.round(grew! / MiB)} MB, ${page.bytesRead / MiB | 0} MB read`);
+  assert.ok(grew! < 64 * MiB, `RSS growth under 64 MB (+${Math.round(grew! / MiB)} MB)`);
   assert.equal(page.complete, true);
   const huge = page.messages.find((m) => m.id === gen.hugeCallId);
   assert.equal(huge?.tool?.status, "done", "the call whose output was skipped is not left running");
@@ -579,16 +761,18 @@ test("parser: results whose call is out of view are kept as orphans and adopted 
 test("open: the 50 MB fixture's newest page — cold and warm timings, cursor, exact ids", async () => {
   const { claude: cl, codex: cx } = fixtures();
   for (const [name, gen, make] of [["Claude", cl, claude], ["Codex", cx, codex]] as const) {
-    const cold0 = performance.now();
-    const source = new TranscriptSource({ path: gen.path, makeParser: make });
-    const page = await source.page({ limit: 60 });
-    const cold = ms(cold0);
-    const warm0 = performance.now();
-    const again = await new TranscriptSource({ path: gen.path, makeParser: make }).page({ limit: 60 });
-    const warm = ms(warm0);
-    measure(`open 50 MB ${name} (newest 60)`, `cold ${cold} ms, warm ${warm} ms`);
-    assert.ok(cold < 300 * RUNNER_SLACK, `${name} cold under ${300 * RUNNER_SLACK} ms (${cold} ms)`);
-    assert.ok(warm < 30 * RUNNER_SLACK, `${name} warm under ${30 * RUNNER_SLACK} ms (${warm} ms)`);
+    // A page is judged against reading and parsing its own bytes: never what the 50 MB behind it would cost.
+    const openPage = async (): Promise<Try<Awaited<ReturnType<TranscriptSource["page"]>>>> => {
+      const t0 = performance.now();
+      const result = await new TranscriptSource({ path: gen.path, makeParser: make }).page({ limit: 60 });
+      const took = ms(t0);
+      return { result, ms: took, refMs: await referenceRead(gen.path, result.cursor?.startOffset ?? 0, result.cursor?.endOffset ?? gen.bytes) };
+    };
+    const cold = await withinCeiling(`${name} cold`, 300, 10, openPage);
+    const warm = await withinCeiling(`${name} warm`, 30, 10, openPage);
+    const page = cold.result;
+    const again = warm.result;
+    measure(`open 50 MB ${name} (newest 60)`, `cold ${cold.ms} ms (${judged(cold)}), warm ${warm.ms} ms (${judged(warm)})`);
     assert.deepEqual(page.messages.map((m) => m.id), gen.ids.slice(-60));
     assert.deepEqual(again.messages, page.messages);
     assert.equal(page.complete, false);
@@ -747,24 +931,24 @@ test("event loop: while a 14 MB page parses and while the Codex fixture with an 
       },
     };
   };
+  // The gap is judged against the read it happened in: a parse that yields holds the loop for a small share of the read, one that never yields holds it for all of it.
+  const gapDuring = (read: () => Promise<Awaited<ReturnType<typeof readBackward>>>) => async (): Promise<Try<Awaited<ReturnType<typeof readBackward>>>> => {
+    const p = probe();
+    const t0 = performance.now();
+    const result = await read();
+    const readMs = ms(t0);
+    return { result, ms: p.stop(), refMs: readMs };
+  };
   const size = statSync(cl.path).size;
-  const p1 = probe();
-  const t1 = performance.now();
-  const big = await readBackward(cl.path, claude, 20_000, size);
-  const bigMs = ms(t1);
-  const gap1 = p1.stop();
-  measure(`setImmediate max gap during a ${(big.bytesRead / MiB).toFixed(1)} MB backward read (${big.messages.length} msgs, ${bigMs} ms)`, `${gap1} ms`);
-  assert.ok(gap1 < 100 * RUNNER_SLACK, `gap ${gap1} ms (under ${100 * RUNNER_SLACK})`);
+  const one = await withinCeiling("setImmediate max gap during the 14 MB backward read", 100, 0.5, gapDuring(() => readBackward(cl.path, claude, 20_000, size)));
+  const big = one.result;
+  measure(`setImmediate max gap during a ${(big.bytesRead / MiB).toFixed(1)} MB backward read (${big.messages.length} msgs, ${one.refMs} ms)`, `${one.ms} ms (ceiling ${one.ceiling} ms)`);
 
-  const p2 = probe();
-  const t2 = performance.now();
   // A cursor just past the 8 MiB line: the page before it has to read back across the line to fill up.
-  const huge = await readBackward(cx.path, codex, 60, cx.hugeLineEnd! + 600);
+  const two = await withinCeiling("setImmediate max gap reading across the 8 MiB line", 100, 0.5, gapDuring(() => readBackward(cx.path, codex, 60, cx.hugeLineEnd! + 600)));
+  const huge = two.result;
   assert.ok(huge.bytesRead > 8 * MiB, `read across the line (${(huge.bytesRead / MiB).toFixed(1)} MB)`);
-  const hugeMs = ms(t2);
-  const gap2 = p2.stop();
-  measure(`setImmediate max gap reading across the 8 MiB line (${(huge.bytesRead / MiB).toFixed(1)} MB, ${hugeMs} ms)`, `${gap2} ms`);
-  assert.ok(gap2 < 100 * RUNNER_SLACK, `gap ${gap2} ms (under ${100 * RUNNER_SLACK})`);
+  measure(`setImmediate max gap reading across the 8 MiB line (${(huge.bytesRead / MiB).toFixed(1)} MB, ${two.refMs} ms)`, `${two.ms} ms (ceiling ${two.ceiling} ms)`);
   const skipped = huge.messages.find((m) => m.id === cx.hugeCallId);
   assert.equal(skipped?.tool?.output, "[output of 8 MB skipped]", "the 8 MiB output line was skipped, its call closed");
 });
