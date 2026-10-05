@@ -3,15 +3,16 @@
  * browser_navigate replaces the page under his hands; a page script in the browser he is typing in clicks, types and
  * moves the focus there. So the helper runs the hands-win guard (Kevin's last key, click or scroll within
  * KEVIN_QUIET_MS gives `busy`, nothing sent) before browser_navigate, and before browser_js when the target browser
- * is the front app. A page script in a browser behind his app touches nothing of his and runs.
- * The fake mirrors the helper (FAKE_HELD_OPS), and the Swift is pinned by its source.
+ * is the front app. A page script in a browser behind his app touches nothing of his and runs, and so does one that
+ * says `readOnly: true` (BrowserTools' probe, read and find only look; holding them broke browser_read for a minute).
+ * The fake mirrors the helper (FAKE_HELD_OPS, fakeHeldNow), and the Swift is pinned by its source.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FAKE_HELD_OPS, FakeHands } from "../fake.ts";
+import { FAKE_HELD_OPS, FakeHands, fakeHeldNow } from "../fake.ts";
 import { NativeRequestError } from "../native.ts";
 
 const native = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "native");
@@ -39,7 +40,7 @@ test("the helper: browser_navigate runs the guard before its Apple event; browse
   const guard = navigate.indexOf("try guardActing(params)");
   assert.ok(guard >= 0 && guard < navigate.indexOf("runScript("), "opBrowserNavigate: the guard before the script");
   const js = body(browser, "opBrowserJS");
-  assert.match(js, /if isFrontApp\(app\) \{ try guardActing\(params\) \}/);
+  assert.match(js, /if try params\.bool\("readOnly"\) != true, isFrontApp\(app\) \{ try guardActing\(params\) \}/);
   assert.ok(js.indexOf("guardActing") < js.indexOf("runScript("), "opBrowserJS: the guard before the script");
   // The reads that only look stay unheld: the tab list and the URL.
   assert.doesNotMatch(body(browser, "opBrowserTabs"), /guardActing/);
@@ -56,6 +57,7 @@ test("the fake: browser_navigate and a front browser's browser_js answer busy wh
   assert.equal(await code(hands.request("browser_js", { app: "Google Chrome", script: "1+1" })), "busy");
   assert.equal(await code(hands.request("browser_js", { app: "google chrome", script: "1+1" })), "busy", "the app's name, case folded");
   assert.equal(await code(hands.request("browser_js", { app: "Safari", script: "1+1" })), "ok", "Safari is behind Chrome");
+  assert.equal(await code(hands.request("browser_js", { app: "Google Chrome", script: "1+1", readOnly: true })), "ok", "a script that only looks runs under his hands");
   assert.equal(await code(hands.request("browser_tabs", { app: "Google Chrome" })), "ok", "the tab list only looks");
   // Quiet again: everything runs. Dictation's own driver is never held by Kevin's keys.
   const quiet = new FakeHands();
@@ -65,4 +67,18 @@ test("the fake: browser_navigate and a front browser's browser_js answer busy wh
   quiet.kevinActed();
   assert.equal(await code(quiet.request("browser_js", { app: "Google Chrome", script: "1+1", ownDriver: true })), "ok");
   assert.deepEqual(quiet.posted, [], "neither is a post");
+});
+
+test("fakeHeldNow is the one held-op predicate every fake helper calls (the engine's RecordingHands too, once fix/w3-1 merges)", () => {
+  const front = "Google Chrome";
+  assert.equal(fakeHeldNow("move", {}, front), true);
+  assert.equal(fakeHeldNow("focus_app", { name: "Slack" }, front), true);
+  assert.equal(fakeHeldNow("open_app", { name: "Slack" }, front), true);
+  assert.equal(fakeHeldNow("open_app", { name: "Slack", activate: false }, front), false, "a background open");
+  assert.equal(fakeHeldNow("browser_navigate", { app: "Safari", url: "https://example.com/" }, front), true, "a navigate wherever it lands");
+  assert.equal(fakeHeldNow("browser_js", { app: "google chrome", script: "x" }, front), true);
+  assert.equal(fakeHeldNow("browser_js", { app: "Safari", script: "x" }, front), false, "a browser behind the front app");
+  assert.equal(fakeHeldNow("browser_js", { app: "Google Chrome", script: "x", readOnly: true }, front), false, "a script that only looks");
+  assert.equal(fakeHeldNow("browser_tabs", { app: "Google Chrome" }, front), false, "not a held op");
+  assert.equal(fakeHeldNow("click", {}, front), false, "an acting op is FAKE_ACTING_OPS', not this predicate's");
 });

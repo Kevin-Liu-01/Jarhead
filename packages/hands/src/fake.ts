@@ -64,14 +64,20 @@ export const FAKE_ACTING_OPS: ReadonlySet<string> = new Set(["click", "mouse_dow
  * click (Input.swift opMove, Windows.swift opFocusApp, opOpenApp when it activates, Browser.swift
  * opBrowserNavigate, and opBrowserJS when the browser is the front app): the pointer jumping, an
  * app pulled over the one he is typing in, or the page under his keys replaced or scripted, is
- * stepping on him too.
+ * stepping on him too. Which of them is held for a given call is `fakeHeldNow`.
  */
 export const FAKE_HELD_OPS: ReadonlySet<string> = new Set(["move", "focus_app", "open_app", "browser_navigate", "browser_js"]);
 
-/** The held ops that are held only sometimes: an open in the background, and a page script in a browser behind the front app. */
-function heldNow(op: string, params: Record<string, unknown>, frontApp: string): boolean {
+/**
+ * Whether the helper holds this call of a FAKE_HELD_OPS op while Kevin's hands are on the machine, as the Swift does:
+ * every one, except an `open_app` with `activate: false` (it opens in the background), a `browser_js` in a browser
+ * that is not the front app, and a `browser_js` that says `readOnly: true` (BrowserTools' probe, read and find only
+ * look). Every fake helper calls this one predicate, so the fakes cannot drift from each other.
+ */
+export function fakeHeldNow(op: string, params: Record<string, unknown>, frontApp: string): boolean {
+  if (!FAKE_HELD_OPS.has(op)) return false;
   if (op === "open_app") return params["activate"] !== false;
-  if (op === "browser_js") return String(params["app"] ?? "").toLowerCase() === frontApp.toLowerCase();
+  if (op === "browser_js") return params["readOnly"] !== true && String(params["app"] ?? "").toLowerCase() === frontApp.toLowerCase();
   return true;
 }
 
@@ -81,7 +87,7 @@ function heldNow(op: string, params: Record<string, unknown>, frontApp: string):
  * `busy` while Kevin's last input is within KEVIN_QUIET_MS (unless `ownDriver`), and
  * `focus_moved` when `expectFront.pid` is not the front app's — in both cases nothing
  * is recorded in `posted`. `focus_app` / `open_app` bring the named app to the front, and
- * they and `move` answer `busy` like an acting op (FAKE_HELD_OPS; a background open does not).
+ * they and `move` answer `busy` like an acting op (FAKE_HELD_OPS, held as `fakeHeldNow` says).
  * Every request is in `calls` (with the clock's time); a `hold` keeps one op in flight
  * until `release()`, so a test can prove nobody takes the lease mid-op.
  */
@@ -140,7 +146,7 @@ export class FakeHands implements NativeHands {
     this.calls.push({ op, params, at });
     if (this.hold === op && this.release_ === undefined) await new Promise<void>((r) => (this.release_ = r));
     if (FAKE_ACTING_OPS.has(op)) this.guardActing(op, params);
-    else if (FAKE_HELD_OPS.has(op) && heldNow(op, params, this.frontApp)) this.guardActing(op, params);
+    else if (fakeHeldNow(op, params, this.frontApp)) this.guardActing(op, params);
     switch (op) {
       case "hello":
         return { version: "fake", pid: 1, permissions: { accessibility: true, screenRecording: true } } as T;

@@ -9,13 +9,16 @@
  *   full table renders the orders exactly as every other brain gets them.
  * - The Responses delegation carries Jarhead's function tools and nothing hosted. OpenAI's built-in web_search ran on
  *   OpenAI's side, where classifyUrl and the redactor never see it; the web_search function tool (through the runner)
- *   is the search every brain has.
+ *   is the search every brain has. Codex has the same hosted search (0.159.2's top-level `web_search`), so both Codex
+ *   argvs switch it off by name.
  * - The cold Codex thread's prompt is re-estimated for the README's 10.7k figure (BR-16), as a [measure] line.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { brainSystemPrompt } from "../brain.ts";
-import { codexAddendum, codexBaseInstructions } from "../codex.ts";
+import { codexAddendum, codexBaseInstructions, codexExecArgs } from "../codex.ts";
+import { appServerArgs } from "../codex-app-server.ts";
+import { CODEX_WEB_SEARCH_OFF } from "../codex-config.ts";
 import { LOCAL_NUM_CTX_MAX, LOCAL_TOOLS, LocalBrain, fitTools } from "../local.ts";
 import { responsesDelegationConfig } from "../responses.ts";
 import { ALL_TOOL_SPECS, type ToolSpec } from "../tools.ts";
@@ -59,6 +62,19 @@ test("F-SAME-TOOLS: the Responses delegation sends the function tools and no hos
     assert.deepEqual(tools.map((t) => t.type), ALL_TOOL_SPECS.map(() => "function"), "every tool is Jarhead's own, judged by the runner");
     assert.deepEqual(tools.map((t) => t.name), ALL_TOOL_SPECS.map((s) => s.name));
   }
+});
+
+test("F-SAME-TOOLS: both Codex argvs switch Codex's own hosted web search off, so its only search is the jarhead tool", () => {
+  assert.equal(CODEX_WEB_SEARCH_OFF, 'web_search="disabled"');
+  const configsOf = (args: readonly string[]): string[] => args.filter((_, i) => args[i - 1] === "-c");
+  const exec = codexExecArgs({ cwd: "/c", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s" });
+  const app = appServerArgs({ bin: "codex", cwd: "/c", env: {}, codexHome: "/nowhere", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", developerInstructions: "x", disableUserServers: false });
+  for (const [name, args] of [["exec", exec], ["app-server", app]] as const) {
+    const configs = configsOf(args);
+    assert.ok(configs.includes(CODEX_WEB_SEARCH_OFF), `${name}: ${configs.join(" ")}`);
+    assert.ok(!configs.some((c) => /^web_search="(cached|indexed|live)"$/.test(c) || /^features\.web_search/.test(c)), `${name}: nothing turns it back on`);
+  }
+  for (const trimPrompt of [true, false]) assert.ok(configsOf(codexExecArgs({ cwd: "/c", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", trimPrompt })).includes(CODEX_WEB_SEARCH_OFF));
 });
 
 /** A llama.cpp server on loopback: /health, /props (its window), /v1/models, and one chat answer per request. */

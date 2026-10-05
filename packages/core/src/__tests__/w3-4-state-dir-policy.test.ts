@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyAction, classifyPath, secretPathReason, type PathAccess } from "../policy.ts";
+import { classifyAction, classifyPath, secretPathReason, shellCwdReason, type PathAccess } from "../policy.ts";
 
 const HOME = "/Users/tester";
 const REPO = "/Users/tester/jarvis";
@@ -101,5 +101,79 @@ test("state dir at ~/.jarhead (production): every verdict and reason is what it 
     assert.equal(secretPathReason(`${other}/env`), undefined, "an env file in a folder that is not the state dir is not this table's");
     assert.equal(path(join(other, "env"), "read").verdict, "run");
     assert.equal(sh(`cat ${other}/env`).verdict, "run");
+  });
+});
+
+/**
+ * W3-4 review fix: the shell's trash and config rules named only `.jarhead`. With the state dir elsewhere, `rm -rf
+ * <state>/trash` ran (in /tmp) or asked (under the home), so a yes could delete the trash; `>` over its ledger or
+ * settings.json ran; and `rm -rf <state>/ledger` in /tmp ran as housekeeping. Each verdict is now ~/.jarhead's.
+ */
+test("state dir, the shell: its trash is move-only, `>` over its ledger or settings.json asks, and nothing in it is housekeeping, as at ~/.jarhead", () => {
+  const verdicts = (d: string): string[] =>
+    [
+      `rm -rf ${d}/trash`,
+      `rm ${d}/trash/2026-10-01/x`,
+      `mv ${d}/trash/x /tmp/`,
+      `echo x > ${d}/trash/x`,
+      `cp /tmp/a ${d}/trash/`,
+      `rm -rf ${d}/{ledger,trash}`,
+      `echo x > ${d}/ledger/2026-10-05.ndjson`,
+      `echo x > ${d}/settings.json`,
+      `rm -rf ${d}/ledger`,
+      `ls ${d}/trash`,
+      `cat ${d}/trash/manifest.jsonl`,
+      `echo x >> ${d}/ledger/2026-10-05.ndjson`,
+      `echo hi > ${d}/notes.md`,
+    ].map((c) => sh(c).verdict);
+  const atJarhead = withStateDir(undefined, () => verdicts("~/.jarhead"));
+  assert.deepEqual(atJarhead, ["refuse", "refuse", "refuse", "refuse", "refuse", "refuse", "confirm", "confirm", "confirm", "run", "run", "run", "run"]);
+  const state = mkdtempSync(join(tmpdir(), "jh-w34-state-"));
+  withStateDir(state, () => {
+    assert.deepEqual(verdicts(state), atJarhead, `state dir ${state}`);
+    if (state.startsWith("/var/")) assert.deepEqual(verdicts(`/private${state}`), atJarhead, "macOS's other spelling");
+    assert.match(sh(`rm -rf ${state}/trash`).reason, /the trash \(~\/\.jarhead\/trash\) is move-only/);
+    assert.equal(sh(`rm -rf ${state}/trash`, HOME).verdict, "refuse");
+    // A temp file beside the state dir is still housekeeping, and the self-edit worktrees inside it are still scratch.
+    assert.equal(sh(`rm -rf ${tmpdir()}/jh-w34-other-scratch`).verdict, "run");
+    assert.equal(classifyAction({ kind: "run_shell", text: `rm -rf ${state}/worktrees/w1`, home: HOME, cwd: HOME, repoRoot: REPO, scratchRoots: [join(state, "worktrees", "w1")] }).verdict, "confirm", "as at ~/.jarhead: the worktree folder itself is not inside its own root");
+    assert.equal(classifyAction({ kind: "run_shell", text: `rm -rf ${state}/worktrees/w1/build`, home: HOME, cwd: HOME, repoRoot: REPO, scratchRoots: [join(state, "worktrees", "w1")] }).verdict, "run");
+    // Commands run from inside it reach env by its bare name, as from ~/.jarhead.
+    assert.match(shellCwdReason(state, HOME) ?? "", /reach its secrets by their bare names/);
+    assert.equal(shellCwdReason(join(state, "worktrees"), HOME), undefined);
+  });
+  withStateDir("~/state-elsewhere", () => assert.deepEqual(verdicts("~/state-elsewhere"), atJarhead, "a state dir under the home, spelled with ~"));
+});
+
+/**
+ * W3-4 review fix: classifyPath trusted any JARHEAD_STATE_DIR as a place to write without asking. Set to /, the home,
+ * a folder above it or ~/Documents, it opened what holds Kevin's files. Now the state dir (and any writable root a
+ * caller passes, the runner's state dir among them) is trusted only when it is a folder of Jarhead's own.
+ */
+test("state dir set to /, ~, /Users or ~/Documents: no write outside Jarhead's places runs; its trash, ledger and settings keep their rules", () => {
+  const write = (p: string, extra: { writableRoots?: string[] } = {}) => classifyPath({ path: p, access: "write", home: HOME, repoRoot: REPO, ...extra }).verdict;
+  for (const dir of ["/", "~", "/Users", HOME, "~/Documents", "~/documents", "/Applications", "/Library", REPO, "/Users/tester/.."]) {
+    withStateDir(dir, () => {
+      for (const p of ["/Applications/x", `${HOME}/Documents/a.txt`, `${HOME}/notes.txt`, `${REPO}/x.ts`]) assert.equal(write(p), "confirm", `state dir ${dir}: write ${p}`);
+      assert.equal(write("/tmp/x"), "run", `state dir ${dir}: /tmp stays Jarhead's`);
+      assert.equal(write(`${HOME}/.jarhead/notes.md`), "run", `state dir ${dir}: ~/.jarhead stays Jarhead's`);
+    });
+  }
+  withStateDir("~", () => {
+    assert.equal(path(`${HOME}/trash/2026-10-01`, "write").verdict, "refuse", "its trash is still move-only");
+    assert.equal(path(`${HOME}/ledger/x.ndjson`, "write").verdict, "confirm");
+    assert.equal(path(`${HOME}/settings.json`, "write").verdict, "confirm");
+    assert.equal(path(`${HOME}/env`, "read").verdict, "refuse", "and its env file is still a secret");
+  });
+  // A dedicated folder anywhere sensible is Jarhead's.
+  for (const dir of ["~/jh-state", "/Users/tester/Library/Application Support/Jarhead2", "/opt/jarhead-state"]) {
+    withStateDir(dir, () => assert.equal(write(`${dir.replace(/^~/, HOME)}/notes.md`), "run", dir));
+  }
+  // The same rule for the roots a caller passes (the runner passes its own state dir and the self-edit worktrees).
+  withStateDir(undefined, () => {
+    for (const root of ["/", HOME, "/Users", `${HOME}/Documents`, REPO, "/System", "/usr"]) assert.equal(write(`${HOME}/Documents/a.txt`, { writableRoots: [root] }), "confirm", `writable root ${root}`);
+    const worktree = join(mkdtempSync(join(tmpdir(), "jh-w34-wt-")), "worktrees", "w1");
+    assert.equal(write(join(worktree, "src", "a.ts"), { writableRoots: [worktree] }), "run", "a self-edit worktree");
+    assert.equal(write(`${HOME}/jh-state/a.txt`, { writableRoots: [`${HOME}/jh-state`] }), "run");
   });
 });

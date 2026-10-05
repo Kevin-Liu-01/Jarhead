@@ -201,14 +201,15 @@ private func isFrontApp(_ app: String) -> Bool {
     return frontmostNow()?.name.lowercased() == app.lowercased()
 }
 
-/// `browser_js {app, script}` → `{result}`: the script's result as text. In the front browser a page script clicks,
-/// types and moves the focus under Kevin's hands, so it is held like a click while he is using them; behind another
-/// app it touches nothing of his and runs.
+/// `browser_js {app, script, readOnly?}` → `{result}`: the script's result as text. In the front browser a page
+/// script clicks, types and moves the focus under Kevin's hands, so it is held like a click while he is using them;
+/// behind another app it touches nothing of his and runs. `readOnly: true` (the client's probe, read and find, which
+/// only look) runs in the front browser too.
 func opBrowserJS(_ params: Params) throws -> JSONObject {
     let app = try params.requireString("app")
     let script = try params.requireString("script")
     let kind = try requireRunning(app)
-    if isFrontApp(app) { try guardActing(params) }
+    if try params.bool("readOnly") != true, isFrontApp(app) { try guardActing(params) }
     let start = DispatchTime.now()
     let result = try runScript(jsSource(kind, app: app), arguments: [script], app: app)
     return ["result": truncated(descriptorText(result), to: 60_000), "ms": elapsedMs(since: start)]

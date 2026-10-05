@@ -378,10 +378,22 @@ function stateDirOf(home: string): string {
   return resolve(dirname(envFilePath(process.env, home)));
 }
 
-/** What the state dir adds to SECRET_PATHS and SECRET_HOLDERS when it is not ~/.jarhead. */
+/**
+ * What the state dir adds to the static tables when it is not ~/.jarhead: SECRET_PATHS and SECRET_HOLDERS, and the
+ * shell's trash and config rules (TRASH_PATH, TRASH_BRACE, the redirect into the trash, CONFIG_TRUNCATE's ledger and
+ * settings.json), which name ~/.jarhead by its own spelling.
+ */
 interface StateDirTables {
   readonly secrets: ReadonlyArray<{ readonly re: RegExp; readonly what: string }>;
   readonly holders: ReadonlyArray<{ readonly re: RegExp; readonly dir: string; readonly what: string }>;
+  /** Its trash named on a command line: the path, or a brace that expands to it. */
+  readonly trash: readonly RegExp[];
+  /** A redirect into its trash. */
+  readonly trashRedirect: RegExp | undefined;
+  /** `>` over its ledger or its settings.json. */
+  readonly configTruncate: RegExp | undefined;
+  /** The folder itself (canonical): nothing in it is disposable, as nothing in ~/.jarhead is, though it sit in /tmp. */
+  readonly dir: string | undefined;
 }
 
 let stateDirCache: { readonly key: string; readonly tables: StateDirTables } | undefined;
@@ -389,20 +401,23 @@ let stateDirCache: { readonly key: string; readonly tables: StateDirTables } | u
 /**
  * A state dir elsewhere than ~/.jarhead (JARHEAD_STATE_DIR: the test preload's temp dir, a second daemon's) holds the
  * same secrets: its env file and the wake gate's passphrase join SECRET_PATHS, and the folder joins SECRET_HOLDERS.
- * Each is matched by every spelling the gates see: the absolute path, macOS's /private twin, and ~ under the home.
- * At ~/.jarhead the static entries already say all of it, so production adds nothing.
+ * Its trash, ledger and settings.json are guarded on a command line as ~/.jarhead's are. Each is matched by every
+ * spelling the gates see: the absolute path, macOS's /private twin, and ~ under the home. At ~/.jarhead the static
+ * entries already say all of it, so production adds nothing.
  */
 function stateDirTables(stateDir: string, home: string): StateDirTables {
   const dir = canon(resolve(stateDir));
   const key = `${dir}\0${home}`;
   if (stateDirCache?.key === key) return stateDirCache.tables;
-  let tables: StateDirTables = { secrets: [], holders: [] };
+  let tables: StateDirTables = { secrets: [], holders: [], trash: [], trashRedirect: undefined, configTruncate: undefined, dir: undefined };
   if (dir !== "/" && dir.toLowerCase() !== canon(resolve(home, ".jarhead")).toLowerCase()) {
     const h = canon(resolve(home));
     const under = isInside(dir, h);
     const shown = under ? `~${dir.slice(h.length)}` : dir;
     const spellings = [dir, ...(/^\/(var|tmp|etc)(\/|$)/.test(dir) ? [`/private${dir}`] : []), ...(under ? [shown] : [])];
     const alt = spellings.map(escapeRe).join("|");
+    // `<dir>/`, `<dir>/./`, `<dir>//`: what TRASH_PATH allows between .jarhead and trash.
+    const into = String.raw`(${alt})(\/\.)*\/+`;
     tables = {
       secrets: [
         { re: new RegExp(String.raw`(${alt})/env(\.[\w.-]+)?${END}`, "i"), what: `${shown}/env` },
@@ -410,10 +425,32 @@ function stateDirTables(stateDir: string, home: string): StateDirTables {
       ],
       // The folder itself, `/.`, `/*`, `/**`, or a wildcard anywhere inside it (`/e?v` reaches env without naming it).
       holders: [{ re: new RegExp(String.raw`(^|[\s"'=])(${alt})(\/?(\.|\*\*?)?|\/[^\s"';|&)]*[*?[][^\s"';|&)]*)(?=$|[\s"';|&)])`, "i"), dir: shown, what: `${shown}, which holds env` }],
+      trash: [new RegExp(String.raw`(^|[\s"'=])${into}trash(\/|(?=$|[\s"';|&),}]))`, "i"), new RegExp(String.raw`(^|[\s"'=])${into}\{[^}]*\btrash\b[^}]*\}`, "i")],
+      trashRedirect: new RegExp(String.raw`(^|[^>&\d])>{1,2}(?!&)\s*["']?${into}trash`, "i"),
+      configTruncate: new RegExp(String.raw`(^|[^>])>\|?\s*["']?(${alt})\/(settings\.json|ledger\/[^\s"']+)(?=$|[\s"';|&)])`, "i"),
+      dir,
     };
   }
   stateDirCache = { key, tables };
   return tables;
+}
+
+/** The state dir's tables for this home (JARHEAD_STATE_DIR read live, ~ against `home`). */
+function stateTables(home: string): StateDirTables {
+  return stateDirTables(stateDirOf(home), home);
+}
+
+/**
+ * Whether `dir` can be one of the places Jarhead writes without asking: a folder of its own. JARHEAD_STATE_DIR and a
+ * caller's writable roots are wiring, not Kevin's words, so a mistyped one never opens what holds his files: not the
+ * disk's root or a folder right under it, not a system folder, not the home or a folder above it, not one of the
+ * home's standard folders (Documents, Desktop and the rest), and not the running checkout or a folder above it.
+ */
+function ownFolder(dir: string, home: string, repo: string): boolean {
+  const d = canon(resolve(dir));
+  if (d === "/" || dirname(d) === "/" || SYSTEM_PATH.test(d)) return false;
+  if (isUnder(canon(resolve(home)), d) || isUnder(canon(repo), d)) return false;
+  return !(canon(dirname(d)).toLowerCase() === canon(resolve(home)).toLowerCase() && HOME_TOP_LEVEL_FOLDED.has(basename(d).toLowerCase()));
 }
 
 /** Which secret store a path or command names, if any. `home` and `stateDir` are this process's unless a caller knows better. */
@@ -539,7 +576,11 @@ export interface PathContext {
  * The running checkout and anything that runs at login ask whatever he named.
  * A state dir elsewhere (JARHEAD_STATE_DIR) is one of Jarhead's places with the
  * same rules; ~/.jarhead keeps them too, so the real install's secrets and
- * ledger never depend on which state dir a daemon was started with.
+ * ledger never depend on which state dir a daemon was started with. It, and
+ * any writable root a caller passes, is a place to write without asking only
+ * when it is a folder of Jarhead's own (`ownFolder`): set to /, the home or
+ * ~/Documents, its trash, ledger and settings.json keep their rules and the
+ * rest of it asks as before.
  */
 export function classifyPath(ctx: PathContext): Decision {
   const home = ctx.home ?? homedir();
@@ -566,8 +607,8 @@ export function classifyPath(ctx: PathContext): Decision {
     const auto = autostartReason(t, home, who);
     if (auto) return confirm(`${auto}; ask first`);
   }
-  const writable = [...tempRoots(home), ...ownDirs, ...(ctx.writableRoots ?? []).map((r) => expandPath(r, home))];
   const repo = expandPath(ctx.repoRoot ?? REPO_ROOT, home);
+  const writable = [...tempRoots(home), resolve(home, ".jarhead"), ...[stateDir, ...(ctx.writableRoots ?? []).map((r) => expandPath(r, home))].filter((r) => ownFolder(r, home, repo))];
   if (targets.some((t) => isUnder(t, repo)) && !targets.every((t) => writable.some((r) => isUnder(t, r)))) {
     return confirm(`${p} is inside the running Jarhead checkout; self_edit is the way to change Jarhead, so editing it in place needs a yes`);
   }
@@ -1004,14 +1045,22 @@ function neverByStatement(norm: string, cwd: string | undefined): string | undef
 function pathIsDisposable(raw: string, home: string, scratch: readonly string[]): boolean {
   const p = expandPath(raw.replace(/^["']|["']$/g, ""), home);
   if (p === "/dev/null") return true;
-  return [...tempRoots(home), ...scratch].some((r) => isInside(p, expandPath(r, home)));
+  if (scratch.some((r) => isInside(p, expandPath(r, home)))) return true;
+  return tempRoots(home).some((r) => isInside(p, r)) && !inStateDir(p, home);
+}
+
+/** Inside the state dir when it is not ~/.jarhead (a test's or a second daemon's, often under /tmp): its ledger and trash are no scratch. */
+function inStateDir(p: string, home: string): boolean {
+  const dir = stateTables(home).dir;
+  return dir !== undefined && isUnder(p, dir);
 }
 
 /** A destination in a temp root (the root itself included) or the bit bucket: what lands there is gone for practical purposes. */
 function destIsTemp(raw: string, home: string, scratch: readonly string[]): boolean {
   const p = expandPath(raw.replace(/^["']|["']$/g, ""), home);
   if (p === "/dev/null") return true;
-  return [...tempRoots(home), ...scratch].some((r) => isUnder(p, expandPath(r, home)));
+  if (scratch.some((r) => isUnder(p, expandPath(r, home)))) return true;
+  return tempRoots(home).some((r) => isUnder(p, r)) && !inStateDir(p, home);
 }
 
 /** `rm` of anything outside the temp dirs and Jarhead's scratch, whatever wrapper it hides behind. */
@@ -1031,6 +1080,8 @@ function rmReason(text: string, home: string, scratch: readonly string[]): strin
 }
 
 const HOME_TOP_LEVEL = new Set(["Documents", "Desktop", "Downloads", "Library", "Pictures", "Movies", "Music", "Applications", "Public", "Developer", "Sites"]);
+/** The same names case-folded (APFS folds them): ~/documents IS ~/Documents. */
+const HOME_TOP_LEVEL_FOLDED: ReadonlySet<string> = new Set([...HOME_TOP_LEVEL].map((n) => n.toLowerCase()));
 
 /** `mv` of a top-level home folder, or of anything real into a temp folder (a deletion by another name). */
 function mvReason(text: string, home: string, scratch: readonly string[]): string | undefined {
@@ -1266,13 +1317,13 @@ function homeSweepReason(norm: string): { readonly refuse?: string; readonly con
 }
 
 /** Why a command reaches a secret store without naming it, if it does. Text is normalised (home → ~). */
-function secretSweepReason(norm: string): string | undefined {
+function secretSweepReason(norm: string, home: string = homedir()): string | undefined {
   for (const stmt of statements(norm)) {
     const s = stripWrappers(stmt);
     const cmd = commandOf(stmt);
     if (/~\/\.(jarhead|codex|claude)\/[^\s"']*[*?[]/i.test(stmt)) return "a wildcard inside that folder can expand to its secret file";
     if (/(^|[\s"'=])~\/\.[\w-]*[*?[][^\s"']*/.test(stmt)) return "a wildcard over the hidden folders in the home can reach a secret store";
-    for (const holder of secretHolders()) {
+    for (const holder of secretHolders(home)) {
       if (!holder.re.test(stmt)) continue;
       if (/^(cd|pushd)$/.test(cmd) || /\s(-C|--directory(=|\s))\s*["']?~\//.test(s) || /\s-C\s*["']?~\//.test(stmt)) return `commands run from ${holder.what.split(",")[0]} reach its secrets by their bare names; run them from another folder with full paths`;
       if (LOOK_ONLY.has(cmd)) continue;
@@ -1297,8 +1348,9 @@ const TRASH_INTERPRETERS = /^(python[\d.]*|node|bun|deno|perl|ruby|php|osascript
 /** Copy-like commands: the destination decides (into the trash is a write); `mv` moves the trash or into it either way. */
 const TRASH_COPIERS = /^(cp|rsync|ln|install|ditto|scp)$/;
 
-function namesTrash(s: string): boolean {
-  return TRASH_PATH.test(s) || TRASH_BRACE.test(s);
+/** `extra` is the state dir's trash spellings when it is not ~/.jarhead (stateDirTables). */
+function namesTrash(s: string, extra: readonly RegExp[] = []): boolean {
+  return TRASH_PATH.test(s) || TRASH_BRACE.test(s) || extra.some((re) => re.test(s));
 }
 
 /**
@@ -1311,21 +1363,23 @@ function namesTrash(s: string): boolean {
  * `install` are refused when their destination is the trash, `mv` / `dd` / `tee` /
  * `sed -i` whenever the statement names it, and a redirect into it always.
  */
-function trashReason(norm: string): string | undefined {
-  if (!namesTrash(norm)) return undefined;
+function trashReason(norm: string, home: string = homedir()): string | undefined {
+  const own = stateTables(home);
+  const trashNamed = (s: string): boolean => namesTrash(s, own.trash);
+  if (!trashNamed(norm)) return undefined;
   let inTrash = false; // `cd ~/.jarhead/trash`, or `T=~/.jarhead/trash`: what follows runs there or reaches it by the variable
   for (const st of splitStatements(norm)) {
     const stmt = st.text;
     const s = stripWrappers(stmt);
     const cmd = commandOf(stmt);
-    const named = namesTrash(stmt) || inTrash;
+    const named = trashNamed(stmt) || inTrash;
     if (/^(cd|pushd)$/.test(cmd)) {
-      inTrash = namesTrash(stmt);
+      inTrash = trashNamed(stmt);
       continue;
     }
     if (/^(export\s+|declare\s+(-\w+\s+)*|local\s+|typeset\s+)?[A-Za-z_]\w*=/.test(stmt) && s === "") {
       // A bare assignment: `T=~/.jarhead/trash` puts the trash in every `$T` that follows.
-      if (namesTrash(stmt)) inTrash = true;
+      if (trashNamed(stmt)) inTrash = true;
       continue;
     }
     if (TRASH_DELETERS.test(cmd) || TRASH_INTERPRETERS.test(cmd)) return TRASH_REASON;
@@ -1337,9 +1391,9 @@ function trashReason(norm: string): string | undefined {
     if (TRASH_COPIERS.test(cmd)) {
       const args = s.split(/\s+/).filter((a) => a && !a.startsWith("-"));
       const dest = args[args.length - 1] ?? "";
-      if (inTrash || namesTrash(` ${dest}`) || (cmd === "rsync" && /\s--delete/.test(s)) || (cmd === "ln" && namesTrash(s))) return TRASH_REASON;
+      if (inTrash || trashNamed(` ${dest}`) || (cmd === "rsync" && /\s--delete/.test(s)) || (cmd === "ln" && trashNamed(s))) return TRASH_REASON;
     }
-    if (/(^|[^>&\d])>{1,2}(?!&)/.test(stmt) && (inTrash || /(^|[^>&\d])>{1,2}(?!&)\s*["']?[^\s"']*\.jarhead(\/\.)*\/+trash/i.test(stmt))) return TRASH_REASON;
+    if (/(^|[^>&\d])>{1,2}(?!&)/.test(stmt) && (inTrash || /(^|[^>&\d])>{1,2}(?!&)\s*["']?[^\s"']*\.jarhead(\/\.)*\/+trash/i.test(stmt) || own.trashRedirect?.test(stmt) === true)) return TRASH_REASON;
     if (inTrash && cmd !== "" && !LOOK_ONLY.has(cmd) && !TRASH_READERS.test(cmd)) return TRASH_REASON;
   }
   return undefined;
@@ -1373,15 +1427,15 @@ export function shellNeverReason(text: string, home: string = homedir(), userNam
     const views = spelledNorm === norm ? [norm] : [norm, spelledNorm];
     for (const view of views) {
       const cleaned = statements(view).map(withoutIdentityFlags).join(" ; ");
-      const secret = secretPathReason(cleaned);
+      const secret = secretPathReason(cleaned, home);
       if (secret) return `that command touches ${secret}, which holds secrets`;
     }
     const env = secretEnvReason(expansion) ?? secretEnvReason(spelled);
     if (env) return env;
     for (const view of views) {
-      const sweep = secretSweepReason(view);
+      const sweep = secretSweepReason(view, home);
       if (sweep) return sweep;
-      const trash = trashReason(view);
+      const trash = trashReason(view, home);
       if (trash) return withName(trash, who);
       const home_ = homeSweepReason(view);
       if (home_.refuse) return home_.refuse;
@@ -1400,10 +1454,11 @@ export function shellNeverReason(text: string, home: string = homedir(), userNam
 export function shellCwdReason(cwd: string, home: string = homedir(), realCwd?: string): string | undefined {
   for (const c of realCwd && realCwd !== cwd ? [cwd, realCwd] : [cwd]) {
     const p = canon(expandPath(c, home));
-    const secret = secretPathReason(p);
+    const secret = secretPathReason(p, home);
     if (secret) return `the working directory is inside ${secret}, which holds secrets`;
     const rel = normalizeShell(p, home);
-    if (/^~\/\.(jarhead|codex|claude)\/?$/i.test(rel)) return `commands run from ${rel} reach its secrets by their bare names; run them from another folder with full paths`;
+    const own = stateTables(home).dir;
+    if (/^~\/\.(jarhead|codex|claude)\/?$/i.test(rel) || (own !== undefined && p.toLowerCase() === own.toLowerCase())) return `commands run from ${rel} reach its secrets by their bare names; run them from another folder with full paths`;
   }
   return undefined;
 }
@@ -1476,7 +1531,7 @@ export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "o
     const sweep = homeSweepReason(norm);
     if (sweep.confirm) return sweep.confirm;
     if (PERSISTENCE_WRITE.test(norm)) return "that changes what runs at login or in every shell";
-    if (CONFIG_TRUNCATE.test(norm)) return "that overwrites a config file";
+    if (CONFIG_TRUNCATE.test(norm) || stateTables(home).configTruncate?.test(norm) === true) return "that overwrites a config file";
     const repoWrite = repoWriteReason(norm, normalizeShell(repo, home), cwdInRepo);
     if (repoWrite) return repoWrite;
     if (SYSTEM_WRITE.test(expansion)) return "that writes into a system directory";
@@ -1568,11 +1623,11 @@ export function classifyAppleScript(ctx: AppleScriptContext): Decision {
   const folded = foldAppleScriptLiterals(s);
   const norm = normalizeShell(folded, home);
   // HFS paths spell the separator as a colon ("Macintosh HD:Users:kevin:.aws:credentials").
-  const secret = secretPathReason(norm) ?? secretPathReason(norm.replace(/:/g, "/"));
+  const secret = secretPathReason(norm, home) ?? secretPathReason(norm.replace(/:/g, "/"), home);
   if (secret) return refuse(`that script touches ${secret}, which holds secrets; it is on the never list`);
   const env = secretEnvReason(folded);
   if (env) return refuse(`${env}; it is on the never list`);
-  const sweep = secretSweepReason(norm);
+  const sweep = secretSweepReason(norm, home);
   if (sweep) return refuse(`${sweep}; it is on the never list`);
   const targets: string[] = [];
   for (const m of s.matchAll(TELL_APP)) {

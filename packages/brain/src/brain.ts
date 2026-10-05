@@ -99,8 +99,11 @@ export interface Brain {
 /**
  * The version of the standing orders below. Bump it when the words change; every
  * brain logs it at start so a transcript can be matched to the rules it ran under.
+ * v3.5 (W3-4): the orders are fitted to the brain's tool table. The full table's text
+ * is v3.4's word for word but for this number; a smaller table (the local brain's)
+ * leaves out the paragraphs and clauses that name tools it lacks.
  */
-export const SYSTEM_PROMPT_VERSION = "3.4";
+export const SYSTEM_PROMPT_VERSION = "3.5";
 
 /**
  * The brain's standing orders, shared by every backend: a constitution in order

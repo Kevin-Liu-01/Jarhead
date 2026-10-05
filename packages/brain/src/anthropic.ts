@@ -36,6 +36,15 @@ export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5";
  */
 export const ANTHROPIC_PROBE_MS = 5000;
 
+/**
+ * The key check's budget when the engine's selection walks (`auto`, or an explicit `codex` walking on): the walk
+ * stops waiting at its own patience and lets this start go on in the background, so a valid key whose check takes
+ * 5 to 16 s still proves itself and takes over at the next quiet moment (F-AUTO-PROBE). The old 8 s x 2 attempts.
+ * For the engine to pass as `probeTimeoutMs` when its selection walks; an explicit pick keeps ANTHROPIC_PROBE_MS, the
+ * default, and a start the engine builds without it is capped at 5 s, walk or not.
+ */
+export const ANTHROPIC_WALK_PROBE_MS = 16_000;
+
 export interface AnthropicBrainOptions {
   readonly runner: ToolRunner;
   /** ANTHROPIC_API_KEY; without it the brain reports not ready. */
@@ -52,7 +61,7 @@ export interface AnthropicBrainOptions {
   /** Per request (default 3 min), never more than what is left of the wall clock. */
   readonly requestTimeoutMs?: number | undefined;
   readonly maxTokens?: number | undefined;
-  /** The whole key check, retries included (default ANTHROPIC_PROBE_MS). */
+  /** The whole key check, retries included (default ANTHROPIC_PROBE_MS; ANTHROPIC_WALK_PROBE_MS when the selection walks). */
   readonly probeTimeoutMs?: number | undefined;
   /** Extra probe attempts after a connection error or 5xx, inside probeTimeoutMs (default 1); the SDK never retries 401/403/404. */
   readonly probeRetries?: number | undefined;
