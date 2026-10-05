@@ -884,8 +884,12 @@ extension AppState {
             if ringing?.id == e.id, row.state != "fired" { ringing = nil }
             if row.state != "armed" { timerRemaining[e.id] = nil }
         case "fired":
+            // SL-14: only a fire that put a ring up is a ring here. A fire that only acted (a routine that opened an
+            // app), a failed one, or one from a daemon before the field (`ring` nil) keeps the row's state and puts
+            // no line on the island; the snapshot that follows carries the row's next state.
             guard var row = automationAt(e.id) else { return }
-            row.state = "fired"
+            let rang = e.ring == true
+            if rang { row.state = "fired" }
             row.lastFiredAt = e.at
             row.fires += 1
             if let detail = e.detail { row.lastDetail = detail }
@@ -893,7 +897,7 @@ extension AppState {
             upsertAutomation(row)
             timerRemaining[e.id] = nil
             let line = e.line ?? ""
-            if !line.isEmpty {
+            if rang, !line.isEmpty {
                 let others = automations.filter { $0.state == "fired" && $0.id != e.id }.count
                 ringing = RingLine(id: row.id, kind: row.kind.rawValue, name: row.name, line: line, calm: nil, at: e.at, lateMs: e.lateMs, presses: e.presses ?? [], more: others)
             }
@@ -1440,8 +1444,9 @@ extension Snapshot {
 /// (the console preview may call it; a scratch main with Model/*.swift is enough):
 /// 20 000 append deltas keep 400 messages in under 200 ms; prepend deduplicates and keeps
 /// order; `isLive` is false when disconnected or the agent ended; a daemon drop seals every
-/// utterance; SettingsPatch carries language / accent / memory. One line per check, "ok" or
-/// "FAIL" first; the timing line carries the measured milliseconds.
+/// utterance; SettingsPatch carries language / accent / memory; a `fired` event rings only with
+/// `ring: true` (SL-14). One line per check, "ok" or "FAIL" first; the timing line carries the
+/// measured milliseconds.
 @MainActor
 public enum AppStateBench {
     public static func run() -> [String] {
@@ -1637,6 +1642,37 @@ public enum AppStateBench {
         sent = []
         kevinTurn("say go when you want"); kevinTurn("say go when you want"); kevinTurn("say go when you want")
         check(sent.isEmpty, "with the guard off the fuse counts nothing")
+
+        // 9. W3-2 SL-14: only a fire that rang is a ring. The engine says `ring` on every `fired` event; a routine that
+        // opened Notes (ring false), a daemon before the field (ring nil) and a failed fire put nothing on the island.
+        func row(_ id: String, _ then: String) -> Automation? {
+            let json = #"{"id":"\#(id)","name":"\#(id)","when":{"kind":"at","at":1},"then":[\#(then)],"clauses":{},"echo":"x","state":"armed","nextAt":2,"fires":0,"missed":0,"createdAt":0,"updatedAt":0,"createdBy":{"by":"brain","request":"x"}}"#
+            return try? JSONDecoder().decode(Automation.self, from: Data(json.utf8))
+        }
+        func fired(_ id: String, seq: Int, ok: Bool = true, ring: Bool?) -> AutomationEvent {
+            AutomationEvent(seq: seq, at: 1_000, id: id, kind: "fired", automation: nil, actions: ["open"], line: "\(id) · opened Notes", ok: ok, detail: nil, lateMs: nil,
+                            presses: [AutomationPress(kind: "snooze", minutes: 10, target: nil), AutomationPress(kind: "done", minutes: nil, target: nil)],
+                            state: nil, nextAt: nil, dueAt: nil, skipped: nil, why: nil, remainingMs: nil, ring: ring)
+        }
+        let rings = AppState()
+        if let notes = row("notes", #"{"kind":"open","app":"Notes"}"#), let wake = row("wake", #"{"kind":"chime","line":"wake up"}"#),
+           let legacy = row("legacy", #"{"kind":"open","app":"Notes"}"#), let red = row("red", #"{"kind":"open","app":"Notes"}"#) {
+            for r in [notes, wake, legacy, red] { rings.upsertAutomation(r) }
+            rings.applyAutomationEvent(fired("notes", seq: 1, ring: false))
+            check(rings.ringing == nil && rings.automationAt("notes")?.state == "armed" && rings.automationAt("notes")?.fires == 1,
+                  "SL-14: ring:false puts no ring up and keeps the row's state (\(rings.automationAt("notes")?.state ?? "-"))")
+            rings.applyAutomationEvent(fired("legacy", seq: 2, ring: nil))
+            check(rings.ringing == nil && rings.automationAt("legacy")?.state == "armed", "SL-14: a fired event with no ring (an older daemon) is not a ring; the snapshot brings one")
+            rings.applyAutomationEvent(fired("red", seq: 3, ok: false, ring: false))
+            check(rings.ringing == nil && rings.automationAt("red")?.state == "armed", "SL-14: a failed fire is not a ring")
+            rings.applyAutomationEvent(fired("wake", seq: 4, ring: true))
+            check(rings.ringing?.id == "wake" && rings.automationAt("wake")?.state == "fired" && rings.ringing?.presses.count == 2, "SL-14: ring:true rings, with its presses")
+            rings.applyAutomationEvent(fired("notes", seq: 5, ring: false))
+            check(rings.ringing?.id == "wake", "SL-14: a later fire that only acted leaves the ring that is up")
+        } else {
+            check(false, "SL-14: the bench's automation rows decode")
+        }
+        check(MissedWhy(rawValue: "zone-moved") == .zoneMoved && MissedWhy.allCases.count == 5, "MissedWhy mirrors the protocol's five values, zone-moved included")
 
         out.append(String(format: "timing: %d append deltas in %.1f ms → %d kept", deltas, ms, held?.messages.count ?? -1))
         return out

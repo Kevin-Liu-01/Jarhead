@@ -271,6 +271,10 @@ export class Automations implements AutomationSource {
   private zoneLink: string | undefined;
   private zone: string | undefined;
   private zoneCheckedAt = 0;
+  /** Rows a zone move put behind now (still ahead in the old zone), for the resync that settles them: missed `zone-moved`. */
+  private readonly zoneBehind = new Set<string>();
+  /** The automation.failed problem each row holds (SL-15): one per row, until its next ok fire. */
+  private readonly failedProblems = new Map<string, string>();
   /** Signals inside a row's cooldown since its last fire. */
   private readonly cooled = new Map<string, number>();
   /** Rows whose fire is in flight (a signal storm queues nothing behind it; a folder row's landed files wait in fileQueue). */
@@ -589,10 +593,12 @@ export class Automations implements AutomationSource {
    * Los Angeles), so a skip holds, an occurrence already rung never rings twice, and one a move puts behind now stays due
    * for the missed table (Run now). Re-pinned: a one-shot's `at`; the `nextAt` of an armed or ringing clock row (an
    * interval keeps its cadence) and of any deferred row (quiet hours are a wall clock). A timer, a snooze and a watcher
-   * keep their instants.
+   * keep their instants. What the move put behind now (still ahead in the old zone) is missed `zone-moved`: settled
+   * here, or, when a resync follows (`settle` false), marked for it. A row the gap had passed already keeps the gap's why.
    */
   private moveZone(from: string, now: number, settle: boolean): void {
     const moved = new Set<string>();
+    const behind: string[] = [];
     for (const a of this.table.all()) {
       if (a.state === "done" || a.state === "failed" || a.state === "trashed" || a.state === "firing" || a.when.kind === "on") continue;
       const wall = a.when.kind === "at" || (a.when.kind === "every" && a.when.every.kind !== "interval");
@@ -604,12 +610,17 @@ export class Automations implements AutomationSource {
       const when: AutomationWhen = a.when.kind === "at" && at !== undefined ? { ...a.when, at } : a.when;
       this.write(mut(a, { when, nextAt, updatedAt: now }), "engine", undefined, false);
       moved.add(a.id);
+      if (a.nextAt !== undefined && a.nextAt > now && nextAt !== undefined && nextAt <= now) behind.push(a.id);
     }
     log.info(`time zone ${from} → ${this.zone}: ${moved.size} row${moved.size === 1 ? "" : "s"} moved to the new wall clock`);
     if (moved.size === 0) return;
+    const enabled = this.opts.settings().automations.enabled;
     // Awake, with no resync to come: inside its grace the occurrence rings late; past it, a missed row with Run now.
-    if (settle && this.loaded && this.opts.settings().automations.enabled) {
-      for (const a of this.table.due(now)) if (moved.has(a.id) && !this.firing.has(a.id)) this.settleDue(a, now, "mac-slept", "the time zone moved");
+    if (settle && this.loaded && enabled) {
+      for (const a of this.table.due(now)) if (moved.has(a.id) && !this.firing.has(a.id)) this.settleDue(a, now, "zone-moved");
+    } else if (!settle && enabled) {
+      // The resync that follows (the load, a wake, the app's clock.changed) settles these with the rest, in their own words.
+      for (const id of behind) this.zoneBehind.add(id);
     }
     this.opts.onChange();
   }
@@ -712,9 +723,12 @@ export class Automations implements AutomationSource {
    * One fire: `firing` → the executor → the row's next state: a ring waits for Done; an
    * acting-only repeater re-arms; a one-shot is done; a failure leaves a one-shot `failed`
    * and re-arms a repeater with the reason. Every fire is an `automation.fired` row and
-   * one `fired` event with its presses.
+   * one `fired` event with its presses and `ring`: true only when the fire put a ring up
+   * (SL-14), so a fire that only acted never shows as one. A fire nobody pressed that failed
+   * is an `automation.failed` problem until the row's next ok fire (SL-15); `attended` is
+   * Kevin's own Run now, whose toast says how it went.
    */
-  private async fire(row: Automation, now: number, lateMs: number, o: { readonly dueAt: number; readonly quiet: boolean; readonly file?: string | undefined; readonly what?: string | undefined; readonly muted?: boolean | undefined }): Promise<void> {
+  private async fire(row: Automation, now: number, lateMs: number, o: { readonly dueAt: number; readonly quiet: boolean; readonly file?: string | undefined; readonly what?: string | undefined; readonly muted?: boolean | undefined; readonly attended?: boolean | undefined }): Promise<void> {
     if (this.firing.has(row.id)) return;
     this.firing.add(row.id);
     this.releaseHold(row.id);
@@ -758,13 +772,17 @@ export class Automations implements AutomationSource {
     });
     const base: Automation = mut(current, { fires: current.fires + 1, lastFiredAt: at, ...(detail ? { lastDetail: cut(detail, DETAIL_CHARS) } : { lastDetail: undefined }), snoozedUntil: undefined, updatedAt: at });
     const oneShotDone = row.clauses.once === true || row.when.kind === "at" || row.when.kind === "in";
+    // The island's word on the fire: a red one waits there until the row goes green; a green one ends it.
+    if (outcome.ok) this.clearFailed(row.id);
+    else if (!o.attended && current.state !== "trashed") this.raiseFailed(current, at, detail);
+    const rang = !moved && outcome.ok && outcome.ring;
     if (moved) {
       // The count and the detail are the fire's; the state is what Kevin set (trashed rows leave the heap, paused rows wait).
       this.write(mut(base, { state: current.state, nextAt: undefined }), "engine", undefined, false);
     } else if (!outcome.ok) {
       if (this.repeats(row) && !oneShotDone) this.write(this.rearmed(base, next, at), "engine", detail);
       else this.write(mut(base, { state: "failed", nextAt: undefined }), "engine", detail);
-    } else if (outcome.ring) {
+    } else if (rang) {
       this.rings.set(row.id, { id: row.id, kind: automationKind(row), name: row.name, line: outcome.line, ...(outcome.calm ? { calm: outcome.calm } : {}), at, ...(lateMs > 0 ? { lateMs } : {}), presses: outcome.presses });
       this.lastChimeAt.set(row.id, at);
       this.write(mut(base, { state: "fired", nextAt: next }), "engine", undefined, false);
@@ -773,9 +791,36 @@ export class Automations implements AutomationSource {
     } else {
       this.write(mut(base, { state: "done", nextAt: undefined }), "engine", undefined, false);
     }
-    this.table.push(row.id, { kind: "fired", actions: outcome.actions, line: cut(outcome.line, EVENT_LINE_CHARS), ok: outcome.ok, ...(detail ? { detail: cut(detail, EVENT_DETAIL_CHARS) } : {}), ...(lateMs > 0 ? { lateMs } : {}), presses: outcome.presses });
+    this.table.push(row.id, { kind: "fired", actions: outcome.actions, line: cut(outcome.line, EVENT_LINE_CHARS), ok: outcome.ok, ...(detail ? { detail: cut(detail, EVENT_DETAIL_CHARS) } : {}), ...(lateMs > 0 ? { lateMs } : {}), presses: outcome.presses, ring: rang });
     this.opts.onChange();
     this.drainFiles(row.id);
+  }
+
+  /**
+   * SL-15: an unattended fire failed, so the island says so until Kevin is back: "backup failed 23:00 · recipe backup
+   * exit 1 · disk full". One problem per row; a newer failure replaces it. Run now retries it; when a retry would fail the
+   * same way (an action's While-asleep chip is off, its recipe is in the Trash or gone, the shell gate wants a yes or
+   * refuses), the button opens the Console instead.
+   */
+  private raiseFailed(a: Automation, at: number, detail: string | undefined): void {
+    const text = `${a.name} failed ${clockOf(at)}${detail ? ` · ${detail}` : ""}`;
+    if (this.failedProblems.get(a.id) === text) return;
+    this.clearFailed(a.id);
+    this.failedProblems.set(a.id, text);
+    const automations = this.opts.settings().automations;
+    const needsChange =
+      a.then.some((x) => !automations.unattended.includes(x.kind) || (x.kind === "run-recipe" && !recipeNamed(automations.recipes, x.recipe))) ||
+      // The executor's words for the shell gate's verdict at fire (executor.ts recipe()).
+      /would need a yes|refused:/.test(detail ?? "");
+    this.opts.problem("automation.failed", text, needsChange ? { label: "Open Console", command: { type: "open-console" } } : { label: "Run now", command: { type: "automation.run", id: a.id } });
+  }
+
+  /** The row's automation.failed problem is over: an ok fire, Kevin's Run now, the row moved to the Trash. */
+  private clearFailed(id: string): void {
+    const text = this.failedProblems.get(id);
+    if (text === undefined) return;
+    this.failedProblems.delete(id);
+    this.opts.clearProblems?.("automation.failed", (t) => t === text);
   }
 
   /** A repeater armed again after a fire: at `next` (clocks) or waiting for its signal (watchers); past `until` it is done. */
@@ -820,8 +865,9 @@ export class Automations implements AutomationSource {
     }
     for (const a of this.table.due(now)) {
       if (a.nextAt === undefined || this.firing.has(a.id)) continue;
-      this.settleDue(a, now, why);
+      this.settleDue(a, now, this.zoneBehind.has(a.id) ? "zone-moved" : why);
     }
+    this.zoneBehind.clear();
     const landed = this.watchers.rebaseline();
     for (const [id, n] of landed) {
       const a = this.table.get(id);
@@ -1120,6 +1166,7 @@ export class Automations implements AutomationSource {
         this.rings.delete(a.id);
         this.watchers.unwatch(a.id);
         this.fileQueue.delete(a.id);
+        this.clearFailed(a.id);
         this.write(mut(a, { state: "trashed", nextAt: undefined, snoozedUntil: undefined, updatedAt: now }), "kevin");
         return { ok: true, text: `${a.name} moved to the Trash · Restore brings it back` };
       }
@@ -1190,8 +1237,10 @@ export class Automations implements AutomationSource {
     if (this.firing.has(a.id)) return { ok: false, text: `${a.name} is running now` };
     const now = this.now();
     this.opts.clearProblems?.("automation.missed", (text) => text.includes(a.name));
+    // His press answers a red fire too; the toast below says how this one went.
+    this.clearFailed(a.id);
     this.rings.delete(a.id);
-    await this.fire(a, now, 0, { dueAt: now, quiet: false });
+    await this.fire(a, now, 0, { dueAt: now, quiet: false, attended: true });
     void by;
     const after = this.table.get(a.id);
     return { ok: after?.state !== "failed", text: `${a.name}: ${after?.lastDetail ?? (after?.state === "fired" ? "rang" : "ran")}` };
@@ -1424,6 +1473,8 @@ function whyWords(why: MissedWhy, sleptAt: number | undefined, downSince?: numbe
       return "quiet hours";
     case "budget":
       return "the brain budget was spent";
+    case "zone-moved":
+      return "the time zone moved";
     default:
       return why;
   }

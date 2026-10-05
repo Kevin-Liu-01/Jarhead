@@ -577,7 +577,12 @@ export type AutomationEvent = { readonly seq: number; readonly at: number; reado
   /** a running timer, ≤ 1/s, only while a client views the island/Console; never a snapshot */
   | { readonly kind: "tick"; readonly remainingMs: number }
 );
-export type MissedWhy = "daemon-down" | "mac-slept" | "quiet-hours" | "budget";
+/**
+ * Why a fire was missed or skipped: Jarhead was off (`daemon-down`, the master switch off included), the Mac slept
+ * through it, quiet hours held it, the brain budget was spent, or a time zone move put its wall clock behind now
+ * (`zone-moved`: the occurrence was still ahead in the old zone).
+ */
+export type MissedWhy = "daemon-down" | "mac-slept" | "quiet-hours" | "budget" | "zone-moved";
 
 /**
  * A signal the app observes on Kevin's behalf and forwards; the daemon has no NSWorkspace. Data,
