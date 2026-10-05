@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -11,7 +11,7 @@ import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { delegationPrompt } from "./anthropic.ts";
 import { progressLine } from "./responses.ts";
 import type { ToolRunner } from "./runner.ts";
-import { CODEX_MCP_SERVER, codexMcpConfigArgs, codexPromptTrimArgs, prepareCodexHome, toml, type CodexHome } from "./codex-config.ts";
+import { CODEX_MCP_SERVER, codexBuiltinsOffArgs, codexMcpConfigArgs, codexPromptTrimArgs, prepareCodexHome, toml, type CodexHome } from "./codex-config.ts";
 import { codexModel } from "./models.ts";
 import { CodexAppServer, type AppServerItem, type TurnResult, type UserInput } from "./codex-app-server.ts";
 
@@ -39,12 +39,14 @@ export { CODEX_MCP_SERVER } from "./codex-config.ts";
  * that arrives before it is up runs on exec, and a failed start is retried in
  * the background a minute later. `detail` says which transport is live and why.
  *
- * Either way Codex runs in its read-only sandbox with Kevin's own MCP servers off
- * (`--ignore-user-config` for exec; per-server `enabled=false` plus
- * `--disable apps` for the app-server, which has no such flag) — his config.toml
- * enables Codex's own computer-use, browser and REPL servers, and the plugin
- * runtime binds his ChatGPT connectors, which would let it act on the Mac and on
- * his accounts around Jarhead's policy — so the only way it can act is through
+ * Either way Codex runs in its read-only sandbox with its own shell and image
+ * reader switched off (`codexBuiltinsOffArgs`: the sandbox stops writes, not
+ * reads) and Kevin's own MCP servers off (`--ignore-user-config` for exec;
+ * per-server `enabled=false` plus `--disable apps` for the app-server, which has
+ * no such flag) — his config.toml enables Codex's own computer-use, browser and
+ * REPL servers, and the plugin runtime binds his ChatGPT connectors, which would
+ * let it act on the Mac and on his accounts around Jarhead's policy — so the only
+ * way it can read or act is through
  * the `jarhead` MCP server (`mcp-bridge.ts`), whose calls land in the same
  * ToolRunner as every other brain: policy, ledger, screenshot archive,
  * confirmation handshake included. A call to any other MCP server fails the turn
@@ -116,7 +118,7 @@ export function codexHomeDir(env: NodeJS.ProcessEnv = process.env): string {
 interface AuthFile {
   auth_mode?: string;
   OPENAI_API_KEY?: string | null;
-  tokens?: { access_token?: string; refresh_token?: string } | null;
+  tokens?: { access_token?: string | null; refresh_token?: string | null } | null;
 }
 
 function readAuth(codexHome: string): AuthFile | undefined {
@@ -127,10 +129,74 @@ function readAuth(codexHome: string): AuthFile | undefined {
   }
 }
 
-/** auth.json says yes/no; undefined when there is no readable file (then `codex login status` decides). Never returns a token. */
+/** A JWT's `exp` in ms, when the token is one (ChatGPT access tokens are); undefined otherwise. Reads the claim only, never a signature. */
+function jwtExpiryMs(token: string | null | undefined): number | undefined {
+  const payload = typeof token === "string" ? token.split(".")[1] : undefined;
+  if (!payload) return undefined;
+  try {
+    const exp = (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { exp?: unknown }).exp;
+    return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Logins the server refused at run time (a 401, "token has expired", "could not
+ * be refreshed"), by auth.json's real path, with the file's mtime and size then.
+ * auth.json alone cannot say a refresh token died, so the refusal is the proof;
+ * it holds until the file changes (Codex refreshed, or a new sign-in). This
+ * process only: a restarted daemon tries once more and learns it again.
+ */
+const refusedLogins = new Map<string, { mtimeMs: number; size: number }>();
+
+/** auth.json's real path (Jarhead's private home links it to the user's) and its stat, or undefined. */
+function authFileStat(codexHome: string): { path: string; mtimeMs: number; size: number } | undefined {
+  try {
+    const path = realpathSync(join(codexHome, "auth.json"));
+    const st = statSync(path);
+    return { path, mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return undefined;
+  }
+}
+
+/** A turn failed on the login itself: the next probe of this auth.json says signed out until the file changes. */
+export function markCodexLoginRefused(codexHome: string): void {
+  const st = authFileStat(codexHome);
+  if (st) refusedLogins.set(st.path, { mtimeMs: st.mtimeMs, size: st.size });
+}
+
+/**
+ * A Codex error that is about the login, not the task: the backend's 401 and Codex's
+ * own words for a refresh that failed ("…could not be refreshed… Please log out and
+ * sign in again"). Narrow on purpose: a match reads the login as signed out until
+ * auth.json changes, so a bare "401" from some tool must not count.
+ */
+export const CODEX_AUTH_FAILURE = /\b401 Unauthorized\b|authentication token has expired|could not be refreshed|sign(?:ing)? in again|not logged in/i;
+
+/**
+ * Why this login cannot work, or undefined while it may: the server refused this
+ * very auth.json at run time, or its access token has expired with no refresh
+ * token to renew it. An expired access token beside a refresh token is Codex's
+ * to renew (it does on the next request), so that is not "expired" here.
+ */
+export function codexLoginExpired(codexHome: string = codexHomeDir(), now = Date.now()): string | undefined {
+  const st = authFileStat(codexHome);
+  const refused = st ? refusedLogins.get(st.path) : undefined;
+  if (refused && st && refused.mtimeMs === st.mtimeMs && refused.size === st.size) return "its login was refused";
+  const auth = readAuth(codexHome);
+  const tokens = auth?.tokens;
+  if (!tokens || auth?.OPENAI_API_KEY || tokens.refresh_token) return undefined;
+  const exp = jwtExpiryMs(tokens.access_token);
+  return exp !== undefined && exp <= now ? "its login has expired" : undefined;
+}
+
+/** auth.json says yes/no (an expired login is a no); undefined when there is no readable file (then `codex login status` decides). Never returns a token. */
 export function codexSignedIn(codexHome: string = codexHomeDir()): boolean | undefined {
   const auth = readAuth(codexHome);
   if (!auth) return undefined;
+  if (codexLoginExpired(codexHome)) return false;
   return Boolean(auth.tokens?.access_token || auth.tokens?.refresh_token || auth.OPENAI_API_KEY);
 }
 
@@ -222,9 +288,12 @@ export async function probeCodex(opts: CodexProbeOptions = {}): Promise<CodexPro
   }
   const authMode = auth?.auth_mode;
   const where = `Codex ${version} via ${bin.label}`;
+  const expired = signedIn ? undefined : codexLoginExpired(codexHome);
   const detail = signedIn
     ? `${where}, signed in${authMode === "chatgpt" ? " with ChatGPT" : authMode ? ` (${authMode})` : ""}${desktopRunning ? ", desktop app running" : ""}`
-    : `${where} is not signed in; sign in to Codex in ChatGPT or run \`codex login\``;
+    : expired
+      ? `${where} is signed out: ${expired}. Sign in to Codex in ChatGPT or run \`codex login\``
+      : `${where} is not signed in; sign in to Codex in ChatGPT or run \`codex login\``;
   return { ...base, bin, version, signedIn, authMode, detail };
 }
 
@@ -267,7 +336,8 @@ export function codexExecArgs(o: CodexExecOptions): string[] {
     "--json",
     // Nothing on disk: these turns are Jarhead's, not entries in Kevin's Codex history.
     "--ephemeral",
-    // Codex's own shell may look but never touch; acting is the jarhead tools' job.
+    // Read-only stops writes, not reads of the secret stores: Codex's own shell and image
+    // reader are switched off below. Reading and acting are the jarhead tools' job.
     "-s",
     "read-only",
     "--skip-git-repo-check",
@@ -278,6 +348,7 @@ export function codexExecArgs(o: CodexExecOptions): string[] {
     ...(o.images ?? []).flatMap((p) => ["-i", p]),
     ...(o.model ? ["-m", o.model] : []),
     ...(o.effort ? ["-c", `model_reasoning_effort=${toml(codexEffort(o.effort))}`] : []),
+    ...codexBuiltinsOffArgs(),
     ...codexMcpConfigArgs(o),
     // --ignore-user-config skips the CODEX_HOME config.toml, so the prompt trims and the tier ride the argv here too.
     ...(o.trimPrompt === false ? [] : codexPromptTrimArgs()),
@@ -297,7 +368,7 @@ export function codexExecArgs(o: CodexExecOptions): string[] {
  * calling convention comes from the `exec` tool's own description, not from here.
  */
 export function codexBaseInstructions(userName = "Kevin"): string {
-  return `You are the brain of Jarhead, a voice assistant that uses ${userName}'s Mac for ${userName}. The developer message that follows holds your standing orders; obey it. You act through the jarhead tools, which you call through the exec function as \`await tools.mcp__jarhead__<name>({...})\`, and speed is the point: when a request needs a tool, your very first output is the tool call — no commentary message before it, no plan, no narration; Jarhead shows ${userName} every call as it happens and speaks for you. Write a message only as the final answer (one or two spoken sentences, plain words, no Markdown, no headings, no lists, no file links) or when a tool returned needs_confirmation, in which case the final answer is that one question. Keep reasoning short. Nothing here is a coding task: there is no repository, no patch to write, no tests to run, no skills, plugins or sub-agents to use, and your own shell is not for acting on ${userName}'s Mac.`;
+  return `You are the brain of Jarhead, a voice assistant that uses ${userName}'s Mac for ${userName}. The developer message that follows holds your standing orders; obey it. You act through the jarhead tools, which you call through the exec function as \`await tools.mcp__jarhead__<name>({...})\`, and speed is the point: when a request needs a tool, your very first output is the tool call — no commentary message before it, no plan, no narration; Jarhead shows ${userName} every call as it happens and speaks for you. Write a message only as the final answer (one or two spoken sentences, plain words, no Markdown, no headings, no lists, no file links) or when a tool returned needs_confirmation, in which case the final answer is that one question. Keep reasoning short. Nothing here is a coding task: there is no repository, no patch to write, no tests to run, no skills, plugins or sub-agents to use, and you have no shell of your own; the jarhead tools are how you read and act on ${userName}'s Mac.`;
 }
 
 const QUESTION_START = /^(what|what's|whats|why|how|is|are|am|can|could|would|should|do|does|did|where|who|whose|which|when|will|tell me|explain|describe)\b/i;
@@ -337,7 +408,7 @@ export function codexAddendum(userName = "Kevin", wiki = wikiRootHere()): string
   const wikiLine = wiki
     ? ` The wiki is ${wiki}; its pages are under ${wiki}/wiki, so a wiki search is one search_files call with root ${wiki}/wiki and glob "*.md", widened to the repo root only when that finds nothing.`
     : "";
-  return `You are running as the Codex CLI in a read-only sandbox with no project of ${userName}'s: your own shell and file tools cannot change anything on this Mac and must not be used to act on it or to read from it. The sandbox does not stop you reading ~/.jarhead/env, ~/.ssh or the other secret stores; the standing orders do, and every read goes through read_file, list_dir, search_files and web_fetch of the "${CODEX_MCP_SERVER}" MCP server so those stores stay refused. Every action goes through that server's tools too — use those, not your own shell, to read and change files on this Mac. When any of them returns needs_confirmation, do not retry it and do not work around it: make your final answer the one-sentence question it asked and stop; ${userName} will answer out loud and you will be asked again with the same tool and exactly the same arguments.
+  return `You are running as the Codex CLI with no project of ${userName}'s. Your own shell and file tools are switched off. Every read and every action on this Mac goes through the tools of the "${CODEX_MCP_SERVER}" MCP server: read_file, list_dir and search_files to read, run_shell to run a command, and the rest below. Jarhead's policy judges each call, so the secret stores stay refused. When any of them returns needs_confirmation, do not retry it and do not work around it: make your final answer the one-sentence question it asked and stop; ${userName} will answer out loud and you will be asked again with the same tool and exactly the same arguments.
 
 Any AGENTS.md pointer index, skills catalog or multi-agent role text in your context is ${userName}'s Codex-app preset, not Jarhead's: do not load a wiki, its hub or its command index, run npm status, or read SKILL.md files unless the task is literally about them.${wikiLine}
 
@@ -495,7 +566,7 @@ export interface CodexBrainOptions {
   readonly model?: string | undefined;
   readonly effort?: Effort | undefined;
   readonly userName?: string | undefined;
-  /** Tool calls (MCP and Codex's own shell) per delegation before the brain gives up (default 40). */
+  /** Jarhead tool calls per delegation before the brain gives up (default 40). */
   readonly maxSteps?: number | undefined;
   /** Wall clock per delegation (default 5 min). */
   readonly maxWallMs?: number | undefined;
@@ -572,6 +643,8 @@ interface RunState {
   readonly sink: BrainSink;
   readonly child: ChildProcess;
   readonly started: number;
+  /** The runner was let go (at the stop, or when the run settled): a late bridge call is refused. */
+  released: boolean;
   /** The most recent agent_message; becomes the summary at turn.completed. */
   candidate: string | undefined;
   /** What Jarhead's tools returned this run, for the carried history (compacted there). */
@@ -597,6 +670,8 @@ interface WarmTurn {
   readonly task: BrainTask;
   readonly sink: BrainSink;
   readonly started: number;
+  /** The runner was let go (at the stop, or when the turn ended): a late bridge call is refused. */
+  released: boolean;
   candidate: string | undefined;
   /** What Jarhead's tools returned this turn, for the carried history (compacted there). */
   readonly results: CarriedResult[];
@@ -643,6 +718,11 @@ export class CodexBrain implements Brain {
   /** Where Codex runs from: `<stateDir>/codex-home`, or Kevin's ~/.codex when that could not be built. */
   get codexHome(): CodexHome | undefined {
     return this.home;
+  }
+
+  /** The socket the bridge calls: the daemon's own, or this brain's private one (set by start(), cleared by stop()). */
+  get toolSocketPath(): string | undefined {
+    return this.toolSocket;
   }
 
   private env(): NodeJS.ProcessEnv {
@@ -859,7 +939,10 @@ export class CodexBrain implements Brain {
    * `jarheadd --socket X` with the default path still busy) would take the steps,
    * the screenshots and the pending confirmation into a runner that a "yes"
    * heard here can never reach. In every other case the brain serves the same
-   * DaemonServer itself, with a runner-only engine.
+   * DaemonServer itself, with a runner-only engine, on a socket of its own
+   * (`privateToolSocketPath`): the main brain and a thread's spare that both
+   * missed the daemon's self-ping used to share one path, so main's calls landed
+   * in the spare's host and stopping the spare unlinked main's socket.
    */
   private async ensureToolSocket(): Promise<string> {
     if (this.toolSocket) return this.toolSocket;
@@ -869,7 +952,8 @@ export class CodexBrain implements Brain {
       this.toolSocket = this.opts.socketPath;
       return this.toolSocket;
     }
-    const path = join(this.opts.stateDir, "codex-tools.sock");
+    sweepDeadToolSockets(this.opts.stateDir);
+    const path = privateToolSocketPath(this.opts.stateDir, this.opts.thread);
     const server = new DaemonServer(toolHost(this.opts.runner, this.opts.thread), path);
     await server.listen();
     this.privateServer = server;
@@ -918,6 +1002,14 @@ export class CodexBrain implements Brain {
     // has set carryHistory, so a "yes" still knows what it confirms.
     await server.settleThread();
     if (task.signal.aborted) return { status: "cancelled" };
+    // The server closed the thread and no replacement is up (it failed, or is not
+    // started yet): this task runs on exec now and a fresh thread starts behind it.
+    const probe = this.probe;
+    if (!server.thread && probe) {
+      log.warn("the warm app-server has no thread; this task runs on exec while a fresh one starts");
+      server.reopenThread("no thread at a task");
+      return this.handleExec(task, sink, probe);
+    }
     // Per-turn effort A/B (opt-in): a few imperative words run at the simple effort.
     const simple = this.simpleEffort();
     let effort: Effort | undefined;
@@ -936,13 +1028,16 @@ export class CodexBrain implements Brain {
     parts.push(delegationPrompt(task, this.opts.userName, attached));
     const input: UserInput[] = [{ type: "text", text: parts.join("\n\n"), text_elements: [] }, ...attached.map((a): UserInput => ({ type: "localImage", path: a.path, detail: "high" }))];
 
-    const warm: WarmTurn = { task, sink, started: Date.now(), candidate: undefined, results: [], steps: 0, failed: undefined, cancelled: false, timer: undefined };
+    const warm: WarmTurn = { task, sink, started: Date.now(), released: false, candidate: undefined, results: [], steps: 0, failed: undefined, cancelled: false, timer: undefined };
     this.warm = warm;
     this.opts.runner.attach(sink, task);
     const maxWallMs = this.opts.maxWallMs ?? 5 * 60_000;
     warm.timer = setTimeout(() => this.failWarm(warm, server, `I ran out of time after ${Math.round(maxWallMs / 1000)} seconds`), maxWallMs);
     const onAbort = (): void => {
       warm.cancelled = true;
+      // Let go of the runner now, not when the server's turn/completed arrives: a
+      // bridge call Codex already sent is refused instead of acting after the stop.
+      this.release(warm);
       void server.interrupt();
     };
     task.signal.addEventListener("abort", onAbort, { once: true });
@@ -968,7 +1063,7 @@ export class CodexBrain implements Brain {
       if (warm.timer) clearTimeout(warm.timer);
       if (this.warm === warm) {
         this.warm = undefined;
-        this.opts.runner.attach(undefined);
+        this.release(warm);
       }
     }
     const ms = Date.now() - warm.started;
@@ -981,8 +1076,28 @@ export class CodexBrain implements Brain {
       this.remember(task.request, summary, warm.results);
       out = { status: "done", summary };
     }
+    this.noteLoginRefusal(out);
     log.debug(`${out.status} in ${ms}ms after ${warm.steps} step(s) (app-server)`);
     return out;
+  }
+
+  /**
+   * The runner lets go of this turn's task once: at the stop, or when the turn ends,
+   * whichever is first. A second release (the turn ending after a stop) must not
+   * detach a task attached since.
+   */
+  private release(owner: WarmTurn | RunState): void {
+    if (owner.released) return;
+    owner.released = true;
+    this.opts.runner.attach(undefined);
+  }
+
+  /** A task that failed on the login itself: the next probe of this auth.json reads signed out, so a restart does not pick this brain again. */
+  private noteLoginRefusal(out: BrainResult): void {
+    if (out.status !== "failed" || !CODEX_AUTH_FAILURE.test(out.error ?? "")) return;
+    const home = this.home?.path ?? this.opts.codexHome ?? codexHomeDir(this.env());
+    markCodexLoginRefused(home);
+    log.warn(`Codex refused the login (${(out.error ?? "").slice(0, 160)}); sign in to Codex in ChatGPT or run \`codex login\``);
   }
 
   private failWarm(warm: WarmTurn, server: CodexAppServer, error: string): void {
@@ -1008,8 +1123,11 @@ export class CodexBrain implements Brain {
         return;
       }
       case "commandExecution": {
-        if (!this.countWarmStep(warm, server)) return;
-        sink.thinking(`Codex is looking with ${(item.command ?? "").slice(0, 60) || "a command"}.`);
+        // Codex's own shell is switched off (codexBuiltinsOffArgs). A command here is a
+        // Codex that ignored that, running with no policy and no redactor: the turn ends.
+        const cmd = (item.command ?? "").slice(0, 120);
+        sink.step({ kind: "error", text: `codex ran its own shell (${cmd || "a command"}); the turn was stopped` });
+        this.failWarm(warm, server, ownShell(cmd));
         return;
       }
       default:
@@ -1057,8 +1175,8 @@ export class CodexBrain implements Brain {
         return;
       }
       case "commandExecution": {
-        const out = (item.aggregatedOutput ?? "").trim();
-        sink.step({ kind: "note", text: `codex ran ${(item.command ?? "").slice(0, 120)}${item.exitCode !== undefined && item.exitCode !== null ? ` (exit ${item.exitCode})` : ""}${out ? `: ${out.slice(0, 300)}` : ""}` });
+        // The command, never its output: nothing redacted it, and it may be a secret store's.
+        sink.step({ kind: "note", text: `codex ran ${(item.command ?? "").slice(0, 120)}${item.exitCode !== undefined && item.exitCode !== null ? ` (exit ${item.exitCode})` : ""}` });
         return;
       }
       default:
@@ -1096,12 +1214,15 @@ export class CodexBrain implements Brain {
         resolve({ status: "failed", error: `could not start Codex: ${(e as Error).message}` });
         return;
       }
-      const state: RunState = { task, sink, child, started: Date.now(), candidate: undefined, results: [], steps: 0, completed: false, failed: undefined, cancelled: false, stderr: "", resolve, timer: undefined, killTimer: undefined };
+      const state: RunState = { task, sink, child, started: Date.now(), released: false, candidate: undefined, results: [], steps: 0, completed: false, failed: undefined, cancelled: false, stderr: "", resolve, timer: undefined, killTimer: undefined };
       this.current = state;
       const maxWallMs = this.opts.maxWallMs ?? 5 * 60_000;
       state.timer = setTimeout(() => this.fail(state, `I ran out of time after ${Math.round(maxWallMs / 1000)} seconds`), maxWallMs);
       const onAbort = (): void => {
         state.cancelled = true;
+        // Let go of the runner now, not when the SIGINT'd child has exited: a bridge
+        // call it already sent is refused instead of acting after the stop.
+        this.release(state);
         this.kill(state);
       };
       task.signal.addEventListener("abort", onAbort, { once: true });
@@ -1194,9 +1315,11 @@ export class CodexBrain implements Brain {
         return;
       }
       case "command_execution": {
-        if (!this.countStep(state)) return;
-        const cmd = Array.isArray(item.command) ? item.command.join(" ") : (item.command ?? "");
-        sink.thinking(`Codex is looking with ${cmd.slice(0, 60) || "a command"}.`);
+        // Codex's own shell is switched off (codexBuiltinsOffArgs). A command here is a
+        // Codex that ignored that, running with no policy and no redactor: the run ends.
+        const cmd = (Array.isArray(item.command) ? item.command.join(" ") : (item.command ?? "")).slice(0, 120);
+        sink.step({ kind: "error", text: `codex ran its own shell (${cmd || "a command"}); the run was stopped` });
+        this.fail(state, ownShell(cmd));
         return;
       }
       default:
@@ -1241,9 +1364,9 @@ export class CodexBrain implements Brain {
         return;
       }
       case "command_execution": {
+        // The command, never its output: nothing redacted it, and it may be a secret store's.
         const cmd = Array.isArray(item.command) ? item.command.join(" ") : (item.command ?? "");
-        const out = (item.aggregated_output ?? "").trim();
-        sink.step({ kind: "note", text: `codex ran ${cmd.slice(0, 120)}${item.exit_code !== undefined ? ` (exit ${item.exit_code})` : ""}${out ? `: ${out.slice(0, 300)}` : ""}` });
+        sink.step({ kind: "note", text: `codex ran ${cmd.slice(0, 120)}${item.exit_code !== undefined ? ` (exit ${item.exit_code})` : ""}` });
         return;
       }
       case "error":
@@ -1286,7 +1409,7 @@ export class CodexBrain implements Brain {
     if (state.killTimer) clearTimeout(state.killTimer);
     if (this.current === state) {
       this.current = undefined;
-      this.opts.runner.attach(undefined);
+      this.release(state);
     }
     const ms = Date.now() - state.started;
     let result: BrainResult;
@@ -1300,6 +1423,7 @@ export class CodexBrain implements Brain {
       const tail = state.stderr.trim().split("\n").slice(-3).join(" ").slice(0, 300);
       result = { status: "failed", error: `Codex exited ${signal ? `on ${signal}` : `with code ${code ?? "?"}`} before finishing${tail ? `: ${tail}` : ""}` };
     }
+    this.noteLoginRefusal(result);
     log.debug(`${result.status} in ${ms}ms after ${state.steps} step(s)`);
     state.resolve(result);
   }
@@ -1315,11 +1439,13 @@ export class CodexBrain implements Brain {
     const warm = this.warm;
     if (warm) {
       warm.cancelled = true;
+      this.release(warm);
       await this.appServer?.interrupt();
     }
     const cur = this.current;
     if (!cur) return;
     cur.cancelled = true;
+    this.release(cur);
     this.kill(cur);
   }
 
@@ -1345,6 +1471,11 @@ export class CodexBrain implements Brain {
 /** The error a turn ends with when Codex calls an MCP server other than Jarhead's. */
 function aroundJarhead(server: string | undefined, tool: string): string {
   return `Codex tried to act around Jarhead (an MCP call to ${server ?? "?"}.${tool}); the turn was stopped`;
+}
+
+/** The error a turn ends with when Codex runs its own shell, which the argv switched off. */
+function ownShell(cmd: string): string {
+  return `Codex ran its own shell around Jarhead (${cmd || "a command"}); the turn was stopped`;
 }
 
 /** The circled regions Codex gets with `-i`; a file already gone is left out rather than failing the run, and the prompt names only these. */
@@ -1376,6 +1507,47 @@ export function daemonPidAt(socketPath: string, timeoutMs = 1000): Promise<numbe
     });
     client.connect({ pid: process.pid, audio: false }).catch(() => finish(undefined));
   });
+}
+
+/** Private tool sockets handed out by this process; with the pid in the name, no two brains anywhere share a path. */
+let privateSocketSeq = 0;
+const PRIVATE_SOCKET = /^codex-tools-(?:main|thread)-(\d+)-\d+\.sock$/;
+
+/**
+ * `<stateDir>/codex-tools-<main|thread>-<pid>-<n>.sock`: one per brain. Short on
+ * purpose (a unix socket path is capped at 103 bytes on macOS), so the role and
+ * not the thread id; the thread id rides the bridge's env instead.
+ */
+export function privateToolSocketPath(stateDir: string, thread?: string | undefined): string {
+  return join(stateDir, `codex-tools-${thread ? "thread" : "main"}-${process.pid}-${++privateSocketSeq}.sock`);
+}
+
+/** Private sockets left by a process that is gone (a crash skips close()): removed, so the state dir does not collect them. */
+function sweepDeadToolSockets(stateDir: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(stateDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const pid = Number(PRIVATE_SOCKET.exec(name)?.[1]);
+    if (!pid || pid === process.pid || processAlive(pid)) continue;
+    try {
+      unlinkSync(join(stateDir, name));
+    } catch {
+      // gone already, or not ours to remove
+    }
+  }
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 /** True when a Jarhead daemon (any process) answers at the path within the timeout. */

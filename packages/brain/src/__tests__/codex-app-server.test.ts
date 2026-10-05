@@ -33,6 +33,10 @@ class FakeChild extends EventEmitter {
   signalCode: string | null = null;
   requests: { id: number | undefined; method: string; params: Record<string, unknown> }[] = [];
   turnStartDelayMs = 300;
+  /** When set, turn/start answers only once this resolves (after the delay): the test decides when. */
+  turnStartGate: Promise<void> | undefined;
+  /** turn/start replies sent so far. */
+  turnStartsAnswered = 0;
   threadStartDelayMs = 0;
   /** Whether turn/interrupt is followed by turn/completed{interrupted} (a server that never says so is given up locally). */
   completesOnInterrupt = true;
@@ -67,7 +71,10 @@ class FakeChild extends EventEmitter {
           const turnId = `turn_${++this.turns}`;
           const n = this.turns;
           // The first turn on a thread starts the MCP servers before the reply lands.
-          setTimeout(() => {
+          const gate = this.turnStartGate ?? Promise.resolve();
+          setTimeout(async () => {
+            await gate;
+            this.turnStartsAnswered++;
             reply({ turn: { id: turnId, status: "inProgress" } });
             notif("turn/started", { threadId, turnId, turn: { id: turnId, status: "inProgress" } });
             const completing = this.completing;
@@ -112,15 +119,19 @@ function server(child: FakeChild, extra: Partial<ConstructorParameters<typeof Co
 
 test("app-server: interrupt() before turn/start has answered still interrupts the server-side turn once its id is known, and the turn resolves on the server's word", async () => {
   const child = new FakeChild();
+  // turn/start answers only when the test says so: the ordering below is proven, not timed (BL-06: a 50 ms budget failed under load).
+  let answerTurnStart!: () => void;
+  child.turnStartGate = new Promise<void>((r) => (answerTurnStart = r));
   const s = server(child);
   await s.start();
   const started: string[] = [];
   const turn = s.turn([{ type: "text", text: "click save", text_elements: [] }], { onItemStarted: (i) => started.push(`${i.type}:${i.tool}`) });
-  await new Promise((r) => setTimeout(r, 30)); // Kevin presses stop while turn/start is in flight
-  const t0 = Date.now();
+  // Kevin presses stop while turn/start is in flight.
+  while (!child.requests.some((r) => r.method === "turn/start")) await new Promise((r) => setTimeout(r, 5));
   await s.interrupt();
-  assert.ok(Date.now() - t0 < 50 * RUNNER_SLACK, `interrupt() returns at once; it does not wait for turn/start: under ${50 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
+  assert.equal(child.turnStartsAnswered, 0, "interrupt() returned before turn/start answered: it does not wait for it");
   assert.ok(!child.requests.some((r) => r.method === "turn/interrupt"), "nothing to interrupt yet: no turn id");
+  answerTurnStart();
   const result = await turn;
   assert.equal(result.status, "interrupted");
   assert.equal(result.turnId, "turn_1", "resolved by the server's turn/completed, with the real id");

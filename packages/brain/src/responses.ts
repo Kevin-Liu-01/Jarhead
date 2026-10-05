@@ -71,10 +71,15 @@ interface PendingCall {
 export class ResponsesBrain implements Brain {
   readonly kind = "openai-responses";
   private live: LiveSession | undefined;
-  private sinks = new Map<string, { sink: BrainSink; resolve: (r: BrainResult) => void; started: number }>();
+  private sinks = new Map<string, { sink: BrainSink; task: BrainTask; resolve: (r: BrainResult) => void; started: number }>();
   private pendingByDelegation = new Map<string, PendingCall[]>();
   /** Circled regions not yet shown to the backend, per delegation. */
   private attachments = new Map<string, LoadedAttachment[]>();
+  /**
+   * Delegations stopped by Kevin: a late completion for one runs no tool. Kept for
+   * the session (delegation ids are Live's item ids, unique within it) and cleared
+   * when a new session binds, so the set never outlives the ids it guards.
+   */
   private cancelled = new Set<string>();
   private unbind: (() => void) | undefined;
 
@@ -83,6 +88,8 @@ export class ResponsesBrain implements Brain {
   /** Attach to a session; called by the orchestrator when the session starts. */
   bind(live: LiveSession): void {
     this.unbind?.();
+    // A new session's ids are new; a rebind to the same session keeps what it stopped.
+    if (live !== this.live) this.cancelled.clear();
     this.live = live;
     const onEvent = (delegationId: string | null, event: Record<string, unknown>): void => {
       void this.onResponseEvent(delegationId, event);
@@ -104,7 +111,7 @@ export class ResponsesBrain implements Brain {
   handle(task: BrainTask, sink: BrainSink): Promise<BrainResult> {
     this.opts.runner.attach(sink, task);
     return new Promise<BrainResult>((resolve) => {
-      this.sinks.set(task.delegationId, { sink, resolve, started: Date.now() });
+      this.sinks.set(task.delegationId, { sink, task, resolve, started: Date.now() });
       // The backend is already answering by the time we hear of the delegation, so
       // the circled regions cannot go in with the words; they ride as input_image
       // items with the first batch of tool results, before the backend continues —
@@ -125,6 +132,9 @@ export class ResponsesBrain implements Brain {
     this.sinks.delete(delegationId);
     this.pendingByDelegation.delete(delegationId);
     this.attachments.delete(delegationId);
+    // Nothing acts without a delegation: with none open, the runner lets go, so the
+    // daemon's tool.run gate closes behind this brain as it does behind every other.
+    if (this.sinks.size === 0) this.opts.runner.attach(undefined);
     entry.resolve(result);
   }
 
@@ -153,7 +163,7 @@ export class ResponsesBrain implements Brain {
       const pending = this.pendingByDelegation.get(id) ?? [];
       this.pendingByDelegation.set(id, []);
       if (pending.length > 0 && !this.cancelled.has(id)) {
-        await this.runCalls(id, pending, entry?.sink);
+        await this.runCalls(id, pending, entry);
         return;
       }
       // The backend answered without a single tool call, so the circled region never
@@ -178,10 +188,12 @@ export class ResponsesBrain implements Brain {
     }
   }
 
-  private async runCalls(delegationId: string, calls: readonly PendingCall[], sink: BrainSink | undefined): Promise<void> {
+  private async runCalls(delegationId: string, calls: readonly PendingCall[], entry: { sink: BrainSink; task: BrainTask } | undefined): Promise<void> {
     const live = this.live;
     if (!live) return;
-    if (sink) this.opts.runner.attach(sink);
+    const sink = entry?.sink;
+    // The task with the sink: the gates read its request and Kevin's words.
+    if (entry) this.opts.runner.attach(entry.sink, entry.task);
     for (const call of calls) {
       if (this.cancelled.has(delegationId)) return;
       sink?.thinking(progressLine(call.name, call.args));

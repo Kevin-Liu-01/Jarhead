@@ -4,7 +4,8 @@ import { logger } from "@jarhead/core";
 
 /**
  * The `-c key=value` overrides both Codex entry points share: the `jarhead` MCP
- * server (Jarhead's tools over the bridge), the prompt blocks Codex would add for
+ * server (Jarhead's tools over the bridge), Codex's own shell and image reader
+ * switched off (`codexBuiltinsOffArgs`), the prompt blocks Codex would add for
  * a coding session and Jarhead does not want (`codexPromptTrimArgs`), and, for
  * the app-server, which of the user's own MCP servers to switch off — `codex
  * app-server` has no `--ignore-user-config`, so the CODEX_HOME config.toml loads
@@ -174,6 +175,28 @@ function samePath(a: string, b: string): boolean {
  */
 export function codexPromptTrimArgs(): string[] {
   return ["-c", "skills.include_instructions=false", "-c", "include_permissions_instructions=false", "-c", "include_collaboration_mode_instructions=false", "-c", "features.plugins=false"];
+}
+
+/**
+ * Codex's own tools that read this Mac, by feature key: its shell (`shell_tool`)
+ * and its image reader (`view_image`). The read-only sandbox stops writes, not
+ * reads, and approval "never" asks nobody: a read of ~/.ssh or ~/.jarhead/env
+ * through Codex's shell reached the model with no policy, no secret-store refusal
+ * and no redactor in between (RAIL-4, launch audit 2026-10-05). With these off,
+ * the only way Codex reads or acts is the `jarhead` MCP server, whose calls land
+ * in the ToolRunner.
+ *
+ * Checked on 0.159.2 with `codex features list -c features.<key>=false` under a
+ * temp CODEX_HOME (no login, no network, no model call): both read back false.
+ * `unified_exec` reads back true whatever `-c` says, so it is not passed; it only
+ * picks which shell tool to build while `shell_tool` is on. The tool list itself
+ * is built for a turn, so it was not rendered: a Codex that still runs a command
+ * is caught at run time instead, and the turn fails (codex.ts, `ownShell`).
+ */
+export const CODEX_BUILTINS_OFF = ["shell_tool", "view_image"] as const;
+
+export function codexBuiltinsOffArgs(): string[] {
+  return CODEX_BUILTINS_OFF.flatMap((feature) => ["-c", `features.${feature}=false`]);
 }
 
 /**

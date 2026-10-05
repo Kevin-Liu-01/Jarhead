@@ -259,9 +259,12 @@ test("codex brain: one delegation replays a recorded run through the sink and th
   const started = await brain.start();
   assert.equal(started.ready, true, started.detail);
   assert.match(started.detail, /Codex 0\.153\.4-fake via JARHEAD_CODEX_BIN, signed in with ChatGPT; model gpt-6-astra \(from ~\/\.codex\/config\.toml\), effort low; tools over a private socket/);
-  // No daemon answered, so the brain serves the tool socket itself.
-  assert.ok(existsSync(join(dir, "codex-tools.sock")));
-  assert.equal(await socketAnswers(join(dir, "codex-tools.sock")), true);
+  // No daemon answered, so the brain serves the tool socket itself: one of its own (W1-8, F-CODEX-SOCKET).
+  const sock = brain.toolSocketPath!;
+  assert.match(sock, /\/codex-tools-main-\d+-\d+\.sock$/);
+  assert.equal(join(sock, ".."), dir);
+  assert.ok(existsSync(sock));
+  assert.equal(await socketAnswers(sock), true);
 
   const log = makeSink();
   const result = await brain.handle(makeTask("what app is open"), log.sink);
@@ -276,7 +279,7 @@ test("codex brain: one delegation replays a recorded run through the sink and th
   assert.equal(exec.args[0], "exec");
   assert.equal(exec.args[exec.args.indexOf("-m") + 1], "gpt-6-astra", "brainModel empty → the model from Codex's own config");
   assert.ok(exec.args.includes('model_reasoning_effort="low"'));
-  assert.ok(exec.args.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(dir, "codex-tools.sock"))}}`));
+  assert.ok(exec.args.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(sock)}}`));
   assert.ok(exec.args.some((a) => a.startsWith("mcp_servers.jarhead.args=[") && a.includes("mcp-bridge.ts")));
   // process.cwd() reports the real path (/private/var…) for a /var temp dir.
   assert.equal(exec.cwd, realpathSync(join(dir, "codex-cwd")), "Codex works in an empty directory of its own");
@@ -289,8 +292,10 @@ test("codex brain: one delegation replays a recorded run through the sink and th
   assert.deepEqual(scrubbed, { PATH: "/bin", CODEX_HOME: "/ch" });
   assert.ok(exec.prompt.startsWith(brainSystemPrompt().slice(0, 60)), "the shared standing orders come first");
   assert.ok(exec.prompt.includes(codexAddendum()));
-  assert.match(codexAddendum(), /must not be used to act on it or to read from it/, "the read-only sandbox does not stop reads; the orders do");
-  assert.match(codexAddendum(), /does not stop you reading ~\/\.jarhead\/env, ~\/\.ssh/);
+  // Codex's own shell and image reader are off in the argv (RAIL-4), so the addendum no longer admits a gap the orders had to cover.
+  assert.match(codexAddendum(), /Your own shell and file tools are switched off\. Every read and every action on this Mac goes through the tools of the "jarhead" MCP server/);
+  assert.doesNotMatch(codexAddendum(), /does not stop you reading/);
+  assert.ok(exec.args.includes("features.shell_tool=false") && exec.args.includes("features.view_image=false"), "exec's argv switches Codex's own shell and image reader off");
   assert.match(codexAddendum(), /the same tool and exactly the same arguments/);
   assert.ok(exec.prompt.includes('Kevin said: "what app is open"'));
   assert.ok(!exec.prompt.includes("Earlier in this session"));
@@ -304,7 +309,7 @@ test("codex brain: one delegation replays a recorded run through the sink and th
   assert.ok(second.prompt.endsWith('Kevin said: "and now?"'));
 
   await brain.stop();
-  assert.equal(existsSync(join(dir, "codex-tools.sock")), false, "the private socket goes with the brain");
+  assert.equal(existsSync(sock), false, "the private socket goes with the brain");
 });
 
 test("codex brain: a step budget, an error event, turn.failed, a crash, a cancel and the wall clock all end the task honestly", async (t) => {
@@ -393,7 +398,8 @@ test("codex brain: when this process's daemon answers on the socket, the bridge 
   const started = await brain.start();
   assert.equal(started.ready, true, started.detail);
   assert.match(started.detail, /tools over the daemon socket/);
-  assert.equal(existsSync(join(stateDir, "codex-tools.sock")), false);
+  assert.equal(brain.toolSocketPath, socketPath);
+  assert.deepEqual(readdirSync(stateDir).filter((f) => f.startsWith("codex-tools")), [], "no private socket");
   assert.equal((await brain.handle(makeTask("x"), makeSink().sink)).status, "done");
   assert.ok(execLog().args.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(socketPath)}}`));
 });
@@ -411,9 +417,11 @@ test("codex brain: a daemon that belongs to another process is not trusted with 
   const started = await brain.start();
   assert.equal(started.ready, true, started.detail);
   assert.match(started.detail, /tools over a private socket/);
-  assert.ok(existsSync(join(stateDir, "codex-tools.sock")));
+  const sock = brain.toolSocketPath!;
+  assert.equal(join(sock, ".."), stateDir);
+  assert.ok(existsSync(sock));
   assert.equal((await brain.handle(makeTask("x"), makeSink().sink)).status, "done");
-  assert.ok(execLog().args.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(stateDir, "codex-tools.sock"))}}`));
+  assert.ok(execLog().args.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(sock)}}`));
   assert.deepEqual(foreign.calls, [], "nothing was routed into the other daemon");
 });
 
@@ -432,7 +440,9 @@ test("codex brain: a thread's brain on its private socket still serves its own t
   const started = await brain.start();
   assert.equal(started.ready, true, started.detail);
   assert.match(started.detail, /tools over a private socket/);
-  const sock = join(stateDir, "codex-tools.sock");
+  const sock = brain.toolSocketPath!;
+  assert.match(sock, /\/codex-tools-thread-\d+-\d+\.sock$/);
+  assert.equal(join(sock, ".."), stateDir);
   // The thread's turn is running: its lane runner has the task.
   runner.attach(makeSink().sink, makeTask("play Focus on Spotify"));
   try {
@@ -492,8 +502,10 @@ test("codex brain: with an app-server the brain is warm — one thread, develope
   const configs = log.args.filter((_, i) => log.args[i - 1] === "-c");
   assert.ok(configs.includes("notify=[]"), "Kevin's turn-ended notify hook does not fire for Jarhead's turns");
   assert.ok(configs.some((c) => c.startsWith("mcp_servers.jarhead.command=")));
-  assert.ok(configs.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(dir, "codex-tools.sock"))}}`));
+  assert.ok(configs.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(brain.toolSocketPath)}}`));
+  assert.equal(join(brain.toolSocketPath!, ".."), dir);
   assert.ok(configs.includes('mcp_servers.jarhead.default_tools_approval_mode="approve"'));
+  assert.ok(configs.includes("features.shell_tool=false") && configs.includes("features.view_image=false"), "Codex's own shell and image reader are off on the warm path too");
   // Kevin's config.toml never loads: CODEX_HOME is Jarhead's, whose config.toml declares no servers — so there is nothing to switch off.
   assert.ok(!configs.some((c) => c.startsWith("mcp_servers.node_repl")), `no server of Kevin's to disable: ${configs.join(" | ")}`);
   for (const trim of codexPromptTrimArgs().filter((a) => a !== "-c")) assert.ok(configs.includes(trim), `${trim} rides the argv`);
@@ -826,7 +838,8 @@ test("codex brain: the user's name rides to the bridge as JARHEAD_USER_NAME on b
   assert.equal((await brain.start()).ready, true);
   await new Promise((r) => setTimeout(r, 150));
   const log = appServerLog();
-  assert.ok(configs(log.args).includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(dir, "codex-tools.sock"))}, JARHEAD_USER_NAME="Sam"}`), configs(log.args).join(" | "));
+  assert.equal(join(brain.toolSocketPath!, ".."), dir);
+  assert.ok(configs(log.args).includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(brain.toolSocketPath)}, JARHEAD_USER_NAME="Sam"}`), configs(log.args).join(" | "));
   await brain.stop();
 });
 
@@ -845,7 +858,8 @@ test("codex brain: a spawned thread's brain — the thread id rides to the bridg
   await new Promise((r) => setTimeout(r, 150));
   const log = appServerLog();
   const configs = log.args.filter((_, i) => log.args[i - 1] === "-c");
-  assert.ok(configs.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(dir, "codex-tools.sock"))}, JARHEAD_THREAD="t_spotify"}`), configs.join(" | "));
+  assert.equal(join(brain.toolSocketPath!, ".."), dir);
+  assert.ok(configs.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(brain.toolSocketPath)}, JARHEAD_THREAD="t_spotify"}`), configs.join(" | "));
   assert.deepEqual(log.requests.map((r) => r.method), ["initialize", "initialized", "thread/start"], "no primer: a spawned thread's brain runs one task and costs nothing more");
   // One task, one turn, as for the main brain; still no primer after it.
   const result = await brain.handle(makeTask("play Focus on Spotify"), makeSink().sink);
