@@ -28,16 +28,27 @@ const OWNED_KEYS: ReadonlySet<string> = new Set([
   "JARHEAD_BRAIN", "JARHEAD_BRAIN_MODEL", "JARHEAD_VOICE", "JARHEAD_LIVE_MODEL", "JARHEAD_MEMORY_MODEL",
 ]);
 
-/** Minimal dotenv: KEY=VALUE lines, no interpolation. */
+/**
+ * One env-file line as its key and value, or undefined for a blank line, a comment or no `=`.
+ * A shell habit's `export KEY=value` is KEY: read as anything else, the value would ride into
+ * every child under a name scrubbedEnv does not know (W1-6, INS-4).
+ */
+function envLineKey(line: string): { readonly key: string; readonly value: string } | undefined {
+  const t = line.trim().replace(/^export\s+/, "");
+  if (!t || t.startsWith("#")) return undefined;
+  const eq = t.indexOf("=");
+  if (eq === -1) return undefined;
+  return { key: t.slice(0, eq).trim(), value: t.slice(eq + 1).trim() };
+}
+
+/** Minimal dotenv: KEY=VALUE lines (an `export ` in front is allowed), no interpolation. */
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
   for (const raw of readFileSync(path, "utf8").split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
+    const parsed = envLineKey(raw);
+    if (!parsed) continue;
+    const key = parsed.key;
+    let value = parsed.value;
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
@@ -96,9 +107,7 @@ export function writeEnvSecrets(patch: Partial<Record<SecretKey, string | null>>
   }
   const out: string[] = [];
   for (const raw of existing) {
-    const line = raw.trim();
-    const eq = line.indexOf("=");
-    const key = !line || line.startsWith("#") || eq === -1 ? undefined : line.slice(0, eq).trim();
+    const key = envLineKey(raw)?.key;
     if (key !== undefined && pending.has(key)) {
       const v = pending.get(key);
       if (v) out.push(`${key}=${v}`);
