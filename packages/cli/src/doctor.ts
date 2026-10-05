@@ -1239,15 +1239,18 @@ interface PlaybackSource {
 }
 
 /**
- * The app's frame while it carries the telemetry, else the ledger's last session (`last`), else nothing. With
- * no session open the daemon has no `liveAudio`, so Live's figures come from the newest row: the app's counters
- * run since its graph started, and the graph a sleep stopped is the last session's.
+ * The app's frame while it carries the telemetry, else the open session's Live figures alone, else the ledger's
+ * last session (`last`), else nothing. With no session open the daemon has no `liveAudio`, so Live's figures come
+ * from the newest row: the app's counters run since its graph started, and the graph a sleep stopped is the last
+ * session's. Live's figures do not depend on the app: with a session open they are reported even when no app is
+ * connected, the app predates the telemetry, or its graph never started.
  */
 function playbackOf(state: AudioState | undefined, live: LiveAudio | undefined, last: AudioPlayoutRow | undefined): PlaybackSource | undefined {
   if (state && (state.playout || state.duck || state.output)) {
     if (live === undefined && last?.liveAudio) return { figures: { ...state, liveAudio: last.liveAudio }, liveFrom: last };
     return { figures: { ...state, liveAudio: live } };
   }
+  if (live) return { figures: { liveAudio: live } };
   if (last) return { figures: last, last };
   return undefined;
 }
@@ -1269,6 +1272,15 @@ export function playoutCause(playout: NonNullable<Playback["playout"]>, live: Li
   const network = behindMs !== undefined && material(behindMs);
   const who = app && (!network || lateMs >= (behindMs ?? 0)) ? "app" : network ? "network" : undefined;
   return { who, lateMs, behindMs };
+}
+
+/**
+ * What `status` and the doctor pass beside the app's frame (AudioStatusExtras, AudioCheckInput): the daemon's
+ * `liveAudio` while a session is open, else the ledger's newest `audio.playout` row. The ledger is read only when
+ * no session is open.
+ */
+export function playbackInputs(liveAudio: LiveAudio | undefined, ledger: () => { read(at: number): readonly unknown[] }, now: number): { readonly liveAudio: LiveAudio | undefined; readonly lastPlayout: AudioPlayoutRow | undefined; readonly now: number } {
+  return { liveAudio, lastPlayout: liveAudio ? undefined : readLastPlayout(ledger(), now), now };
 }
 
 /** The ledger's newest `audio.playout` row over today and the `days - 1` before it; undefined when none. */
@@ -1327,15 +1339,32 @@ function liveWords(l: LiveAudio): string {
   return parts.length ? parts.join(" · ") : plural(l.deltas, "delta");
 }
 
-/** The status block's playback lines: one per object the figures carry. */
-function playbackLines(p: Playback): string[] {
+/** The status block's playback lines: one per object the figures carry. `liveTail` follows the live line (`· last session, 1 h ago`). */
+function playbackLines(p: Playback, liveTail = ""): string[] {
   const out: string[] = [];
   const line = (label: string, value: string): void => void out.push(`${STATUS_PAD}${label.padEnd(8)}${value}`);
   if (p.playout) line("playout", playoutWords(p.playout));
   if (p.duck) line("duck", duckWords(p.duck));
   if (p.output) line("output", outputWords(p.output));
-  if (p.liveAudio) line("live", liveWords(p.liveAudio));
+  if (p.liveAudio) line("live", `${liveWords(p.liveAudio)}${liveTail}`);
   return out;
+}
+
+/**
+ * The playback block under the audio lines, from the same source the doctor reads (playbackOf): the app's frame with
+ * the open session's Live figures; Live's figures alone when the app sends none; the ledger's last session, headed
+ * and dated, when neither has any. With no session open the live line is the last session's, and says so.
+ */
+function playbackBlock(state: AudioState | undefined, extras: AudioStatusExtras): string[] {
+  const source = playbackOf(state, extras.liveAudio, extras.lastPlayout);
+  if (!source) return [];
+  const now = extras.now ?? Date.now();
+  if (source.last) {
+    // Dated as the doctor dates it: a clock time alone would read as today for a row up to 7 days old.
+    const id = source.last.sessionId ? ` ${shortSession(source.last.sessionId)}` : "";
+    return [`${STATUS_PAD}last session${id} · ${agoWords(source.last.at, now)} (the ledger)`, ...playbackLines(source.last)];
+  }
+  return playbackLines(source.figures, source.liveFrom ? ` · last session, ${agoWords(source.liveFrom.at, now)}` : "");
 }
 
 /** The session id as the status line shows it: the last twelve characters. */
@@ -1344,9 +1373,10 @@ function shortSession(id: string): string {
 }
 
 /**
- * What `status` passes beside the frame: the daemon's live figures (only while a session is open), and the
- * ledger's newest `audio.playout` row (readLastPlayout): the whole playback block when no app is connected, and
- * the `live` line when the app is connected and no session is open. `now` dates the row (`1 h ago`).
+ * What `status` passes beside the frame (playbackInputs): the daemon's live figures (only while a session is open),
+ * and the ledger's newest `audio.playout` row (readLastPlayout): the whole playback block when no app is connected
+ * and no session is open, and the `live` line when the app is connected and no session is open. `now` dates the row
+ * (`1 h ago`).
  */
 export interface AudioStatusExtras {
   readonly liveAudio?: LiveAudio | undefined;
@@ -1443,12 +1473,8 @@ export function audioStatusLines(state: AudioState | undefined, settings: AudioS
     const recording = settings?.recording ? " · recording on" : "";
     const device = (d: AudioProfilerDevice | undefined): string => (d ? `${d.name} ${d.rate} Hz` : "none");
     const head = profiler ? `  audio      no app connected${recording} — defaults: in ${device(profiler.defaultInput)} · out ${device(profiler.defaultOutput)}` : `  audio      no app connected${recording}`;
-    const last = extras.lastPlayout;
-    if (!last) return [head];
-    // The last session's playback figures, from the ledger (voice PLAN W1.5), dated as the doctor dates them: a
-    // clock time alone would read as today for a row up to 7 days old.
-    const ago = agoWords(last.at, extras.now ?? Date.now());
-    return [head, `${STATUS_PAD}last session${last.sessionId ? ` ${shortSession(last.sessionId)}` : ""} · ${ago} (the ledger)`, ...playbackLines(last)];
+    // The playback figures (voice PLAN W1.5): the open session's Live figures, else the ledger's last session.
+    return [head, ...playbackBlock(undefined, extras)];
   }
   const since = state.since !== undefined && state.running ? ` · since ${clockWords(state.since)}` : "";
   const lines = [`  audio      voice processing ${voiceProcessingWords(state)}${since}`];
@@ -1462,12 +1488,7 @@ export function audioStatusLines(state: AudioState | undefined, settings: AudioS
     lines.push(`${STATUS_PAD}recording ${onOff(state.recording)} · guard off · ${rest}${muted}`);
   }
   // The playback lines (voice PLAN W1.5): the playout cushion, the duck, the output level, Live's arrival.
-  if (state.playout || state.duck || state.output) {
-    lines.push(...playbackLines({ ...state, liveAudio: extras.liveAudio }));
-    // No session open: Live's figures are the last session's, from the ledger, and say so.
-    const last = extras.liveAudio === undefined ? extras.lastPlayout : undefined;
-    if (last?.liveAudio) lines.push(`${STATUS_PAD}${"live".padEnd(8)}${liveWords(last.liveAudio)} · last session, ${agoWords(last.at, extras.now ?? Date.now())}`);
-  }
+  lines.push(...playbackBlock(state, extras));
   return lines;
 }
 
@@ -1736,10 +1757,9 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
       profiler: readAudioProfiler(),
       probe: readAudioProbe(cfg.stateDir),
       appBuiltAt: appBuiltAt(),
-      now: Date.now(),
-      liveAudio: daemon?.liveAudio,
-      // The whole report with no app connected; Live's figures with no session open (the app's frame has no arrival).
-      lastPlayout: daemon?.liveAudio ? undefined : readLastPlayout(new Ledger(cfg.stateDir), Date.now()),
+      // `now`, the open session's Live figures, else the ledger's last session: the whole report with no app connected,
+      // Live's figures with no session open (the app's frame has no arrival).
+      ...playbackInputs(daemon?.liveAudio, () => new Ledger(cfg.stateDir), Date.now()),
     })) add(c);
     if (opts.testAudio) {
       add(

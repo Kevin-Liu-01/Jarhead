@@ -222,3 +222,53 @@ test("v2 doctor: with no session open, Live's figures come from the newest audio
   assert.doesNotMatch(open[0]!.detail, /last session/);
   assert.doesNotMatch(open.find((r) => r.name === "live arrival")!.detail, /last session/);
 });
+
+test("v2 doctor: a session open reports Live's arrival with no app connected and with an app whose frame has no telemetry", () => {
+  // The review's repro: the daemon measured an arrival p99 of 210 ms; the app sent nothing to pair it with.
+  const bursty: LiveAudio = { ...LIVE, arrivalP99Ms: 210, arrivalMaxMs: 420 };
+  const { playout: _p, duck: _d, output: _o, ...older } = CALM;
+  const lastRow: PlayoutRow = { at: NOW - 3_600_000, type: "audio.playout", sessionId: "s0", playout: CALM.playout!, liveAudio: LIVE };
+  for (const [name, state] of [
+    ["no app connected", undefined],
+    ["an app from before the telemetry", older],
+    ["an app whose graph never started", { ...older, running: false }],
+  ] as const) {
+    const rows = playback(checks({ ...base, state, liveAudio: bursty }));
+    assert.deepEqual(
+      rows.map((r) => [r.name, r.status]),
+      [["live arrival", "warn"]],
+      `${name}: Live's figures do not depend on the app`,
+    );
+    assert.equal(rows[0]!.detail, "40 ms deltas · arrival p99 210 ms / max 420 ms · ahead 0 ms · loop max 12 ms · 24000 Hz");
+    assert.equal(rows[0]!.fix, "Live's audio arrives in bursts: the network (Wi-Fi) or the daemon");
+    // The ledger's last session never stands in for the open one.
+    assert.deepEqual(playback(checks({ ...base, state, liveAudio: bursty, lastPlayout: lastRow })), rows, `${name}: the open session wins over the row`);
+  }
+});
+
+test("v2 status: a session open prints Live's line with no app connected and under an app frame with no telemetry", () => {
+  const lines = statusLines(undefined, { recording: false }, undefined, { liveAudio: LIVE, now: NOW });
+  assert.deepEqual(lines, ["  audio      no app connected", LIVE_LINE], "no app: the head, then the open session's live line, never a last-session block");
+  const { playout: _p, duck: _d, output: _o, ...older } = CALM;
+  const withOlder = statusLines(older, { recording: false }, undefined, { liveAudio: LIVE, now: NOW });
+  assert.equal(withOlder.length, 4 + 1);
+  assert.equal(withOlder.at(-1), LIVE_LINE);
+  // No session open and an older app: the ledger's last session, headed and dated as with no app.
+  const row: PlayoutRow = { at: NOW - 7_200_000, type: "audio.playout", sessionId: "s9", liveAudio: LIVE };
+  assert.deepEqual(statusLines(older, { recording: false }, undefined, { lastPlayout: row, now: NOW }).slice(4), ["             last session s9 · 2 h ago (the ledger)", LIVE_LINE]);
+});
+
+test("v2 playbackInputs: the daemon's live figures while a session is open, the ledger only when none is; the ledger is not opened otherwise", () => {
+  const inputs = (doctor as { playbackInputs?: (live: LiveAudio | undefined, ledger: () => { read(at: number): unknown[] }, now: number) => Extras }).playbackInputs;
+  assert.ok(inputs, "doctor.ts exports playbackInputs for status and the doctor");
+  const row: PlayoutRow = { at: NOW - 60_000, type: "audio.playout", sessionId: "s1", liveAudio: LIVE };
+  let opened = 0;
+  const ledger = (): { read(at: number): unknown[] } => {
+    opened++;
+    return { read: (at: number) => (Math.floor(at / 86_400_000) === Math.floor(NOW / 86_400_000) ? [row] : []) };
+  };
+  assert.deepEqual(inputs(LIVE, ledger, NOW), { liveAudio: LIVE, lastPlayout: undefined, now: NOW });
+  assert.equal(opened, 0, "a session open: the day files are not read");
+  assert.deepEqual(inputs(undefined, ledger, NOW), { liveAudio: undefined, lastPlayout: row, now: NOW });
+  assert.equal(opened, 1);
+});
