@@ -81,8 +81,9 @@ export interface PendingConfirmation {
   readonly input: Record<string, unknown>;
   /**
    * The words the gate judged when it asked: the app in front, then the label and role of
-   * the control under the point or in focus. A yes lands only an attempt judged on the same
-   * words, so a yes to "Send" is never spent on "Delete Account" a few pixels away.
+   * the control under the point or in focus, and that control's frame when the helper
+   * reports one. A yes lands only an attempt judged on the same words, so a yes to "Send"
+   * is never spent on "Delete Account" a few pixels away, nor on the next row's "Delete".
    */
   readonly target?: string;
   readonly at: number;
@@ -108,22 +109,6 @@ export interface ArmedConfirmation extends PendingConfirmation {
 }
 
 /**
- * The key the gate carries its judged words on (`PendingConfirmation.target`) through `ask`
- * and `consume`. A symbol, so the arguments pass unchanged through every lane's forwarding
- * and never reach a JSON row or a model.
- */
-export const JUDGED_TARGET = Symbol("jarhead.judgedTarget");
-
-function withJudged(input: Record<string, unknown>, words: string): Record<string, unknown> {
-  return { ...input, [JUDGED_TARGET]: words };
-}
-
-function judgedOf(input: Record<string, unknown>): string | undefined {
-  const words = (input as Record<symbol, unknown>)[JUDGED_TARGET];
-  return typeof words === "string" ? words : undefined;
-}
-
-/**
  * A grant lives for the conversation (the chain's end, a stop, `conversation.new`
  * end it); this is the ceiling when nothing does — conversation-shaped, not
  * shift-shaped, so a yes never outlives the errand it was said for by more than this.
@@ -136,10 +121,17 @@ export const HOLD_ID = "hold";
 /**
  * Confirmation is a two-delegation handshake: the tool refuses with a question,
  * Live asks Kevin, Kevin says "go ahead", the next delegation arms this state,
- * and the *same* action then runs once: the same member, the same target words, the
- * same arguments (a re-aimed point within AIM_TOLERANCE_PX). A yes never carries over
- * to a different action, and it expires. A yes past the TTL arms nothing and leaves the
+ * and the *same* action then runs once: the same member, the same judged words (the
+ * app, the control's label and role and, for a point, that control's frame), the same
+ * arguments (a re-aimed point within AIM_TOLERANCE_PX). A yes never carries over to a
+ * different action, and it expires. A yes past the TTL arms nothing and leaves the
  * question where it was asked (`arm` answers `expired`), so the action asks it again.
+ * A yes armed in time lands while the question lasts, or for LANDS_WITHIN_MS after the
+ * arm when that is later, so a slow re-run near the end of the TTL is not asked twice.
+ *
+ * Everything that decides what a yes lands on lives inside this class: the tolerance,
+ * the equality, the judged words and the landing window. The self-edit rail guard reads
+ * this file by its changed hunks, and a hunk in here carries this class's name.
  *
  * Grants (2026-09-12): when the question was a repeatable one — "act in this
  * hands-off app?" — the yes may also open that app for that class of action for the
@@ -163,6 +155,8 @@ export const HOLD_ID = "hold";
 export class ConfirmationState {
   pending: PendingConfirmation | undefined;
   private armed = false;
+  /** When Kevin's yes armed the question, for its landing window (`landing`). */
+  private armedAt: number | undefined;
   private seq = 0;
   private readonly grants = new Map<string, ConfirmationGrant & { suspended?: boolean }>();
   /**
@@ -191,9 +185,10 @@ export class ConfirmationState {
   ) {}
 
   ask(description: string, member: string, input: Record<string, unknown>, grantable?: Grantable): PendingConfirmation {
-    const target = judgedOf(input);
+    const target = ConfirmationState.judgedOf(input);
     this.pending = { id: `confirm_${++this.seq}`, description, member, input, ...(target !== undefined ? { target } : {}), at: this.now(), ...(grantable && grantable.app ? { grantable } : {}) };
     this.armed = false;
+    this.armedAt = undefined;
     return this.pending;
   }
 
@@ -205,27 +200,31 @@ export class ConfirmationState {
    *
    * A yes past the TTL answers `expired: true`: nothing armed, no grant, and the question
    * stays on the floor it was asked on. The caller re-runs the action, which asks again.
+   * A yes already on its way (armed in time, still landing) is not undone by another one.
    */
   arm(record?: (grant: ConfirmationGrant) => void): ArmedConfirmation | undefined {
     if (!this.pending) return undefined;
     if (this.expired) {
+      if (this.landing) return this.pending;
       this.armed = false;
+      this.armedAt = undefined;
       return { ...this.pending, expired: true };
     }
     this.armed = true;
+    this.armedAt = this.now();
     const g = this.pending.grantable;
     if (!g || !record) return this.pending;
     const at = this.now();
     const grant: ConfirmationGrant = { app: g.app, actionClass: g.actionClass, at, until: at + this.grantTtlMs };
     record(grant);
-    this.grants.set(grantKey(g.app, g.actionClass), { ...grant });
+    this.grants.set(ConfirmationState.grantKey(g.app, g.actionClass), { ...grant });
     return { ...this.pending, grant };
   }
 
   /** Does a standing yes from this conversation cover `actionClass` in `app`? Not while a cut has it suspended. */
   granted(app: string | undefined, actionClass: string | undefined): boolean {
     if (!app || !actionClass) return false;
-    const key = grantKey(app, actionClass);
+    const key = ConfirmationState.grantKey(app, actionClass);
     const g = this.grants.get(key);
     if (!g) return false;
     if (this.now() > g.until) {
@@ -255,17 +254,28 @@ export class ConfirmationState {
   }
 
   /**
+   * Kevin's yes is on its way to its action: armed inside the TTL, and either the question
+   * is still inside it or the arm was within LANDS_WITHIN_MS. `consume` lands only a yes
+   * that is landing; the desk's `holds` counts one as a question still held.
+   */
+  get landing(): boolean {
+    if (!this.armed || !this.pending || this.armedAt === undefined) return false;
+    return !this.expired || this.now() - this.armedAt <= ConfirmationState.LANDS_WITHIN_MS;
+  }
+
+  /**
    * True once, for an action matching the pending one: the same member, the same judged
-   * target words, the same arguments. A yes that outlived its question is spent on nothing
-   * and the question stays, so the gate asks it again in place.
+   * words, the same arguments. A yes that is no longer landing is spent on nothing and
+   * the question stays, so the gate asks it again in place.
    */
   consume(member: string, input: Record<string, unknown>): boolean {
     if (!this.armed || !this.pending) return false;
-    if (this.expired) {
+    if (!this.landing) {
       this.armed = false;
+      this.armedAt = undefined;
       return false;
     }
-    const same = this.pending.member === member && this.pending.target === judgedOf(input) && sameTarget(this.pending.input, input);
+    const same = this.pending.member === member && this.pending.target === ConfirmationState.judgedOf(input) && ConfirmationState.sameTarget(this.pending.input, input);
     if (!same) return false;
     this.dropQuestion();
     return true;
@@ -281,44 +291,73 @@ export class ConfirmationState {
   dropQuestion(): void {
     this.pending = undefined;
     this.armed = false;
+    this.armedAt = undefined;
   }
-}
 
-function grantKey(app: string, actionClass: string): string {
-  return `${app.trim().toLowerCase()}\u0000${actionClass.trim().toLowerCase()}`;
-}
-
-/** How far a re-aimed point may drift, in screenshot pixels, and still be the same action (the judged words decide it is the same control). */
-const AIM_TOLERANCE_PX = 40;
-const AIM_KEYS: ReadonlySet<string> = new Set(["coordinate", "start_coordinate"]);
-
-/** The whole arguments, deep-equal; a point within AIM_TOLERANCE_PX of the asked one counts as the same aim. */
-function sameTarget(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
-    if (AIM_KEYS.has(key) && near(a[key], b[key])) continue;
-    if (!deepEqual(a[key], b[key])) return false;
+  /**
+   * The arguments with the words the gate judged riding on them: the app in front, then the
+   * control's label and role, then its frame (rounded points) when the helper reports one.
+   * The frame binds a yes to one control: the next row's "Delete" has the same words and
+   * another frame. With no frame, the words and AIM_TOLERANCE_PX decide.
+   */
+  static judged(input: Record<string, unknown>, app: string | undefined, thing: readonly (string | undefined)[], frame?: { readonly x: number; readonly y: number; readonly w: number; readonly h: number } | null): Record<string, unknown> {
+    const box = frame && [frame.x, frame.y, frame.w, frame.h].every((n) => typeof n === "number" && Number.isFinite(n)) ? `[${Math.round(frame.x)},${Math.round(frame.y)} ${Math.round(frame.w)}x${Math.round(frame.h)}]` : undefined;
+    const words = [app, ...thing, box].filter((s): s is string => typeof s === "string" && s.length > 0).join(" · ");
+    return { ...input, [ConfirmationState.JUDGED]: words };
   }
-  return true;
-}
 
-function near(a: unknown, b: unknown): boolean {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== 2 || b.length !== 2) return false;
-  if (![...a, ...b].every((n) => typeof n === "number" && Number.isFinite(n))) return false;
-  return Math.abs(a[0] - b[0]) <= AIM_TOLERANCE_PX && Math.abs(a[1] - b[1]) <= AIM_TOLERANCE_PX;
-}
+  /**
+   * The key the gate carries its judged words on (`PendingConfirmation.target`) through `ask`
+   * and `consume`. A symbol, so the arguments pass unchanged through every lane's forwarding
+   * and never reach a JSON row or a model.
+   */
+  private static readonly JUDGED = Symbol("jarhead.judgedTarget");
 
-/** JSON-shaped equality; an absent key and an undefined one are the same. */
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((v, i) => deepEqual(v, b[i]));
+  /** How far a re-aimed point may drift, in screenshot pixels, and still be the same action (the judged words decide it is the same control). */
+  private static readonly AIM_TOLERANCE_PX = 40;
+  private static readonly AIM_KEYS: ReadonlySet<string> = new Set(["coordinate", "start_coordinate"]);
+
+  /** How long a yes armed inside the TTL may take to reach its action once the TTL has passed (time to first action: 7 s median, 28 s p95). */
+  private static readonly LANDS_WITHIN_MS = 60_000;
+
+  private static judgedOf(input: Record<string, unknown>): string | undefined {
+    const words = (input as Record<symbol, unknown>)[ConfirmationState.JUDGED];
+    return typeof words === "string" ? words : undefined;
   }
-  const x = a as Record<string, unknown>;
-  const y = b as Record<string, unknown>;
-  for (const key of new Set([...Object.keys(x), ...Object.keys(y)])) if (!deepEqual(x[key], y[key])) return false;
-  return true;
+
+  /** The whole arguments, deep-equal; a point within AIM_TOLERANCE_PX of the asked one counts as the same aim. */
+  private static sameTarget(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+    for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      if (ConfirmationState.AIM_KEYS.has(key) && ConfirmationState.near(a[key], b[key])) continue;
+      if (!ConfirmationState.deepEqual(a[key], b[key])) return false;
+    }
+    return true;
+  }
+
+  private static near(a: unknown, b: unknown): boolean {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== 2 || b.length !== 2) return false;
+    if (![...a, ...b].every((n) => typeof n === "number" && Number.isFinite(n))) return false;
+    const tolerance = ConfirmationState.AIM_TOLERANCE_PX;
+    return Math.abs(a[0] - b[0]) <= tolerance && Math.abs(a[1] - b[1]) <= tolerance;
+  }
+
+  /** JSON-shaped equality; an absent key and an undefined one are the same. */
+  private static deepEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+    if (Array.isArray(a) || Array.isArray(b)) {
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+      return a.every((v, i) => ConfirmationState.deepEqual(v, b[i]));
+    }
+    const x = a as Record<string, unknown>;
+    const y = b as Record<string, unknown>;
+    for (const key of new Set([...Object.keys(x), ...Object.keys(y)])) if (!ConfirmationState.deepEqual(x[key], y[key])) return false;
+    return true;
+  }
+
+  private static grantKey(app: string, actionClass: string): string {
+    return `${app.trim().toLowerCase()}\u0000${actionClass.trim().toLowerCase()}`;
+  }
 }
 
 /**
@@ -663,8 +702,11 @@ export class ComputerToolset {
         const under = await this.underPoint(found.app, el.label, el.role, p, frame);
         if (under.stopped) return { kind: "error", message: `stopped: ${this.who()} pressed stop before this action ran` };
         if (under.problem) return { kind: "error", message: under.problem };
-        // The yes is bound to this control in this app, not to the name alone.
-        const judged = withJudged({ name }, judgedWords(under.front?.app ?? found.app, [el.label, el.role]));
+        // The yes is bound to this click (its button and count) on this control (its frame) in
+        // this app, not to the name alone: a yes to one click on "Delete" is not a double click.
+        const button = input["button"] === "right" ? "right" : "left";
+        const count = Number(input["count"]) === 2 ? 2 : 1;
+        const judged = ConfirmationState.judged({ name, button, count }, under.front?.app ?? found.app, [el.label, el.role], frame);
         const confirmed = this.confirmations.consume("click_element", judged);
         // The policy judges the name the tree gave and whatever the point itself says; a standing
         // yes for clicks in this app answers the hands-off question, and presence is judged as for
@@ -676,9 +718,8 @@ export class ComputerToolset {
         const decision = this.policy({ kind: "left_click", app: found.app, target, confirmed, granted, presence });
         noteDecision(decision);
         if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
-        if (decision.verdict === "confirm") return this.askYes("click_element", judged, decision, `click "${el.label}" in ${found.app}`, found.app, appKey);
-        const button = input["button"] === "right" ? "right" : "left";
-        const count = Number(input["count"]) === 2 ? 2 : 1;
+        const verb = count === 2 ? "double click" : button === "right" ? "right click" : "click";
+        if (decision.verdict === "confirm") return this.askYes("click_element", judged, decision, `${verb} "${el.label}" in ${found.app}`, found.app, appKey);
         this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: "click_element" });
         await hands.request("click", { ...p, button, count, modifiers: [], ...frontOf(under.front) });
         this.opts.annotate?.({ cmd: "click-pulse", x: p.x, y: p.y });
@@ -836,8 +877,9 @@ export class ComputerToolset {
       secure = f.secure;
       if (!target) target = f.title ?? f.role;
     }
-    // The yes is bound to what was judged: the app in front and the control under the point or in focus.
-    const judged = withJudged(input, judgedWords(front?.app, el ? [el.title, el.description, el.role] : f ? [f.title, f.role] : []));
+    // The yes is bound to what was judged: the app in front and the control under the point
+    // (its frame too, so the next row's control with the same label is another action) or in focus.
+    const judged = ConfirmationState.judged(input, front?.app, el ? [el.title, el.description, el.role] : f ? [f.title, f.role] : [], el?.frame);
     const confirmed = this.confirmations.consume(member, judged);
     // The app the action lands on (the element under the point, or the focused field's owner)
     // against the app in front: a mismatch is one leg of "he is not here"; unknown is unknown.
@@ -847,7 +889,10 @@ export class ComputerToolset {
     // A standing yes from earlier in the conversation, keyed on the app and the class of action.
     const appKey = front?.bundleId ?? app;
     const granted = this.confirmations.granted(appKey, grantClassOf(member));
-    const decision = this.policy({ kind: member, app, target, text: about.text, secureField: secure, confirmed, granted, presence });
+    // A scroll moves the view, never a control: the words under its point are not what it acts
+    // on, so the policy judges a scroll by its app (a hands-off app asks) and presence alone. The
+    // element still drives the stale-frame check above and the words a yes is bound to.
+    const decision = this.policy({ kind: member, app, target: member === "scroll" ? "" : target, text: about.text, secureField: secure, confirmed, granted, presence });
     if (decision.verdict === "run") return { decision, probes };
     if (decision.verdict === "refuse") return { decision, result: { kind: "error", message: `refused: ${decision.reason}` }, probes };
     return { decision, result: this.askYes(member, judged, decision, describe(member, input, app, target), app, appKey), probes };
@@ -878,11 +923,6 @@ export class ComputerToolset {
     const pending = this.confirmations.ask(description, member, input, decision.grant && grantApp ? { app: grantApp, actionClass: decision.grant } : undefined);
     return { kind: "needs-confirmation", pendingId: pending.id, question: question(description, decision, app, this.who()) };
   }
-}
-
-/** What a yes is bound to besides the arguments: the app, then the control's label and role. */
-function judgedWords(app: string | undefined, thing: readonly (string | undefined)[]): string {
-  return [app, ...thing].filter((s): s is string => typeof s === "string" && s.length > 0).join(" · ");
 }
 
 /**

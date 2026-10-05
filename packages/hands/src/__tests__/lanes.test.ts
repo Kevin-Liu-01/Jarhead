@@ -106,7 +106,7 @@ test("consume is false for a non-floor lane even with the same member and target
   assert.equal(root.pending, undefined);
 });
 
-test("dropQuestion through a lane (Kevin moved on) drops the floor AND the queue; a question dropped directly on the root (the Delegator, the ear reflex, dictation) was that lane's alone, so the next queued one comes up; clear (a cut) drops both and suspends the grants", () => {
+test("dropQuestion through a lane (Kevin moved on) drops the floor AND the queue; a question dropped directly on the root (the Delegator, the ear reflex, dictation) was that lane's alone, so the next queued one comes up at the next promote, never on a read; clear (a cut) drops both and suspends the grants", () => {
   const { root, desk, spoken } = world();
   const a = desk.lane("jarhead", "Jarhead");
   const b = desk.lane("w_1", "Spotify");
@@ -123,12 +123,17 @@ test("dropQuestion through a lane (Kevin moved on) drops the floor AND the queue
   assert.deepEqual(spoken, []);
 
   // The engine dropped the root directly (the Delegator is wired to the root): Kevin moved on from Jarhead's question,
-  // not from Spotify's. The floor heals and Spotify's question comes up, spoken once with its name (W1-4, TH-1: a
-  // thread told to wait is never left waiting on a question nobody will ask).
+  // not from Spotify's. The floor heals on the next read, and Spotify's question stays queued until the next promote
+  // (the engine's tick), which speaks it once with its name (W1-4, TH-1: a thread told to wait is never left waiting
+  // on a question nobody will ask, and a read never speaks a question a yes could arm in the same breath).
   a.ask("send the message in Mail", "left_click", { coordinate: [1, 1] });
   b.ask("play Focus in Spotify", "click_element", { name: "Play" });
   root.dropQuestion();
-  assert.equal(desk.floorLane(), "w_1", "the next queued question is on the floor");
+  assert.equal(desk.floorLane(), undefined, "the floor heals; a read promotes nothing");
+  assert.equal(desk.queuedCount, 1, "Spotify's waits for the tick");
+  assert.deepEqual(spoken, []);
+  assert.equal(desk.promote()?.laneId, "w_1", "the tick brings it up");
+  assert.equal(desk.floorLane(), "w_1");
   assert.equal(desk.queuedCount, 0);
   assert.equal(desk.promote(), undefined, "the floor is taken");
   assert.deepEqual(spoken, [{ name: "Spotify", question: "play Focus in Spotify" }]);
