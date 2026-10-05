@@ -780,9 +780,10 @@ export function testConfig(dir: string, over: Partial<JarheadConfig> = {}): Jarh
  * over the same day. `where.firstSessionId` names that engine's first FakeLive (default
  * `sess_1`), so two engines over one ledger do not write the same session id twice.
  * `where.oneHands` gives both helpers the same RecordingHands (a test that patches
- * `hands.request` and does not care which helper answered).
+ * `hands.request` and does not care which helper answered). `where.select`: no injected
+ * brain, so the engine walks its real selection (over `extra.brainOf`'s fakes).
  */
-export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string; readonly firstSessionId?: string; readonly noHands?: boolean; readonly oneHands?: boolean } = {}): World {
+export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string; readonly firstSessionId?: string; readonly noHands?: boolean; readonly oneHands?: boolean; readonly select?: boolean } = {}): World {
   const dir = where.dir ?? tempDir("jh-engine-");
   const config = testConfig(dir, { openaiApiKey: "sk-test-not-used" });
   let engine!: Engine;
@@ -884,7 +885,9 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
   // `observeSettleMs: 0`: the observer's 150 ms settle before it reads the screen after an acting tool is real time
   // (an app's reaction), pointless against a fake helper that answers at once; the `now:` line itself still lands.
-  engine = new Engine({ config, connectors: [], brain, fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
+  // `probe: false` and `discoverLocal`: no start-up key check against api.openai.com and no look at the loopback ports
+  // (V14 / BL-12), so a world passes under JARHEAD_TEST_NET=strict. A test that wants either passes its own.
+  engine = new Engine({ config, connectors: [], ...(where.select ? {} : { brain }), fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, probe: false, discoverLocal: async () => localNone(), ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
   // The real service's audit rows reach the ledger through the bridge's onRow; the fake's do the same here.
   if (fakeMemory) fakeMemory.onRow = (row) => engine.ledger.append(row);
   const events: EngineEvent[] = [];

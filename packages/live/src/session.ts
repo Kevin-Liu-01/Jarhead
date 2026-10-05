@@ -112,6 +112,8 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
   private usageSeconds = 0;
   /** Wall clock at session.started; session-timeline ms ≈ now - this. */
   private startedAtWall = 0;
+  /** Every message the server has sent on this socket, parsed or not. */
+  private frames = 0;
 
   constructor(private readonly opts: LiveSessionOptions) {
     super();
@@ -132,6 +134,15 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
 
   get billedSeconds(): number {
     return this.usageSeconds;
+  }
+
+  /**
+   * How many messages the server has sent so far, counted on arrival. GPT-Live-1 streams output audio continuously,
+   * silence included, so on a healthy session this never stands still for long: the engine reads it once a second on
+   * its own clock and treats a count that stopped as a dead socket (V3). A count, not a timestamp, so it holds on any clock.
+   */
+  get serverFrames(): number {
+    return this.frames;
   }
 
   private setState(next: LiveState): void {
@@ -167,6 +178,7 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
         this.raw({ type: "session.start", event_id: "start", session: config });
       };
       ws.onmessage = (ev) => {
+        this.frames += 1;
         const parsed = parseServerEvent(String(ev.data));
         if (!parsed) return;
         if (parsed.type === "session.started") {
@@ -365,11 +377,13 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
   /**
    * Close the socket now, without asking the server to finalize. For when a
    * graceful close() has not been answered and the meter must stop: the state is
-   * `closed` at once and `closed("client_closed", usageSeconds)` fires exactly
-   * once — the socket's own onclose (if it still fires) and any late
-   * `session.closed` frame are swallowed. Harmless when already closed.
+   * `closed` at once and `closed(reason, usageSeconds)` fires exactly once — the
+   * socket's own onclose (if it still fires) and any late `session.closed` frame
+   * are swallowed. Harmless when already closed. `reason` is `client_closed`, or
+   * `connection_lost` when the engine drops a socket that went silent (V3), so the
+   * reconnect that follows a real drop follows this one too.
    */
-  terminate(): void {
+  terminate(reason: "client_closed" | "connection_lost" = "client_closed"): void {
     if (this.state === "closed") return;
     const wasConnecting = this.state === "connecting";
     this.setState("closed");
@@ -381,6 +395,6 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
       // ignore
     }
     if (wasConnecting) this.rejectStart?.(new Error("live session terminated before it started"));
-    if (report) this.emit("closed", "client_closed", this.usageSeconds);
+    if (report) this.emit("closed", reason, this.usageSeconds);
   }
 }
