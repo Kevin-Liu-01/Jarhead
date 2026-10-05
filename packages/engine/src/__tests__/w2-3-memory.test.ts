@@ -61,6 +61,64 @@ test("LM-3: memory on, a filter the redactor changes is matched by words; a plai
   assert.match(net.calls[0]!, /\/v1\/embeddings$/);
 });
 
+/** A recording fetch that names the method and answers the model list, OpenAI's embeddings and Ollama's /api/embed. */
+function wire(): { calls: string[]; fetchImpl: typeof fetch } {
+  const calls: string[] = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push(`${init?.method ?? "GET"} ${String(url)}`);
+    if (String(url).endsWith("/v1/models")) return new Response(JSON.stringify({ data: [{ id: "gpt-5-mini" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    const input = (JSON.parse(String(init?.body ?? "{}")) as { input?: string[] }).input ?? [];
+    const vec = (i: number): number[] => Array.from({ length: 512 }, (_v, k) => (k === i ? 1 : 0));
+    return new Response(JSON.stringify({ embeddings: input.map((_, i) => vec(i)), data: input.map((_, index) => ({ index, embedding: vec(index) })) }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+/** What a `drain` tick starts (a relink after the toggle moved) has finished. */
+async function afterTick(b: MemoryBridge): Promise<void> {
+  b.drain(false);
+  await new Promise((resolve) => setImmediate(resolve));
+  await b.ready();
+}
+
+test("LM-3: memory off, the start asks the key for no model list and embeds no probe on the local server", async () => {
+  const keyed = wire();
+  const withKey = bridge({ fetchImpl: keyed.fetchImpl, enabled: () => false, model: () => undefined });
+  await withKey.ready();
+  await withKey.search("my sister's address");
+  assert.deepEqual(keyed.calls, [], "an OpenAI key and no pinned model: nothing asked");
+  assert.equal(withKey.summary().embeddings, "keyword");
+
+  const local = wire();
+  const onMac = bridge({ fetchImpl: local.fetchImpl, enabled: () => false, local: () => ({ flavor: "ollama", baseUrl: "http://127.0.0.1:11434", chatModel: "qwen3.5:27b", embedModel: "nomic-embed-text" }) });
+  await onMac.ready();
+  await onMac.search("my sister's address");
+  assert.deepEqual(local.calls, [], "a local embedding model: no probe");
+  assert.equal(onMac.summary().embeddings, "keyword");
+});
+
+test("LM-3: turning memory on rebuilds over the providers the settings name at the next tick; off again asks nothing", async () => {
+  const net = wire();
+  let on = false;
+  const b = bridge({ fetchImpl: net.fetchImpl, enabled: () => on, model: () => undefined });
+  await b.ready();
+  await afterTick(b);
+  assert.deepEqual(net.calls, [], "off at start, off at the tick");
+  on = true;
+  await afterTick(b);
+  assert.deepEqual(net.calls, ["GET https://api.openai.com/v1/models"], "on: the key's model list, once");
+  assert.equal(b.summary().embeddings, "openai");
+  await b.search("my sister's address");
+  assert.deepEqual(net.calls.slice(1), ["POST https://api.openai.com/v1/embeddings"], "on: the filter is embedded");
+  on = false;
+  await afterTick(b);
+  assert.equal(b.summary().embeddings, "keyword");
+  const before = net.calls.length;
+  await b.search("my brother's address");
+  await afterTick(b);
+  assert.equal(net.calls.length, before, "off again: nothing leaves");
+});
+
 const tick = (w: World): void => (w.engine as unknown as { tick(): void }).tick();
 
 async function heard(w: World, text: string): Promise<void> {

@@ -44,7 +44,9 @@ import type { EngineCommand, LedgerRow, LocalFlavor, MemoryItem, MemoryKind, Mem
  * vectors at quiet ticks.
  *
  * Off means off: with `Settings.memory` false nothing is extracted, injected or embedded —
- * the Memory rail's filter is ranked by words, as is a filter the redactor changed. A
+ * the service is built over keywords and rules, so no model list is asked and no probe is
+ * embedded, and turning memory on rebuilds it over the providers the settings name at the
+ * next tick. The Memory rail's filter is ranked by words, as is a filter the redactor changed. A
  * conversation in the Trash is never read, and what was learned only from it is left out
  * of every read (the brain's and the voice's blocks, the rail, the counts) until Restore;
  * the store keeps it (decision D5).
@@ -196,8 +198,10 @@ export class MemoryBridge {
   private pickedOnce = false;
   /** The build or relink under way; `ready()` waits on it. */
   private building: Promise<void> | undefined;
-  /** Which providers the service is built over ("local|url|embed|chat", "openai|model", "keyword"); relink() rebuilds only when it moves. */
+  /** Which providers the service is built over ("local|url|embed|chat", "openai|model", "keyword", "off"); relink() rebuilds only when it moves. */
   private identity: string | undefined;
+  /** The toggle `follow()` last relinked for, until the service matches it (one try per move of the toggle). */
+  private followed: boolean | undefined;
   /** A relink changed the embedding space: `reembed()` runs at quiet ticks until it returns 0. */
   private reembedPending = false;
   /** A reembed slice is the run in flight (not a conversation: the summary's `pending` leaves it out). */
@@ -222,9 +226,10 @@ export class MemoryBridge {
   /** Build the service (once) over the providers the settings name and read what the ledger holds; a store that cannot start is one warning. */
   private async start(): Promise<void> {
     const target = this.opts.local();
+    const on = this.opts.enabled();
     try {
-      this.service = await this.build(target);
-      this.identity = this.identityOf(target);
+      this.service = await this.build(target, on);
+      this.identity = this.identityOf(target, on);
     } catch (e) {
       // The store lives under <stateDir>/memory; a dir that cannot be made or read is one warning, not a dead engine.
       log.warn(`could not start the memory store: ${(e as Error).message.split("\n")[0]}; memory is off until it does`);
@@ -262,10 +267,11 @@ export class MemoryBridge {
     return this.building ?? Promise.resolve();
   }
 
-  /** The providers a target names, as one string: what `relink()` compares. */
-  private identityOf(target: LocalMemoryTarget | "offline" | undefined): string {
+  /** The providers a target names, as one string: what `relink()` compares. Memory off is its own identity (keywords and rules). */
+  private identityOf(target: LocalMemoryTarget | "offline" | undefined, on: boolean): string {
     // The user's name is part of every identity: the extractors and the renderer are built with it, so a rename rebuilds them.
     const who = `|who=${this.userName()}`;
+    if (!on) return `off${who}`;
     if (target === "offline") return `keyword${who}`;
     // The token's presence is part of the identity: a `config.set-secrets` that adds one relinks onto a server that wanted it.
     if (target) return `local|${target.baseUrl}|${target.embedModel ?? ""}|${target.chatModel}|${this.opts.brainApiKey() ? "token" : ""}${who}`;
@@ -285,9 +291,11 @@ export class MemoryBridge {
    * skipped even with a key. Under `local` with nothing answering: keywords and
    * rules. Otherwise Kevin's OpenAI key when there is one (embeddings and the Responses extractor,
    * which is also the decider — the key's model list is asked once when no model is pinned),
-   * rules and keywords when there is not.
+   * rules and keywords when there is not. Memory off (`on` false): keywords and rules whatever
+   * the settings name, so nothing is asked of any server; Forget, Restore and Edit still reach
+   * the store, and the vectors it holds wait for memory to come back on.
    */
-  private async build(target: LocalMemoryTarget | "offline" | undefined): Promise<MemoryServiceLike> {
+  private async build(target: LocalMemoryTarget | "offline" | undefined, on: boolean): Promise<MemoryServiceLike> {
     const dir = join(this.opts.stateDir, "memory");
     const fetchImpl = this.opts.fetchImpl;
     let embedder: Embedder;
@@ -295,7 +303,11 @@ export class MemoryBridge {
     let decider: Decider;
     let maxChars: number | undefined;
     const userName = this.userName();
-    if (target === "offline") {
+    if (!on) {
+      embedder = new KeywordEmbedder();
+      extractor = new RulesExtractor(userName);
+      decider = new RulesDecider();
+    } else if (target === "offline") {
       embedder = this.opts.embedder ?? new KeywordEmbedder();
       extractor = this.opts.extractor ?? new RulesExtractor(userName);
       decider = this.opts.decider ?? new RulesDecider();
@@ -366,19 +378,25 @@ export class MemoryBridge {
     if (this.opts.service) return;
     await this.ready();
     const target = this.opts.local();
-    const id = this.identityOf(target);
+    const on = this.opts.enabled();
+    const id = this.identityOf(target, on);
     if (this.service && id === this.identity) return;
     this.building = (async () => {
       await this.running?.catch(() => undefined);
       this.service?.flush();
       try {
-        this.service = await this.build(target);
+        this.service = await this.build(target, on);
       } catch (e) {
         log.warn(`memory could not move to ${id.split("|")[0]}: ${(e as Error).message.split("\n")[0]}; the store stays as it was`);
         return;
       }
       this.identity = id;
       this.reembedPending = true;
+      if (!on) {
+        log.info("memory off: keywords and rules, nothing asked of any server");
+        this.opts.onChange();
+        return;
+      }
       const s = this.service.summary();
       const where = target && target !== "offline" ? `extractor ${target.chatModel || "rules"} on ${target.baseUrl}` : target === "offline" ? "rules (the local server is down)" : this.opts.apiKey() ? "the Responses extractor" : "rules";
       log.info(`memory now ${s.embeddings} matching${s.embeddingModel ? ` (${s.embeddingModel}, ${s.embeddingDims ?? "?"} dims)` : ""} · ${where}; vectors heal at quiet ticks`);
@@ -523,6 +541,7 @@ export class MemoryBridge {
    * nothing pending, one slice of consolidation when a pass is due. Never two runs at once.
    */
   drain(quiet: boolean): void {
+    this.follow();
     if (!quiet || this.running || !this.opts.enabled()) return;
     const service = this.service;
     if (!service) return;
@@ -582,6 +601,23 @@ export class MemoryBridge {
         this.running = undefined;
         this.opts.onChange();
       });
+  }
+
+  /**
+   * Memory turned on or off since the service was built: rebuild it (`relink`) over what the
+   * toggle now names. Checked every tick (`drain`), since a settings change relinks only on a
+   * rename. A rebuild that fails is not retried until the toggle moves again.
+   */
+  private follow(): void {
+    if (this.opts.service || this.building || this.identity === undefined) return;
+    const on = this.opts.enabled();
+    if (this.identity.startsWith("off|") !== on) {
+      this.followed = undefined;
+      return;
+    }
+    if (this.followed === on) return;
+    this.followed = on;
+    void this.relink();
   }
 
   /** One `reembed` slice after a relink: the live items without a vector in the new space, ≤ 96 a tick, until none is left. */

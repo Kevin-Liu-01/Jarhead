@@ -27,9 +27,11 @@ export const WALK_DAYS = 60;
 export const CHAIN_ROWS_MAX = 20_000;
 
 /**
- * How many bytes of day files one search reads, newest first. A year of heavy use is ~100 MB;
- * a search past this bound stops and says where it stopped (`searchPage(…).older`), and the
- * next page goes on from there. The live daemon never blocks on the whole history.
+ * How many bytes of day files one page of `searchPage` reads, newest first. A year of heavy use
+ * is ~100 MB; a page past this bound stops and says where it stopped (`older`), and the next page
+ * goes on from there. `search()` is not paged: until the wire carries `before` and `older`, the
+ * daemon's `ledger.search` reads every live day (a rare word over a synthetic year: ~130 ms CPU,
+ * nothing kept).
  */
 export const SEARCH_PAGE_BYTES = 32 * 1024 * 1024;
 
@@ -81,7 +83,7 @@ export interface SearchPageOptions {
   readonly limit?: number;
   /** Search only the days before this one (YYYY-MM-DD, exclusive): the `older` of the previous page. */
   readonly before?: string;
-  /** Bytes of day files this page may read (at least one file is always read); default SEARCH_PAGE_BYTES. */
+  /** Bytes of day files this page may read (at least one file is always read; Infinity reads them all); default SEARCH_PAGE_BYTES. */
   readonly maxBytes?: number;
 }
 
@@ -292,6 +294,8 @@ interface PendingLineage {
   readonly from: string;
   readonly heir: string;
   readonly file: string;
+  /** The day the move took away: a later move of that day back to the live ledger voids this entry. */
+  readonly day: string;
 }
 
 /** A tombstone row waiting for the chain roots to be known. */
@@ -410,7 +414,8 @@ export class Ledger {
    * `conversation.*` / `grant` rows and this session's `now.*` rows are included
    * wherever they sit ("Moved to Trash 14:02 · Restored 14:03" in the Log), and a
    * tombstone for another chain that happened to land inside an open span is not.
-   * Only a listed session reads (see `sessions()`).
+   * A decision a day's move carried reads as Kevin made it (`restate`). Only a listed
+   * session reads (see `sessions()`).
    */
   readSession(sessionId: string): LedgerRow[] {
     const walk = this.walk();
@@ -454,7 +459,39 @@ export class Ledger {
     // An open session's span runs to the last file, so only a closed one has files after it.
     const late = built.end ? [...outside.filter((p) => p.file > (built.end as Position).file), ...after].sort(Ledger.byPosition) : [];
     for (const p of late) push(this.rowsOf(p.file)[p.index]);
+    return Ledger.restate(out);
+  }
+
+  /**
+   * A session's rows with the carried decisions (`carry`) as Kevin made them. A copy whose
+   * original is in the same answer is left out (a day came back from the Trash, or a later
+   * move carried it again), and one whose original left with its day is given back at
+   * `decidedAt`, its `carried` and `decidedAt` kept. So the Log never shows a move as a fresh
+   * "moved to Trash", "renamed" or "Now cleared" line at the move's time.
+   */
+  private static restate(rows: LedgerRow[]): LedgerRow[] {
+    const carried = (row: LedgerRow): boolean => (row as { carried?: unknown }).carried === true;
+    if (!rows.some(carried)) return rows;
+    const originals = new Set(rows.filter((r) => Ledger.isMeta(r) && !carried(r)).map(Ledger.decisionKey));
+    const seen = new Set<string>();
+    const out: LedgerRow[] = [];
+    for (const row of rows) {
+      if (!carried(row)) {
+        out.push(row);
+        continue;
+      }
+      const key = Ledger.decisionKey(row);
+      if (originals.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...row, at: Ledger.decidedAt(row) });
+    }
     return out;
+  }
+
+  /** One decision however often it was carried: the row less what a carry sets (`at`, `carried`, `decidedAt`, a part's `chainId`), and when Kevin made it. */
+  private static decisionKey(row: LedgerRow): string {
+    const { at: _at, carried: _carried, decidedAt: _decided, chainId: _chain, ...rest } = row as unknown as Record<string, unknown>;
+    return `${Ledger.decidedAt(row)}|${JSON.stringify(rest)}`;
   }
 
   /**
@@ -522,24 +559,31 @@ export class Ledger {
       if (conv.state !== "trashed") continue;
       for (const b of walk.members.get(root) ?? []) out.add(b.id);
     }
-    const memo = new Map<string, StateMark | null>();
-    const newest = (id: string, visiting: Set<string>): StateMark | undefined => {
-      const known = memo.get(id);
-      if (known !== undefined) return known ?? undefined;
-      let top = walk.stateOf.get(id);
-      if (visiting.has(id)) return top;
-      visiting.add(id);
-      for (const heir of walk.heirs.get(id)?.keys() ?? []) {
-        const root = walk.roots.get(heir);
-        const mark = root !== undefined ? walk.stateOf.get(root) : newest(heir, visiting);
+    // The newest decision over everything that continues an id, followed through the ids that are gone
+    // too. Lineage can loop (a session that left follows its root, which a later move says it continues),
+    // so each id walks its own reach: the answer never depends on which id was asked first.
+    const newest = (id: string): StateMark | undefined => {
+      let top: StateMark | undefined;
+      const take = (mark: StateMark | undefined): void => {
         if (mark && (!top || Ledger.newer(mark, top))) top = mark;
+      };
+      const seen = new Set<string>([id]);
+      const todo = [id];
+      for (let cur = todo.pop(); cur !== undefined; cur = todo.pop()) {
+        take(walk.stateOf.get(cur));
+        for (const heir of walk.heirs.get(cur)?.keys() ?? []) {
+          const root = walk.roots.get(heir);
+          if (root !== undefined) take(walk.stateOf.get(root));
+          else if (!seen.has(heir)) {
+            seen.add(heir);
+            todo.push(heir);
+          }
+        }
       }
-      visiting.delete(id);
-      memo.set(id, top ?? null);
       return top;
     };
     const gone = new Set<string>([...walk.heirs.keys(), ...walk.stateOf.keys()].filter((id) => !walk.byId.has(id)));
-    for (const id of gone) if (newest(id, new Set())?.state === "trashed") out.add(id);
+    for (const id of gone) if (newest(id)?.state === "trashed") out.add(id);
     walk.trashed = out;
     return out;
   }
@@ -660,20 +704,22 @@ export class Ledger {
   /**
    * Case-insensitive substring search over what was heard and said and over the
    * delegations' requests and summaries, across the LIVE day files only (the trash
-   * is not read), newest first. Bounded: `limit` defaults to 50 and never exceeds
-   * 200, and one search reads at most SEARCH_PAGE_BYTES of day files (`searchPage`
-   * says where to go on).
+   * is not read), newest first. `limit` defaults to 50 and never exceeds 200. Every
+   * live day is read until `limit` hits are found: the daemon's `ledger.search` sends
+   * no `before` and gets no `older` yet, so a byte bound here would hide every older
+   * hit from the Console and the CLI with no word that it stopped. The prefilter keeps
+   * the cost to the reads; `searchPage` is the bounded page for when the wire carries one.
    */
   search(query: string, limit: number = SEARCH_DEFAULT_LIMIT): LedgerSearchHit[] {
-    return this.searchPage(query, { limit }).hits;
+    return this.searchPage(query, { limit, maxBytes: Number.POSITIVE_INFINITY }).hits;
   }
 
   /**
    * One page of `search`: the day files before `before`, newest first, until `maxBytes`
    * of them were read or `limit` hits found. A line is parsed only when its raw text holds
-   * every word of the query (JSON-escaped, lowercased), so a rare word costs the reads and
-   * no rows are kept. `older` is the day to pass as the next page's `before` when the byte
-   * bound stopped the page with older files unread.
+   * every word of the query (JSON-escaped, lowercased, final sigma folded), so a rare word
+   * costs the reads and no rows are kept. `older` is the day to pass as the next page's
+   * `before` when the byte bound stopped the page with older files unread.
    */
   searchPage(query: string, opts: SearchPageOptions = {}): LedgerSearchPage {
     const q = query.replace(/\s+/g, " ").trim().toLowerCase();
@@ -682,9 +728,12 @@ export class Ledger {
     const asked = Math.floor(Number(opts.limit ?? SEARCH_DEFAULT_LIMIT));
     const cap = Math.min(SEARCH_MAX_LIMIT, asked > 0 ? asked : SEARCH_DEFAULT_LIMIT);
     const budget = Math.max(1, Math.floor(Number(opts.maxBytes ?? SEARCH_PAGE_BYTES)) || SEARCH_PAGE_BYTES);
-    // Every word as the day file spells it: JSON escapes quotes, backslashes and control characters.
-    const needles = [...new Set(q.split(" "))].map((w) => JSON.stringify(w).slice(1, -1)).sort((a, b) => b.length - a.length);
-    const has = (lower: string): boolean => needles.every((n) => lower.includes(n));
+    // Every word as the day file spells it: JSON escapes quotes, backslashes and control characters. The raw
+    // line and the parsed text can lowercase a capital sigma differently (an escape such as `\n` puts a letter
+    // beside it, which makes it final), so the prefilter folds ς into σ on both sides; the parsed check decides.
+    const fold = (s: string): string => s.toLowerCase().replace(/ς/g, "σ");
+    const needles = [...new Set(q.split(" "))].map((w) => fold(JSON.stringify(w).slice(1, -1))).sort((a, b) => b.length - a.length);
+    const has = (folded: string): boolean => needles.every((n) => folded.includes(n));
     const walk = this.walk();
     const files = this.days();
     const hits: LedgerSearchHit[] = [];
@@ -707,13 +756,13 @@ export class Ledger {
       }
       read += text.length;
       lastRead = file.slice(0, -".jsonl".length);
-      if (!has(text.toLowerCase())) continue;
+      if (!has(fold(text))) continue;
       const matches: { index: number; line: string }[] = [];
       let index = 0;
       for (const line of text.split("\n")) {
         if (!line.trim()) continue;
         const i = index++;
-        if (has(line.toLowerCase())) matches.push({ index: i, line });
+        if (has(fold(line))) matches.push({ index: i, line });
       }
       const owners = walk.owners.get(file);
       for (let k = matches.length - 1; k >= 0 && hits.length < cap; k--) {
@@ -1058,12 +1107,19 @@ export class Ledger {
               break;
             }
             case "ledger.moved": {
+              if (row.what !== "ledger") break;
+              if (row.to === "live") {
+                // The day is back: its sessions are live again, and what its earlier moves said about them no longer
+                // holds (the chains may change before it moves again; that move says the lineage of its own time).
+                for (let k = pendingLineage.length - 1; k >= 0; k--) if (pendingLineage[k]!.day === row.day) pendingLineage.splice(k, 1);
+                break;
+              }
               // A move's lineage (`carry`): heir → the ids whose conversation it continues. Not in the protocol's row type.
               const said = (row as { lineage?: unknown }).lineage;
               if (!said || typeof said !== "object" || Array.isArray(said)) break;
               for (const [heir, froms] of Object.entries(said as Record<string, unknown>)) {
                 if (!Array.isArray(froms)) continue;
-                for (const from of froms) if (typeof from === "string" && from !== heir) pendingLineage.push({ from, heir, file });
+                for (const from of froms) if (typeof from === "string" && from !== heir) pendingLineage.push({ from, heir, file, day: row.day });
               }
               break;
             }

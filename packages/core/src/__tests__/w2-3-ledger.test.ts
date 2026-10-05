@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LedgerRow } from "@jarhead/protocol";
-import { Ledger, WALK_DAYS } from "../ledger.ts";
+import { Ledger, SEARCH_PAGE_BYTES, WALK_DAYS } from "../ledger.ts";
 import { Trash } from "../trash.ts";
 
 /**
@@ -178,6 +178,50 @@ test("LM-5: the trashed sessions memory hides include every member and the root 
   assert.deepEqual([...ledger.trashedSessionIds()], []);
 });
 
+test("LM-5: a carried decision reads in the conversation's Log as Kevin made it, once, never as a fresh line at the move", () => {
+  const { dir, ledger } = fresh("jh-w23-5g-");
+  session(ledger, "S", NOW - 5 * DAY);
+  session(ledger, "x", NOW - 2 * DAY);
+  const decided = NOW - 2 * DAY + 3_600_000;
+  ledger.append({ at: decided, type: "conversation.trashed", chainId: "S", by: "kevin" });
+  ledger.append({ at: decided + 1, type: "conversation.renamed", chainId: "S", name: "the old plan" });
+  ledger.append({ at: decided + 2, type: "now.cleared", sessionId: "S" });
+  const decisions = (): { type: string; at: number; carried: boolean }[] =>
+    ledger
+      .readChain("S")
+      .rows.filter((r) => r.type.startsWith("conversation.") || r.type.startsWith("now."))
+      .map((r) => ({ type: r.type, at: r.at, carried: (r as { carried?: unknown }).carried === true }));
+  const before = decisions();
+  assert.deepEqual(before.map((d) => [d.type, d.at]), [["conversation.trashed", decided], ["conversation.renamed", decided + 1], ["now.cleared", decided + 2]]);
+  const trash = new Trash(dir, ledger, { now: () => NOW });
+  assert.equal(trash.moveDay(Ledger.dayFor(decided), "ledger", "kevin").ok, true);
+  assert.equal(ledger.read(NOW).filter((r) => (r as { carried?: unknown }).carried === true).length, 3, "the day file holds the copies as written");
+  const after = decisions();
+  assert.deepEqual(after.map((d) => [d.type, d.at]), before.map((d) => [d.type, d.at]), "each at the instant Kevin decided it, not the move's");
+  assert.ok(after.every((d) => d.carried), "and marked as carried");
+  assert.deepEqual(ledger.readSession("S").filter((r) => r.type === "now.cleared").map((r) => r.at), [decided + 2]);
+  // The day comes back: the originals read, the copies are left out.
+  assert.deepEqual(trash.restoreDay(Ledger.dayFor(decided)).refused, []);
+  assert.deepEqual(decisions(), before.map((d) => ({ ...d, carried: false })));
+});
+
+test("LM-5: when a chain's root leaves with its decisions, the part that stays shows each one once, at its own time", () => {
+  const { dir, ledger } = fresh("jh-w23-5h-");
+  // R and the decisions about its conversation share a day; M and N continue it on later days.
+  session(ledger, "R", NOW - 6 * DAY);
+  const decided = NOW - 6 * DAY + 3_600_000;
+  ledger.append({ at: decided, type: "conversation.renamed", chainId: "R", name: "kept" });
+  ledger.append({ at: decided + 1, type: "conversation.archived", chainId: "R" });
+  session(ledger, "M", NOW - 4 * DAY, { resumedFrom: "R" });
+  session(ledger, "N", NOW - 3 * DAY, { resumedFrom: "M" });
+  const trash = new Trash(dir, ledger, { now: () => NOW });
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 6 * DAY), "ledger", "kevin").ok, true);
+  assert.equal(ledger.chainRootOf("N"), "M");
+  assert.equal(ledger.conversation("N")?.state, "archived");
+  const rows = ledger.readChain("M").rows.filter((r) => r.type.startsWith("conversation."));
+  assert.deepEqual(rows.map((r) => [r.type, r.at]), [["conversation.renamed", decided], ["conversation.archived", decided + 1]]);
+});
+
 // ------------------------------------------------------------------------- D5 lineage
 
 test("D5: a conversation Kevin restored stays visible to memory after its remaining days move to the Trash", () => {
@@ -254,6 +298,28 @@ test("D5: a carried copy of an old decision never outranks a newer one on the co
   assert.deepEqual([...ledger.trashedSessionIds()], []);
 });
 
+test("D5: the lineage of a move undone by a Restore says nothing once that day moves again", () => {
+  // X branches into A and B. B's day moves (B follows X) and comes straight back; X's day moves (A and B
+  // each continue X); Kevin trashes A only; then B's day moves again. B was never trashed.
+  const { dir, ledger } = fresh("jh-w23-d5d-");
+  session(ledger, "X", NOW - 9 * DAY);
+  session(ledger, "A", NOW - 8 * DAY, { resumedFrom: "X" });
+  session(ledger, "B", NOW - 7 * DAY, { resumedFrom: "X" });
+  let t = NOW - 6 * DAY;
+  const trash = new Trash(dir, ledger, { now: () => t });
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 7 * DAY), "ledger", "kevin").ok, true);
+  assert.deepEqual(trash.restoreDay(Ledger.dayFor(NOW - 7 * DAY)).refused, []);
+  t = NOW - 5 * DAY;
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 9 * DAY), "ledger", "kevin").ok, true);
+  t = NOW - 4 * DAY;
+  ledger.append({ at: t, type: "conversation.trashed", chainId: "A", by: "kevin" });
+  assert.ok(!ledger.trashedSessionIds().has("B"));
+  t = NOW - 3 * DAY;
+  assert.equal(trash.moveDay(Ledger.dayFor(NOW - 7 * DAY), "ledger", "kevin").ok, true);
+  assert.ok(!ledger.trashedSessionIds().has("B"), "B left with its day; nothing about it was trashed");
+  assert.ok(ledger.trashedSessionIds().has("A"));
+});
+
 // ------------------------------------------------------------------------------- LM-9
 
 test("LM-9: a search reads a bounded slice of the history, newest first, and says where to go on; the continuation finds the older hits", () => {
@@ -282,13 +348,31 @@ test("LM-9: a search reads a bounded slice of the history, newest first, and say
   assert.deepEqual(ledger.search("zanzibar").map((h) => h.sessionId), ["new", "old"]);
 });
 
-test("LM-9: the raw-line prefilter never drops a hit the parsed text would make: quotes, backslashes, tabs and runs of spaces", () => {
+test("LM-9: search() reads the whole history, past a page's bound: the daemon's ledger.search has no way to ask for older pages", () => {
+  const { dir, ledger } = fresh("jh-w23-9d-");
+  session(ledger, "old", NOW - 3 * DAY, { heard: "the zanzibar plan" });
+  // One day file bigger than a page, between the two hits (written whole: a filler day of problem rows).
+  const line = `${JSON.stringify({ at: NOW - 2 * DAY, type: "problem", text: "z".repeat(16_000) })}\n`;
+  writeFileSync(join(dir, "ledger", `${Ledger.dayFor(NOW - 2 * DAY)}.jsonl`), line.repeat(Math.ceil((SEARCH_PAGE_BYTES + 1) / line.length)));
+  session(ledger, "new", NOW - DAY, { heard: "the Zanzibar plan again" });
+  const page = ledger.searchPage("zanzibar");
+  assert.deepEqual(page.hits.map((h) => h.sessionId), ["new"], "a page stops at its bound");
+  assert.equal(page.older, Ledger.dayFor(NOW - 2 * DAY));
+  assert.deepEqual(ledger.search("zanzibar").map((h) => h.sessionId), ["new", "old"], "search() does not");
+});
+
+test("LM-9: the raw-line prefilter never drops a hit the parsed text would make: quotes, backslashes, tabs, runs of spaces and a capital sigma beside an escape", () => {
   const { ledger } = fresh("jh-w23-9b-");
   session(ledger, "q", NOW - DAY, { heard: 'he said "ship it"\tand  left C:\\temp behind' });
   assert.equal(ledger.search('"ship it" and left').length, 1);
   assert.equal(ledger.search("C:\\temp").length, 1);
   assert.equal(ledger.search("SHIP   IT").length, 1);
   assert.equal(ledger.search("ship it and left").length, 0, "the quote is part of the text");
+  // In the raw line `\n` puts a letter before the second Σ, which lowercases it to a final ς; the parsed text has σ.
+  session(ledger, "g", NOW - 2 * DAY, { heard: "ΟΔΟΣ\nΣ ΑΘΗΝΑ" });
+  assert.deepEqual(ledger.search("σ αθηνα").map((h) => h.sessionId), ["g"]);
+  assert.deepEqual(ledger.search("Σ ΑΘΗΝΑ").map((h) => h.sessionId), ["g"]);
+  assert.deepEqual(ledger.search("οδος").map((h) => h.sessionId), ["g"]);
 });
 
 test("LM-9: the parsed-row cache is bounded by bytes, and a day read again after eviction reads the same rows", () => {
