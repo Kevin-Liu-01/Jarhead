@@ -23,6 +23,9 @@ const log = logger("brain.responses");
 
 export const DEFAULT_RESPONSES_MODEL = "gpt-5.6-terra";
 
+/** The output a tool call gets when no delegation is open for it: it did not run. */
+export const REFUSED_NO_TASK = "refused: no task is running in Jarhead";
+
 export interface ResponsesBrainOptions {
   readonly model?: string | undefined;
   readonly effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
@@ -71,10 +74,15 @@ interface PendingCall {
 export class ResponsesBrain implements Brain {
   readonly kind = "openai-responses";
   private live: LiveSession | undefined;
-  private sinks = new Map<string, { sink: BrainSink; resolve: (r: BrainResult) => void; started: number }>();
+  private sinks = new Map<string, { sink: BrainSink; task: BrainTask; resolve: (r: BrainResult) => void; started: number }>();
   private pendingByDelegation = new Map<string, PendingCall[]>();
   /** Circled regions not yet shown to the backend, per delegation. */
   private attachments = new Map<string, LoadedAttachment[]>();
+  /**
+   * Delegations stopped by Kevin: a late completion for one runs no tool. Kept for
+   * the session (delegation ids are Live's item ids, unique within it) and cleared
+   * when a new session binds, so the set never outlives the ids it guards.
+   */
   private cancelled = new Set<string>();
   private unbind: (() => void) | undefined;
 
@@ -83,6 +91,8 @@ export class ResponsesBrain implements Brain {
   /** Attach to a session; called by the orchestrator when the session starts. */
   bind(live: LiveSession): void {
     this.unbind?.();
+    // A new session's ids are new; a rebind to the same session keeps what it stopped.
+    if (live !== this.live) this.cancelled.clear();
     this.live = live;
     const onEvent = (delegationId: string | null, event: Record<string, unknown>): void => {
       void this.onResponseEvent(delegationId, event);
@@ -102,9 +112,15 @@ export class ResponsesBrain implements Brain {
    * response completes.
    */
   handle(task: BrainTask, sink: BrainSink): Promise<BrainResult> {
+    // Stopped before it reached the brain: an abort listener added now would never
+    // fire, so the runner would carry this task until the next delegation.
+    if (task.signal.aborted) {
+      this.cancelled.add(task.delegationId);
+      return Promise.resolve({ status: "cancelled" });
+    }
     this.opts.runner.attach(sink, task);
     return new Promise<BrainResult>((resolve) => {
-      this.sinks.set(task.delegationId, { sink, resolve, started: Date.now() });
+      this.sinks.set(task.delegationId, { sink, task, resolve, started: Date.now() });
       // The backend is already answering by the time we hear of the delegation, so
       // the circled regions cannot go in with the words; they ride as input_image
       // items with the first batch of tool results, before the backend continues —
@@ -125,6 +141,12 @@ export class ResponsesBrain implements Brain {
     this.sinks.delete(delegationId);
     this.pendingByDelegation.delete(delegationId);
     this.attachments.delete(delegationId);
+    // Nothing acts without a delegation: with none open, the runner lets go, so the
+    // daemon's tool.run gate closes behind this brain as it does behind every other.
+    // With others open, it carries the most recent of them, never the one that ended.
+    const latest = [...this.sinks.values()].at(-1);
+    if (latest) this.opts.runner.attach(latest.sink, latest.task);
+    else this.opts.runner.attach(undefined);
     entry.resolve(result);
   }
 
@@ -151,10 +173,15 @@ export class ResponsesBrain implements Brain {
 
     if (type === "response.completed" || type === "response.incomplete" || type === "response.failed") {
       const pending = this.pendingByDelegation.get(id) ?? [];
-      this.pendingByDelegation.set(id, []);
-      if (pending.length > 0 && !this.cancelled.has(id)) {
-        await this.runCalls(id, pending, entry?.sink);
-        return;
+      this.pendingByDelegation.delete(id);
+      if (pending.length > 0) {
+        if (entry && !this.cancelled.has(id)) {
+          await this.runCalls(id, pending, entry);
+          return;
+        }
+        // No open delegation for these calls (it finished, Kevin stopped it, or the
+        // event names none): nothing acts without one, so none of them runs.
+        this.refuseCalls(id, pending);
       }
       // The backend answered without a single tool call, so the circled region never
       // went in: show it now and let it answer once more, seeing what Kevin meant.
@@ -178,13 +205,28 @@ export class ResponsesBrain implements Brain {
     }
   }
 
-  private async runCalls(delegationId: string, calls: readonly PendingCall[], sink: BrainSink | undefined): Promise<void> {
+  /**
+   * Calls with no open delegation behind them: each is answered as refused, so every
+   * function_call in Live's conversation has its output, and the backend is not
+   * continued. Nothing runs.
+   */
+  private refuseCalls(delegationId: string, calls: readonly PendingCall[]): void {
+    const live = this.live;
+    log.warn(`refused ${calls.length} tool call(s) (${calls.map((c) => c.name).join(", ")}) for ${delegationId || "no delegation"}: no task is running`);
+    if (!live) return;
+    for (const call of calls) live.createResponseItem({ type: "function_call_output", call_id: call.callId, output: REFUSED_NO_TASK });
+  }
+
+  private async runCalls(delegationId: string, calls: readonly PendingCall[], entry: { sink: BrainSink; task: BrainTask }): Promise<void> {
     const live = this.live;
     if (!live) return;
-    if (sink) this.opts.runner.attach(sink);
+    const { sink } = entry;
     for (const call of calls) {
       if (this.cancelled.has(delegationId)) return;
-      sink?.thinking(progressLine(call.name, call.args));
+      // The task with the sink, before every call: the gates read its request and
+      // Kevin's words, and another delegation ending meanwhile may have moved the runner.
+      this.opts.runner.attach(entry.sink, entry.task);
+      sink.thinking(progressLine(call.name, call.args));
       const outcome = await this.opts.runner.run(call.name, call.args);
       const r = outcome.result;
       live.createResponseItem({ type: "function_call_output", call_id: call.callId, output: resultText(r) });
@@ -198,7 +240,7 @@ export class ResponsesBrain implements Brain {
           ],
         });
       }
-      if (r.kind === "needs-confirmation") sink?.step({ kind: "confirm", text: r.question });
+      if (r.kind === "needs-confirmation") sink.step({ kind: "confirm", text: r.question });
     }
     this.sendAttachments(delegationId, false);
     live.createResponse();
