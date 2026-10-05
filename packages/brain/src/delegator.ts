@@ -296,8 +296,33 @@ const SESSION_ENDED = "the voice session ended";
 const JARHEAD_NAME = "Jarhead";
 
 const STOP_PATTERN = /^\s*(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/i;
+/** A stop word that ends the words heard ("… jarhead, stop."): Live closes a fragment with its punctuation or leaves it for the next. */
+const STOP_AT_END = /\b(stop|cancel)\b[.!]?\s*$/i;
+/**
+ * What opens a fragment before its words: the previous utterance's terminal punctuation (Live sends it as the next
+ * fragment's prefix, ". Never mind") and the name ("Jarhead, stop"). Stripped before STOP_PATTERN judges the head.
+ */
+const STOP_LEAD = /^[\s.,!?;:…\-–—]*(?:(?:hey\s+)?jarhead[\s.,!?;:…\-–—]*)?/i;
 /** Every stop word, anywhere in the words heard: where the name that may follow one begins. */
 const STOP_WORDS_ANYWHERE = /\b(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/gi;
+const SEP = String.raw`[\s,.!?;:…\-–—]`;
+/** The verbs a no names ("don't send it"), and what it names them on. */
+const REFUSED_ACT = String.raw`(?:do|send|post|reply|click|press|delete|submit|share|run|open|type|call|buy|pay|book|move|close|go)`;
+const REFUSED_OBJECT = String.raw`(?:it|that|this|them|(?:the|that|this)\s+\w+)`;
+const NEGATION = String.raw`(?:no(?:\s+way)?|nope|nah|negative|not\s+(?:now|yet|that|this|it|today)|(?:don['’]?t|do\s+not|never)(?:\s+${REFUSED_ACT}(?:\s+${REFUSED_OBJECT})?)?)`;
+const REFUSAL_FILLER = String.raw`(?:thanks|thank\s+you|please|sorry|wait|(?:hey\s+)?jarhead|i\s+changed\s+my\s+mind|leave\s+it|skip\s+it)`;
+/**
+ * An utterance that opens with a no ("no", "nope", "don't", "do not", "not now", "never"). Said while a
+ * spawned thread's question is the last thing Kevin was asked, it is his no to that question (`onDelegation`,
+ * path b‴). "No problem" and "no worries" are pleasantries, never a no.
+ */
+export const REFUSAL_HEAD = new RegExp(String.raw`^${SEP}*(?:(?:hey\s+)?jarhead${SEP}+)?(?:no(?!${SEP}+(?:problem|problems|worries|doubt)\b)|nope|nah|negative|not\s+(?:now|yet|that|this|it|today)|don['’]?t|do\s+not|never)\b`, "i");
+/**
+ * An utterance that is a no and nothing else: "no", "no thanks", "no, don't send it", "don't send that",
+ * "not now", "nope, not yet". A no with a request after it ("no, send it to Anna") answers the question and
+ * the rest goes on as a request.
+ */
+export const REFUSAL_PATTERN = new RegExp(String.raw`^${SEP}*(?:(?:hey\s+)?jarhead${SEP}+)?${NEGATION}(?:${SEP}+(?:${NEGATION}|${REFUSAL_FILLER}))*${SEP}*$`, "i");
 /** The thread verbs the grammar answers from the table (packages/brain/src/reflex.ts, `meta: true`). */
 const THREAD_VERBS: ReadonlySet<ReflexKind> = new Set<ReflexKind>(["thread_status", "thread_list", "thread_stop", "thread_pause", "thread_resume"]);
 /** A correction of the running task names another app too ("no, in Chrome"): never a thread of its own. */
@@ -322,6 +347,17 @@ const PER_CLICK_LINE = /^\s*(?:clicking|clicked|pressing|pressed|scrolling|scrol
  * else it carries (the runner's question quotes the command: `run "python edit_file.py"`).
  */
 const ASKS_KEVIN = /\?|\b(?:say yes|confirm|go ahead)\b/i;
+/**
+ * A thread's question said again, in the words the engine asks the main lane's with ("May I …? Say yes."):
+ * "Slack still asks: may I click "Send" in Slack? Say yes." `description` is the root's pending question.
+ */
+function askAgainLine(name: string, description: string | undefined): string {
+  let q = (description ?? "").replace(/\s+/g, " ").trim().replace(/[\s?.!]+$/, "");
+  if (!q) return `${name} is still waiting on your yes.`;
+  if (q.length > 140) q = `${q.slice(0, 140).replace(/\s+\S*$/, "")}…`;
+  if (/^[A-Z][a-z]/.test(q)) q = q[0]!.toLowerCase() + q.slice(1);
+  return `${name} still asks: may I ${q}? Say yes.`;
+}
 /** Every tool the brains have, by name: a spoken line that carries one of these is mechanics, not intent. */
 const TOOL_NAMES: ReadonlySet<string> = new Set(ALL_TOOL_SPECS.map((t) => t.name));
 const SNAKE_TOKENS = /\b[a-z]+(?:_[a-z]+)+\b/g;
@@ -449,6 +485,14 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * as a stop on the task they started ("cancel my three pm meeting" … "thanks").
    */
   private delegatedWords: { readonly itemId: string; readonly text: string } | undefined;
+  /**
+   * The root's pending id of the spawned thread's question Kevin moved on from: he asked the brain, or
+   * another thread, for something while it held the floor. It stays on the floor (that thread still
+   * waits on it), but it is no longer the last thing he was asked, so his next yes or no may be for what
+   * was said since. A yes asks it again first; a no goes on as a request. Cleared when it is asked again;
+   * a new question has a new id.
+   */
+  private movedOnFrom: string | undefined;
   /** The session is gone (`dispose`): records still close, but the engine owns the phase from here. */
   private disposed = false;
 
@@ -490,16 +534,18 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * The session this delegator served is gone: the server dropped it, a pause, a sleep, the watchdog.
    * Nothing it started may outlive it. Every stop verb (Stop, Pause, sleep, a spoken stop) reaches the
    * NEXT session's delegator, so a turn left running here would act on with nothing able to cut it.
-   * The running turn's signal is aborted and the brain's cancel sent; a draining delegation's wait ends
-   * (its threads are the scheduler's). Both records close as cancelled on the ledger. Quiet: nothing is
-   * said to a voice that is gone, and the engine owns its phase across the detach.
+   * The running turn's signal is aborted, the brain's cancel sent, and its record closes as cancelled.
+   * A draining delegation's wait ends, and its record closes with its brain's own result: its threads
+   * are the scheduler's and carry on, so the record never says they were cancelled. A reflex that ran
+   * ahead and was never adopted closes once it settles. Quiet: nothing is said to a voice that is gone,
+   * and the engine owns its phase across the detach.
    */
   dispose(): void {
     this.disposed = true;
     for (const u of this.unbind.splice(0)) u();
     if (this.prefireTimer) clearTimeout(this.prefireTimer);
     this.prefireTimer = undefined;
-    if (this.prefired?.forgetTimer) clearTimeout(this.prefired.forgetTimer);
+    if (this.prefired) this.finishPrefire(this.prefired, SESSION_ENDED);
     if (this.pendingStop) clearTimeout(this.pendingStop.timer);
     this.pendingStop = undefined;
     for (const q of this.commentaryQueue.values()) if (q.timer) clearTimeout(q.timer);
@@ -509,13 +555,18 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.running = undefined;
     this.parked.clear();
     // Oldest first, as cancel() closes them.
-    for (const slot of [...parked, ...(run ? [run] : [])]) {
-      slot.abort.abort();
+    for (const slot of parked) {
       slot.cut.abort();
-      this.closeSlot(slot, { status: "cancelled", summary: SESSION_ENDED });
+      this.addStep(slot.delegation.id, { kind: "note", text: `${SESSION_ENDED}; its threads carried on` });
+      this.closeSlot(slot, slot.result ?? { status: "done" });
     }
-    const cut = [...(run ? ["the running turn"] : []), ...(parked.length > 0 ? [`${parked.length} draining`] : [])];
-    if (cut.length > 0) log.info(`${SESSION_ENDED}: cancelled ${cut.join(" and ")}`);
+    if (run) {
+      run.abort.abort();
+      run.cut.abort();
+      this.closeSlot(run, { status: "cancelled", summary: SESSION_ENDED });
+    }
+    const ended = [...(run ? ["cancelled the running turn"] : []), ...(parked.length > 0 ? [`closed ${parked.length} draining (threads carry on)`] : [])];
+    if (ended.length > 0) log.info(`${SESSION_ENDED}: ${ended.join("; ")}`);
     if (run) {
       void Promise.resolve()
         .then(() => this.opts.brain.cancel())
@@ -554,7 +605,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         return;
       }
       const tail = recent.slice(-40);
-      if (STOP_PATTERN.test(tail.trimStart()) || /\b(stop|cancel)\b\s*$/i.test(tail)) {
+      if (STOP_PATTERN.test(tail.replace(STOP_LEAD, "")) || STOP_AT_END.test(tail)) {
         const threads = this.opts.threads;
         const live = threads?.liveNames().length ?? 0;
         // Two or more threads live: the word may be "stop … the slack one". Or the ear just stopped one by name and
@@ -956,16 +1007,34 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const record = ledger ? (g: { app: string; actionClass: string; until: number }): void => ledger.append({ at: this.now(), type: "grant", chainId: confirmations.conversationId, app: g.app, actionClass: g.actionClass, until: g.until }) : undefined;
     const isYes = YES_PATTERN.test(transcript.last("kevin")?.text ?? "");
 
+    // A spawned thread's question on the floor, and whether it is still the last thing Kevin
+    // was asked: he has not asked the brain, or another thread, for anything since (`movedOnFrom`).
+    const threads = this.opts.threads;
+    const floor = threads ? this.threadFloor() : undefined;
+    const asked = floor ? confirmations.pending?.id : undefined;
+    const movedOn = asked !== undefined && asked === this.movedOnFrom;
+
     // (b) A yes while a spawned thread's question holds the floor: the yes is armed on
     // the root and that thread re-runs its tool on its own brain. The brain's running
-    // turn is not superseded — the yes was never for it.
-    const floor = isYes ? this.threadFloor() : undefined;
-    if (floor && this.opts.threads && confirmations.arm(record) !== undefined) {
+    // turn is not superseded — the yes was never for it. When Kevin moved on since the
+    // question was asked, the yes may be for what was said since ("should I delete the
+    // draft?"): nothing is armed, the question is asked again, and his next yes answers it.
+    if (floor && threads && isYes && movedOn) {
+      const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
+      this.appendIds.set(aside.id, appendId);
+      this.movedOnFrom = undefined;
+      this.addStep(aside.id, { kind: "note", text: `a yes after ${this.userName} moved on from ${floor.name}'s question: nothing armed; the question is asked again`, thread: floor.name });
+      this.sayAside(aside.id, appendId, askAgainLine(floor.name, confirmations.pending?.description));
+      this.closeRecord(aside.id, "done", `asked ${floor.name}'s question again`);
+      log.info(`delegation ${aside.id}: a yes after ${this.userName} moved on; ${floor.name}'s question asked again, nothing armed`);
+      return;
+    }
+    if (floor && threads && isYes && confirmations.arm(record) !== undefined) {
       const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
       this.appendIds.set(aside.id, appendId);
       this.addStep(aside.id, { kind: "note", text: `yes for ${floor.name}'s question; the running task carries on`, thread: floor.name });
       try {
-        await this.opts.threads.resume(floor.id);
+        await threads.resume(floor.id);
         this.closeRecord(aside.id, "done", `relayed the yes to ${floor.name}`);
       } catch (e) {
         this.closeRecord(aside.id, "failed", `could not relay the yes to ${floor.name}: ${(e as Error).message.slice(0, 200)}`);
@@ -973,11 +1042,37 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       return;
     }
 
+    // (b‴) A no while a spawned thread's question is the last thing Kevin was asked: that
+    // thread's answer, as the Console's Deny gives it. The thread cannot go on without the
+    // yes, so it stops ("Slack stopped."), and its question goes with it: no later yes can
+    // land the action he refused. A no and nothing else is answered here; the brain's
+    // running turn is untouched. A no with a request after it ("no, send it to Anna") goes on
+    // as that request. After Kevin moved on, a no may be for what was said since: it goes on
+    // as a request, and the question stays for a yes to ask again.
+    if (floor && threads && asked !== undefined && !isYes && !movedOn && REFUSAL_HEAD.test(lastText)) {
+      const whole = REFUSAL_PATTERN.test(lastText);
+      const aside = whole ? this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems) : undefined;
+      if (aside) this.appendIds.set(aside.id, appendId);
+      let stopped = false;
+      try {
+        stopped = await threads.stopNamed(floor.name);
+      } catch (e) {
+        log.warn(`stop ${floor.name} on ${this.userName}'s no: ${(e as Error).message}`);
+      }
+      // The thread was gone already (or the stop failed): its question still never waits for a later yes.
+      if (!stopped && confirmations.pending?.id === asked) confirmations.dropQuestion();
+      log.info(`${this.userName} said no to ${floor.name}'s question: ${stopped ? `${floor.name} stopped` : "its question dropped"}${aside ? "" : "; the rest goes on as a request"}`);
+      if (aside) {
+        this.addStep(aside.id, { kind: "note", text: `no for ${floor.name}'s question; ${stopped ? `${floor.name} stopped` : "the question dropped"}; the running task carries on`, thread: floor.name });
+        this.closeRecord(aside.id, "done", `${this.userName} said no to ${floor.name}`);
+        return;
+      }
+    }
+
     // (b′) A thread verb — "what is Spotify doing", "what are you doing", "stop the Slack
     // one", "pause Spotify" — is answered from the TABLE as an aside: zero generations,
     // and the running turn is untouched (the same words used to supersede it and cost
     // two generations). Judged on the whole request, then on an addressed last utterance.
-    const threads = this.opts.threads;
     const names = threads?.liveNames() ?? [];
     const verb = threads && !isYes ? this.threadVerb(request, requestItems, lastText, names) : undefined;
     if (threads && verb) {
@@ -1002,10 +1097,12 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
     // (b″) Addressed to a live thread by name — "spotify, skip this song", "hey slack …",
     // "tell spotify to …" — is a follow-up turn on THAT thread's own brain, Kevin's circled
-    // marks riding along; the main brain's turn carries on.
+    // marks riding along; the main brain's turn carries on. Kevin moved on from the floor's
+    // question: what that thread says next may ask him something of its own.
     const addressed = threads && names.length > 0 && !isYes ? this.addressedThread(lastText, names) : undefined;
     const thread = addressed ? threads?.byNameLive(addressed.name) : undefined;
     if (threads && addressed && thread) {
+      if (asked !== undefined) this.movedOnFrom = asked;
       const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
       this.appendIds.set(aside.id, appendId);
       const { attachments: marks } = await this.takeMarks();
@@ -1056,13 +1153,16 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
     const armed = isYes ? confirmations.arm(record) : undefined;
     const confirmation = armed !== undefined;
-    if (!confirmation && confirmations.pending && !YES_PATTERN.test(request) && !this.threadFloor()) {
-      // A different request while the main brain's question was pending drops it: a
-      // later "yes" must not fire an action Kevin has moved on from. The question only:
-      // moving on from a question is not a cut, so the standing grants stay. A spawned
-      // thread's question stays on the floor: that thread is still waiting on it, and
-      // Kevin's later "yes" (path b) is still its answer.
-      confirmations.dropQuestion();
+    if (!confirmation && confirmations.pending && !YES_PATTERN.test(request)) {
+      // A different request while a question was pending: a later "yes" must not fire an
+      // action Kevin has moved on from. The main brain's question is dropped (the question
+      // only: moving on from a question is not a cut, so the standing grants stay). A spawned
+      // thread's question stays on the floor, since that thread still waits on it, but the
+      // brain is about to speak: a later yes may be for what it asks, so that yes asks the
+      // thread's question again first (path b). A question asked while this request was on
+      // its way (not `asked`) is the newest thing Kevin heard, and stays as it is.
+      if (!this.threadFloor()) confirmations.dropQuestion();
+      else if (asked !== undefined && confirmations.pending.id === asked) this.movedOnFrom = asked;
     }
 
     const marks = new Marks(this.now);

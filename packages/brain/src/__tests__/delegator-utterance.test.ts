@@ -5,17 +5,23 @@ import { Transcript, type LiveSession } from "@jarhead/live";
 import { ConfirmationState } from "@jarhead/hands";
 import { MAIN_THREAD_ID } from "@jarhead/protocol";
 import { GAP_MS } from "../../../live/src/transcript.ts";
-import { Delegator, UTTERANCE_GAP_MS, type DelegatorThreads, type ThreadFloor } from "../delegator.ts";
+import { Delegator, REFUSAL_HEAD, REFUSAL_PATTERN, UTTERANCE_GAP_MS, type DelegatorThreads, type ThreadFloor } from "../delegator.ts";
 import type { Brain, BrainResult, BrainSink, BrainTask } from "../brain.ts";
+import { parseReflex, type Reflex, type ReflexOutcome } from "../reflex.ts";
 
 /**
  * W1-3, the Delegator alone (the engine-level reproductions are in
  * packages/engine/src/__tests__/delegator-utterance.test.ts):
  *
  * - V2: a spoken stop is judged on the utterance its fragment belongs to, never glued onto the
- *   request before it, and never on the words Live already delegated.
- * - V1: dispose() (the session is gone) cuts what that session's delegator still runs or drains.
- * - TH-1: a new request drops only the main brain's pending question, never a thread's.
+ *   request before it, and never on the words Live already delegated. Live's leading punctuation
+ *   and the name ("…. Never mind", "Jarhead, stop.") do not hide it.
+ * - V1: dispose() (the session is gone) cuts the turn that session's delegator still runs. A
+ *   draining delegation closes with its brain's own result (its threads carry on), and a reflex
+ *   that ran ahead closes once it settles.
+ * - TH-1: a new request drops only the main brain's pending question, never a thread's. After
+ *   Kevin moved on, his next yes asks the thread's question again first. His no to a thread's
+ *   question stops that thread, so no later yes can land the action he refused.
  * - PERF-7: an aside answered from the table goes to Live at once, past the commentary coalescer.
  */
 
@@ -79,8 +85,12 @@ class FakeThreads implements DelegatorThreads {
   async followUp(): Promise<boolean> {
     return true;
   }
-  async stopNamed(): Promise<boolean> {
-    return true;
+  stopped: string[] = [];
+  /** What a stop by name does (the scheduler's: the thread ends and its question leaves the desk); true by default. */
+  onStopNamed: ((name: string) => boolean) | undefined;
+  async stopNamed(name: string): Promise<boolean> {
+    this.stopped.push(name);
+    return this.onStopNamed ? this.onStopNamed(name) : true;
   }
   floorThread(): ThreadFloor | undefined {
     return this.floor;
@@ -214,7 +224,33 @@ test("V2: a stop word in the utterance a fragment belongs to still stops: a new 
   }
 });
 
-test("V1: dispose() cuts what its session left: the running turn aborted and the brain's cancel sent, a draining delegation's wait ended, both records cancelled; quiet, no phase, and a late result changes nothing", async () => {
+test("V2: Live's leading punctuation and the name do not hide a stop: '. Never mind', '. Cancel that', 'Jarhead, stop.'", async () => {
+  for (const frags of [[". Never mind"], [". Never", " mind"], [". Cancel that"], [" Jarhead,", " stop."], [" hey jarhead, cancel"]]) {
+    const { live, transcript, stops, d } = setup();
+    hear(live, transcript, "open the budget", 0, 1200);
+    live.emit("delegation", "item_1", "client", 1200);
+    await tick();
+    let t = 4000;
+    for (const f of frags) {
+      hear(live, transcript, f, t, t + 250);
+      t += 250;
+      await tick(0);
+    }
+    assert.deepEqual(stops, ["Kevin said stop"], JSON.stringify(frags));
+    d.dispose();
+  }
+  // A request whose words merely follow the name is no stop.
+  const { live, transcript, stops, d } = setup();
+  hear(live, transcript, "open the budget", 0, 1200);
+  live.emit("delegation", "item_1", "client", 1200);
+  await tick();
+  hear(live, transcript, ". Jarhead, what is the weather", 4000, 4600);
+  await tick(0);
+  assert.deepEqual(stops, []);
+  d.dispose();
+});
+
+test("V1: dispose() cuts what its session left: the running turn aborted, the brain's cancel sent, its record cancelled; a draining delegation's wait ends and it closes with its brain's own result, its threads carrying on; quiet, no phase, and a late result changes nothing", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
   const brain = holdingBrain();
@@ -251,10 +287,12 @@ test("V1: dispose() cuts what its session left: the running turn aborted and the
   assert.equal(threads.drains[0]!.aborted, true, "the draining wait ended (its threads are the scheduler's)");
   await tick();
   assert.equal(brain.cancels, 1, "the brain's cancel was sent once (turn/interrupt for Codex)");
-  for (const rec of d.all()) {
-    assert.equal(rec.status, "cancelled", rec.request);
-    assert.equal(rec.summary, "the voice session ended");
-  }
+  const [drained, cut] = d.all();
+  assert.equal(drained!.status, "done", "the draining delegation keeps its brain's result: its threads were never cancelled");
+  assert.equal(drained!.summary, "Spotify alongside.");
+  assert.equal(drained!.steps.at(-1)!.text, "the voice session ended; its threads carried on");
+  assert.equal(cut!.status, "cancelled", "the running turn is cancelled");
+  assert.equal(cut!.summary, "the voice session ended");
   assert.deepEqual(phases, [], "the engine owns the phase across a detach");
   assert.deepEqual(cancelled, []);
   assert.equal(live.sent.length, sentBefore, "nothing is said to a voice that is gone");
@@ -272,39 +310,178 @@ test("V1: dispose() cuts what its session left: the running turn aborted and the
   assert.equal(idle.brain.cancels, 0);
 });
 
-test("TH-1: a new request drops the main brain's pending question, never a spawned thread's: Slack's question stays on the floor and Kevin's later yes reaches it", async () => {
+/** A delegator with Slack's question on the floor, as the engine's desk would hold it: the root's pending question, the floor naming Slack. */
+async function slackAsks(): Promise<{ live: FakeLive; transcript: Transcript; brain: ReturnType<typeof holdingBrain>; threads: FakeThreads; confirmations: ConfirmationState; d: Delegator; said: () => string[] }> {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const brain = holdingBrain();
+  const threads = new FakeThreads();
+  const confirmations = new ConfirmationState();
+  let clock = 100_000;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations, threads, now: () => ++clock, commentaryCoalesceMs: 0 });
+  hear(live, transcript, "tell ben on slack i'm late", 0, 900);
+  live.emit("delegation", "item_1", "client", 900);
+  await tick();
+  threads.names = ["Slack"];
+  threads.alive.set("t_slack", 1);
+  confirmations.ask('left click on "Send" in Slack', "click_element", { name: "Send" });
+  threads.floor = { id: "t_slack", name: "Slack" };
+  // A stop by name ends the thread and takes its question off the desk, as the scheduler does.
+  threads.onStopNamed = (name) => {
+    if (name !== "Slack") return false;
+    threads.floor = undefined;
+    threads.names = [];
+    threads.alive.clear();
+    confirmations.dropQuestion();
+    return true;
+  };
+  const said = (): string[] => live.sent.filter((x) => x.type === "commentary").map((x) => x.content);
+  return { live, transcript, brain, threads, confirmations, d, said };
+}
+
+let at = 4000;
+/** Kevin says `words` as a new utterance and Live delegates on it. */
+async function says(live: FakeLive, transcript: Transcript, words: string, id: string): Promise<void> {
+  at += 4000;
+  hear(live, transcript, ` ${words}`, at, at + 600);
+  live.emit("delegation", id, "client", at + 600);
+  await tick();
+}
+
+test("TH-1: a new request drops the main brain's pending question, never a spawned thread's: Slack's question stays on the floor", async () => {
   for (const [floor, survives] of [
     [{ id: "t_slack", name: "Slack" }, true],
     [{ id: MAIN_THREAD_ID, name: "Jarhead" }, false],
     [undefined, false],
   ] as const) {
-    const live = new FakeLive();
-    const transcript = new Transcript(() => 0);
-    const brain = holdingBrain();
-    const threads = new FakeThreads();
-    const confirmations = new ConfirmationState();
-    let clock = 100_000;
-    const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations, threads, now: () => ++clock, commentaryCoalesceMs: 0 });
-    hear(live, transcript, "tell ben on slack i'm late", 0, 900);
-    live.emit("delegation", "item_1", "client", 900);
-    await tick();
-    confirmations.ask("left click on \"Send\" in Slack", "click_element", { name: "Send" });
+    const { live, transcript, threads, confirmations, d } = await slackAsks();
     threads.floor = floor;
     // Kevin asks for something else before he answers.
-    hear(live, transcript, " what is in my notes", 4000, 4900);
-    live.emit("delegation", "item_2", "client", 4900);
-    await tick();
+    await says(live, transcript, "what is in my notes", "item_2");
     assert.equal(confirmations.pending !== undefined, survives, `${floor?.name ?? "a free floor"}: the question ${survives ? "survives" : "is dropped"}`);
-    if (survives) {
-      hear(live, transcript, " yes", 8000, 8300);
-      live.emit("delegation", "item_yes", "client", 8300);
-      await tick();
-      assert.deepEqual(threads.resumed, ["t_slack"], "the yes reached Slack");
-      assert.equal(brain.tasks.length, 2, "the yes was not a brain task");
-      assert.equal(confirmations.consume("click_element", { name: "Send" }), true, "the yes was armed for Slack's exact action");
-    }
     d.dispose();
   }
+});
+
+test("TH-1: after Kevin moved on from Slack's question, his next yes may be for what was said since: nothing is armed, Slack's question is asked again, and the yes after that reaches Slack", async () => {
+  for (const between of ["what is in my notes", "spotify, play something calmer"]) {
+    const { live, transcript, brain, threads, confirmations, d, said } = await slackAsks();
+    threads.names = ["Slack", "Spotify"];
+    await says(live, transcript, between, "item_2");
+    // The brain (or Spotify) speaks and may ask something of its own ("should I read them?"). Kevin: "yes".
+    await says(live, transcript, "yes", "item_yes");
+    assert.deepEqual(threads.resumed, [], `after "${between}": the yes did not reach Slack`);
+    assert.equal(confirmations.consume("click_element", { name: "Send" }), false, "nothing was armed");
+    assert.ok(confirmations.pending, "Slack's question is still on the floor");
+    assert.equal(said().at(-1), 'Slack still asks: may I left click on "Send" in Slack? Say yes.', "the question is asked again, at once");
+    const reask = d.all().find((x) => x.liveId === "item_yes");
+    assert.equal(reask?.summary, "asked Slack's question again");
+    const tasks = brain.tasks.length;
+    // Kevin heard the question again; this yes answers it.
+    await says(live, transcript, "yes", "item_yes2");
+    assert.deepEqual(threads.resumed, ["t_slack"], "the yes reached Slack");
+    assert.equal(brain.tasks.length, tasks, "neither yes was a brain task");
+    assert.equal(confirmations.consume("click_element", { name: "Send" }), true, "the yes was armed for Slack's exact action");
+    d.dispose();
+  }
+  // No request in between: the yes is Slack's at once.
+  const { live, transcript, threads, d } = await slackAsks();
+  await says(live, transcript, "yes", "item_yes");
+  assert.deepEqual(threads.resumed, ["t_slack"]);
+  d.dispose();
+});
+
+test("TH-1: Kevin's no to Slack's question stops Slack, as the Console's Deny does; the brain is untouched, and a later yes lands nothing", async () => {
+  for (const no of ["no", "no, don't send it", "don't send that", "not now", "nope. not yet", "no thanks"]) {
+    const { live, transcript, brain, threads, confirmations, d } = await slackAsks();
+    const turn = brain.tasks[0]!;
+    await says(live, transcript, no, "item_no");
+    assert.deepEqual(threads.stopped, ["Slack"], `"${no}": Slack stopped`);
+    assert.equal(confirmations.pending, undefined, `"${no}": its question is gone`);
+    assert.equal(brain.tasks.length, 1, `"${no}": no brain task`);
+    assert.equal(turn.signal.aborted, false, `"${no}": the running turn carries on`);
+    assert.equal(d.all().find((x) => x.liveId === "item_no")?.summary, "Kevin said no to Slack");
+    await says(live, transcript, "yes", "item_yes");
+    assert.deepEqual(threads.resumed, [], `"${no}" then "yes": Slack is not resumed`);
+    assert.equal(confirmations.consume("click_element", { name: "Send" }), false, `"${no}" then "yes": nothing armed`);
+    d.dispose();
+  }
+});
+
+test("TH-1: a no that cannot stop Slack still drops its question; a no with a request after it stops Slack and the request goes on to the brain", async () => {
+  {
+    const { live, transcript, threads, confirmations, d } = await slackAsks();
+    threads.onStopNamed = () => false; // Slack ended a moment ago
+    await says(live, transcript, "no", "item_no");
+    assert.deepEqual(threads.stopped, ["Slack"]);
+    assert.equal(confirmations.pending, undefined, "the question never waits for a later yes");
+    await says(live, transcript, "yes", "item_yes");
+    assert.deepEqual(threads.resumed, []);
+    d.dispose();
+  }
+  {
+    const { live, transcript, brain, threads, d } = await slackAsks();
+    await says(live, transcript, "no, send it to anna instead", "item_no");
+    assert.deepEqual(threads.stopped, ["Slack"], "the no answered Slack");
+    assert.equal(brain.tasks.length, 2, "the rest went on as a request");
+    assert.match(brain.tasks[1]!.request, /send it to anna instead/);
+    d.dispose();
+  }
+});
+
+test("TH-1: after Kevin moved on, a no may be for what was said since: Slack is not stopped, the words go to the brain, and Slack's question stays for a yes to ask again", async () => {
+  const { live, transcript, brain, threads, confirmations, d, said } = await slackAsks();
+  await says(live, transcript, "what is in my notes", "item_2");
+  await says(live, transcript, "no", "item_no");
+  assert.deepEqual(threads.stopped, [], "Slack carries on");
+  assert.equal(brain.tasks.length, 3, "the no went to the brain");
+  assert.ok(confirmations.pending, "Slack's question stays");
+  await says(live, transcript, "yes", "item_yes");
+  assert.deepEqual(threads.resumed, []);
+  assert.match(said().at(-1) ?? "", /^Slack still asks: /);
+  d.dispose();
+});
+
+test("TH-1: the refusal grammar: a no, a no with a request after it, and words that are no no at all", () => {
+  const whole = ["no", "No.", "nope", "nah", "no thanks", "no thank you", "no, don't send it", "don't send that", "don't", "do not send it", "not now", "not yet", "no, not yet", "never", "no way", "jarhead, no", "no wait", "nope, don't do it", "don’t post that", "no, I changed my mind", "don't send the message"];
+  const headOnly = ["no, send it to anna instead", "no what's the weather", "don't send it to ben, send it to anna", "not that one, the blue one", "never send messages after ten"];
+  const neither = ["yes", "now what", "nobody told me", "notes", "no problem", "no worries", "what is in my notes", "know what", "nothing yet", "send it", "stop", "cancel that"];
+  for (const t of whole) {
+    assert.ok(REFUSAL_HEAD.test(t), `"${t}" opens with a no`);
+    assert.ok(REFUSAL_PATTERN.test(t), `"${t}" is a no and nothing else`);
+  }
+  for (const t of headOnly) {
+    assert.ok(REFUSAL_HEAD.test(t), `"${t}" opens with a no`);
+    assert.ok(!REFUSAL_PATTERN.test(t), `"${t}" says more than no`);
+  }
+  for (const t of neither) assert.ok(!REFUSAL_HEAD.test(t), `"${t}" is no no`);
+});
+
+test("V1: dispose() closes a reflex that ran ahead of a delegation Live never sent, once the reflex settles", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const ran: string[] = [];
+  const reflexes = {
+    match: (u: string) => parseReflex(u),
+    run: async (reflex: Reflex, sink?: BrainSink): Promise<ReflexOutcome> => {
+      ran.push(reflex.label);
+      await tick(80);
+      sink?.step({ kind: "tool", tool: { name: reflex.tool, input: reflex.input, ok: true, ms: 80 } });
+      return { reflex, result: { kind: "text", text: "OK" }, ms: 80, ok: true };
+    },
+    inExchange: () => false,
+  };
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain: holdingBrain(), confirmations: new ConfirmationState(), reflexes, prefireQuietMs: 10, prefireTtlMs: 60_000, commentaryCoalesceMs: 0 });
+  live.emit("inputTranscript", "jarhead scroll down.", 0, 700);
+  transcript.push({ speaker: "kevin", delta: "jarhead scroll down.", startMs: 0, endMs: 700 });
+  await tick(40);
+  assert.deepEqual(ran, ["scroll down"], "the reflex ran ahead");
+  assert.equal(d.all()[0]!.status, "running");
+  d.dispose(); // the session drops before Live delegates
+  await tick(120);
+  const rec = d.all()[0]!;
+  assert.equal(rec.status, "done", "closed once the reflex settled, not left running");
+  assert.equal(rec.summary, "scrolled down. (the voice session ended)");
 });
 
 test("PERF-7: a status answered from the table goes to Live at once, even inside the commentary coalescer's window", async () => {

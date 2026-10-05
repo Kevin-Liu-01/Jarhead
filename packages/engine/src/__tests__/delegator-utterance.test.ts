@@ -3,12 +3,14 @@
  *
  * - V2: the spoken-stop check judges the utterance a fragment belongs to. Kevin's next words while
  *   "cancel my three pm meeting" runs ("thanks") are a new utterance, or new words in the same one,
- *   and carry no stop word: nothing is cut.
+ *   and carry no stop word: nothing is cut. A stop in the shapes Live sends (the last utterance's
+ *   punctuation as the next fragment's prefix, the name before it) cuts.
  * - V1 (the Delegator's half): a turn running when the server drops the session is cut with that
  *   session's Delegator. Its signal aborts, the brain's cancel is sent, and its record closes as
  *   cancelled, so no turn is left acting where no later Stop can reach it.
- * - TH-1 (the Delegator's half): a thread's question survives an unrelated request. Kevin's later
- *   "yes" still reaches it.
+ * - TH-1 (the Delegator's half): a thread's question survives an unrelated request. Kevin's next
+ *   "yes" asks it again (it may have been for what the brain said since), and the yes after that
+ *   reaches it. His "no" stops the thread, so no later yes sends what he refused.
  * - PERF-7: a status answered from the thread table reaches the voice at once, never held in the
  *   commentary coalescer behind the lines said a moment before.
  */
@@ -89,6 +91,41 @@ test("V2 controls: a stop word in Kevin's next utterance still stops the running
   }
 });
 
+for (const frags of [
+  [" Stop."], [" Stop"], [". Stop"], [" Stop", "."],
+  [" Jar", "head", ", stop"], [". Jarhead", ", stop"], [" Jarhead,", " stop."],
+  [". Cancel", " that"], [". Cancel that"], [" Cancel that."],
+  [". Never", " mind"], [". Never mind"],
+]) {
+  test(`V2: a stop in the fragment shapes Live sends cuts the running task: ${JSON.stringify(frags)}`, async () => {
+    const w = world();
+    const { engine, brain } = w;
+    try {
+      await engine.start();
+      await engine.ready();
+      engine.updateSettings({ idleSleepMinutes: 0 });
+      await engine.wake("test");
+      delegate(w, "jarhead find the invoice from march and email it to Ben", "item_1");
+      await until(() => brain.tasks.length === 1);
+      const task = brain.tasks[0]!;
+      nextUtterance(w);
+      const live = current(w);
+      for (const f of frags) {
+        const s = live.nowMs;
+        live.nowMs += 250;
+        live.emit("inputTranscript", f, s, live.nowMs);
+        await settle(5);
+      }
+      await until(() => task.signal.aborted, 1000);
+      assert.equal(task.signal.aborted, true, "the task is cut");
+      assert.equal(rows(w, "stop").length, 1, "one stop row");
+    } finally {
+      brain.resolve?.({ status: "cancelled" });
+      await engine.stop();
+    }
+  });
+}
+
 test("V1: a turn running when the server drops the session is cut with that session's Delegator: aborted, the brain's cancel sent, its record cancelled; Stop then finds nothing left acting", async () => {
   const w = world();
   const { engine, brain } = w;
@@ -129,27 +166,33 @@ test("V1: a turn running when the server drops the session is cut with that sess
 const threadsOf = (w: World): readonly Thread[] => w.engine.threads.threads().filter((t) => t.id !== MAIN_THREAD_ID);
 const named = (w: World, name: string): Thread | undefined => threadsOf(w).find((t) => t.name === name);
 
-test("TH-1: Slack asks 'send?'; Kevin asks for something else first; Slack's question keeps the floor and his later 'yes' still reaches it", async () => {
+/** Slack's thread asks before it sends ("click Send?"); the main brain holds the request that started it. */
+async function slackAsks(w: World): Promise<ToolResult[]> {
+  const { engine } = w;
+  const results: ToolResult[] = [];
+  w.threads.script = async (job): Promise<BrainResult> => {
+    const r = (await job.runner.run("click_element", { name: "Send" })).result;
+    results.push(r);
+    return { status: "done", summary: r.kind === "needs-confirmation" ? r.question : r.kind === "text" ? "sent." : "failed" };
+  };
+  await engine.start();
+  await engine.ready();
+  engine.updateSettings({ idleSleepMinutes: 0 });
+  await engine.wake("test");
+  delegate(w, "jarhead tell ben on slack i'm late and play focus on spotify", "item_1");
+  await settle();
+  assert.equal(w.brain.tasks.length, 1, "the main brain holds the task");
+  await engine.runner.run("thread_start", { name: "Slack", task: "send Ben: I'm running late", lane: "screen" });
+  await until(() => named(w, "Slack")?.status === "waiting-kevin");
+  assert.equal(engine.threads.floorThread()?.name, "Slack", "Slack's question holds the floor");
+  return results;
+}
+
+test("TH-1: Slack asks 'send?'; Kevin asks for something else first; Slack's question keeps the floor; his next 'yes' asks it again, and the yes after that sends", async () => {
   const w = world();
   const { engine, hands } = w;
   try {
-    const results: ToolResult[] = [];
-    w.threads.script = async (job): Promise<BrainResult> => {
-      const r = (await job.runner.run("click_element", { name: "Send" })).result;
-      results.push(r);
-      return { status: "done", summary: r.kind === "needs-confirmation" ? r.question : r.kind === "text" ? "sent." : "failed" };
-    };
-    await engine.start();
-    await engine.ready();
-    engine.updateSettings({ idleSleepMinutes: 0 });
-    await engine.wake("test");
-    delegate(w, "jarhead tell ben on slack i'm late and play focus on spotify", "item_1");
-    await settle();
-    assert.equal(w.brain.tasks.length, 1, "the main brain holds the task");
-    await engine.runner.run("thread_start", { name: "Slack", task: "send Ben: I'm running late", lane: "screen" });
-    await until(() => named(w, "Slack")?.status === "waiting-kevin");
-    assert.equal(engine.threads.floorThread()?.name, "Slack", "Slack's question holds the floor");
-
+    const results = await slackAsks(w);
     // Kevin, before answering, asks for something else (a brain request, not a thread verb, not a yes).
     nextUtterance(w);
     delegate(w, "jarhead what is in my notes", "item_2");
@@ -158,19 +201,58 @@ test("TH-1: Slack asks 'send?'; Kevin asks for something else first; Slack's que
     assert.ok(engine.confirmations.pending, "the question is still pending on the root");
     assert.equal(named(w, "Slack")?.status, "waiting-kevin");
 
-    // Kevin: "yes" (meant for Slack, whose question the Console still shows). It reaches Slack.
+    // Kevin: "yes". The brain spoke since, and may have asked something of its own: the yes is not taken as Slack's.
     nextUtterance(w);
     delegate(w, "yes", "item_yes");
+    await settle(80);
+    assert.equal(results.length, 1, "Slack did not re-run its tool");
+    assert.equal(hands.named("click").length, 0, "nothing was sent");
+    assert.match(current(w).commentary.at(-1) ?? "", /^Slack still asks: may I .+\? Say yes\.$/, "Slack's question was asked again");
+    assert.equal(engine.snapshot().delegations.find((d) => d.liveId === "item_yes")?.summary, "asked Slack's question again");
+
+    // Kevin heard the question again: this yes is Slack's.
+    nextUtterance(w);
+    delegate(w, "yes", "item_yes2");
     await until(() => results.length === 2, 1000);
     assert.equal(results.length, 2, "Slack re-ran its tool on the yes");
     assert.equal(results[1]!.kind, "text", "…and this time it went through");
     assert.equal(hands.named("click").length, 1, "one click: the send");
-    const yes = engine.snapshot().delegations.find((d) => d.liveId === "item_yes");
+    const yes = engine.snapshot().delegations.find((d) => d.liveId === "item_yes2");
     assert.equal(yes?.summary, "relayed the yes to Slack", "the yes was relayed, not handed to the main brain as a task");
   } finally {
     await engine.stop();
   }
 });
+
+for (const no of ["no", "no, don't send it", "don't send that", "not now"]) {
+  test(`TH-1: Slack asks 'send?'; Kevin says "${no}": Slack stops, the main brain is untouched, and a later unrelated 'yes' sends nothing`, async () => {
+    const w = world();
+    const { engine, hands } = w;
+    try {
+      const results = await slackAsks(w);
+      nextUtterance(w);
+      delegate(w, no, "item_no");
+      await until(() => named(w, "Slack")?.status === "stopped", 1000);
+      assert.equal(named(w, "Slack")?.status, "stopped", "the no ended Slack, as the Console's Deny does");
+      assert.equal(engine.threads.floorThread(), undefined, "its question left the floor");
+      assert.equal(engine.confirmations.pending, undefined);
+      assert.equal(w.brain.tasks.length, 1, "the no was not a brain task");
+      assert.equal(w.brain.tasks[0]!.signal.aborted, false, "the main brain's turn carries on");
+      // A spawned thread's lines go through the commentary coalescer (600 ms).
+      await until(() => current(w).commentary.some((c) => c.includes("Slack stopped.")), 1500);
+      assert.ok(current(w).commentary.some((c) => c.includes("Slack stopped.")), "Kevin hears that Slack stopped");
+
+      // Later Kevin says "yes" to something else.
+      nextUtterance(w);
+      delegate(w, "yes", "item_yes");
+      await settle(150);
+      assert.equal(results.length, 1, "Slack never re-ran");
+      assert.equal(hands.named("click").length, 0, `Kevin said "${no}" to Slack's send; a later yes must not send it`);
+    } finally {
+      await engine.stop();
+    }
+  });
+}
 
 for (const via of ["Live's delegation", "the ear"] as const) {
   test(`PERF-7: the table's status answer reaches the voice at once through ${via}, even right after other speech`, async (t) => {
