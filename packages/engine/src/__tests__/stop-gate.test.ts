@@ -2,15 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { BrainSink } from "@jarhead/brain";
 import type { EngineEvent, LedgerRow } from "@jarhead/protocol";
-import { current, delegate, rows, settle, until, world } from "./world.ts";
+import { Engine } from "../engine.ts";
+import { current, delegate, rows, settle, until, world, type World } from "./world.ts";
 
 /**
  * A Stop that stops, and an output gate that holds (W1-1; launch findings V1, V9, V10, V12).
  *
  * - V1: a brain turn running when the SERVER ends the session (an hour's expiry, a Wi-Fi change) is cut with the
  *   session; it never outlives its delegation, and a later Stop finds nothing attached to the runner.
- * - V10: the gate a spoken stop sets is lifted only by new speech — never by Live's own transcript of the stop
- *   word, nor by the rest of the stop utterance ("Stop, Jarhead.").
+ * - V10: the gate a spoken stop sets is lifted only by a new utterance that says something, or the lapse. Nothing
+ *   inside the stop's own utterance lifts it, whatever follows the stop word ("Stop, Jarhead.", "Stop talking.",
+ *   "Stop right there.", "Hold on a second."), and Live's late transcript of a stop the ear acted on is that utterance.
  * - V9: a "stop" heard only by Live while Jarhead is talking and nothing runs still cuts the voice locally.
  * - V12: Pause inside the reconnect window, or during a handshake, is a pause: no paid session opens behind it.
  */
@@ -25,6 +27,32 @@ const loud = (): Buffer => {
   return b;
 };
 const toasts = (events: EngineEvent[]): string[] => events.filter((e): e is Extract<EngineEvent, { type: "toast" }> => e.type === "toast").map((e) => e.text);
+
+/** Kevin's words on Live's input transcript, one fragment at a time, 80 ms apart on both clocks. */
+async function say(w: World, frags: readonly string[]): Promise<void> {
+  const live = current(w);
+  for (const frag of frags) {
+    w.clock.t += 80;
+    live.emit("inputTranscript", frag, live.nowMs, live.nowMs + 80);
+    live.nowMs += 80;
+    await settle(5);
+  }
+}
+
+/** Five frames of the sentence still streaming from the voice: how many reached the speaker. */
+async function framesPlayed(w: World): Promise<number> {
+  const before = w.audio.length;
+  for (let i = 0; i < 5; i++) current(w).emit("audio", loud());
+  await settle(10);
+  return w.audio.length - before;
+}
+
+/** The common ways to say stop. Each begins with a stop phrase; what follows is still the stop's own utterance. */
+const STOPS = [
+  [" Stop", " talking."],
+  [" Stop", " right", " there."],
+  [" Hold on", " a second."],
+] as const;
 
 test("V1: a task running when the server drops the session is cut with it — aborted, the brain's cancel called, the runner let go — the reconnect says so, and Stop finds nothing left", async () => {
   const w = world();
@@ -149,6 +177,122 @@ test("V10b: on Live's path, 'Stop, Jarhead.' — the fragments after 'stop' are 
   }
 });
 
+for (const frags of STOPS) {
+  const said = frags.join("").trim();
+  test(`V10b: on Live's path, "${said}" cuts the task and the rest of the stop's utterance does not lift the gate; his next utterance does`, async () => {
+    const w = world();
+    const { engine, brain } = w;
+    try {
+      await engine.start();
+      await engine.ready();
+      engine.updateSettings({ idleSleepMinutes: 0 });
+      await engine.wake("test");
+      delegate(w, "jarhead find the invoice from march", "item_1");
+      await until(() => brain.tasks.length === 1);
+      const live = current(w);
+      live.nowMs += 3000;
+      live.emit("outputTranscript", " Looking for the March invoice in your mail now,", live.nowMs, live.nowMs + 800);
+      live.nowMs += 800;
+      await say(w, frags);
+      w.clock.t += 100;
+      assert.equal(brain.tasks[0]!.signal.aborted, true, "the stop cut the task");
+      assert.equal(await framesPlayed(w), 0, "the interrupted sentence stays silent");
+      assert.equal(engine.outputGated, true);
+      // A new utterance that says something lifts it at once.
+      live.nowMs += 2000;
+      live.emit("inputTranscript", " what's the weather", live.nowMs, live.nowMs + 600);
+      assert.equal(engine.outputGated, false, "his next words lift the gate");
+    } finally {
+      brain.resolve?.({ status: "cancelled" });
+      await engine.stop();
+    }
+  });
+}
+
+test("V10b: the voice's own transcript arriving between the stop's fragments splits the utterance on the record, and the rest still does not lift the gate", async () => {
+  const w = world();
+  const { engine, brain, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    delegate(w, "jarhead find the invoice from march", "item_1");
+    await until(() => brain.tasks.length === 1);
+    const live = current(w);
+    live.nowMs += 3000;
+    live.emit("outputTranscript", " Looking for the March invoice", live.nowMs, live.nowMs + 600);
+    live.nowMs += 600;
+    await say(w, [" Stop"]);
+    assert.equal(engine.outputGated, true);
+    // The sentence the gate is dropping goes on the record between his words.
+    live.emit("outputTranscript", " in your mail now,", live.nowMs, live.nowMs + 300);
+    clock.t += 300;
+    live.nowMs += 300;
+    live.emit("inputTranscript", " talking.", live.nowMs, live.nowMs + 200);
+    live.nowMs += 200;
+    await settle(5);
+    assert.equal(await framesPlayed(w), 0, "the rest of the stop's utterance is not new speech");
+    assert.equal(engine.outputGated, true);
+  } finally {
+    brain.resolve?.({ status: "cancelled" });
+    await engine.stop();
+  }
+});
+
+for (const said of [" Stop talking.", " Hold on a second.", " Stop right there."]) {
+  test(`V10a: the ear's stop, and Live's transcript of it 1.1 s later as ${JSON.stringify(said.trim())}: the gate holds and the interrupted sentence stays silent`, async () => {
+    const w = world();
+    const { engine, clock } = w;
+    try {
+      await engine.start();
+      await engine.ready();
+      engine.updateSettings({ idleSleepMinutes: 0 });
+      await engine.wake("test");
+      const live = current(w);
+      live.emit("outputTranscript", " Your next meeting is at three, with the design team,", live.nowMs, live.nowMs + 800);
+      live.nowMs += 800;
+      live.emit("audio", loud());
+      clock.t += 150;
+      engine.ear("stop", true, 1, clock.t);
+      await settle(20);
+      assert.equal(engine.outputGated, true, "gated by the stop");
+      clock.t += 1100;
+      live.emit("inputTranscript", said, live.nowMs, live.nowMs + 300);
+      live.nowMs += 300;
+      clock.t += 200;
+      assert.equal(await framesPlayed(w), 0, "Live's transcript of the stop is the stop's own utterance, not new speech");
+      assert.equal(engine.outputGated, true);
+    } finally {
+      await engine.stop();
+    }
+  });
+}
+
+test("V10a: Live's late transcript of the ear's stop in fragments that begin with the name (\"Jar\", \"head,\", \"stop\", \"talking.\") does not lift the gate", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    const live = current(w);
+    live.emit("outputTranscript", " Your next meeting is at three, with the design team,", live.nowMs, live.nowMs + 800);
+    live.nowMs += 800;
+    live.emit("audio", loud());
+    clock.t += 150;
+    engine.ear("stop", true, 1, clock.t);
+    await settle(20);
+    clock.t += 700;
+    await say(w, [" Jar", "head,", " stop", " talking."]);
+    assert.equal(await framesPlayed(w), 0);
+    assert.equal(engine.outputGated, true);
+  } finally {
+    await engine.stop();
+  }
+});
+
 test("the gate after a pressed stop: punctuation alone is not speech; Kevin's next words lift it as before", async () => {
   const w = world();
   const { engine, live } = w;
@@ -205,7 +349,31 @@ for (const reflexes of [true, false]) {
   });
 }
 
-test("V9: 'can you stop by the store' over the voice gates on 'stop' and the rest of his question lifts it — the answer plays", async () => {
+for (const frags of STOPS) {
+  test(`V9: ${JSON.stringify(frags.join("").trim())} over the voice with nothing running: the voice is cut and the rest of the utterance does not bring it back`, async () => {
+    const w = world();
+    const { engine } = w;
+    try {
+      await engine.start();
+      await engine.ready();
+      engine.updateSettings({ idleSleepMinutes: 0 });
+      await engine.wake("test");
+      const live = current(w);
+      live.emit("outputTranscript", " The weather in London today is mild,", live.nowMs, live.nowMs + 600);
+      live.nowMs += 600;
+      live.emit("audio", loud());
+      await say(w, frags);
+      w.clock.t += 100;
+      assert.equal(await framesPlayed(w), 0);
+      assert.equal(engine.outputGated, true);
+      assert.equal(rows<StopRow>(w, "stop").length, 1, "one stop row for the utterance");
+    } finally {
+      await engine.stop();
+    }
+  });
+}
+
+test("V9: 'can you stop by the store' over the voice gates on 'stop'; the rest of the same utterance cannot be told from 'can you stop talking' and does not lift it; the lapse does, and the answer then plays", async () => {
   const w = world();
   const { engine, clock, audio } = w;
   try {
@@ -222,9 +390,11 @@ test("V9: 'can you stop by the store' over the voice gates on 'stop' and the res
       live.nowMs += 200;
       clock.t += 100;
     }
-    assert.equal(engine.outputGated, false, "his question went on: the gate is lifted");
+    assert.equal(engine.outputGated, true, "the rest of the stop's utterance does not lift the gate");
+    clock.t += Engine.OUTPUT_GATE_MS;
+    const before = audio.length;
     live.emit("audio", loud());
-    assert.equal(audio.length > 0, true);
+    assert.equal(audio.length - before, 1, "after the lapse the answer plays");
   } finally {
     await engine.stop();
   }

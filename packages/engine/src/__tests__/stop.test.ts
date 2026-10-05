@@ -174,11 +174,12 @@ test("a spoken \"stop\" is an interrupt: the delegation is cancelled, the brain'
     await settle();
     assert.equal(hands.named("type").length, 0, "nothing was typed after the spoken stop");
 
-    // The voice's sentence in flight is dropped; Kevin's next words lift the gate.
+    // The voice's sentence in flight is dropped; Kevin's next utterance lifts the gate. It starts past the stop's end
+    // plus the transcript's GAP_MS: words inside the stop's own utterance never lift it (V10).
     audio.length = 0;
     live.emit("audio", frame());
     assert.equal(audio.length, 0);
-    live.emit("inputTranscript", " ok now open safari", live.nowMs + 1500, live.nowMs + 2200);
+    live.emit("inputTranscript", " ok now open safari", live.nowMs + 2000, live.nowMs + 2700);
     assert.equal(engine.outputGated, false);
     live.emit("audio", frame());
     assert.equal(audio.length, 1);

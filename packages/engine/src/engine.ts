@@ -349,6 +349,12 @@ export class Engine extends EventEmitter<EngineEvents> {
   private lastHeardAt = 0;
   /** When the announced idle sleep falls due: fixed once announced; the clause itself and the room cannot push it, only an addressed turn (`addressed()`). */
   private sleepDeadlineAt: number | undefined;
+  /**
+   * The pre-sleep clause the voice was asked for (`announceSleep`), on the session timeline once it starts: the only
+   * speech of Jarhead's that is not an addressed turn. `heard`: an input delta arrived since the announcement, so later
+   * words of the voice past CLAUSE_GAP_MS answer someone. Undefined when no clause was asked for.
+   */
+  private sleepClause: { startMs?: number; endMs?: number; heard: boolean } | undefined;
   private diskCheckedAt = 0;
   /** While the voice reconnects after `expired` / `connection_lost`: since when, for the problem line's elapsed figure. 0 otherwise. */
   private voiceReconnectSince = 0;
@@ -378,11 +384,18 @@ export class Engine extends EventEmitter<EngineEvents> {
   private lastOutputAudioAt = 0;
   /**
    * The attention clock (W1-1): the last ADDRESSED turn — Live's delegation, Jarhead's own speech (not the pre-sleep
-   * clause), a typed line, dictation, an ear reflex that ran, words that name Jarhead, a Go / wake / resume Kevin
-   * pressed. Live's input transcript is whatever the microphone hears (a TV, a call, the room) and never moves it; a
-   * reconnect carries it. The idle sleep, its ceiling and the ear's exchange window read it.
+   * clause), a typed line, dictation, an ear reflex on addressed words that ran, words that name Jarhead, a Go / wake /
+   * resume Kevin pressed. Live's input transcript is whatever the microphone hears (a TV, a call, the room) and never
+   * moves it; a reconnect carries it. The idle sleep and the ear's exchange window read it.
    */
   private lastAddressedAt = 0;
+  /**
+   * The ceiling's clock (D1): the same turns minus words that only name Jarhead. The room can say the name (a call
+   * about Jarhead, a film), so the name alone never holds a session past IDLE_CEILING_MS.
+   */
+  private lastEngagedAt = 0;
+  /** The utterance whose words last named Jarhead: one utterance is one turn, however long the room talks on in it. */
+  private namedItemId: string | undefined;
   /**
    * The output gate: Live has no interrupt, so after a stop the voice's audio is
    * dropped here (and its transcript deltas do not count as speaking) until Kevin
@@ -391,16 +404,19 @@ export class Engine extends EventEmitter<EngineEvents> {
   private outputGateUntil = 0;
   private gatedFrames = 0;
   /**
-   * The spoken stop the gate holds for (V10): when it was heard, the utterance on Live's transcript that carries it
-   * (known at once on Live's path; on the ear's, once Live's own transcript of the words arrives), and Live's words
-   * in that utterance since the stop. Undefined for a pressed stop. Only new speech lifts the gate.
+   * The spoken stop the gate holds for (V10): when it was heard, and the utterance on Live's transcript that carries it
+   * (its item and where it ends on the session timeline): known at once on Live's path; on the ear's, once Live's own
+   * transcript of the words arrives. Undefined for a pressed stop. Nothing inside that utterance lifts the gate; only
+   * a new utterance with real words does, or the lapse.
    */
-  private stopHeard: { readonly at: number; itemId: string | undefined; since: string } | undefined;
+  private stopHeard: StopHeard | undefined;
   /** The utterance a spoken stop last came from: one utterance is one stop, however many fragments say it. */
   private lastStopItemId: string | undefined;
   private readonly reflexRunner: ReflexRunner;
   /** Reflexes the ear fired in the last seconds, so Live's delegation for the same words is finished as done, not redone. */
   private readonly firedReflexes: FiredReflexes;
+  /** The ear's words for each reflex it matched, the wake word included: whether a reflex that ran was addressed. */
+  private readonly earWords = new WeakMap<Reflex, string>();
   /** The on-device ear: partials matched against the grammar, dictation. */
   private readonly earReflexes: EarReflexes;
   /** Wall clock of the last output frame that was audible (RMS above `AUDIBLE_OUTPUT_LEVEL`); the ear's speaking hold reads this, not every frame. */
@@ -665,7 +681,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.earReflexes = new EarReflexes({
       now: this.now,
       enabled: () => this.reflexesEnabled(),
-      match: (u, o) => this.matchReflex(u, o),
+      // The words each reflex was matched on, the name included: the phrase it runs with has the name stripped.
+      match: (u, o) => {
+        const reflex = this.matchReflex(u, o);
+        if (reflex) this.earWords.set(reflex, u);
+        return reflex;
+      },
       run: (reflex, phrase, via) => this.runEarReflex(reflex, phrase, via ?? "ear"),
       // A spoken "stop" interrupts: work and speech end, the session stays open and listening.
       onStop: () => {
@@ -763,8 +784,22 @@ export class Engine extends EventEmitter<EngineEvents> {
    * does one whose idle setting is not a number. A longer idle setting is honoured as it is; an explicit 0 is off.
    */
   static readonly IDLE_CEILING_MS = 30 * 60_000;
-  /** After a spoken stop, Live's own transcript of the stop words arrives up to this late; within it they are not new speech (V10). */
+  /**
+   * After the ear's stop, Live's own transcript of the stop words arrives up to this late: an utterance that begins with
+   * a stop phrase within it is the stop's own, whatever words follow ("Stop talking.", "Hold on a second.") (V10).
+   */
   static readonly STOP_ECHO_MS = 2000;
+  /**
+   * The Transcript's GAP_MS (@jarhead/live does not export it): a fragment that starts within this of an utterance's end
+   * continues it. The gate uses it on the session timeline, since the voice's own transcript, still arriving while the
+   * gate holds, can split one of Kevin's utterances in two.
+   */
+  static readonly UTTERANCE_GAP_MS = 1400;
+  /**
+   * The pre-sleep clause goes on while the voice's next words start within this of its end. Later words, once someone
+   * was heard, answer them: an answer waits for the words it answers to end.
+   */
+  static readonly CLAUSE_GAP_MS = 500;
   /** Why a brain turn ended when the server dropped the session under it (V1): the delegation's summary and the continuity's cue. */
   static readonly CONNECTION_DROPPED = "the voice connection dropped";
   /** How often the frontmost window's accessibility tree is refreshed while awake, so a spoken click finds its control at once. */
@@ -2246,11 +2281,19 @@ export class Engine extends EventEmitter<EngineEvents> {
       // attention: the idle clock moves on an addressed turn, and words that name Jarhead are one (W1-1).
       this.lastHeardAt = this.now();
       this.markKevin();
+      if (this.sleepClause) this.sleepClause.heard = true;
       const item = this.transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
-      if (addressesJarhead(item.text)) this.addressed();
+      // Words that name Jarhead are a turn for the idle clock, judged on the new words only (with the few characters
+      // before them, so "Jar" + "head" counts) and once per utterance: a TV that says the name once and talks on is
+      // one turn, not one per fragment. Not "Jared" or "Jarred": the ear needs them for its mishearings, the clock
+      // does not.
+      if (item.id !== this.namedItemId && NAMES_JARHEAD.test(item.text.slice(-(delta.length + 8)))) {
+        this.namedItemId = item.id;
+        this.named();
+      }
       // The output gate holds for a stop until Kevin says something new (V10); a stop said over the voice while
       // nothing runs is cut here, since the Delegator judges stops only while work runs (V9).
-      if (this.outputGateUntil && (this.now() >= this.outputGateUntil || this.newSpeech(delta, item))) this.liftOutputGate(`${this.userName} spoke`);
+      if (this.outputGateUntil && (this.now() >= this.outputGateUntil || this.newSpeech(delta, item, s, e))) this.liftOutputGate(`${this.userName} spoke`);
       if (!this.outputGateUntil) this.stopOverVoice(item);
     });
     live.on("outputTranscript", (delta, s, e) => {
@@ -2259,9 +2302,10 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.transcript.push({ speaker: "jarhead", delta, startMs: s, endMs: e });
       if (this.now() < this.outputGateUntil) return; // muted locally: not "speaking"
       this.lastOutputSpeechAt = this.now();
-      // Jarhead's own speech is an addressed turn — except the pre-sleep clause, said while the announced sleep stands:
-      // counted, it would re-arm the idle clock every idle stretch and the session would never sleep.
-      if (this.sleepDeadlineAt === undefined) this.lastAddressedAt = this.lastOutputSpeechAt;
+      // Jarhead's own speech is an addressed turn, except the pre-sleep clause: counted, it would re-arm the idle clock
+      // every idle stretch and the session would never sleep. What the voice says after the clause, once someone was
+      // heard, is Live answering them: a turn, and the sleep is off.
+      if (!this.sleepClauseSpeech(s, e)) this.addressed();
       this.recomputePhase();
     });
     live.on("delegation", () => {
@@ -2701,39 +2745,47 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   /**
-   * A spoken stop, for the gate (V10): now, and the utterance on Live's transcript that carries it — Kevin's open one.
+   * A spoken stop, for the gate (V10): now, and the utterance on Live's transcript that carries it (Kevin's open one).
    * On Live's path that is the utterance the stop word arrived in (this runs a microtask after its fragment); on the
    * ear's, Live may not have heard the words yet, and its transcript of them is recognised when it comes.
    */
-  private spokenStop(): { readonly at: number; itemId: string | undefined; since: string } {
+  private spokenStop(): StopHeard {
     const open = this.transcript.last("kevin");
-    const itemId = open && !open.final ? open.id : undefined;
-    if (itemId) this.lastStopItemId = itemId;
-    return { at: this.now(), itemId, since: "" };
+    const carries = open && !open.final ? open : undefined;
+    if (carries) this.lastStopItemId = carries.id;
+    return { at: this.now(), itemId: carries?.id, endMs: carries?.endMs };
   }
 
   /**
-   * Whether an input delta lifts the gate a stop set: new speech does; punctuation alone never does; after a spoken
-   * stop, the rest of the stop's own utterance does only once it says more than stop words and "jarhead" ("Stop,
-   * Jarhead." holds; "stop, and open safari" lifts), and Live's own transcript of the stop the ear acted on (a stop
-   * phrase within STOP_ECHO_MS) does not. A pressed stop is lifted by any words, as before.
+   * Whether an input delta lifts the gate a stop set. Punctuation alone never does; after a pressed stop any words do.
+   * After a spoken stop nothing inside the stop's own utterance does, whatever follows the stop word ("Stop talking.",
+   * "Stop right there.", "Stop, Jarhead."): the same item, or words that start within UTTERANCE_GAP_MS of its end. A
+   * new utterance lifts it once it says something: not while it is only the name or a filler ("Jar", "um"), and not
+   * when it begins with a stop phrase. That is another stop, and within STOP_ECHO_MS it is Live's own transcript of
+   * the stop the ear acted on, the stop's utterance from then on.
    */
-  private newSpeech(delta: string, item: TranscriptItem): boolean {
-    if (!wordsOf(delta)) return false;
+  private newSpeech(delta: string, item: TranscriptItem, startMs: number, endMs: number): boolean {
+    if (!/[\p{L}\p{N}]/u.test(delta)) return false;
     const stop = this.stopHeard;
     if (!stop) return true;
-    if (stop.itemId === item.id) {
-      stop.since += delta;
-      return !stopNoise(stop.since);
+    if (item.id === stop.itemId || (stop.endMs !== undefined && startMs <= stop.endMs + Engine.UTTERANCE_GAP_MS)) {
+      this.holdStopUtterance(stop, item, endMs);
+      return false;
     }
-    if (this.now() - stop.at < Engine.STOP_ECHO_MS && stopNoise(item.text)) {
-      // Live's words for the stop the ear already acted on: this utterance is the stop's from now on.
-      stop.itemId = item.id;
-      stop.since = item.text;
-      this.lastStopItemId = item.id;
+    const said = saidWords(item.text);
+    if (!said) return false;
+    if (STOP_HEAD.test(said)) {
+      if (this.now() - stop.at < Engine.STOP_ECHO_MS) this.holdStopUtterance(stop, item, endMs);
       return false;
     }
     return true;
+  }
+
+  /** This utterance carries the stop: it ends where its latest words end, and it is never judged a stop again. */
+  private holdStopUtterance(stop: StopHeard, item: TranscriptItem, endMs: number): void {
+    stop.itemId = item.id;
+    stop.endMs = Math.max(stop.endMs ?? endMs, endMs, item.endMs);
+    this.lastStopItemId = item.id;
   }
 
   /**
@@ -2741,8 +2793,9 @@ export class Engine extends EventEmitter<EngineEvents> {
    * ear may be down (Speech not granted, the dictation model missing, reflexes off), so Live's transcript is judged
    * here: the current utterance (the transcript's own merge rule) begins with a stop phrase or ends in "stop" /
    * "cancel", Jarhead spoke within SPEAKING_WINDOW_MS and the words are not Jarhead's own line back through the microphone.
-   * The speech half of a stop — the voice gated, the speaker flushed — and its row; once per utterance. No instruction:
-   * if it was "stop by the store", the rest of his question lifts the gate and the answer plays.
+   * The speech half of a stop (the voice gated, the speaker flushed) and its row; once per utterance. No instruction.
+   * The rest of the utterance never lifts the gate: "can you stop by the store" cannot be told from "can you stop
+   * talking" until it is over, so a false stop holds the voice until the lapse or his next utterance.
    */
   private stopOverVoice(item: TranscriptItem): void {
     if (item.id === this.lastStopItemId) return;
@@ -2756,7 +2809,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const t0 = this.now();
     this.gateSpeech(`${this.userName} said stop over the voice`);
     this.lastStopItemId = item.id;
-    this.stopHeard = { at: t0, itemId: item.id, since: "" };
+    this.stopHeard = { at: t0, itemId: item.id, endMs: item.endMs };
     this.ledger.append({ at: t0, type: "stop", how: "said" });
     this.toast("stopped", "info");
   }
@@ -2874,6 +2927,14 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** A reflex through the runner, its steps in the delegation when there is one (a prefire has none yet). */
   private async runReflex(reflex: Reflex, sink?: BrainSink): Promise<ReflexOutcome> {
+    // A dictation toggle Live delegated (the ear leaves a bare "start dictating" to Live when nobody named Jarhead):
+    // the engine's own dictation, as on the ear's path. There is no tool for it, and the brain must not get the task.
+    if (reflex.kind === "dictate_start" || reflex.kind === "dictate_stop") {
+      const dispatchedAt = this.now();
+      if (reflex.kind === "dictate_start") this.startDictation();
+      else this.stopDictation("said");
+      return { reflex, result: { kind: "text", text: "OK" }, ms: 0, ok: true, dispatchedAt };
+    }
     if (sink) this.runner.attach(sink);
     try {
       return await this.reflexRunner.run(reflex);
@@ -4233,9 +4294,12 @@ export class Engine extends EventEmitter<EngineEvents> {
    * cleared so a later "yes" cannot arm it — and the model path will ask.
    */
   private async runEarReflex(reflex: Reflex, phrase: string, via: "ear" | "typed" = "ear"): Promise<ReflexOutcome & { readonly dropped?: string }> {
+    // An addressed turn only when the words were addressed (typed, naming Jarhead, or mid-exchange) and it ran. Decided
+    // before the run, since the exchange window moves while it runs. Jarhead's own look (a screenshot, a circle) runs
+    // on room talk too, and room talk opens no exchange: one the room set off must not let it chain the next command.
+    const wasAddressed = via === "typed" || addressesJarhead(this.earWords.get(reflex) ?? phrase) || this.inExchange();
     const outcome = await this.earReflexOutcome(reflex, phrase, via);
-    // A reflex that ran is an addressed turn (the ear judged the words addressed); one dropped or refused is not.
-    if (outcome.ok) this.addressed();
+    if (outcome.ok && wasAddressed) this.addressed();
     return outcome;
   }
 
@@ -4383,13 +4447,14 @@ export class Engine extends EventEmitter<EngineEvents> {
    * "new line" / "new paragraph" while dictating (RAIL-1, dictation's half). Return sends in Messages, Slack, Mail and
    * the other presence-gated apps, and in a web app's compose box (the page in a browser may be one; its host is not
    * known here), so there the newline that never sends is posted: Option-Return in Messages, Shift-Return elsewhere.
-   * Anywhere else it is Return, as before. If the gate still wants a yes, nothing is posted, the question goes (a
-   * later "yes" must not press it) and the toast says how to send.
+   * Shift-Return too when the front app is unknown: a newline almost everywhere, a send almost nowhere. Return only in
+   * an app known not to send on it. If the gate wants a yes or refuses the key, nothing is typed, the question goes (a
+   * later "yes" must not press it) and the toast says so: in an app where Return sends, with how to send.
    */
   private async dictateNewline(count: number): Promise<void> {
     const app = (await this.frontmostAppName()) || this.frontApp;
-    const sends = presenceGated(app, undefined) || BROWSER_APPS.test(app);
-    const combo = !sends ? "Return" : /\bmessages\b/i.test(app) ? "alt+Return" : "shift+Return";
+    const sends = app !== "" && (presenceGated(app, undefined) || BROWSER_APPS.test(app));
+    const combo = app !== "" && !sends ? "Return" : /\bmessages\b/i.test(app) ? "alt+Return" : "shift+Return";
     const r = await this.toolset.run("key", { text: combo, repeat: count });
     this.lease.touch("dictation");
     if (r.kind === "needs-confirmation") {
@@ -4400,7 +4465,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       return;
     }
     log.info(`dictation: ${combo} in ${app || "the front app"} not posted (${r.kind === "error" ? r.message.slice(0, 80) : "the gate wants a yes"})`);
-    this.toast("new line held · say send if you mean send", "warn");
+    const messaging = r.kind === "needs-confirmation" && sends && !HANDS_OFF_APPS.test(app);
+    this.toast(messaging ? "new line not typed · say send if you mean send" : "new line not typed here", "warn");
   }
 
   get isDictating(): boolean {
@@ -4770,10 +4836,44 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.lastKevinAt = this.now();
   }
 
-  /** An addressed turn (`lastAddressedAt` lists them): the idle clock restarts and an announced sleep is off. */
+  /** An addressed turn (`lastAddressedAt` lists them): the idle clock and the ceiling's restart, and an announced sleep is off. */
   private addressed(): void {
-    this.lastAddressedAt = this.now();
+    const now = this.now();
+    this.lastAddressedAt = now;
+    this.lastEngagedAt = now;
     this.sleepDeadlineAt = undefined;
+    this.sleepClause = undefined;
+  }
+
+  /**
+   * Words that name Jarhead: the idle clock restarts and the exchange window opens, but the ceiling's clock does not
+   * move (D1: the room can say the name). An announced sleep is off, unless the ceiling is what is due.
+   */
+  private named(): void {
+    const now = this.now();
+    this.lastAddressedAt = now;
+    const ceilingMs = this.ceilingMs();
+    if (ceilingMs > 0 && now - this.lastEngagedAt > ceilingMs - 5000) return;
+    this.sleepDeadlineAt = undefined;
+    this.sleepClause = undefined;
+  }
+
+  /**
+   * Whether the voice's words (session timeline) are the pre-sleep clause it was asked for: the first it says after the
+   * announcement, and what follows on from it, within CLAUSE_GAP_MS or before anyone was heard. Past that, with
+   * someone heard since the announcement, the voice is answering them (Kevin's "no wait, I'm still here").
+   */
+  private sleepClauseSpeech(startMs: number, endMs: number): boolean {
+    const clause = this.sleepClause;
+    if (!clause || this.sleepDeadlineAt === undefined) return false;
+    if (clause.startMs === undefined || clause.endMs === undefined) {
+      clause.startMs = startMs;
+      clause.endMs = endMs;
+      return true;
+    }
+    if (clause.heard && startMs - clause.endMs > Engine.CLAUSE_GAP_MS) return false;
+    clause.endMs = Math.max(clause.endMs, endMs);
+    return true;
   }
 
   /** Kevin spoke TO Jarhead himself — a typed line, dictation, a Go, a wake: presence and attention. */
@@ -4791,6 +4891,11 @@ export class Engine extends EventEmitter<EngineEvents> {
   private idleMs(): number {
     const minutes = this.settings.idleSleepMinutes;
     return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 0;
+  }
+
+  /** D1's ceiling in ms: IDLE_CEILING_MS, or a longer idle setting; 0 only when idle sleep is explicitly off (0). */
+  private ceilingMs(): number {
+    return this.settings.idleSleepMinutes === 0 ? 0 : Math.max(Engine.IDLE_CEILING_MS, this.idleMs());
   }
 
   /** How long a pause (or a conversation the server cut) is held before it decays to sleep: the idle setting, at least a minute. */
@@ -4831,20 +4936,26 @@ export class Engine extends EventEmitter<EngineEvents> {
     // The schedule's clock: a tick gap means the Mac slept (resync), due rows fire, rings linger, the watchers poll.
     this.automations.tick(now);
     // The limit on the addressed clock: Kevin's idle setting while nothing runs; while something runs, or when the
-    // setting is not a number at all, the ceiling (D1) — no turn that never ends and no typo keeps a paid session up
-    // longer with nobody addressing it. Room talk never moves the clock (W1-1). An explicit 0 is idle sleep off.
-    const limitMs = this.settings.idleSleepMinutes === 0 ? 0 : !busy && idleMs > 0 ? idleMs : Math.max(Engine.IDLE_CEILING_MS, idleMs);
+    // setting is not a number at all, the ceiling (D1). Whatever the setting, the ceiling also holds on lastEngagedAt,
+    // the clock that words naming Jarhead do not move. No turn that never ends, no typo and no room that says the name
+    // keeps a paid session up longer with nobody addressing it. Room talk moves neither clock (W1-1). 0 is off.
+    const ceilingMs = this.ceilingMs();
+    const limitMs = ceilingMs === 0 ? 0 : !busy && idleMs > 0 ? idleMs : ceilingMs;
+    const byCeiling = this.lastEngagedAt + ceilingMs < this.lastAddressedAt + limitMs;
+    const dueAt = byCeiling ? this.lastEngagedAt + ceilingMs : this.lastAddressedAt + limitMs;
     const open = this.live !== undefined && !this.connecting && this.live.currentState === "started";
-    // Five seconds before the sleep, one clause ("going to sleep") — and the sleep then falls due on a fixed deadline:
+    // Five seconds before the sleep, one clause ("going to sleep"), and the sleep then falls due on a fixed deadline:
     // the clause is not an addressed turn and the room cannot push it; only an addressed turn does (`addressed()`).
-    if (open && limitMs > 5000 && this.sleepDeadlineAt === undefined && now - this.lastAddressedAt > limitMs - 5000) {
+    if (open && limitMs > 5000 && this.sleepDeadlineAt === undefined && now > dueAt - 5000) {
       this.sleepDeadlineAt = now + 5000;
-      this.delegator?.announceSleep(5);
+      this.sleepClause = this.delegator?.announceSleep(5) ? { heard: false } : undefined;
     }
-    if (open && limitMs > 0 && (now - this.lastAddressedAt > limitMs || (this.sleepDeadlineAt !== undefined && now >= this.sleepDeadlineAt))) {
+    if (open && limitMs > 0 && (now > dueAt || (this.sleepDeadlineAt !== undefined && now >= this.sleepDeadlineAt))) {
       this.sleepDeadlineAt = undefined;
+      this.sleepClause = undefined;
       const heard = this.lastHeardAt > this.lastAddressedAt ? `; the room was heard ${Math.round((now - this.lastHeardAt) / 1000)} s ago` : "";
-      log.info(`no addressed turn for ${Math.round(limitMs / 60_000)} min${limitMs === idleMs ? "" : " (the ceiling)"}${heard}; sleeping`);
+      const span = byCeiling ? `${Math.round(ceilingMs / 60_000)} min (the ceiling; words that name Jarhead do not count)` : `${Math.round(limitMs / 60_000)} min${limitMs === idleMs ? "" : " (the ceiling)"}`;
+      log.info(`no addressed turn for ${span}${heard}; sleeping`);
       this.toast("asleep — tap the orb to wake", "info");
       void this.fallAsleep("idle");
     }
@@ -5972,30 +6083,31 @@ function normalizeForLog(s: string): string {
   return s.replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
-/** An utterance that begins with a stop (after the wake word and fillers are stripped): the Delegator's own head rule, for `stopOverVoice`. */
-const STOP_HEAD = /^(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/i;
-
 /**
- * The words a stop is made of, its tail included ("stop it", "stop, jarhead", "no no stop now"). Words of only these
- * are not new speech for the output gate (V10); a last word may be a fragment of one ("Jar" of "jarhead").
+ * An utterance that begins with a stop, after the wake word, fillers and politeness are stripped (`normalizeUtterance`):
+ * the Delegator's own head rule plus the ear's other stop words (quiet, shush, shut up), for `stopOverVoice` and the gate.
  */
-const STOP_NOISE_WORDS = ["stop", "it", "that", "cancel", "never", "nevermind", "mind", "forget", "hold", "on", "abort", "that's", "thats", "enough", "quiet", "shush", "shut", "up", "wait", "no", "ok", "okay", "hey", "now", "please", "jarhead", "jar", "head", "jared", "jarred"];
-const STOP_NOISE = new Set(STOP_NOISE_WORDS);
+const STOP_HEAD = /^(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on|quiet|shush|shut up)\b/i;
 
-/** The words of a transcript fragment, lowercased, punctuation dropped; "" when it was punctuation alone. */
-function wordsOf(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}']+/gu, " ")
-    .trim();
+/** Words that name Jarhead, for the idle clock: the name as said, not the ear's mishearings of it ("Jared", "Jarred"). */
+const NAMES_JARHEAD = /\b(jarhead|jar head|jar-head)\b/i;
+
+/** What a spoken stop holds the gate for (`Engine.stopHeard`). `endMs`: where its utterance ends on the session timeline. */
+interface StopHeard {
+  readonly at: number;
+  itemId: string | undefined;
+  endMs: number | undefined;
 }
 
-/** True when the words are a stop and nothing else: every word a stop word or "jarhead", the last possibly cut short. */
-function stopNoise(text: string): boolean {
-  const words = wordsOf(text).split(" ").filter(Boolean);
-  const last = words.pop();
-  if (last === undefined) return true;
-  return words.every((w) => STOP_NOISE.has(w)) && (STOP_NOISE.has(last) || STOP_NOISE_WORDS.some((w) => w.startsWith(last)));
+/**
+ * What an utterance says, for the output gate: its words with the wake word, fillers and politeness stripped
+ * (`normalizeUtterance`), punctuation dropped. "" while it is only the name, the start of it ("Jar") or a filler.
+ */
+function saidWords(text: string): string {
+  const said = normalizeUtterance(text)
+    .replace(/[^\p{L}\p{N}']+/gu, " ")
+    .trim();
+  return /^(?:(?:hey|ok|okay|yo|um+|uh+|erm|hmm+|oh|so|and|please|just|jar|head|jarhead|jared|jarred)(?:\s+|$))*$/.test(said) ? "" : said;
 }
 
 /**

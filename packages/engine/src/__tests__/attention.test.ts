@@ -9,17 +9,21 @@ import { current, delegate, rows, settle, until, world, type World } from "./wor
  *
  * The idle sleep is "10 min without an ADDRESSED turn". Live transcribes whatever the microphone hears — a TV,
  * a call on the speakers, two people talking — so a Live input delta is presence (Kevin may be in the room),
- * never attention. The addressed clock moves only on: Live's delegation, Jarhead's own speech, a typed line,
- * dictation, an ear reflex that ran, words that name Jarhead, and a Go / wake / resume Kevin pressed. A
- * reconnect after the server dropped the session carries the clock; it does not restart it. Whatever is
- * running, a session with no addressed turn for 30 minutes sleeps, and so does one whose idle setting is not a
- * number (D1); a longer setting is honoured, and an explicit 0 is idle sleep off.
+ * never attention. The addressed clock moves only on: Live's delegation, Jarhead's own speech (not the pre-sleep
+ * clause), a typed line, dictation, an ear reflex on addressed words that ran, new words that name Jarhead (once
+ * per utterance), and a Go / wake / resume Kevin pressed. A reconnect after the server dropped the session carries
+ * the clock; it does not restart it. Whatever is running and whatever the room says, a session with no addressed
+ * turn for 30 minutes sleeps (words that only name Jarhead do not count there, since the room can say the name),
+ * and so does one whose idle setting is not a number (D1); a longer setting is honoured, and an explicit 0 is
+ * idle sleep off.
  */
 
 type SleepRow = Extract<LedgerRow, { type: "sleep" }>;
 const tick = (engine: Engine): void => (engine as unknown as { tick(): void }).tick();
 /** The presence clock (`presenceAt` for the policy's presence gate): private, read for the RAIL-14 pin. */
 const presenceAt = (engine: Engine): number => (engine as unknown as { lastKevinAt: number }).lastKevinAt;
+/** The attention clock and the exchange window: private, read for the reflex pins. */
+const attention = (engine: Engine) => engine as unknown as { lastAddressedAt: number; inExchange(): boolean };
 
 /** `minutes` of ticks, one a second of engine clock, with `each(minute)` called at the top of every minute. */
 function runMinutes(w: World, minutes: number, each?: (minute: number) => void): void {
@@ -39,6 +43,30 @@ function roomTalk(w: World, text: string): void {
   live.nowMs += 2500;
   live.emit("inputTranscript", ` ${text}`, s, live.nowMs);
   live.nowMs += 3000;
+}
+
+/**
+ * Talk that never pauses for `minutes` (a TV, a call on the speakers): a fragment every second, each starting 200 ms
+ * after the last ended, so Live's transcript merges it all into one utterance. One tick a second; stops at the sleep.
+ */
+function nonStopTalk(w: World, minutes: number, text: string): void {
+  const live = current(w);
+  for (let s = 0; s < minutes * 60 && w.engine.transportState === "awake"; s++) {
+    w.clock.t += 1000;
+    live.nowMs += 200;
+    live.emit("inputTranscript", ` ${text}`, live.nowMs, live.nowMs + 800);
+    live.nowMs += 800;
+    tick(w.engine);
+  }
+}
+
+/** Ticks up to the pre-sleep clause of a 10-minute idle sleep (it is asked for 5 s before the sleep). */
+function toTheClause(w: World): void {
+  for (let s = 0; s < 9 * 60 + 56; s++) {
+    w.clock.t += 1000;
+    tick(w.engine);
+  }
+  assert.ok(current(w).instructions.some((i) => /going to sleep in about 5 seconds/.test(i)), "the clause was asked for");
 }
 
 test("control: a quiet room sleeps after idleSleepMinutes (10), with the pre-sleep clause first", async () => {
@@ -300,6 +328,183 @@ test("the pre-sleep clause is not an addressed turn: room talk after 'going to s
     tick(engine);
     await settle();
     assert.equal(engine.transportState, "awake", "Kevin named Jarhead after the clause: the sleep is off");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("Kevin answers the pre-sleep clause without the name and the voice answers him: it stays awake", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 10 });
+    await engine.wake("test");
+    const live = current(w);
+    toTheClause(w);
+    live.emit("outputTranscript", " Going to sleep.", live.nowMs, live.nowMs + 600);
+    live.nowMs += 600;
+    clock.t += 1000;
+    tick(engine);
+    live.emit("inputTranscript", " no wait, I'm still here", live.nowMs, live.nowMs + 900);
+    live.nowMs += 900;
+    clock.t += 1000;
+    tick(engine);
+    live.emit("outputTranscript", " Okay, I'll stay.", live.nowMs, live.nowMs + 700);
+    live.nowMs += 700;
+    for (let s = 0; s < 10; s++) {
+      clock.t += 1000;
+      tick(engine);
+    }
+    await settle();
+    assert.equal(engine.transportState, "awake", "Live answered him: an addressed turn, and the sleep is off");
+    assert.equal(rows<SleepRow>(w, "sleep").length, 0);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a TV talking over the pre-sleep clause, its fragments landing between the clause's own, does not make the clause an answer: it sleeps", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 10 });
+    await engine.wake("test");
+    const live = current(w);
+    toTheClause(w);
+    const n = live.nowMs;
+    live.emit("outputTranscript", " Going", n, n + 300);
+    live.emit("inputTranscript", " and in sports tonight", n + 250, n + 900);
+    live.emit("outputTranscript", " to sleep.", n + 300, n + 600);
+    live.nowMs = n + 900;
+    for (let s = 0; s < 10; s++) {
+      clock.t += 1000;
+      tick(engine);
+    }
+    await settle();
+    assert.equal(engine.currentPhase, "asleep");
+    assert.deepEqual(rows<SleepRow>(w, "sleep").map((r) => r.cause), ["idle"]);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a TV that says 'Jared' once and then talks on without a pause (one long utterance on Live's transcript) does not hold a 10-minute idle session open", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 10 });
+    await engine.wake("test");
+    const t0 = clock.t;
+    const live = current(w);
+    live.emit("inputTranscript", " so Jared went to the office", live.nowMs, live.nowMs + 1000);
+    live.nowMs += 1000;
+    nonStopTalk(w, 20, "and the market moved");
+    await settle();
+    assert.equal(engine.currentPhase, "asleep");
+    const slept = rows<SleepRow>(w, "sleep")[0];
+    assert.ok(slept && slept.at - t0 <= 10 * 60_000 + 2000, `asleep ${Math.round(((slept?.at ?? clock.t) - t0) / 1000)} s after the wake`);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("'Jarhead' said once at the head of one long utterance is one turn, not one per fragment: asleep 10 minutes after it", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 10 });
+    await engine.wake("test");
+    clock.t += 60_000;
+    const live = current(w);
+    const namedAt = clock.t;
+    // The name in two fragments ("Jar" + "head") still counts.
+    live.emit("inputTranscript", " so the Jar", live.nowMs, live.nowMs + 400);
+    live.nowMs += 400;
+    live.emit("inputTranscript", "head demo went well", live.nowMs, live.nowMs + 600);
+    live.nowMs += 600;
+    assert.equal(attention(engine).lastAddressedAt, namedAt, "the name is a turn");
+    nonStopTalk(w, 20, "and then we talked about the launch");
+    await settle();
+    const slept = rows<SleepRow>(w, "sleep")[0];
+    assert.ok(slept, "asleep");
+    assert.ok(slept.at - namedAt >= 10 * 60_000 && slept.at - namedAt <= 10 * 60_000 + 2000, `asleep ${Math.round((slept.at - namedAt) / 1000)} s after the name`);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("D1 ceiling: a room that says 'Jarhead' every 5 minutes (a call about the project) holds a 10-minute idle session at most 30 minutes", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 10 });
+    await engine.wake("test");
+    const t0 = clock.t;
+    runMinutes(w, 40, (m) => {
+      if (m % 5 === 0 && engine.transportState === "awake") roomTalk(w, "so the jarhead demo went well");
+    });
+    await settle();
+    assert.equal(engine.currentPhase, "asleep");
+    const slept = rows<SleepRow>(w, "sleep")[0];
+    assert.ok(slept && slept.at - t0 >= 30 * 60_000 && slept.at - t0 <= 30 * 60_000 + 2000, `asleep ${Math.round(((slept?.at ?? clock.t) - t0) / 60_000)} min after the wake`);
+    assert.deepEqual(rows<SleepRow>(w, "sleep").map((r) => r.cause), ["idle"]);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("RF-2 / WG-3: a screenshot the room set off ('take a screenshot', nobody named Jarhead) runs but is not a turn: a room 'goodnight' 3 s later does not sleep it", async () => {
+  const w = world();
+  const { engine, live, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    clock.t += 30_000;
+    live.nowMs += 30_000;
+    const before = attention(engine).lastAddressedAt;
+    engine.ear("take a screenshot", true, 3, clock.t);
+    await settle(150);
+    assert.equal(attention(engine).lastAddressedAt, before, "the attention clock did not move");
+    assert.equal(attention(engine).inExchange(), false, "no exchange window opened");
+    clock.t += 3000;
+    engine.ear("goodnight", true, 4, clock.t);
+    await settle(150);
+    assert.deepEqual(rows<SleepRow>(w, "sleep"), [], "a goodnight to someone else does not sleep it");
+    assert.equal(live.currentState, "started");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("control: 'jarhead, take a screenshot' is a turn: a 'goodnight' 3 s later is mid-exchange and sleeps it", async () => {
+  const w = world();
+  const { engine, live, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    clock.t += 30_000;
+    live.nowMs += 30_000;
+    engine.ear("jarhead take a screenshot", true, 3, clock.t);
+    await settle(150);
+    assert.equal(attention(engine).lastAddressedAt, clock.t, "an addressed reflex that ran is a turn");
+    clock.t += 3000;
+    engine.ear("goodnight", true, 4, clock.t);
+    await until(() => rows<SleepRow>(w, "sleep").length === 1, 1000);
+    assert.deepEqual(rows<SleepRow>(w, "sleep").map((r) => [r.cause, r.phrase]), [["said", "goodnight"]]);
   } finally {
     await engine.stop();
   }
