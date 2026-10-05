@@ -1,10 +1,11 @@
 /**
  * The still ramp orb: the disc on the diagonal ORB ramp in five dithered bands, the rim shade,
  * the glassy gleam, the three-level glow spilling onto a ground, and the face the live blob draws
- * (lib/eyes.ts: `O O` ink ovals with a paper catchlight, `^ ^` ink arcs, `- -` closed lids), antialiased per pixel.
+ * (lib/eyes.ts: `O O` ink ovals with a paper star and dot for catchlights, `^ ^` ink arcs with their own small star and
+ * dot, `- -` closed lids), antialiased per pixel.
  * Threshold per CELL, geometry per PIXEL, so the disc's edge stays crisp while the pattern stays chunky.
  * Sources: facts-orb.md §1.4–1.5, §1.9 (scripts/dither.ts:107-346, UI/Console/BrandMarks.swift:446-466).
- * Used by Mark, the blob's stills (lib/still.ts) and the OG field. Pure: no DOM, runs in Node.
+ * Used by Mark and the blob's stills (lib/still.ts). Pure: no DOM, runs in Node.
  */
 import { BAYER8, ORB_STOPS, clamp01, lut, quantise, rampAt, smoothstep, mix3, type RGB, type Stops } from "./dither";
 import { faceField } from "./eyes";
@@ -95,8 +96,9 @@ function paintOrb(img: OrbImage, o: PaintOrbOptions): void {
         const rim = smoothstep(0.55, 1, d) * clamp01(0.5 + (nx + ny) / 2) * ORB.rimDarken;
         col = mix3(col, ORB.rimTone, quantise(rim, ORB.rimLevels, t));
         col = mix3(col, PAPER, quantise(gleamLift(gleam, nx, ny), ORB.highlightLevels, t));
-        // The face, only near the eyes: ink, then the catchlight, each covering by its distance (one pixel of antialias).
-        if (face && nx > -0.62 && nx < 0.62 && ny > -0.42 && ny < 0.2) {
+        // The face, only near the eyes (and the happy sparkle off the right one): ink, then the catchlights, each covering
+        // by its distance (one pixel of antialias).
+        if (face && nx > -0.62 && nx < 0.7 && ny > -0.42 && ny < 0.2) {
           const f = faceField(nx, ny, face);
           const ink = clamp01(0.5 - f.ink * R);
           if (ink > 0) col = mix3(col, INK, ink);
@@ -184,7 +186,7 @@ interface RenderOrbOptions {
   halo?: Halo | null;
 }
 
-/** The contract: a square ImageData of `size` with the orb; used by Mark, OrbField, the still PNG and the OG field. */
+/** The contract: a square ImageData of `size` with the orb; used by Mark, OrbField and the still PNG. */
 export function renderOrb(o: RenderOrbOptions): ImageData {
   const img = makeImage(o.size, o.size);
   const R = o.radius ?? (o.halo ? o.size / 2.8 : o.size / 2);

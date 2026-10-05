@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { Island, islandFace, type IslandRefs } from "@/components/desk/Island";
 import { ISLAND } from "@/content/island";
 import { BAYER8, QUIET_STOPS, cellCss, ditherGlyphs, mix3, parseColor, renderMeter, type RGB } from "@/lib/dither";
+import { TWINKLE, flareSize, popSize, type FacePose } from "@/lib/eyes";
 import { renderIslandInk } from "@/lib/island";
-import { getLive, resolveShow, setLive, subscribeLive, type Show } from "@/lib/live";
+import { getLive, glintTurn, resolveShow, setLive, subscribeLive, type Show } from "@/lib/live";
 import { SPRING, useCalm } from "@/lib/motion";
 import type { DeskKind } from "@/lib/phase";
 import { cssVar, subscribeTheme } from "@/lib/theme";
@@ -20,6 +21,12 @@ const ISL_H = 184;
 /** The island's face per kind: round eyes listening, the flat pair thinking and asleep, `o o` acting and ringing, `^ ^` speaking. */
 const ISLAND_FACE: Record<DeskKind, string> = { listening: "O O", thinking: "- -", acting: "o o", speaking: "^ ^", asleep: "- -", alarm: "o o" };
 const BLINKS = new Set<DeskKind>(["listening", "alarm"]);
+/** A face that can glint (catchlights, or the happy sparkle that pulses), and one with open eyes. */
+const GLINTS = /[Oo^]/;
+const OPEN = /[Oo]/;
+/** The island's sparkle in ms (lib/eyes.ts TWINKLE): a flare's life with its second eye's lag, the happy sparkle's pop. */
+const FLARE_MS = (TWINKLE.flare + TWINKLE.lag) * 1000;
+const POP_MS = TWINKLE.pop * 1000;
 /** The island's hairline and eye tint: the phase tone, but the orb's own blue while thinking (no violet in anything orb-like). */
 const ISLAND_TONE: Record<DeskKind, `--jh-${string}`> = {
   listening: "--jh-listening",
@@ -85,8 +92,9 @@ function paintFade(cv: HTMLCanvasElement, foot: number): void {
  * It wears what the visitor is doing (lib/live.ts resolveShow): the hero blob's claim over the hero, then the claim of the
  * demo in view (its kind, its line, its question, its tiles, the foot, the clock), or that section's own kind. A new kind
  * fades the content out over --jh-quick and lands with the island settling on the spring from its top edge. Its ink
- * breathes, its meters tick, its face blinks and turns to the pointer, at 8 fps while the tab is visible. Calm (reduced
- * motion, `#still`): one pose per change and a stepped scale.
+ * breathes, its meters tick, its face blinks and turns to the pointer, at 8 fps while the tab is visible; its sparkle
+ * breathes with them and flares and pops on frames of its own. Calm (reduced motion, `#still`): one pose per change (the
+ * sparkle at rest) and a stepped scale.
  */
 export function Top({ stars }: { readonly stars: number | null }): ReactElement {
   const still = useCalm();
@@ -120,6 +128,20 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     inkScale: 0,
     blinkAt: 0,
     blinkUntil: 0,
+    /**
+     * The sparkle: the breath (the 8 fps loop's), the flare playing (its start and first eye), when the next is due, when
+     * the happy sparkle popped, the frames they run on (rAF, so the loop never steps them), the pose setEyes last drew and
+     * the kind's own pair as the kind effect last set it.
+     */
+    breath: 0.5,
+    flareAt: -1e9,
+    flareLead: 1 as -1 | 1,
+    flareNext: 0,
+    popAt: -1e9,
+    sparkRaf: 0,
+    pair: "- -",
+    lid: 1,
+    kindPair: "- -",
     shown: "asleep" as DeskKind,
     kind: "asleep" as DeskKind,
     docked: false,
@@ -266,22 +288,59 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
   }, [view.kind, footMeter, still, meterInk, refs.meterHead, refs.meterFoot, refs.glyphs]);
 
   // The island's eyes: the kind's own face (lib/eyes.ts, as SVG), shut for a blink and turned with the pointer, written
-  // straight to the DOM (no re-render per frame) and only when the pose changes.
+  // straight to the DOM (no re-render per frame) and only when the pose changes. `live`: a face with catchlights or the
+  // happy sparkle breathes, flares and pops (the loop's and the sparkle's frames); without it, as under calm, it rests whole.
   const setEyes = useCallback(
-    (pair: string, open = 1) => {
+    (pair: string, open = 1, live = false) => {
       const svg = refs.face.current;
       if (!svg) return;
       const s = tl.current;
-      const key = `${pair}|${open}|${s.turn}`;
+      s.pair = pair;
+      s.lid = open;
+      let pose: FacePose = { open, sparkle: 0, turn: s.turn };
+      let key = `${pair}|${open}|${s.turn}`;
+      if (live && GLINTS.test(pair)) {
+        const now = performance.now();
+        const u = (now - s.flareAt) / (TWINKLE.flare * 1000);
+        const v = u - TWINKLE.lag / TWINKLE.flare;
+        const flare = (s.flareLead < 0 ? [u, v] : [v, u]) as [number, number];
+        const spark = popSize((now - s.popAt) / POP_MS) * (1 + 0.4 * flareSize(u));
+        pose = { ...pose, twinkle: s.breath, flare, spark };
+        const at = (w: number) => (w > 0 && w < 1 ? w.toFixed(2) : "-");
+        key += `|${s.breath.toFixed(2)}|${at(flare[0])}|${at(flare[1])}|${spark.toFixed(2)}`;
+      }
       if (s.face === key) return;
       s.face = key;
-      svg.innerHTML = islandFace(pair, { open, sparkle: 0, turn: s.turn });
+      svg.innerHTML = islandFace(pair, pose);
     },
     [refs.face],
   );
+  // The sparkle's own frames: while a flare or a pop plays, each frame draws the pose the loop last set with them, and the
+  // last draws it at rest.
+  const sparkle = useCallback(() => {
+    const s = tl.current;
+    if (s.sparkRaf) return;
+    const tick = () => {
+      const now = performance.now();
+      setEyes(s.pair, s.lid, true);
+      s.sparkRaf = now < s.flareAt + FLARE_MS || now < s.popAt + POP_MS ? requestAnimationFrame(tick) : 0;
+    };
+    s.sparkRaf = requestAnimationFrame(tick);
+  }, [setEyes]);
   useEffect(() => {
-    setEyes(ISLAND_FACE[kind]);
-  }, [kind, setEyes]);
+    const s = tl.current;
+    const was = s.kindPair;
+    const pair = ISLAND_FACE[kind];
+    s.kindPair = pair;
+    setEyes(pair, 1, !still);
+    if (still) return;
+    // `^ ^` arrives with its sparkle popping; eyes opening from a closed face catch the light soon after
+    if (pair.startsWith("^") && !was.startsWith("^")) {
+      // a pop playing is never started over
+      if (performance.now() >= s.popAt + POP_MS) s.popAt = performance.now();
+      sparkle();
+    } else if (OPEN.test(pair) && !OPEN.test(was)) s.flareNext = performance.now() + TWINKLE.wake * 1000;
+  }, [kind, setEyes, sparkle, still]);
 
   // The pointer turns the island's eyes by ±8 / ±5 px; away from it, and once calm, they rest centred.
   useEffect(() => {
@@ -343,13 +402,27 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
           });
         }
       }
-      if (BLINKS.has(s.kind)) {
-        if (now >= s.blinkAt) {
-          s.blinkUntil = now + 120;
-          s.blinkAt = now + 3000 + Math.random() * 3000;
+      if (BLINKS.has(s.kind) && now >= s.blinkAt) {
+        s.blinkUntil = now + 120;
+        s.blinkAt = now + 3000 + Math.random() * 3000;
+      }
+      // The sparkle breathes at the loop's ticks; every 2 to 4.6 s a star flares on its own frames, the eye the face is
+      // turned to first (else the other eye from last time), never inside a blink, one playing never cut off, and only
+      // when it is the page's turn (lib/live.ts glintTurn). A face that cannot glint just lets the clock move on.
+      s.breath = 0.5 + 0.5 * Math.sin((2 * Math.PI * t) / TWINKLE.period);
+      const face = ISLAND_FACE[s.kind];
+      if (now >= s.flareNext) {
+        const busy = now < s.blinkUntil || now < s.flareAt + FLARE_MS + TWINKLE.gap * 1000;
+        if (!GLINTS.test(face)) s.flareNext = now + (TWINKLE.rest[0] + Math.random() * TWINKLE.rest[1]) * 1000;
+        else if (busy || !glintTurn(now, TWINKLE.page * 1000)) s.flareNext = now + 300 + Math.random() * 500;
+        else {
+          s.flareAt = now;
+          s.flareLead = Math.abs(s.turn) > 0.3 ? (s.turn > 0 ? 1 : -1) : s.flareLead === 1 ? -1 : 1;
+          s.flareNext = now + (TWINKLE.rest[0] + Math.random() * TWINKLE.rest[1]) * 1000;
+          sparkle();
         }
-        setEyes(ISLAND_FACE[s.kind], now < s.blinkUntil ? 0 : 1);
-      } else setEyes(ISLAND_FACE[s.kind]);
+      }
+      setEyes(face, BLINKS.has(s.kind) && now < s.blinkUntil ? 0 : 1, true);
       next();
     };
     const next = () => {
@@ -370,6 +443,8 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       s.raf = 0;
     };
     s.running = true;
+    // the first flare a moment after the loop starts, unless the kind effect asked for a sooner one (eyes opening)
+    if (s.flareNext < performance.now()) s.flareNext = performance.now() + 1200 + Math.random() * 1600;
     play();
     const vis = () => (document.hidden ? pause() : play());
     document.addEventListener("visibilitychange", vis);
@@ -377,10 +452,14 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       s.running = false;
       document.removeEventListener("visibilitychange", vis);
       pause();
+      if (s.sparkRaf) cancelAnimationFrame(s.sparkRaf);
+      s.sparkRaf = 0;
+      s.flareAt = -1e9;
+      s.popAt = -1e9;
       paintInk(0.5);
       setEyes(ISLAND_FACE[s.kind]);
     };
-  }, [meterInk, paintInk, refs, setEyes, still]);
+  }, [meterInk, paintInk, refs, setEyes, sparkle, still]);
 
   return (
     <header ref={top} className="top desk" style={style} data-still={still ? "" : undefined} data-kind={kind}>

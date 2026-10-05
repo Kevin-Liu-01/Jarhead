@@ -88,3 +88,15 @@ export function resolveShow(l: LiveState, sectionKind: Readonly<Record<string, D
   if (l.section) return l.claims[l.section] ?? { kind: sectionKind[l.section] ?? "listening" };
   return l.claims["hero"] ?? { kind: "asleep" };
 }
+
+/**
+ * The page's faces take turns to glint (lib/eyes.ts TWINKLE.page): the hero, every demo blob and the island share the last
+ * glint's time, so two faces never flare together. A face's own clock asks for a turn and waits when it is refused; an
+ * event (eyes opening, what it loves lighting up) `insists` and takes the turn anyway. `now` in ms (performance.now).
+ */
+let lastGlint = -Infinity;
+export function glintTurn(now: number, pageGap: number, insist = false): boolean {
+  if (!insist && now - lastGlint < pageGap) return false;
+  lastGlint = now;
+  return true;
+}

@@ -1,10 +1,20 @@
 <p align="center">
-  <img src="docs/media/banner.png" width="1280" alt="Jarhead: the dithered orb over an ink field that pools toward the accent">
+  <a href="https://jarhead.kevinliu.studio">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/media/banner-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="docs/media/banner-light.png">
+      <img src="docs/media/banner-light.png" width="1280" alt="Your Mac, by voice. The website's blob is the full stop. Each eye has a white star in it.">
+    </picture>
+  </a>
 </p>
 
 <h1 align="center">Jarhead</h1>
 
-<p align="center">A voice-first Mac assistant that uses the computer for you.</p>
+<p align="center">
+  <b>Your Mac, by voice.</b><br>
+  A voice-first Mac assistant that uses the computer for you.<br>
+  <a href="https://jarhead.kevinliu.studio">jarhead.kevinliu.studio</a>
+</p>
 
 <p align="center">
   <a href="https://github.com/Kevin-Liu-01/Jarhead/actions/workflows/check.yml"><img alt="check" src="https://github.com/Kevin-Liu-01/Jarhead/actions/workflows/check.yml/badge.svg"></a>
@@ -13,10 +23,21 @@
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-8a8f98"></a>
 </p>
 
-Say "jarhead", pass Touch ID, talk. The voice is [GPT-Live-1](https://developers.openai.com/api/docs/guides/live),
-full duplex. The brain is whatever you already have a login for — Codex, Claude Code,
-an API key, a local server. The hands are a Swift helper on the real Mac. A dithered
-ASCII blob in the notch shows the work, and every step lands in an append-only ledger.
+Say "jarhead", pass Touch ID, talk. The voice is [GPT-Live-1](https://developers.openai.com/api/docs/guides/live).
+It listens and speaks at the same time. The brain is whatever you already have a login for: Codex, Claude Code,
+an API key or a local server. The hands are a Swift helper on the real Mac. A dithered ASCII blob in the notch
+shows the work. Every step is written to an append-only ledger.
+
+<p align="center">
+  <a href="https://jarhead.kevinliu.studio">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/media/hero-dark.gif">
+      <source media="(prefers-color-scheme: light)" srcset="docs/media/hero.gif">
+      <img src="docs/media/hero.gif" alt="The website's hero. The blob turns to the Install key, lights up and hops when the key is pressed.">
+    </picture>
+  </a><br>
+  <sub>The website's hero. In the app, the blob and its eyes are ASCII.</sub>
+</p>
 
 **Quick start** — one line ([jarhead.kevinliu.studio](https://jarhead.kevinliu.studio); the script is
 [`scripts/install.sh`](scripts/install.sh): it checks macOS 14+ on Apple silicon, Xcode's tools, Node 24 and pnpm,
@@ -214,7 +235,7 @@ A brain said `show_rect` with a label. The blob became the pen and drew it.
   <img src="docs/media/icon-sizes.png" width="480" alt="The Dock icon at 16, 32, 64, 128 and 256 with the small ones blown up: a round dithered orb wearing the blob's ^ ^">
 </p>
 
-A true circle, five bands, the same Bayer matrix as the island — wearing the blob's `^ ^`: flat paper chevrons boxed in flat ink, one cell pattern from 64 to 1024 (cell = size / 64), a hand bitmap at 32 and a dot pair at 16, the gleam above the eyes. `pnpm build:icon` renders it (`scripts/icon-render.ts`, pinned by `scripts/__tests__/icon.test.ts`); `pnpm build:banner` renders the banner at the top of this page from the same orb, with the same face.
+A true circle, five bands, the same Bayer matrix as the island — wearing the blob's `^ ^`: flat paper chevrons boxed in flat ink, one cell pattern from 64 to 1024 (cell = size / 64), a hand bitmap at 32 and a dot pair at 16, the gleam above the eyes. `pnpm build:icon` renders it (`scripts/icon-render.ts`, pinned by `scripts/__tests__/icon.test.ts`). `pnpm build:banner` renders `docs/media/banner.png` from the same orb, with the same face. The banners at the top of this page are the website's, captured by `site/scripts/make-cards.sh`.
 
 ## How it works
 
@@ -509,7 +530,7 @@ pnpm test                                      # node:test over packages/*/src/*
 node --import tsx --test packages/core/src/__tests__/policy.test.ts
 JARHEAD_AUTO_WAKE=0 pnpm jarheadd              # the engine alone, quiet
 cd apps/mac && swift build && JARHEAD_REPO=$PWD/../.. .build/debug/Jarhead   # the app from a terminal (Terminal owns TCC then)
-pnpm build:media                               # build:icon (the Dock icon, the contact strip docs/media/icon-sizes.png) + build:banner (docs/media/banner.png)
+pnpm build:media                               # build:icon (the Dock icon, the contact strip docs/media/icon-sizes.png) + build:banner (docs/media/banner.png; the banners at the top come from site/scripts/make-cards.sh)
 ```
 
 Protocol first: change `packages/protocol/src/index.ts`, then its Swift mirror

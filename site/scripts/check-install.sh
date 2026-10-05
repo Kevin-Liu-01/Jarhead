@@ -1,7 +1,7 @@
 #!/bin/sh
 # Checks scripts/install.sh without running it for real: a syntax pass, shellcheck when it is
 # installed, a dry run that must exit 0 and print the plan and exactly the README's four commands
-# (README:23-29) in order, and greps for what the script must never do. Also checks that the page's
+# (README:38-44) in order, and greps for what the script must never do. Also checks that the page's
 # own words never claim a download, a .dmg or a cask (facts-product.md §5.1).
 # Run it from the repo root: `sh site/scripts/check-install.sh`.
 set -eu
@@ -50,7 +50,7 @@ actual="$(sed -n 's/^jarhead: \$ //p' "$out" | grep -v -E '^(git|corepack) ' || 
 if [ "$actual" = "$expected" ]; then
   ok "the four README commands, in order"
 else
-  bad "commands differ from README:23-29; got:"
+  bad "commands differ from README:38-44; got:"
   printf '%s\n' "$actual" >&2
 fi
 if grep -q -E '^jarhead: \$ git clone .*Kevin-Liu-01/Jarhead\.git |^jarhead: \$ git -C .* pull --quiet --ff-only origin ' "$out"; then

@@ -1,7 +1,7 @@
 /**
  * A token's value as the token sheet declares it (app/globals.css), for the server's few places that need a colour as a
- * string: the theme-color the boot script stamps, the manifest, the OG image and the blob's build-time stills. One
- * source, so no raw colour lives outside the sheet. Server-only (it reads the file at build; a literal path, so the build
+ * string: the theme-color the boot script stamps, the manifest and the blob's build-time stills. One source, so no
+ * raw colour lives outside the sheet. Server-only (it reads the file at build; a literal path, so the build
  * traces it).
  */
 import { readFileSync } from "node:fs";

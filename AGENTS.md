@@ -158,7 +158,7 @@ scripts/make-readme-shots.sh [--only console|orb|onboarding] [--skip-build] [--a
 apps/mac/Scripts/duck-probe.sh              # the echo guard's machine + the start ladder (V4 check lines, no TCC), then the barge-in duck rounds
 apps/mac/Scripts/audio-probe.sh [--json|--test] # AUDIO_PROBE_MODE=aec|recording|asleep|private: the graph's state read back, no session (its own .app for the mic grant; AUDIO_PROBE_DIRECT=1 borrows the terminal's); --test plays a chime ONLY with AUDIO_PROBE_PLAY=1
 apps/mac/Scripts/recorder-probe.sh · duck-leak-probe.sh   # V3 recorders beside the graph · V2 other apps' level under the unit — both PLAY SOUND, only with AUDIO_PROBE_PLAY=1; never while Jarhead.app is awake
-pnpm build:banner · pnpm build:media   # docs/media/banner.png (the README hero, 2560×800 so one 8 px cell is 4 CSS px); media = icon + banner; both wear the blob's `^ ^` (scripts/dither.ts FACE)
+pnpm build:banner · pnpm build:media   # docs/media/banner.png (the app's orb on its ink field, 2560×800 so one 8 px cell is 4 CSS px; no longer shown by the README, whose top banners and hero GIFs are the site's: site/scripts/make-cards.sh); media = icon + banner; both wear the blob's `^ ^` (scripts/dither.ts FACE)
 ```
 
 Test launches of anything that opens a voice session must set

@@ -1,12 +1,18 @@
 /**
  * The live blob: the icon's dithered material (ORB_STOPS, five bands, rim, gleam) on the desktop
- * blob's live harmonic outline, with its drawn face (lib/eyes.ts: ink ovals with a catchlight, and the
- * lines that close them) and its dithered halo in the phase colour.
+ * blob's live harmonic outline, with its drawn face (lib/eyes.ts: ink ovals with a star and a dot for
+ * catchlights, and the lines that close them) and its dithered halo in the phase colour. Its eyes
+ * sparkle (lib/eyes.ts TWINKLE): the catchlights breathe, and a star flares now and then (the hero
+ * every 2 to 4.6 s, every other blob every 3 to 6 s, the page's faces taking turns), as the eyes open,
+ * as what it loves lights up and out of a squint of joy; the happy sparkle pops in and pulses. When
+ * joy starts, two stars of field cells pop round its head and dissolve through the Bayer thresholds,
+ * and while it is lit one more now and then (SPARK). Calm: whole catchlights, one star when lit.
  * Sim from UI/Orb/BlobField.swift through facts-orb.md §1.6, §2, §3, §5, §6; design.md §5.
  *
  * Two canvases in the host: the field (one buffer pixel per 1.5 CSS px cell, image-rendering:
  * pixelated) and the face (full DPR, the eyes stay crisp). The sim steps every rAF tick; the raster
- * runs at the phase's fps (60 through a blink and its reopening, 24 while anything is live).
+ * runs at the phase's fps (60 through a blink and its reopening, 24 while anything is live); a flare
+ * or a pop alone redraws only the face, at 60.
  * Per-cell caches carry the geometry whenever the body is not stretched. The loop is paused
  * offscreen, on a hidden tab and after 20 s of static sleep; `destroy()` releases all.
  *
@@ -15,7 +21,8 @@
  * (thinking wears the accent blue: no violet anywhere on the orb).
  */
 import { BAYER8, ORB_STOPS, QUIET_STOPS, cellCss, clamp01, lut, mix3, parseColor, smoothstep, watchDpr, type RGB } from "@/lib/dither";
-import { EYES, drawFace } from "@/lib/eyes";
+import { EYES, TWINKLE, drawFace, flareSize, popSize, type FacePose } from "@/lib/eyes";
+import { glintTurn } from "@/lib/live";
 import { cssVar, type Theme } from "@/lib/theme";
 import type { Phase } from "@/lib/phase";
 
@@ -47,6 +54,8 @@ interface BlobOptions {
   pointerRoot?: HTMLElement | null;
   /** Keep 1.5 px cells as laid out, ignoring a transform on the host at mount (the hero's blob mounts while it is a dot). */
   ignoreScale?: boolean;
+  /** The page's lead (the hero's blob): its eyes glint on the quicker clock (TWINKLE.rest, not TWINKLE.demo). */
+  lead?: boolean;
 }
 
 interface Personality { amp: number; speed: number; churn: number; squash: number; spin: number; glow: number; fps: number; face: string; quiet: boolean; rest: readonly [number, number]; blinks: boolean }
@@ -76,6 +85,37 @@ const AMP_SCALE = 1.8;
  * settles), and the whole body dips with it by `dip` (squash and stretch, so the whole character blinks).
  */
 const LID = { k: 1500, zeta: 0.55, dip: 0.04 };
+/**
+ * The stars round its head, rationed: each a four-point star of field cells, its arms `arm` R up and down (seven tenths
+ * across) scaled by a random `size`, its middle solid and its tips a Bayer scatter. It pops up in `rise` s, holds to
+ * `hold` and dissolves through the thresholds, tips first, by `life`. They stand on `slots` above the shoulders (degrees
+ * from the right, upward negative) at least `at` R from the centre and `gap` R off the body's edge as it is when they
+ * pop, on a slot whose whole star fits a cell inside the host, so none hides behind the body, covers the face or breaks
+ * at the edge. A `burst` of two, `stagger` s apart, when joy starts (a squint of joy, what it loves lighting up), then
+ * while it is lit one more every `every` s, `most` at once; never for a happy face it only keeps. Calm keeps one whole
+ * star while lit (`still`: slot, distance, size).
+ */
+const SPARK = {
+  arm: 0.19,
+  size: [0.85, 0.3],
+  rise: 0.14,
+  hold: 0.42,
+  life: 0.95,
+  slots: [-22, -50, -82, -114, -146],
+  at: [1.1, 0.08],
+  gap: 0.07,
+  burst: 2,
+  stagger: 0.12,
+  every: [1.2, 0.8],
+  most: 2,
+  still: [1, 1.14, 1],
+} as const;
+interface Spark { readonly slot: number; readonly x: number; readonly y: number; readonly born: number; readonly size: number; readonly still: boolean }
+/** A flare: when it starts (s, the blob's clock), the eye it starts in, and whether the other eye follows (TWINKLE.lag). */
+interface Flare { readonly at: number; readonly lead: -1 | 1; readonly both: boolean }
+/** A face that can glint: catchlights (`O`, `o`) or the happy sparkle (`^`, which pulses). */
+const GLINTS = /[Oo^]/;
+const isOpen = (pair: string): boolean => /[Oo]/.test(pair);
 const INK: RGB = [7, 7, 7];
 const TAU = Math.PI * 2;
 
@@ -198,6 +238,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let under: RGB = [11, 12, 16];
   let eyeInk = "rgb(11 12 16)";
   let eyeLight = "rgb(255 255 255)";
+  let eyePaper: RGB = [255, 255, 255];
   let Lfrom: RGB[] = lut(P.quiet ? QUIET_STOPS : ORB_STOPS, 5);
   let Lto: RGB[] = Lfrom;
   let L: RGB[] = Lfrom;
@@ -227,11 +268,47 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   // What the blob attends to (a vector from its centre, in its own px), and how lit it is by it (eased 0 to 1).
   let attention: [number, number] | null = null;
   let lit = 0;
+  // The sparkle (TWINKLE, SPARK): the flare playing and the one asked for next, when the clock's own is due (the hero's
+  // clock is the quicker), when the happy sparkle last popped; the stars round the head, the burst still to come, the
+  // slot used last.
+  const clock = o.lead ? TWINKLE.rest : TWINKLE.demo;
+  let flare: Flare = { at: -9, lead: -1, both: true };
+  let queued: { at: number; lead: -1 | 1 | 0; both: boolean } | null = null;
+  let nextFlare = 1 + Math.random() * clock[1];
+  let joyAt = -9;
+  let wasHappy = false;
+  const sparks: Spark[] = [];
+  let nextSpark = 0;
+  let burstAt = -9;
+  let burstLeft = 0;
+  let lastSlot = -1;
+  // The face as the last full frame drew it, so a flare or a pop alone redraws only the face canvas.
+  let facePair = P.face;
+  let faceCx = 0;
+  let faceCy = 0;
+  let faceR = 0;
+  let faceTurn = 0;
+  // This frame's stars on the field's cells: the centre cell, the arms' reach in cells (plus a half), what is left of it.
+  const SX = new Int32Array(SPARK.most + 2);
+  const SY = new Int32Array(SPARK.most + 2);
+  const SA = new Float32Array(SPARK.most + 2);
+  const SB = new Float32Array(SPARK.most + 2);
+  const SE = new Float32Array(SPARK.most + 2);
+  let ns = 0;
+  let sparkCore = 0;
+  let sparkArm = 0;
+  let sparkBody = 0;
+  // The last frame's outline terms (draw), so a new star can stand just off the body's edge.
+  let edgeRb = 0;
+  let edgeSq = 1;
+  let edgeM2 = 0;
+  let edgeM3 = 0;
   let activeAt = 0;
   let visible = true;
   let raf = 0;
   let last = 0;
   let lastDraw = 0;
+  let lastFace = 0;
   let destroyed = false;
 
   function resolveTheme(): void {
@@ -243,6 +320,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const paper: RGB = paperCss ? parseColor(paperCss) : [255, 255, 255];
     eyeInk = `rgb(${under[0] | 0} ${under[1] | 0} ${under[2] | 0})`;
     eyeLight = `rgb(${paper[0] | 0} ${paper[1] | 0} ${paper[2] | 0})`;
+    eyePaper = paper;
   }
   resolveTheme();
   haloTo = phaseColor(phase);
@@ -266,6 +344,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     fadeAt = t;
     kick();
     if (!(LOW.has(lastPair[0] ?? "") && LOW.has(P.face[0] ?? ""))) blinkUntil = t + 0.09;
+    // eyes opening on a wake catch the light once the lids have lifted
+    if (!faceOverride && !isOpen(lastPair) && isOpen(P.face)) glint(TWINKLE.wake);
     lastPair = P.face;
     activeAt = t;
     if (stillMode) {
@@ -280,6 +360,106 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       return;
     }
     wake();
+  }
+
+  /** The face it shows now, before a blink: the squint's `^^`, the demo's face or the phase's. */
+  function showing(): string {
+    return !faceOverride && t < squintUntil ? "^^" : (faceOverride ?? P.face);
+  }
+
+  /** The eye nearer what it loves (or where it looks), else the other eye from last time. */
+  function nearEye(): -1 | 1 {
+    const lx = attention ? attention[0] / (Math.hypot(attention[0], attention[1]) || 1) : look[0];
+    return Math.abs(lx) > 0.3 ? (lx > 0 ? 1 : -1) : flare.lead === 1 ? -1 : 1;
+  }
+
+  /** When the flare playing ends (its second eye included). */
+  function flareEnd(): number {
+    return flare.at + TWINKLE.flare + (flare.both ? TWINKLE.lag : 0);
+  }
+
+  /**
+   * An event's flare `delay` s from now: in the eye `lead` (0: the nearer one when it starts), the other eye following
+   * unless `alone`. One playing is never cut off: the request waits for it to end and TWINKLE.gap after (the newest
+   * request wins the wait). It insists on its page turn.
+   */
+  function glint(delay: number, lead: -1 | 1 | 0 = 0, alone = false): void {
+    if (stillMode) return;
+    queued = { at: Math.max(t + delay, flareEnd() + TWINKLE.gap), lead, both: !alone };
+    wake();
+  }
+
+  /** A flare starts now, if the page's turn is free (or it insists); the clock's next waits a full spell after it. */
+  function startFlare(lead: -1 | 1 | 0, both: boolean, insist: boolean): boolean {
+    if (!glintTurn(performance.now(), TWINKLE.page * 1000, insist)) return false;
+    flare = { at: t, lead: lead || nearEye(), both };
+    const w = lit > 0.5 ? TWINKLE.lit : clock;
+    nextFlare = t + w[0] + Math.random() * w[1];
+    return true;
+  }
+
+  /** Joy starts (a squint of joy, what it loves lighting up): a burst of stars round the head, never twice in a moment. */
+  function burst(): void {
+    if (stillMode || phase === "asleep" || t - burstAt < 0.6) return;
+    burstAt = t;
+    burstLeft = SPARK.burst;
+    nextSpark = t;
+  }
+
+  /** The body's edge along angle `a` from its centre, in R units, from the last frame's outline (a stretch only adds). */
+  function edgeAt(a: number): number {
+    if (!edgeRb) return 1;
+    const ca = Math.cos(a);
+    const sa = Math.sin(a) / edgeSq;
+    const idx = ((((Math.atan2(sa, ca) / TAU) * 512) | 0) + 512) & 511;
+    const mul = Math.max(0.35, OUT[idx]! + edgeM2 * C2[idx]! + edgeM3 * C3[idx]!);
+    return ((mul * edgeRb) / (Math.hypot(ca, sa) * R)) * (1 + 0.35 * str);
+  }
+
+  /**
+   * Where a star of `size` may stand along angle `a` (R units from the centre): `most`, the furthest its whole star stays a
+   * cell inside the field, and `want`, its distance off the body's edge.
+   */
+  function sparkRoom(a: number, size: number, at: number): { most: number; want: number } {
+    const A = Math.max(1, Math.round((SPARK.arm * size * R) / cell));
+    const B = Math.max(1, Math.round(A * 0.7));
+    const up = Math.max(1e-3, Math.abs(Math.sin(a)));
+    const side = Math.max(1e-3, Math.abs(Math.cos(a)));
+    const most = Math.min(((c - 2 - A) * cell) / R / up, ((c - 2 - B) * cell) / R / side);
+    return { most, want: Math.max(at, edgeAt(a) + SPARK.gap + (0.3 * A * cell) / R) };
+  }
+
+  /**
+   * A star round the head: on a slot no living one stands on (and not the last one used) where it fits off the body's edge
+   * inside the field, else on the roomiest of them, as far out as the field allows.
+   */
+  function spawnSpark(): void {
+    const size = SPARK.size[0] + Math.random() * SPARK.size[1];
+    let best: { slot: number; a: number; r: number; room: number } | null = null;
+    const fits: { slot: number; a: number; r: number; room: number }[] = [];
+    for (let i = 0; i < SPARK.slots.length; i++) {
+      if (i === lastSlot || sparks.some((sp) => sp.slot === i)) continue;
+      const a = ((SPARK.slots[i]! + (Math.random() - 0.5) * 14) * Math.PI) / 180;
+      const { most, want } = sparkRoom(a, size, SPARK.at[0] + Math.random() * SPARK.at[1]);
+      const cand = { slot: i, a, r: Math.min(want, most), room: most - want };
+      if (cand.room >= 0) fits.push(cand);
+      if (!best || cand.room > best.room) best = cand;
+    }
+    const pick = fits[(Math.random() * fits.length) | 0] ?? best;
+    if (!pick) return;
+    lastSlot = pick.slot;
+    sparks.push({ slot: pick.slot, x: Math.cos(pick.a) * pick.r, y: Math.sin(pick.a) * pick.r, born: t, size, still: false });
+  }
+
+  /** Calm: one whole star while it is lit, none otherwise; nothing pops or fades. */
+  function stillSparks(): void {
+    sparks.length = 0;
+    if (phase === "asleep" || !attention) return;
+    const [slot, at, size] = SPARK.still;
+    const a = (SPARK.slots[slot]! * Math.PI) / 180;
+    const { most, want } = sparkRoom(a, size, at);
+    const r = Math.min(most, want);
+    sparks.push({ slot, x: Math.cos(a) * r, y: Math.sin(a) * r, born: 0, size, still: true });
   }
 
   function step(dt: number): void {
@@ -384,6 +564,36 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     if (squintUntil > 0 && t >= squintUntil) {
       squintUntil = -1;
       blinkUntil = Math.max(blinkUntil, t + 0.06);
+      // out of a squint of joy at what it loves, the lit eyes catch the light, the nearer one first
+      if (attention) glint(0.16);
+    }
+    // The sparkle (not under calm). An event's flare starts when its time comes and the lids are up (or on `^ ^`, whose
+    // sparkle pulses); the clock's own come every few seconds (more often while lit) on a face that can show one, each
+    // waiting for the lids, for the flare before it and for the page's turn; on any other face the clock just moves on.
+    if (!stillMode) {
+      const face = showing();
+      const can = GLINTS.test(face);
+      const ready = can && (face[0] === "^" || open > 0.9);
+      if (queued && t >= queued.at) {
+        if (!can || t > queued.at + 1) queued = null;
+        else if (ready) {
+          startFlare(queued.lead, queued.both, true);
+          queued = null;
+        }
+      }
+      if (t >= nextFlare) {
+        const w = lit > 0.5 ? TWINKLE.lit : clock;
+        if (!can) nextFlare = t + w[0] + Math.random() * w[1];
+        else if (!ready || queued || t < flareEnd() + TWINKLE.gap || !startFlare(0, true, false)) nextFlare = t + 0.3 + Math.random() * 0.5;
+      }
+      // The stars round the head: the burst's, then while lit one more now and then.
+      for (let i = sparks.length - 1; i >= 0; i--) if (t - sparks[i]!.born > SPARK.life) sparks.splice(i, 1);
+      if (phase === "asleep") burstLeft = 0;
+      else if (t >= nextSpark && sparks.length < SPARK.most && (burstLeft > 0 || lit > 0.5)) {
+        spawnSpark();
+        if (burstLeft > 0) burstLeft--;
+        nextSpark = t + (burstLeft > 0 ? SPARK.stagger : SPARK.every[0] + Math.random() * SPARK.every[1]);
+      }
     }
     const target = t < blinkUntil ? 0 : 1;
     if (stillMode) {
@@ -435,6 +645,10 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const ma = Math.atan2(sy, sx);
     const m2x = m2.x;
     const m3x = m3.x;
+    edgeRb = Rb;
+    edgeSq = sq;
+    edgeM2 = m2x;
+    edgeM3 = m3x;
     for (let i = 0; i < 512; i++) {
       const a = (i / 512) * TAU - ma;
       C2[i] = Math.cos(2 * a);
@@ -448,6 +662,32 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const bkr = backing ? backing[0] : 0;
     const bkg = backing ? backing[1] : 0;
     const bkb = backing ? backing[2] : 0;
+    // The sparkles on the field's own cells. On ink a star's middle is paper and its arms the ramp's light end; on paper
+    // the middle is the light end and the arms the ramp's blue, so it reads on either ground.
+    ns = 0;
+    for (const sp of sparks) {
+      const age = sp.still ? SPARK.hold : t - sp.born;
+      if (age < 0 || age > SPARK.life || ns >= SX.length) continue;
+      const grow = Math.min(1, age / SPARK.rise);
+      const fade = age <= SPARK.hold ? 1 : 1 - (age - SPARK.hold) / (SPARK.life - SPARK.hold);
+      const full = Math.max(1, Math.round((SPARK.arm * sp.size * R) / cell));
+      let A = Math.max(1, Math.round(full * (0.4 + 0.6 * (1 - (1 - grow) * (1 - grow)))));
+      if (fade < 0.3 && A > 1) A -= 1;
+      const B = Math.max(1, Math.round(A * 0.7));
+      SX[ns] = Math.round((sp.x * R) / cell + c - 0.5);
+      SY[ns] = Math.round((sp.y * R) / cell + c - 0.5);
+      SA[ns] = A + 0.5;
+      SB[ns] = B + 0.5;
+      SE[ns] = fade;
+      ns++;
+    }
+    if (ns) {
+      const lo2 = backing ? eyePaper : L[1]!;
+      const hi2 = backing ? L[1]! : L[3]!;
+      sparkCore = (255 << 24) | ((lo2[2] & 255) << 16) | ((lo2[1] & 255) << 8) | (lo2[0] & 255);
+      sparkArm = (255 << 24) | ((hi2[2] & 255) << 16) | ((hi2[1] & 255) << 8) | (hi2[0] & 255);
+      sparkBody = (255 << 24) | ((eyePaper[2] & 255) << 16) | ((eyePaper[1] & 255) << 8) | (eyePaper[0] & 255);
+    }
     const L5 = L[5]!;
     const rimR = (L5[0] + INK[0]) / 2;
     const rimG = (L5[1] + INK[1]) / 2;
@@ -502,7 +742,17 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
           const gg = (col[1] + (rimG - col[1]) * rim) * (1 - glq) + 255 * glq;
           const b = (col[2] + (rimB - col[2]) * rim) * (1 - glq) + 255 * glq;
           px[i] = (255 << 24) | ((b & 255) << 16) | ((gg & 255) << 8) | (r & 255);
+          // a star the body has swelled or hopped into stays whole: over the body it is paper (only near its edge, far
+          // from the face)
+          if (ns && d > 0.72 * mul && sparkAt(x, y, th)) px[i] = sparkBody;
         } else {
+          if (ns) {
+            const sc = sparkAt(x, y, th);
+            if (sc) {
+              px[i] = sc === 1 ? sparkCore : sparkArm;
+              continue;
+            }
+          }
           let gq = ((1.28 + 0.08 * lit) * mul - d) / (0.85 * mul);
           if (gq <= 0) continue;
           if (gq > 1) gq = 1;
@@ -520,14 +770,57 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       }
     }
     g!.putImageData(img, 0, 0);
-    // The face (lib/eyes.ts): it turns with the look and leans into a stretch.
+    // The face (lib/eyes.ts): it turns with the look and leans into a stretch. The happy sparkle pops as `^ ^` appears
+    // (a pop playing is never started over).
+    facePair = pairNow();
+    faceCx = size / 2 + look[0] * EYES.look[0] * R + sx * str * 0.39 * R;
+    faceCy = size / 2 + EYES.row * Rb * sq + look[1] * EYES.look[1] * R + sy * str * 0.39 * R;
+    faceR = Rb * (phase === "muted" ? 0.9 : 1);
+    faceTurn = look[0];
+    const happy = facePair[0] === "^";
+    if (happy && !wasHappy && t >= joyAt + TWINKLE.pop) joyAt = t;
+    wasHappy = happy;
+    drawEyes();
+    if (!host.dataset["live"]) host.dataset["live"] = "1";
+  }
+
+  /**
+   * The face canvas alone, where the last full frame put the face: the catchlights breathe, a flare stretches and twists a
+   * star (the second eye TWINKLE.lag after the first), the happy sparkle pops and pulses with each flare. Calm: at rest.
+   */
+  function drawEyes(): void {
     fg!.setTransform(dpr, 0, 0, dpr, 0, 0);
     fg!.clearRect(0, 0, size, size);
-    const pair = pairNow();
-    const cx = size / 2 + look[0] * EYES.look[0] * R + sx * str * 0.39 * R;
-    const cy = size / 2 + EYES.row * Rb * sq + look[1] * EYES.look[1] * R + sy * str * 0.39 * R;
-    drawFace(fg!, pair, cx, cy, Rb * (phase === "muted" ? 0.9 : 1), { open, sparkle: lit, turn: look[0] }, { ink: eyeInk, light: eyeLight });
-    if (!host.dataset["live"]) host.dataset["live"] = "1";
+    let pose: FacePose = { open, sparkle: lit, turn: faceTurn };
+    if (!stillMode) {
+      const u = (t - flare.at) / TWINKLE.flare;
+      const v = flare.both ? u - TWINKLE.lag / TWINKLE.flare : -1;
+      pose = {
+        ...pose,
+        twinkle: 0.5 + 0.5 * Math.sin((TAU * t) / TWINKLE.period),
+        flare: flare.lead < 0 ? [u, v] : [v, u],
+        spark: popSize((t - joyAt) / TWINKLE.pop) * (1 + 0.4 * flareSize(u)),
+      };
+    }
+    drawFace(fg!, facePair, faceCx, faceCy, faceR, pose, { ink: eyeInk, light: eyeLight });
+  }
+
+  /** A star at field cell (x, y): 1 its middle, 2 an arm, 0 none; solid in its middle, a Bayer scatter toward its tips and as it fades. */
+  function sparkAt(x: number, y: number, th: number): number {
+    for (let k = 0; k < ns; k++) {
+      const du = Math.abs(x - SX[k]!);
+      const dv = Math.abs(y - SY[k]!);
+      const a = SA[k]!;
+      const b = SB[k]!;
+      if (du >= b || dv >= a) continue;
+      const q = Math.sqrt(du / b) + Math.sqrt(dv / a);
+      if (q >= 1) continue;
+      // the middle cross always, and a big one's diagonal neighbours while it is at its peak (a fuller middle)
+      const near = du + dv <= 1 || (du === 1 && dv === 1 && a > 4 && SE[k]! > 0.7);
+      if (SE[k]! * (near ? 1 : 0.3 + 0.7 * Math.min(1, (1 - q) * 2.6)) <= th) continue;
+      return du + dv === 0 || (du + dv === 1 && a > 3) ? 1 : 2;
+    }
+    return 0;
   }
 
   function shouldRun(): boolean {
@@ -540,10 +833,16 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const dt = Math.min(0.1, (now - (last || now)) / 1000);
     last = now;
     step(dt);
-    const live = t < blinkUntil + 0.28 ? 60 : shiver > 0.03 || str > 0.01 || t - fadeAt < 0.6 || pointer ? 24 : P.fps;
+    // The whole frame at the phase's rate (24 while stars stand round the head); a flare or a pop alone redraws only the
+    // face, at 60, over the field as it was last drawn.
+    const live = t < blinkUntil + 0.28 ? 60 : shiver > 0.03 || str > 0.01 || t - fadeAt < 0.6 || pointer || sparks.length > 0 ? 24 : P.fps;
     if (now - lastDraw >= 1000 / live - 2) {
       draw();
       lastDraw = now;
+      lastFace = now;
+    } else if ((t < flareEnd() || t < joyAt + TWINKLE.pop) && now - lastFace >= 1000 / 60 - 2) {
+      drawEyes();
+      lastFace = now;
     }
     if (shouldRun()) raf = requestAnimationFrame(frame);
   }
@@ -583,6 +882,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     look[1] = attention ? attention[1] / al : P.rest[1];
     lit = attention ? 1 : 0;
     open = 1;
+    stillSparks();
     draw();
   }
 
@@ -632,6 +932,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     setPhase,
     setFace(pair) {
       if (pair === faceOverride) return;
+      // eyes opening from a closed face (a thread blob set to work, a demo's `^ ^` let go) catch the light
+      if (!isOpen(faceOverride ?? P.face) && isOpen(pair ?? P.face)) glint(TWINKLE.wake);
       faceOverride = pair;
       blinkUntil = t + 0.09;
       activeAt = t;
@@ -647,10 +949,17 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       if (!at) {
         attention = null;
       } else {
+        const onset = !attention;
         // One layout read per change: the vector from the blob's centre, in its own px.
         const rect = host.getBoundingClientRect();
         const scale = rect.width / (size || 1) || 1;
         attention = [(at[0] - (rect.left + rect.width / 2)) / scale, (at[1] - (rect.top + rect.height / 2)) / scale];
+        // what it loves lights up: stars pop round its head and the nearer eye catches the light (on a squint of joy,
+        // the happy sparkle pulses instead)
+        if (onset) {
+          burst();
+          glint(0.06, 0, true);
+        }
       }
       activeAt = t;
       if (stillMode) stillFrame();
@@ -660,6 +969,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       if (stillMode) return;
       squintUntil = t + seconds;
       blinkUntil = Math.max(blinkUntil, t + 0.06);
+      burst();
       kick();
       activeAt = t;
       wake();
