@@ -28,11 +28,17 @@ import Foundation
 /// edge off. A confirmation takes it to 0.1 (−20 dB) in two 4 ms steps.
 ///
 /// Confirmation — Live heard Kevin too — in the order it can arrive: the ear's partial
-/// carrying a word Jarhead did not just say (100–200 ms; a partial made only of words
-/// from Jarhead's own transcript may be residual echo and confirms nothing), Kevin's
-/// non-final item growing in the snapshot's transcript (Live's
-/// `session.input_transcript.delta`, typically around a second), the phase leaving
-/// `speaking` (≥ 1.2 s after Jarhead's last words: a fallback).
+/// carrying a new word (100–200 ms), Kevin's non-final item growing in the snapshot's
+/// transcript (Live's `session.input_transcript.delta`, typically around a second), the
+/// phase leaving `speaking` (≥ 1.2 s after Jarhead's last words: a fallback). Only what
+/// arrived after the duck began counts, because the leak that trips the gate is also what
+/// makes the recognizer talk. A new word is one the partial added after the ear's last
+/// partial before the duck (`earBaseline`; past its length when it grew from it, so a word
+/// revised in place adds nothing), that the baseline did not carry and Jarhead did not just
+/// say. With no partial seen before the duck, the ear cannot tell old from new and confirms
+/// nothing. Live's item counts only when it opened `liveTranscriptLag` or more after the
+/// gate's onset: one already open, or one that opened sooner, is transcribing something said
+/// before the duck (a late item for Kevin's last turn).
 ///
 /// Release: confirmed, when the mic has been quiet 250 ms (capped at 4 s), a 300 ms ramp
 /// back to 1 and a 500 ms hold-off. Unconfirmed at 700 ms with the mic gone quiet: a
@@ -85,6 +91,10 @@ final class BargeInDuck: @unchecked Sendable {
     static let earEnergyWindow: TimeInterval = 0.3
     /// A word this long that Jarhead did not just say is what lets a partial confirm.
     static let novelWordMinLength = 3
+    /// Live's transcript of new speech trails its first sound by more than this (0.45–1 s in
+    /// the replays). A Kevin item that opened sooner after the gate's onset, or before it, is
+    /// about something said before the duck, and confirms nothing.
+    static let liveTranscriptLag: TimeInterval = 0.35
 
     enum Event {
         /// The gain reached the duck (−6 dB); `latencyMs` is from the first hot slice's capture time.
@@ -92,8 +102,12 @@ final class BargeInDuck: @unchecked Sendable {
         case confirmed(String)
         /// The 700 ms deadline moved on because the mic was still hot; `afterMs` since the duck.
         case extended(afterMs: Double)
-        /// A partial made only of Jarhead's own words was not taken as confirmation.
+        /// A partial with no new word (Jarhead's own words, or words the ear had before the
+        /// duck) was not taken as confirmation.
         case refusedWords(String)
+        /// A Live item for Kevin that opened before the duck, or too soon after its onset, was
+        /// not taken as confirmation.
+        case refusedLive(String)
         /// Back at unity; `afterMs` since the duck.
         case released(String, afterMs: Double)
     }
@@ -106,8 +120,10 @@ final class BargeInDuck: @unchecked Sendable {
         var unconfirmed = 0
         /// Unconfirmed ducks held past 700 ms because the mic stayed hot.
         var held = 0
-        /// Partials refused as confirmation (Jarhead's own words).
+        /// Partials refused as confirmation (Jarhead's own words, or the ear's words from before the duck).
         var refusedWords = 0
+        /// Live items for Kevin refused as confirmation (opened before the duck, or too soon after it).
+        var refusedLive = 0
         /// Words (the ear's or Live's) that came with recent energy while nothing was ducked:
         /// what used to start a duck and now only waits for the gate.
         var wordOnsetsSkipped = 0
@@ -146,6 +162,12 @@ final class BargeInDuck: @unchecked Sendable {
     private var hotCount = 0
     /// Jarhead's recent words (lowercased, ≥ `novelWordMinLength`), from the snapshot's transcript.
     private var jarheadWords: Set<String> = []
+    /// The tokens of the ear's last partial seen with no unconfirmed duck waiting: what the
+    /// cumulative segment already held before a duck began. Nil until the ear has posted one.
+    private var earBaseline: [String]?
+    /// The Kevin item Live last grew, and when it first appeared (host time).
+    private var liveItem: String?
+    private var liveItemOpenedHost: UInt64 = 0
     /// Bumped by every state change that invalidates queued timers.
     private var generation = 0
     private var stats = Stats()
@@ -200,6 +222,9 @@ final class BargeInDuck: @unchecked Sendable {
         hotSum = 0
         hotCount = 0
         jarheadWords.removeAll()
+        earBaseline = nil
+        liveItem = nil
+        liveItemOpenedHost = 0
         generation += 1
         stats = Stats()
         let gain = self.gain
@@ -216,7 +241,7 @@ final class BargeInDuck: @unchecked Sendable {
     func diagSuffix() -> String {
         let s = currentStats
         guard s.ducks > 0 || s.wordOnsetsSkipped > 0 else { return "" }
-        return ", duck \(s.ducks) (\(s.confirmed) confirmed, \(s.unconfirmed) unconfirmed, \(s.held) held past 700 ms, \(s.refusedWords) echo partials refused, \(s.wordOnsetsSkipped) word onsets skipped)"
+        return ", duck \(s.ducks) (\(s.confirmed) confirmed, \(s.unconfirmed) unconfirmed, \(s.held) held past 700 ms, \(s.refusedWords) old partials refused, \(s.refusedLive) old Live items refused, \(s.wordOnsetsSkipped) word onsets skipped)"
     }
 
     // MARK: inputs
@@ -270,14 +295,28 @@ final class BargeInDuck: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Live's transcript of Kevin grew (a new or longer non-final item in the snapshot,
-    /// main queue): the confirmation when the ear is off. Never an onset: his items arrive
+    /// Live's transcript of Kevin grew: `item` (its transcript id) is a new or longer
+    /// non-final item in the snapshot, main queue. The confirmation when the ear is off, but
+    /// only for an item that opened `liveTranscriptLag` or more after the gate's onset: an
+    /// item already open, or one that opened sooner, transcribes what he said before the duck
+    /// (11% of replies get a late item for his last turn). Never an onset: his items arrive
     /// revised and late, after Jarhead has started. What would have ducked is counted.
-    func noteLiveHeardKevin() {
+    func noteLiveHeardKevin(item: String) {
         lock.lock()
+        let nowHost = mach_absolute_time()
+        if item != liveItem {
+            liveItem = item
+            liveItemOpenedHost = nowHost
+        }
         switch state {
-        case .ducked(_, _, false):
-            confirmLocked("live transcript")
+        case .ducked(_, let onset, false):
+            let opened = liveItemOpenedHost
+            if opened > onset, AVAudioTime.seconds(forHostTime: opened - onset) >= BargeInDuck.liveTranscriptLag {
+                confirmLocked("live transcript")
+            } else {
+                stats.refusedLive += 1
+                queue.async { [weak self] in self?.onEvent?(.refusedLive(item)) }
+            }
         case .idle, .releasing:
             let now = CFAbsoluteTimeGetCurrent()
             if recentEnergyLocked(), echoCancelled, gain != nil, outputAudibleLocked(now) { stats.wordOnsetsSkipped += 1 }
@@ -287,25 +326,30 @@ final class BargeInDuck: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// The ear produced words (a partial that grew), on the ear queue. With a word Jarhead
-    /// did not just say they confirm a duck the gate started; made only of his words they
-    /// confirm nothing — residual echo says his words. Never an onset: the partial is the
-    /// whole segment, and Kevin's own last turn is still in it.
+    /// The ear produced words (a partial that grew), on the ear queue. The partial is the
+    /// whole segment, Kevin's own last turn included, so it is judged against the last one
+    /// seen before the duck began (`earBaseline`): a word it added, that the baseline did not
+    /// carry and Jarhead did not just say, confirms a duck the gate started. Words the ear
+    /// already had, revised in place or not, and Jarhead's own (residual echo says his words)
+    /// confirm nothing. Never an onset.
     func noteEarWords(_ text: String) {
+        let tokens = BargeInDuck.tokens(of: text)
         lock.lock()
-        let novel = hasNovelWordLocked(text)
         switch state {
         case .idle, .releasing:
-            if novel, recentEnergyLocked(), armedLocked() { stats.wordOnsetsSkipped += 1 }
+            // What used to start a duck: a word Jarhead did not just say, with recent energy.
+            if hasNovelWordLocked(tokens, besides: []), recentEnergyLocked(), armedLocked() { stats.wordOnsetsSkipped += 1 }
+            earBaseline = tokens
         case .ducked(_, _, false):
-            if novel {
+            if let baseline = earBaseline, hasNovelWordLocked(BargeInDuck.added(tokens, after: baseline), besides: Set(baseline)) {
+                earBaseline = tokens
                 confirmLocked("ear words")
             } else {
                 stats.refusedWords += 1
                 queue.async { [weak self] in self?.onEvent?(.refusedWords(text)) }
             }
         case .ducked:
-            break
+            earBaseline = tokens
         }
         lock.unlock()
     }
@@ -377,6 +421,19 @@ final class BargeInDuck: @unchecked Sendable {
         return nowHost < lastHotHost ? 0 : AVAudioTime.seconds(forHostTime: nowHost - lastHotHost)
     }
 
+    /// The tokens of `text` in order, lowercased, letters and digits only.
+    static func tokens(of text: String) -> [String] {
+        text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    }
+
+    /// What a partial added after `before`, the ear's last partial before the duck: the tokens
+    /// past its length when this one grew from it (the same segment; a word revised in place
+    /// adds nothing), all of them when it did not (a new segment, or a revision that merged words).
+    static func added(_ tokens: [String], after before: [String]) -> ArraySlice<String> {
+        if tokens.count >= before.count, tokens.first == before.first { return tokens.dropFirst(before.count) }
+        return tokens[...]
+    }
+
     /// Words of `text`, lowercased, letters and digits only, at least `novelWordMinLength` long.
     static func words(of text: String) -> Set<String> {
         var out: Set<String> = []
@@ -386,12 +443,10 @@ final class BargeInDuck: @unchecked Sendable {
         return out
     }
 
-    /// True when `text` has a word Jarhead did not just say (or nothing of his is known yet).
-    private func hasNovelWordLocked(_ text: String) -> Bool {
-        let words = BargeInDuck.words(of: text)
-        guard !words.isEmpty else { return false }
-        guard !jarheadWords.isEmpty else { return true }
-        return words.contains { !jarheadWords.contains($0) }
+    /// True when `tokens` has a word (≥ `novelWordMinLength`) that is not in `known` and that
+    /// Jarhead did not just say (nothing of his known yet counts as nothing said).
+    private func hasNovelWordLocked<S: Sequence>(_ tokens: S, besides known: Set<String>) -> Bool where S.Element == String {
+        tokens.contains { $0.count >= BargeInDuck.novelWordMinLength && !known.contains($0) && !jarheadWords.contains($0) }
     }
 
     private func armedLocked() -> Bool {

@@ -8,7 +8,9 @@ import Foundation
 /// late (the network, a busy queue, the daemon) leaves the player dry: a hole in a word,
 /// with a click at each edge. The model keeps the player `target` ahead, 120 ms by default:
 /// - **Reset** (start, flush, a graph restart, the player dry for ≥ 0.5 s, or no render
-///   time yet): the next chunk is preceded by `target` of silence. Not an underrun.
+///   time yet on a stream not yet primed): the next chunk is preceded by `target` of
+///   silence. Not an underrun. Chunks that follow before the player's first render continue
+///   that stream: nothing has played, so they are contiguous.
 /// - **Underrun** (the player ran dry mid-stream, for less than 0.5 s): counted, scheduled
 ///   at once behind a 5 ms fade-in, and `target` grows to `min(200 ms, longest gap + 40 ms)`
 ///   for the resets that follow. No re-prime on the spot: that measured longer tail holes.
@@ -41,7 +43,7 @@ struct PlayoutModel: Equatable {
         /// The player ran dry mid-stream before this chunk, for `gapFrames`.
         var underrun = false
         var gapFrames = 0
-        /// The chunk opens a new stream (start, flush, restart, a long dry spell, no render time).
+        /// The chunk opens a new stream (start, flush, restart, a long dry spell, no render time before priming).
         var reset = false
     }
 
@@ -77,6 +79,13 @@ struct PlayoutModel: Equatable {
     mutating func plan(frames: Int, now: Int64?) -> Plan {
         let count = Int64(max(0, frames))
         stats.chunks += 1
+        if now == nil, primed {
+            // A burst before the player's first render (a restart that queued chunks behind
+            // it): the stream is already primed and nothing has played, so it continues.
+            scheduledEnd += count
+            shadowEnd += count
+            return Plan()
+        }
         guard let now, primed, now - scheduledEnd < Int64(PlayoutModel.dryResetFrames) else {
             // A new stream: the player's timeline starts at 0 when it has not rendered yet.
             let base = now ?? 0

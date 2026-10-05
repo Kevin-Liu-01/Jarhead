@@ -9,21 +9,23 @@ import Foundation
 //   DUCK_PROBE_RUNS=3      runs; each run plays the five scenarios below, the speech onset
 //                          0, 30 or 70 ms into a 100 ms buffer in turn
 //   DUCK_PROBE_LIVE_MS=900 when Live's transcript of Kevin first grows, after his onset
-//                          (modelled: no live session is opened here)
+//                          (modelled: no live session is opened here; at least 400, since
+//                          an item sooner than BargeInDuck.liveTranscriptLag confirms nothing)
 //   DUCK_PROBE_RESIDUAL_S  seconds of the residual round (default 60; 0 skips it; under
 //                          --json it runs only when set, so the bench stays quick)
 //   --json                 the last line is the report the bench reads
 //
 // The scenarios, each with audible output "playing" (noteOutput every 100 ms, as the speaker
-// path does) and Jarhead's transcript "Let me check that for you. Opening the settings now.":
-//   live    Kevin speaks 1.5 s; the ear is off; Live's transcript of him grows at +LIVE_MS and
-//           every 300 ms after; Live stops Jarhead's audio at +1.4 s (its measured stop on
+// path does), Jarhead's transcript "Let me check that for you. Opening the settings now.", and
+// the ear's partial of Kevin's last turn ("can you open the settings") seen before the reply:
+//   live    Kevin speaks 1.5 s; the ear is off; Live's transcript of him opens at +LIVE_MS and
+//           grows every 300 ms after; Live stops Jarhead's audio at +1.4 s (its measured stop on
 //           barge-in); the phase leaves `speaking` at +2.6 s (1.2 s after Jarhead's last words)
 //   cough   200 ms of energy, nothing follows: a dip to −6 dB, back at 700 ms
-//   ear     Kevin speaks 1.0 s; the ear's partial "open safari" at +200 ms (words Jarhead did
-//           not say); Live stops Jarhead at +1.4 s
-//   echo    200 ms of energy and a partial "check that for you" at +200 ms — Jarhead's own words,
-//           the residual echo case: it must not confirm
+//   ear     Kevin speaks 1.0 s; the ear's cumulative partial gains "open safari" at +200 ms
+//           ("safari": a word neither his last turn nor Jarhead had); Live stops Jarhead at +1.4 s
+//   echo    200 ms of energy and the partial gains "check that for you" at +200 ms — Jarhead's
+//           own words, the residual echo case: it must not confirm
 //   phase   Kevin speaks 1.5 s; no ear, no Live transcript; Live stops Jarhead at +1.4 s; only
 //           the phase leaves `speaking`, at +2.6 s
 // An unconfirmed duck holds at −6 dB; live and ear must reach −20 dB within 8 ms of their
@@ -34,6 +36,14 @@ import Foundation
 //   stale      the ear's cumulative partial: Kevin's last turn plus Jarhead's own words
 //   revise     the ear revises Kevin's own last turn
 //   late-live  Live's transcript of Kevin grows after Jarhead has started
+// Then the echo-stale rounds (W1.4's bound): Kevin silent, a 100 ms residual leak at 0.012
+// trips the gate (−6 dB), and inside that duck come the ear's cumulative partial (his last turn
+// plus Jarhead's echo) and a late Live item for his last turn (opening 150 ms after the onset,
+// growing 300 ms later). Nothing of it is new, so each must hold at −6.0 dB and release
+// unconfirmed:
+//   baseline   the ear posted his last turn before the reply (what EarListener always does)
+//   revised    as baseline, and the partial inside the duck revises his turn ("the" inserted)
+//   cold       no partial before the duck: the ear's first words land inside it
 // And the residual round (W1.4): Jarhead talks for 60 s over bursty residual echo at −50 dBFS
 // with Kevin silent; at most 1% of his audible speech may sit under −6 dB.
 //
@@ -50,7 +60,7 @@ struct DuckProbeMain {
         let json = CommandLine.arguments.contains("--json")
         let env = ProcessInfo.processInfo.environment
         let runs = max(1, Int(env["DUCK_PROBE_RUNS"] ?? "") ?? 3)
-        let liveMs = max(100, Int(env["DUCK_PROBE_LIVE_MS"] ?? "") ?? 900)
+        let liveMs = max(400, Int(env["DUCK_PROBE_LIVE_MS"] ?? "") ?? 900)
         let residualSeconds = max(0, Double(env["DUCK_PROBE_RESIDUAL_S"] ?? "") ?? (json ? 0 : 60))
         let probe = DuckProbe(runs: runs, liveMs: liveMs, residualSeconds: residualSeconds, json: json)
         probe.begin()
@@ -93,6 +103,8 @@ final class DuckProbe: @unchecked Sendable {
     private let feeder = DispatchQueue(label: "duck-probe.feeder", qos: .userInteractive)
     private let events = DispatchQueue(label: "duck-probe.events", qos: .userInteractive)
     static let jarheadSaid = "Let me check that for you. Opening the settings now."
+    /// The ear's partial before the reply: Kevin's last turn, the segment the barge-in grows.
+    static let kevinBefore = "can you open the settings"
     /// −6 dB: where a duck nobody confirmed holds (voice PLAN W1.4).
     static let unconfirmedGain: Float = 0.5
     static let phaseLeavesSpeakingMs = 2600
@@ -119,6 +131,8 @@ final class DuckProbe: @unchecked Sendable {
     private var wordRoundDucks = 0
     private var residualUnderPct: Double?
     private var residualDucks = 0
+    /// The echo-stale rounds' lowest gain, dB (W1.4: -6.0 each).
+    private var echoStaleLowestDb: [Double] = []
 
     // The round in flight.
     private var current: Round?
@@ -243,7 +257,10 @@ final class DuckProbe: @unchecked Sendable {
             say(String(format: "  still hot at %.0f ms: the deadline moves on", afterMs))
         case .refusedWords(let text):
             refusedEchoPartials += 1
-            say("  partial \"\(text)\" refused as confirmation: Jarhead's own words")
+            say("  partial \"\(text)\" refused as confirmation: no new word")
+        case .refusedLive(let item):
+            say("  Live item \(item) refused as confirmation: it opened before the duck or too soon after it")
+            failures.append("\(round.scenario.rawValue) round: Live item \(item) refused; a barge-in's own item must confirm")
         case .released(let why, let afterMs):
             releasedWhy = why
             if why.hasPrefix("unconfirmed, held") {
@@ -267,7 +284,7 @@ final class DuckProbe: @unchecked Sendable {
 
     private func nextRound() {
         guard !rounds.isEmpty else {
-            // The word and residual rounds sleep between buffers: off the main run loop.
+            // The word, echo-stale and residual rounds sleep between buffers: off the main run loop.
             Thread.detachNewThread { [weak self] in
                 guard let self else { return }
                 self.extraRounds()
@@ -277,6 +294,8 @@ final class DuckProbe: @unchecked Sendable {
         }
         let round = rounds.removeFirst()
         duck.resetForHarness()
+        // Kevin's last turn, as the ear posted it while he spoke (nothing playing, nothing ducked).
+        duck.noteEarWords(DuckProbe.kevinBefore)
         duck.noteJarheadSaid(DuckProbe.jarheadSaid)
         duck.noteVoiceSpeaking(true)
         lock.lock()
@@ -358,14 +377,16 @@ final class DuckProbe: @unchecked Sendable {
         switch round.scenario {
         case .live:
             var t = liveMs
+            // One item for his barge-in: it opens at +LIVE_MS and grows every 300 ms after.
+            let item = "t_barge\(round.run)"
             while Double(t) / 1000 < round.scenario.speechSeconds + 0.3 {
-                at(t) { [duck] in duck.noteLiveHeardKevin() }
+                at(t) { [duck] in duck.noteLiveHeardKevin(item: item) }
                 t += 300
             }
         case .ear:
-            at(DuckProbe.earPartialMs) { [duck] in duck.noteEarWords("open safari") }
+            at(DuckProbe.earPartialMs) { [duck] in duck.noteEarWords("\(DuckProbe.kevinBefore) open safari") }
         case .echo:
-            at(DuckProbe.earPartialMs) { [duck] in duck.noteEarWords("check that for you") }
+            at(DuckProbe.earPartialMs) { [duck] in duck.noteEarWords("\(DuckProbe.kevinBefore) check that for you") }
         case .cough, .phase:
             break
         }
@@ -435,7 +456,7 @@ final class DuckProbe: @unchecked Sendable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.nextRound() }
     }
 
-    // MARK: the word rounds and the residual round (voice PLAN W1.3, W1.4)
+    // MARK: the word rounds, the echo-stale rounds and the residual round (voice PLAN W1.3, W1.4)
 
     static let wordJarhead = "Sure, opening System Settings for you now."
     static let kevinTurn = "can you open system settings"
@@ -458,7 +479,7 @@ final class DuckProbe: @unchecked Sendable {
         }
     }
 
-    /// The word rounds, then the residual round; on a background thread, sleeping between buffers.
+    /// The word rounds, the echo-stale rounds, then the residual round; on a background thread, sleeping between buffers.
     private func extraRounds() {
         var rng = ProbeRNG(state: 7)
         for round in WordRound.allCases {
@@ -470,6 +491,18 @@ final class DuckProbe: @unchecked Sendable {
             } else {
                 say("word round \(round.rawValue): FAIL \(ducks) duck(s), \(skipped) word onset(s) skipped")
                 lock.lock(); failures.append("word round \(round.rawValue) ducked \(ducks) time(s) and counted \(skipped) skipped word onset(s); the words must only confirm a duck, and count the onset once"); lock.unlock()
+            }
+        }
+        for round in EchoStaleRound.allCases {
+            let c = echoStaleRound(round, rng: &rng)
+            let db = 20 * log10(Double(max(c.lowest, 1e-6)))
+            lock.lock(); echoStaleLowestDb.append((db * 10).rounded() / 10); lock.unlock()
+            let line = String(format: "echo-stale round %@: %d duck(s), %d confirmed, %d partial(s) and %d Live call(s) refused, lowest %.1f dB, released %@", round.rawValue, c.ducks, c.confirmed, c.refusedWords, c.refusedLive, db, c.released ?? "never")
+            if c.ducks == 1, c.confirmed == 0, c.lowest == DuckProbe.unconfirmedGain, c.refusedWords == 1, c.refusedLive == 2, c.released?.hasPrefix("unconfirmed at") == true {
+                say(line)
+            } else {
+                say("\(line): FAIL")
+                lock.lock(); failures.append("echo-stale round \(round.rawValue): \(line); stale words must leave an echo duck at -6.0 dB"); lock.unlock()
             }
         }
         guard residualSeconds > 0 else { return }
@@ -503,7 +536,7 @@ final class DuckProbe: @unchecked Sendable {
         switch round {
         case .stale: duck.noteEarWords("\(DuckProbe.kevinTurn) opening system settings for")
         case .revise: duck.noteEarWords("can you open the system settings")
-        case .lateLive: duck.noteLiveHeardKevin()
+        case .lateLive: duck.noteLiveHeardKevin(item: "t_late")
         }
         for _ in 0 ..< 25 {
             feedSlices(Array(repeating: 0.001, count: 10), rng: &rng)
@@ -511,6 +544,47 @@ final class DuckProbe: @unchecked Sendable {
         }
         Thread.sleep(forTimeInterval: 0.2)
         return counter.ducks
+    }
+
+    enum EchoStaleRound: String, CaseIterable {
+        case baseline, revised, cold
+    }
+
+    /// Kevin silent; a residual leak trips the gate, and stale words arrive inside the duck.
+    /// Returns what the duck did: its ducks, confirmations, refusals, lowest gain, release.
+    private func echoStaleRound(_ round: EchoStaleRound, rng: inout ProbeRNG) -> EventCounter {
+        let counter = EventCounter()
+        duck.onEvent = { counter.note($0) }
+        duck.resetForHarness()
+        Thread.sleep(forTimeInterval: 0.05)
+        lock.lock(); minGainSeen = 1; lock.unlock()
+        // His last turn, posted by the ear while he spoke (`cold`: the ear had posted nothing).
+        if round != .cold { duck.noteEarWords(DuckProbe.kevinTurn) }
+        duck.noteJarheadSaid(DuckProbe.wordJarhead)
+        duck.noteVoiceSpeaking(true)
+        for _ in 0 ..< 40 { duck.noteOutput(rms: 0.08, seconds: 0.1) }
+        for _ in 0 ..< 5 {
+            feedSlices(Array(repeating: 0.001, count: 10), rng: &rng)
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        // The leak: 100 ms at 0.012 (−38 dBFS), over the 0.008 floor. The gate ducks to −6 dB.
+        feedSlices(Array(repeating: 0.012, count: 10), rng: &rng)
+        Thread.sleep(forTimeInterval: 0.05)
+        // 150 ms after the leak's onset: a late Live item for his last turn opens.
+        duck.noteLiveHeardKevin(item: "t_late")
+        Thread.sleep(forTimeInterval: 0.05)
+        // The ear's cumulative partial: his last turn (`revised`: a word inserted into it), then Jarhead's echo.
+        let turn = round == .revised ? "can you open the system settings" : DuckProbe.kevinTurn
+        duck.noteEarWords("\(turn) sure opening system settings")
+        for i in 0 ..< 12 {
+            feedSlices(Array(repeating: 0.001, count: 10), rng: &rng)
+            Thread.sleep(forTimeInterval: 0.1)
+            // The late item grows.
+            if i == 2 { duck.noteLiveHeardKevin(item: "t_late") }
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        lock.lock(); counter.lowest = minGainSeen; lock.unlock()
+        return counter
     }
 
     /// Port of the DUCK investigation's E2 sweep (bursty): Jarhead's utterances of syllables, the
@@ -599,6 +673,7 @@ final class DuckProbe: @unchecked Sendable {
         let s = samples, u = unconfirmedRestores, c = confirmedReleases, e = speechEndToUnity, h = heldRestores, l = liveConfirms, w = earConfirms
         let refused = refusedEchoPartials, min = minGainSeen, names = rankedNames, fails = failures
         let deep = confirmToDeep, wordDucks = wordRoundDucks, residualPct = residualUnderPct, residualN = residualDucks
+        let echoStale = echoStaleLowestDb
         lock.unlock()
         let onsets = runs * Scenario.allCases.count
         say(String(format: "done: %d ducks of %d onsets; onset → duck (−6 dB) median %.0f ms, p95 %.0f ms, max %.0f ms; lowest gain %.2f", s.count, onsets, percentile(s, 50), percentile(s, 95), s.max() ?? .nan, min))
@@ -626,6 +701,7 @@ final class DuckProbe: @unchecked Sendable {
             "pureChecksFailed": pureChecks.failed,
             "confirmToDeepMs": r(deep),
             "wordRoundDucks": wordDucks,
+            "echoStaleLowestDb": echoStale,
         ]
         if let residualPct {
             report["residualUnderMinus6dBPct"] = (residualPct * 100).rounded() / 100
@@ -644,11 +720,28 @@ final class DuckProbe: @unchecked Sendable {
 final class EventCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
+    private var confirms = 0
+    private var words = 0
+    private var live = 0
+    private var why: String?
+    /// The lowest gain the round saw; the round sets it.
+    var lowest: Float = 1
     func note(_ event: BargeInDuck.Event) {
-        guard case .ducked = event else { return }
-        lock.lock(); count += 1; lock.unlock()
+        lock.lock(); defer { lock.unlock() }
+        switch event {
+        case .ducked: count += 1
+        case .confirmed: confirms += 1
+        case .refusedWords: words += 1
+        case .refusedLive: live += 1
+        case .released(let w, _): why = w
+        case .extended: break
+        }
     }
     var ducks: Int { lock.lock(); defer { lock.unlock() }; return count }
+    var confirmed: Int { lock.lock(); defer { lock.unlock() }; return confirms }
+    var refusedWords: Int { lock.lock(); defer { lock.unlock() }; return words }
+    var refusedLive: Int { lock.lock(); defer { lock.unlock() }; return live }
+    var released: String? { lock.lock(); defer { lock.unlock() }; return why }
 }
 
 /// A small deterministic generator, so a round's levels repeat run to run.
@@ -960,11 +1053,23 @@ struct PureSections {
                 let ok = p.reset && p.prerollFrames == target && m.scheduledEnd == Int64(target + f) && m.stats.underruns == 0 && m.stats.wouldBeUnderruns == 0 && m.stats.resets == 2
                 return ok ? nil : "\(p), end \(m.scheduledEnd), \(m.stats)"
             }),
-            ("a nil nowSample is a reset", {
+            ("a nil nowSample before priming is a reset; while primed it appends", {
+                // A burst before the player's first render: one pre-roll, then contiguous.
                 var m = PlayoutModel()
-                _ = m.plan(frames: f, now: 4_800)
-                let p = m.plan(frames: f, now: nil)
-                return p.reset && p.prerollFrames == target && m.scheduledEnd == Int64(target + f) && m.stats.underruns == 0 ? nil : "\(p), end \(m.scheduledEnd)"
+                let first = m.plan(frames: f, now: nil)
+                let second = m.plan(frames: f, now: nil)
+                let third = m.plan(frames: f, now: nil)
+                let burst = first.reset && first.prerollFrames == target && second == PlayoutModel.Plan() && third == PlayoutModel.Plan() && m.scheduledEnd == Int64(target + 3 * f) && m.stats.resets == 1
+                // Once the player renders, the backlog is read on the same timeline: no underrun.
+                let rendered = m.plan(frames: f, now: Int64(2 * f))
+                let continues = rendered == PlayoutModel.Plan() && m.stats.underruns == 0 && m.stats.wouldBeUnderruns == 0 && m.stats.queuedFrames == target + f
+                // A primed stream with a valid clock that then reads nil also appends.
+                var n = PlayoutModel()
+                _ = n.plan(frames: f, now: 4_800)
+                let end = n.scheduledEnd
+                let appended = n.plan(frames: f, now: nil)
+                let primedAppend = appended == PlayoutModel.Plan() && n.scheduledEnd == end + Int64(f) && n.stats.resets == 1
+                return burst && continues && primedAppend ? nil : "burst \(first) \(second) \(third) end \(m.scheduledEnd); then \(rendered) \(m.stats); primed nil \(appended) end \(n.scheduledEnd)"
             }),
             ("target grows to the longest gap + 40 ms, capped at 200 ms, and never shrinks", {
                 var m = PlayoutModel()

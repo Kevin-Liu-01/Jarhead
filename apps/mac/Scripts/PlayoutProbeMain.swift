@@ -27,11 +27,14 @@ import Foundation
 //
 // Offline gates: today shows ≥ 3 holes/min on paced arrival with the readback ticks (the defect);
 // the cushion has 0 holes on paced and on |N(0,50 ms)| jitter, ≤ 30% of today's speech-hole time
-// on the Wi-Fi model, the source's level within 0.1 dB, an added p50 latency ≤ 130 ms; its
-// `underruns` equal its rendered holes, and its `wouldBeUnderruns` equal today's holes (traces
-// without a flush). --stall gates: the HAL on its own queue keeps every play block's wait ≤ 10 ms
-// (or within 2 ms of the rig with no HAL work, when a loaded machine holds that rig past 10 ms)
-// and that rig's holes ± 1; --legacy must show waits ≥ 20 ms.
+// on the Wi-Fi model, the source's level within 0.1 dB, an added p50 latency ≤ 130 ms (≤ the
+// grown target + 10 ms on a trace whose underruns raised it; PLAN W1.1 asked for 130 ms flat);
+// its `underruns` equal its rendered holes, and its `wouldBeUnderruns` equal today's holes
+// (traces without a flush); three chunks scheduled before the player's first render get one
+// pre-roll between them, with 0 holes and 0 underruns. --stall gates: the HAL on its own queue
+// keeps every play block's wait ≤ 10 ms (or within 2 ms of the rig with no HAL work, when a
+// loaded machine holds that rig past 10 ms; PLAN W1.2 asked for 10 ms flat) and that rig's
+// holes ± 1; --legacy must show waits ≥ 20 ms.
 
 let outFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
 let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24_000, channels: 1, interleaved: false)!
@@ -364,8 +367,36 @@ struct OfflineProbe {
             if p.speechHoleMs < c.speechHoleMs, p.latencyP50 <= c.latencyP50 + 1 { reprimeWins += 1 } else if p.speechHoleMs == c.speechHoleMs, abs(p.latencyP50 - c.latencyP50) <= 1 { ties += 1 } else { losses += 1 }
         }
         say("re-prime vs reset-only: re-prime better on \(reprimeWins) traces, tied on \(ties), worse on \(losses) → \(reprimeWins > losses ? "re-prime" : "reset-only (shipped)")")
+        let b = burstBeforeFirstRender()
+        check("cushion: 3 chunks scheduled before the first pull play with one pre-roll, 0 holes, 0 underruns", b.holes == 0 && b.stats.underruns == 0 && b.stats.resets == 1 && b.prerolls == [PlayoutModel.defaultTargetFrames, 0, 0] && b.targetFrames == PlayoutModel.defaultTargetFrames, "pre-rolls \(b.prerolls), holes \(b.holes), underruns \(b.stats.underruns), resets \(b.stats.resets), target \(Int(PlayoutModel.ms(b.targetFrames))) ms")
         say("gates: \(oks) ok, \(fails.count) FAIL")
         return fails.isEmpty
+    }
+
+    /// A restart that queued chunks behind it (play blocks waiting on the audio queue run right
+    /// after `finishStart`): three chunks reach the shipped SpeakerScheduler before the player
+    /// has rendered once, then the stream goes on paced. The player's render time is nil for
+    /// all three; the stream is primed by the first, so the next two are contiguous.
+    private func burstBeforeFirstRender() -> (holes: Int, stats: PlayoutModel.Stats, prerolls: [Int], targetFrames: Int) {
+        guard let rig = try? OfflineRig() else { fatalError("no offline engine") }
+        let content = makeContent(seconds: 3, seed: 5, replies: false)
+        let chunks = content.pcm.count / chunkFrames
+        var prerolls: [Int] = []
+        var next = 0
+        func send() {
+            if let s = rig.speaker.schedule(pcm: pcmData(content.pcm, chunk: next)) { prerolls.append(s.plan.prerollFrames) }
+            next += 1
+            rig.touched = true
+        }
+        for _ in 0 ..< 3 { send() }
+        // Then one 40 ms chunk every four 10 ms pulls, and half a second to drain.
+        let pulls = chunks * 4 + 50
+        for k in 0 ..< pulls {
+            if k > 0, k % 4 == 0, next < chunks { send() }
+            rig.pull()
+        }
+        let r = analyze(rig.out, cuts: [0])
+        return (r.holes, rig.speaker.model.stats, Array(prerolls.prefix(3)), rig.speaker.model.targetFrames)
     }
 
     private func run(_ trace: Trace, _ policy: Policy, pcm: [Int16]) -> RunResult {

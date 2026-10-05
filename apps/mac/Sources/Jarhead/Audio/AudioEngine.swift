@@ -14,8 +14,11 @@ import Foundation
 /// Recording on (`VoiceProcessingPolicy.recording`, `setPolicy`) the plain graph runs
 /// on the ranked microphone and the software echo guard (`EchoGuard`) holds the wire
 /// while he speaks. What the graph is actually doing is read back as an
-/// `AudioStateReadback` (`onAudioState`) — never assumed, and never on `jarhead.audio`: that
-/// queue schedules the speaker, so every HAL read runs on `AudioStateReader`'s own queue.
+/// `AudioStateReadback` (`onAudioState`), never assumed. `jarhead.audio` schedules the
+/// speaker, so the state frame's HAL reads (the 5 s tick, route changes, the picker) run on
+/// `AudioStateReader`'s own queue. Start and mute still make a few HAL calls here: the guard's
+/// tail (output latency, default output), the ranked mic (the input list), a failed start's
+/// device names, and the process input mute.
 /// The speaker keeps a playout cushion (`SpeakerScheduler`, `PlayoutModel`) so a late chunk
 /// is absorbed instead of heard as a hole.
 ///
@@ -200,6 +203,9 @@ final class AudioEngine {
                 self.stopLocked()
                 self.retryAttempt = 0
                 self.startLocked()
+            } else {
+                // Asleep: no start or stop pushes the pick, so the picker's ranking takes it now.
+                self.stateReader.choices(preferredInputUID: value, recording: !self.wantedPolicy.echoCancel, reason: "picker")
             }
         }
     }
@@ -215,8 +221,10 @@ final class AudioEngine {
             guard p != self.wantedPolicy else { return }
             self.wantedPolicy = p
             guard self.wanted, self.running else {
-                // Stopped: the next start walks the new policy's ladder from the top.
+                // Stopped: the next start walks the new policy's ladder from the top, and the
+                // frame says Recording now.
                 self.winningRung = nil
+                self.stateReader.choices(preferredInputUID: self.preferredInputUID, recording: !p.echoCancel, reason: "policy")
                 return
             }
             guard !self.rebuildPending else { return }

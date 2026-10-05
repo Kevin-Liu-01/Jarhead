@@ -125,7 +125,8 @@ extension AudioStateReadback {
 /// speaker's chunks: 20–40 ms a tick, 100–290 ms tails, whole seconds under load, each one a
 /// hole in Jarhead's voice. Here they run on their own utility queue:
 /// - the engine pushes its in-process facts (`AudioLocalFacts`) at start, stop, a policy
-///   flip and mute; a guard edge and the 5 s tick refresh only the guard's counters;
+///   flip and mute, and Kevin's choices (the picked mic, Recording) when he changes them
+///   while the graph is down; a guard edge and the 5 s tick refresh only the guard's counters;
 /// - the HAL is read again only when a Core Audio listener marked it dirty, when the engine
 ///   asks (start, stop, mute), or every 30 s;
 /// - `mic clients changed` (the process list) is read at most once per 2 s; device-list and
@@ -208,6 +209,18 @@ final class AudioStateReader {
             self.local = facts
             self.halDirty = true
             self.publishRoute(reason)
+        }
+    }
+
+    /// Kevin's choices moved while the graph is down (a microphone picked, Recording flipped),
+    /// so no start or stop will push them. The ranking, the picker's `picked` tag and the
+    /// frame's `recording` follow now: a pick re-ranks and posts the route, a flip the frame.
+    func choices(preferredInputUID: String?, recording: Bool, reason: String) {
+        queue.async {
+            let picked = self.local.preferredInputUID != preferredInputUID
+            self.local.preferredInputUID = preferredInputUID
+            self.local.recording = recording
+            if picked { self.publishRoute(reason) } else { self.publishFrame(reason) }
         }
     }
 
