@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
-import { HANDS_OFF_APPS, REPO_ROOT, classifyAction, classifyAppleScript, classifyPath, classifyUrl, expandPath, logger, newId, shellCwdReason, shellSteals, type ActionContext, type Decision, Ledger } from "@jarhead/core";
+import { HANDS_OFF_APPS, REPO_ROOT, appleScriptShellLines, classifyAction, classifyAppleScript, classifyPath, classifyUrl, expandPath, logger, newId, shellCwdReason, shellFocus, type ActionContext, type Decision, Ledger } from "@jarhead/core";
 import type { AgentRegistry } from "@jarhead/agents";
 import { DaemonClient } from "@jarhead/daemon";
 import { ComputerToolset, KEVIN_QUIET_MS, type ToolResult, type UserIdle } from "@jarhead/hands";
@@ -118,12 +118,6 @@ export interface RunOutcome {
   readonly ms: number;
 }
 
-/** A call `execute` ran (dispatched, redacted, a screenshot archived) whose step `record` has not written yet. */
-export interface Executed {
-  readonly args: Record<string, unknown>;
-  readonly out: RunOutcome;
-}
-
 export class ToolRunner {
   private readonly notes: { at: number; note: string }[] = [];
   private sink: BrainSink | undefined;
@@ -210,18 +204,14 @@ export class ToolRunner {
     return { jobs };
   }
 
-  async run(name: string, input: unknown): Promise<RunOutcome> {
-    const done = await this.execute(name, input);
-    this.record(name, done);
-    return done.out;
-  }
-
   /**
-   * `run` up to its step: the call dispatched, its result redacted, a screenshot archived
-   * and announced. `record` writes the step. A lane runner that ends an acting result with
-   * an observation line (the engine's `now:`) records it once the line is in (PERF-5).
+   * Dispatch, redact, archive a screenshot, and record the step as the call returns. The
+   * step goes to the sink attached when the call began: a turn detached while the call
+   * was in flight (a stop, a supersede) still gets the step for what its hands did, and
+   * a turn attached meanwhile does not get a step that was never its own.
    */
-  protected async execute(name: string, input: unknown): Promise<Executed> {
+  async run(name: string, input: unknown): Promise<RunOutcome> {
+    const sink = this.sink;
     const started = this.now();
     const args = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
     let result: ToolResult;
@@ -236,28 +226,16 @@ export class ToolRunner {
     let screenshotPath: string | undefined;
     if (result.kind === "image") {
       screenshotPath = this.archive(result.pngBase64);
-      this.sink?.screenshot(screenshotPath, result.note);
+      sink?.screenshot(screenshotPath, result.note);
     }
-    return { args, out: { result, ...(screenshotPath ? { screenshotPath } : {}), ms } };
-  }
-
-  /**
-   * The step for a call `execute` ran. `observed`: a line a subclass added to the end of
-   * the text result after it landed. The step's output keeps it past the 600-character
-   * cut, so the ledger holds what the model read.
-   */
-  protected record(name: string, done: Executed, observed?: string): void {
-    const { args, out } = done;
-    const { result, screenshotPath, ms } = out;
-    const summary = summarize(result);
-    const output = observed && typeof summary === "string" ? `${summary}\n${observed}` : summary;
-    this.sink?.step({
+    sink?.step({
       kind: result.kind === "needs-confirmation" ? "confirm" : result.kind === "error" ? "error" : "tool",
       ...(result.kind === "needs-confirmation" ? { text: result.question } : result.kind === "error" ? { text: result.message } : {}),
-      tool: { name, input: redact(args), output, ok: result.kind !== "error", ms },
+      tool: { name, input: redact(args), output: summarize(result), ok: result.kind !== "error", ms },
       ...(screenshotPath ? { screenshotPath } : {}),
     });
     if (result.kind === "error") log.warn(`${name}: ${result.message}`);
+    return { result, ...(screenshotPath ? { screenshotPath } : {}), ms };
   }
 
   /** No text a model reads carries a secret value, whichever tool produced it and however the value got there. */
@@ -823,8 +801,8 @@ export class ToolRunner {
     if (url) return { kind: "error", message: `refused: ${url}` };
     // Keystrokes without a named target land in the frontmost app: the gate needs to know which, as the hands' type tool does, and Kevin's hands hold them.
     const posts = SCRIPT_INPUT.test(script) || osascriptMayPost(script);
-    // A script that activates an app lands over his typing as a click does: his hands hold it too.
-    const fronts = !posts && SCRIPT_FRONTS.test(script);
+    // A script that activates an app, or whose `do shell script` line fronts one, lands over his typing as a click does: his hands hold it too.
+    const fronts = !posts && (SCRIPT_FRONTS.test(script) || appleScriptShellLines(script).some(shellFronts));
     const [app, held] = posts ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", fronts ? await this.heldByKevin("run") : undefined];
     if (held) return held;
     // A yes covers this script, and for keystrokes, with this app in front.
@@ -1128,13 +1106,18 @@ function dequote(text: string): string {
 const OSASCRIPT_WORD = /(?<![\w.-])osascript(?![\w.-])/gi;
 
 /**
- * Whether a shell line brings an app forward without the helper: core's `shellSteals`
- * (an `open` with no background flag, or an osascript, in any segment or inner shell)
- * where the line opens something or its script activates. An osascript that only reads
- * or plays is not held. Fails toward holding: a false positive costs one busy retry.
+ * Whether a shell line brings an app forward without the helper: what the lanes call
+ * screen work (core's `shellFocus`, the one judgment: every segment, inner shell, group
+ * and substitution, a shell fed on stdin, an unread line, in any case), less one kind.
+ * A line whose screen work is an osascript that neither opens nor activates (a read, a
+ * play) lands in no window and is not held. Keystrokes are `osascriptMayPost`'s. Fails
+ * toward holding: a false positive costs one busy retry.
  */
 function shellFronts(command: string): boolean {
-  return shellSteals(command) && (/\bopen\b/.test(command) || SCRIPT_FRONTS.test(command));
+  const why = shellFocus(command);
+  if (why === undefined) return false;
+  if (why !== "fronts") return true;
+  return !/\bosascript\b/i.test(command) || /\bopen\b/i.test(command) || SCRIPT_FRONTS.test(command);
 }
 
 /**

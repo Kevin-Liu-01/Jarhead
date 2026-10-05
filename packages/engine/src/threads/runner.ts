@@ -1,4 +1,4 @@
-import { logger, shellSteals } from "@jarhead/core";
+import { appleScriptShellLines, logger, shellFocus } from "@jarhead/core";
 import { ACTING_MEMBERS, USER_IDLE_POLL_MS, WAIT_MAX_MS, isBusyResult, type AcquireOptions, type ConfirmationDesk, type FocusLease, type LeaseOutcome, type ToolResult } from "@jarhead/hands";
 import { ToolRunner, type BrainSink, type BrainTask, type RunOutcome, type RunnerOptions } from "@jarhead/brain";
 import { ACTING_TOOLS, FOCUS_APPLESCRIPT } from "@jarhead/brain";
@@ -19,9 +19,9 @@ import { ACTING_TOOLS, FOCUS_APPLESCRIPT } from "@jarhead/brain";
  * (Kevin's hands > the main lane > threads by age; the lease's `rank` is the lease's
  * business — taken here as an option and handed through). Two hooks for the speed
  * pass ride as options: an `observer` that annotates every ACTING tool's result with
- * what is now in front (after the base ran the call, never inside the rail; the base's
- * step is recorded once the line is in, PERF-5) and a `serializer` that orders acting
- * calls under the lease.
+ * what is now in front (after the base ran and recorded the call, never inside the
+ * rail; the line follows the step as a note, PERF-5) and a `serializer` that orders
+ * acting calls under the lease.
  */
 
 const log = logger("engine.threads.runner");
@@ -62,66 +62,21 @@ export const LANE_REFUSAL =
  */
 export const MAIN_LEASE_WAIT_MS = 30_000;
 
-/** Whether a tool call, with these arguments, acts on the screen (and so needs the lease, or the background refusal). */
+/**
+ * Whether a tool call, with these arguments, acts on the screen (and so needs the lease, or the background refusal).
+ * A shell line by core's `shellFocus` (an `open` or osascript in any segment, inner shell, group or substitution, in
+ * any case; an osascript keystroke however it is wrapped; a shell fed on stdin; a line past SHELL_SCAN_CHARS, unread).
+ * An AppleScript that drives the front surface (FOCUS_APPLESCRIPT), or whose `do shell script` line would be screen
+ * work as run_shell. The tool runner's hold for Kevin's hands reads the same judgment (brain/runner.ts).
+ */
 export function needsFocus(name: string, args: Record<string, unknown>): boolean {
   if (FOCUS_TOOLS.has(name)) return true;
-  if (name === "applescript") return FOCUS_APPLESCRIPT.test(String(args["script"] ?? ""));
-  if (name === "run_shell") return shellNeedsFocus(String(args["command"] ?? ""));
+  if (name === "applescript") {
+    const script = String(args["script"] ?? "");
+    return FOCUS_APPLESCRIPT.test(script) || appleScriptShellLines(script).some((line) => shellFocus(line) !== undefined);
+  }
+  if (name === "run_shell") return shellFocus(String(args["command"] ?? "")) !== undefined;
   return false;
-}
-
-/** osascript sending keystrokes, wherever each sits in the line: they land in whatever is in front. Two linear scans. */
-const OSASCRIPT = /\bosascript\b/i;
-const KEYSTROKE = /\b(?:keystroke|key code)\b/i;
-
-/** A shell line is judged over its first this many characters; a longer one is screen work (fails closed, and the scan stays bounded). */
-export const SHELL_SCAN_CHARS = 16_384;
-
-/** A shell by name: sh, bash, zsh, ksh, dash, fish, csh, tcsh, under any directory (path segments, so a long word is scanned once). */
-const SHELL_NAME = String.raw`(?:[\w.~-]*\/)*(?:ba|z|k|da|fi|c|tc)?sh\b`;
-
-/**
- * A shell fed its commands on stdin (`… | sh`, `… | bash -s`, `bash <<< '…'`, `zsh <<EOF`): what it
- * runs is not written out where it can be judged, so it is screen work. A piped `sh -c '…'` is not this
- * (its command is written out and judged as an inner shell).
- */
-const SHELL_ON_STDIN = new RegExp(String.raw`\|\s*(?:(?:sudo|env|exec|command|nohup)\s+)*${SHELL_NAME}(?!\s+-\w*c)|(?:^|[\s;&|(\`])${SHELL_NAME}[^;&|\n]{0,120}?<<`);
-
-/**
- * A shell line fronts an app or types: core's `shellSteals` on the line, on every inner command
- * it writes out (`bash -c '…'`, `sh -c`, `zsh -lc`, `eval "…"`, `su kevin -c '…'`) and on every
- * group or substitution (`( … )`, `{ …; }`, `$( … )`, backticks), a few levels deep; an osascript
- * keystroke however it is wrapped; and a shell fed its commands on stdin. Fails closed: a false
- * positive costs a background thread one refusal, a miss types behind Kevin's back. A line past
- * SHELL_SCAN_CHARS is screen work unread.
- */
-function shellNeedsFocus(command: string): boolean {
-  if (command.length > SHELL_SCAN_CHARS) return true;
-  if ((OSASCRIPT.test(command) && KEYSTROKE.test(command)) || SHELL_ON_STDIN.test(command)) return true;
-  return [command, ...innerCommands(command)].some((c) => shellSteals(c));
-}
-
-/**
- * An inner shell or eval that carries its command written out, anywhere in the line. The stretch
- * between the shell's name and its `-c` is bounded (and never crosses a line), so the scan is
- * linear in the line, never quadratic.
- */
-const INNER_SHELL = new RegExp(String.raw`(?:^|[\s;&|(\`])(?:${SHELL_NAME}[^;&|'"\n]{0,120}?\s-\w*c\w*|eval|su\b[^;&|'"\n]{0,120}?\s-c)\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+))`, "g");
-
-/** A group or a substitution, innermost first: `$( … )`, backticks, `( … )`, `{ …; }`. */
-const GROUPED = /\$\(([^()]*)\)|`([^`]*)`|\(([^()]*)\)|\{\s([^{}]*)\}/g;
-
-/** The commands this line runs written out inside it (inner shells, evals, groups, substitutions), up to three levels deep. */
-function innerCommands(command: string, depth = 0): string[] {
-  if (depth >= 3) return [];
-  const out: string[] = [];
-  const add = (inner: string | undefined): void => {
-    const c = inner?.trim();
-    if (c) out.push(c, ...innerCommands(c, depth + 1));
-  };
-  for (const m of command.matchAll(INNER_SHELL)) add(m[1] ?? m[2]?.replace(/\\(.)/g, "$1") ?? m[3]);
-  for (const m of command.matchAll(GROUPED)) add(m[1] ?? m[2] ?? m[3] ?? m[4]);
-  return out;
 }
 
 // ------------------------------------------------------- step recording
@@ -131,6 +86,14 @@ function innerCommands(command: string, depth = 0): string[] {
 
 export function argsOf(input: unknown): Record<string, unknown> {
   return (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
+}
+
+/** The line an observer added after a text result's own text (`now: …`), or "" when it added none. */
+function observationLine(out: RunOutcome, seen: RunOutcome): string {
+  if (seen === out || seen.result.kind !== "text" || out.result.kind !== "text") return "";
+  const own = out.result.text;
+  const text = seen.result.text;
+  return text.startsWith(own) ? text.slice(own.length).replace(/^\n/, "") : "";
 }
 
 function redactArgs(args: Record<string, unknown>): Record<string, unknown> {
@@ -254,35 +217,26 @@ export abstract class LeasedRunner extends ToolRunner {
   /**
    * The base runner's run, with the two hooks around it: the serializer orders an
    * acting call; the observer annotates its result once it landed. Never inside the
-   * rail: the base executes the call, the observer adds its line (outside the
-   * serializer, as before), and the base records the step then, with the line in it,
-   * so the ledger holds what the model read (PERF-5). A call the serializer halted
-   * never ran and records nothing, as before.
+   * rail. The base records the step as the call returns, inside the serializer, so
+   * acting steps reach the ledger in the order they ran and a stop during the
+   * observation cannot drop one that landed. The observer's `now:` line follows as a
+   * note (PERF-5: the ledger holds what the model read, and `ledger --speed` pairs the
+   * two), written only while the turn that made the call is still attached.
    */
   protected async runBase(name: string, input: unknown): Promise<RunOutcome> {
     const acting = this.actingTools.has(name);
-    const observer = acting ? this.observer : undefined;
-    const serializer = acting ? this.serializer : undefined;
-    if (!observer) return serializer ? serializer.run(name, () => super.run(name, input)) : super.run(name, input);
-    const ran: { done?: { readonly args: Record<string, unknown>; readonly out: RunOutcome } } = {};
-    const execute = async (): Promise<RunOutcome> => {
-      ran.done = await this.execute(name, input);
-      return ran.done.out;
-    };
-    const out = serializer ? await serializer.run(name, execute) : await execute();
-    const done = ran.done;
-    if (!done) return out;
-    let seen = out;
-    if (out.result.kind === "text") {
-      try {
-        seen = await observer.annotate(name, done.args, out);
-      } catch (e) {
-        log.debug(`observer for ${name}: ${(e as Error).message}`);
-      }
+    const sink = this.sinkRef;
+    const out = acting && this.serializer ? await this.serializer.run(name, () => super.run(name, input)) : await super.run(name, input);
+    if (!acting || !this.observer || out.result.kind !== "text") return out;
+    let seen: RunOutcome;
+    try {
+      seen = await this.observer.annotate(name, argsOf(input), out);
+    } catch (e) {
+      log.debug(`observer for ${name}: ${(e as Error).message}`);
+      return out;
     }
-    // The line the observer added after the result's own text, if any.
-    const line = seen !== out && seen.result.kind === "text" && out.result.kind === "text" ? seen.result.text.slice(out.result.text.length).replace(/^\n/, "") : "";
-    this.record(name, done, line || undefined);
+    const line = observationLine(out, seen);
+    if (line && sink && this.sinkRef === sink) sink.step({ kind: "note", text: line });
     return seen;
   }
 

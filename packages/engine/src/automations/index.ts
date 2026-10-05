@@ -160,6 +160,8 @@ export interface AutomationsOptions {
   readonly updateSettings: (patch: SettingsPatch) => void;
   /** The acting helper (open_app, the press probes and key). */
   readonly hands: NativeHands;
+  /** Unused: the app quit fallback reads the process list through `exec`. The engine still hands it in; the two go together. */
+  readonly reader?: NativeHands | undefined;
   readonly redact: (text: string) => string;
   readonly emit: (event: EngineEvent) => void;
   readonly problem: (kind: ProblemKind, text: string, remedy?: ProblemRemedy) => void;

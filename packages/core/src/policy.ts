@@ -1853,6 +1853,70 @@ function stealsAt(command: string, depth: number): boolean {
   });
 }
 
+/** A shell line is judged over its first this many characters; a longer one is screen work (fails closed, and the scan stays bounded). */
+export const SHELL_SCAN_CHARS = 16_384;
+
+/**
+ * Why a shell line is screen work, if it is: `unread` (longer than SHELL_SCAN_CHARS), `keys` (an osascript
+ * keystroke, however it is wrapped), `stdin` (a shell fed its commands on stdin: what it runs is not written out
+ * where it can be judged) or `fronts` (`shellSteals` on the line, on every inner command it writes out and on
+ * every group or substitution, a few levels deep). The ONE judgment: the thread lanes route and refuse by it
+ * (threads/runner.ts `needsFocus`), and the tool runner holds a fronting line while Kevin's hands are on the
+ * machine by it. Case-insensitive: on macOS `OPEN` and `BASH` run `open` and `bash`. Fails closed: a false
+ * positive costs a background thread one refusal or a lane one busy retry; a miss acts behind Kevin's back.
+ */
+export type ShellFocus = "unread" | "keys" | "stdin" | "fronts";
+
+export function shellFocus(command: string): ShellFocus | undefined {
+  if (command.length > SHELL_SCAN_CHARS) return "unread";
+  if (OSASCRIPT_WORD.test(command) && KEYSTROKE_WORD.test(command)) return "keys";
+  if (SHELL_ON_STDIN.test(command)) return "stdin";
+  return [command, ...writtenOut(command)].some((c) => shellSteals(c)) ? "fronts" : undefined;
+}
+
+/** osascript sending keystrokes, wherever each sits in the line: they land in whatever is in front. Two linear scans. */
+const OSASCRIPT_WORD = /\bosascript\b/i;
+const KEYSTROKE_WORD = /\b(?:keystroke|key code)\b/i;
+
+/** A shell by name: sh, bash, zsh, ksh, dash, fish, csh, tcsh, under any directory (path segments, so a long word is scanned once). */
+const SHELL_NAME = String.raw`(?:[\w.~-]*\/)*(?:ba|z|k|da|fi|c|tc)?sh\b`;
+
+/**
+ * A shell fed its commands on stdin (`… | sh`, `… | bash -s`, `bash <<< '…'`, `zsh <<EOF`). A piped
+ * `sh -c '…'` is not this: its command is written out and judged as an inner shell.
+ */
+const SHELL_ON_STDIN = new RegExp(String.raw`\|\s*(?:(?:sudo|env|exec|command|nohup)\s+)*${SHELL_NAME}(?!\s+-\w*c)|(?:^|[\s;&|(\`])${SHELL_NAME}[^;&|\n]{0,120}?<<`, "i");
+
+/**
+ * An inner shell or eval that carries its command written out, anywhere in the line. The stretch
+ * between the shell's name and its `-c` is bounded (and never crosses a line), so the scan is
+ * linear in the line, never quadratic.
+ */
+const INNER_SHELL = new RegExp(String.raw`(?:^|[\s;&|(\`])(?:${SHELL_NAME}[^;&|'"\n]{0,120}?\s-\w*c\w*|eval|su\b[^;&|'"\n]{0,120}?\s-c)\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+))`, "gi");
+
+/** A group or a substitution, innermost first: `$( … )`, backticks, `( … )`, `{ …; }`. */
+const GROUPED = /\$\(([^()]*)\)|`([^`]*)`|\(([^()]*)\)|\{\s([^{}]*)\}/g;
+
+/** The commands this line runs written out inside it (inner shells, evals, groups, substitutions), up to three levels deep. */
+function writtenOut(command: string, depth = 0): string[] {
+  if (depth >= 3) return [];
+  const out: string[] = [];
+  const add = (inner: string | undefined): void => {
+    const c = inner?.trim();
+    if (c) out.push(c, ...writtenOut(c, depth + 1));
+  };
+  for (const m of command.matchAll(INNER_SHELL)) add(m[1] ?? m[2]?.replace(/\\(.)/g, "$1") ?? m[3]);
+  for (const m of command.matchAll(GROUPED)) add(m[1] ?? m[2] ?? m[3] ?? m[4]);
+  return out;
+}
+
+/** The command lines an AppleScript's `do shell script "…"` literals run, unescaped (a computed one is refused by classifyAppleScript). */
+export function appleScriptShellLines(script: string): string[] {
+  const out: string[] = [];
+  for (const m of foldAppleScriptLiterals(script).matchAll(/do shell script\s+"((?:[^"\\]|\\.)*)"/gi)) out.push((m[1] ?? "").replace(/\\"/g, '"').replace(/\\\\/g, "\\"));
+  return out;
+}
+
 /** The line split at `;`, `&`, `&&`, `|`, `||` and newlines outside quotes. */
 function shellSegments(command: string): string[] {
   const out: string[] = [];

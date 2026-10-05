@@ -403,6 +403,13 @@ export interface EngineOptions {
    * event coalescer's window.
    */
   readonly automations?: { readonly exec?: AutomationExec | undefined; readonly shell?: ShellRunner | undefined; readonly shellGate?: ShellGate | undefined; readonly coalesceMs?: number | undefined; readonly home?: string | undefined } | undefined;
+  /**
+   * This process holds the state dir's daemon lock (`<stateDir>/jarheadd.lock`; daemon/main.ts sets it once the lock is
+   * taken). Only then does start() close what a dead daemon left open: its session (`session.closed`, reason
+   * SESSION_LOST_REASON) and its live threads (`thread.ended`). Off by default: `jarhead live` or `probe` beside a
+   * running daemon must not close the daemon's live session as lost, or the day would bill it twice.
+   */
+  readonly ownsStateDir?: boolean;
 }
 
 /** Where a page's messages sit in the session file (`TranscriptPage.cursor`); "Load earlier" reads backward from `startOffset`. */
@@ -852,6 +859,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       settings: () => this.settings,
       updateSettings: (patch) => this.updateSettings(patch),
       hands: this.pool.focus,
+      reader: this.pool.background,
       redact: (s) => this.runner.redactor.redact(s),
       emit: (e) => this.emit("event", e),
       problem: (kind, text, remedy) => this.problemOf(kind, text, remedy),
@@ -917,10 +925,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     };
     // The table: what the last daemon left — a thread live when it died is ended `failed`, and nothing acts — plus
     // the main thread's own record, idle. Every summary, event and status line reads from it. Read here, written by
-    // start(): building an engine writes nothing to the ledger (LM-1); its one `thread.ended` row each waits there.
+    // start(): building an engine writes nothing to the ledger (LM-1); its one `thread.ended` row each waits there,
+    // and only the process that holds the state dir writes them (`ownsStateDir`).
     const at = this.now();
     const rebuilt = ThreadTable.rebuild([...this.ledger.read(at - 86_400_000), ...this.ledger.read(at)], { now: this.now });
-    this.orphanRows = rebuilt.rows;
+    if (this.opts.ownsStateDir) this.orphanRows = rebuilt.rows;
     const table = rebuilt.table;
     if (!table.get(MAIN_THREAD_ID)) table.started(this.mainRecord());
     // Threads get the same runner and toolset options over their own lane (hands, Screen, desk lane), the memory
@@ -1275,10 +1284,13 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** Spawn the helper, probe permissions, start the brain. Does not open a session. */
   async start(): Promise<void> {
     this.startedAt = this.now();
-    // What the dead daemon left open, written before anything else this process writes: its session's close
-    // (V8 / LM-2, W2-5's contract), then one `thread.ended` row for each thread it left live (LM-1).
-    this.closeLostSessions();
-    this.appendOrphanRows();
+    // What a dead daemon left open, written before anything else this process writes: its session's close
+    // (V8 / LM-2, W2-5's contract), then one `thread.ended` row for each thread it left live (LM-1). Only by the
+    // process that holds the state dir: an engine beside a running daemon (`jarhead live`) leaves the daemon's alone.
+    if (this.opts.ownsStateDir) {
+      this.closeLostSessions();
+      this.appendOrphanRows();
+    }
     this.tickTimer = setInterval(() => this.tick(), 1000);
     if (this.settingsBad) this.problemOf("other", this.settingsBad.text, { label: "Reveal", open: this.settingsBad.path });
     // What the previous process left behind: a pause to hold again, a session it was cut
@@ -2850,7 +2862,9 @@ export class Engine extends EventEmitter<EngineEvents> {
    * the seconds of its last `session.usage` row (a ledger from before those rows: its last pause row's, else 0), and
    * as its `at` the newest `at` in the newest day file: the dead daemon's last write, never earlier than any row of
    * the session. So the close lands in the dead daemon's last day however late this start is, and sorts after the
-   * session's rows. Every reader then counts the session once, from that row.
+   * session's rows. Every reader then counts the session once, from that row. Only the process that holds the state
+   * dir runs it (`ownsStateDir`). A session whose close cannot be read or written (a full or read-only disk) is
+   * logged and skipped, so the sweep never stops the start; the next start tries again.
    */
   private closeLostSessions(): void {
     let ids: string[];
@@ -2866,11 +2880,15 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     if (!Number.isFinite(at)) return;
     for (const id of ids) {
-      const rows = this.ledger.readSession(id);
-      const usage = rows.findLast((r) => r.type === "session.usage" && r.sessionId === id) ?? rows.findLast((r) => r.type === "pause" && r.sessionId === id);
-      const usageSeconds = usage && "usageSeconds" in usage ? Number(usage.usageSeconds) || 0 : 0;
-      this.ledger.append({ at, type: "session.closed", sessionId: id, reason: SESSION_LOST_REASON, usageSeconds });
-      log.info(`session ${id} was open when the previous engine ended; closed it as ${SESSION_LOST_REASON} at ${new Date(at).toISOString()} with ${usageSeconds} s billed`);
+      try {
+        const rows = this.ledger.readSession(id);
+        const usage = rows.findLast((r) => r.type === "session.usage" && r.sessionId === id) ?? rows.findLast((r) => r.type === "pause" && r.sessionId === id);
+        const usageSeconds = usage && "usageSeconds" in usage ? Number(usage.usageSeconds) || 0 : 0;
+        this.ledger.append({ at, type: "session.closed", sessionId: id, reason: SESSION_LOST_REASON, usageSeconds });
+        log.info(`session ${id} was open when the previous engine ended; closed it as ${SESSION_LOST_REASON} at ${new Date(at).toISOString()} with ${usageSeconds} s billed`);
+      } catch (e) {
+        log.warn(`session ${id} was left open and is not closed yet: ${(e as Error).message}`);
+      }
     }
   }
 

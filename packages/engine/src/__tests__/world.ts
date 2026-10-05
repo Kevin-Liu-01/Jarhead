@@ -908,7 +908,9 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   // `probe: false`, `fetch` and `discoverLocal`: no start-up key check against api.openai.com, a 401 for the key
   // check Retry runs and for memory's model pick (what a server says to a key it does not know), and no look at the
   // loopback ports (V14 / BL-12), so a world passes under JARHEAD_TEST_NET=strict. A test that wants any passes its own.
-  engine = new Engine({ config, connectors: [], ...(where.select ? {} : { brain }), fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, probe: false, fetch: refusingFetch, discoverLocal: async () => localNone(), ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
+  // `ownsStateDir`: a world is the daemon's engine (it holds the dir, so its start closes what a dead one left open);
+  // a test of `jarhead live` beside it passes `{ ownsStateDir: false }`.
+  engine = new Engine({ config, connectors: [], ownsStateDir: true, ...(where.select ? {} : { brain }), fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, probe: false, fetch: refusingFetch, discoverLocal: async () => localNone(), ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
   // The real service's audit rows reach the ledger through the bridge's onRow; the fake's do the same here.
   if (fakeMemory) fakeMemory.onRow = (row) => engine.ledger.append(row);
   const events: EngineEvent[] = [];

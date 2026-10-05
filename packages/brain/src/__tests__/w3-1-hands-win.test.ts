@@ -63,10 +63,16 @@ test("W3-1: open_url is held while Kevin typed 200 ms ago, in the helper's busy 
   assert.match(resultText(scheme.result), /refused: only http and https/, "a URL that never opens is refused without a look at Kevin's hands");
 });
 
+/**
+ * The spellings the lanes call screen work (core's `shellFocus`): a group, a substitution, a shell fed on stdin, a
+ * head in capitals (macOS runs `OPEN` as `open`). A miss here ran under the lease without the hold (W3-1 review).
+ */
+const FRONTING_SPELLINGS = ["(open -a Notes)", "{ open -a Notes; }", "echo $(open -a Notes)", "echo `open -a Notes`", "echo 'open -a Notes' | sh", "OPEN -a Notes", "Open -b com.apple.Notes", "BASH -c 'open -a Notes'"];
+
 test("W3-1: a run_shell line that brings an app forward (open -a, open -b, an inner shell's open, osascript activate) is held while Kevin types; a background open and a line that fronts nothing are not, and read nothing", async () => {
   const { runner, hands, seen, clock } = harness();
   hands.kevinActed(clock.t - 200);
-  for (const command of ["open -a Notes", "open -b com.apple.Notes", "bash -c 'open -a Notes'", `osascript -e 'tell application "Notes" to activate'`, "open ~/Documents/plan.pdf"]) {
+  for (const command of ["open -a Notes", "open -b com.apple.Notes", "bash -c 'open -a Notes'", `osascript -e 'tell application "Notes" to activate'`, "open ~/Documents/plan.pdf", ...FRONTING_SPELLINGS]) {
     const r = await runner.run("run_shell", { command });
     assert.match(resultText(r.result), busy("run"), command);
   }
@@ -82,16 +88,18 @@ test("W3-1: a run_shell line that brings an app forward (open -a, open -b, an in
   assert.match(resultText(quiet.result), /refused: stand-in: nothing runs here/, "Kevin stopped: the policy judges it");
 });
 
-test("W3-1: an AppleScript that activates or reopens an app is held while Kevin types; one that fronts nothing is not, and reads nothing", async () => {
+test("W3-1: an AppleScript that activates or reopens an app, or whose do shell script line fronts one, is held while Kevin types; one that fronts nothing is not, and reads nothing", async () => {
   const { runner, hands, clock } = harness();
   hands.kevinActed(clock.t - 200);
-  for (const script of [`tell application "Notes" to activate${ADMIN}`, `tell application "Safari" to reopen${ADMIN}`, `tell application "System Events" to set frontmost of process "Notes" to true${ADMIN}`]) {
+  for (const script of [`tell application "Notes" to activate${ADMIN}`, `tell application "Safari" to reopen${ADMIN}`, `tell application "System Events" to set frontmost of process "Notes" to true${ADMIN}`, `do shell script "open -a Notes"${ADMIN}`, `do shell script "(open -b com.apple.Notes)"${ADMIN}`]) {
     const r = await runner.run("applescript", { script });
     assert.match(resultText(r.result), busy("run"), script.split("\n")[0]);
   }
   const reads = hands.calls.filter((c) => c.op === "user_idle").length;
-  const plain = await runner.run("applescript", { script: `tell application "Music" to get name of current track${ADMIN}` });
-  assert.match(resultText(plain.result), /refused: that script needs an administrator password/);
+  for (const script of [`tell application "Music" to get name of current track${ADMIN}`, `do shell script "ls ~/Documents"${ADMIN}`, `do shell script "open -g -a Notes"${ADMIN}`]) {
+    const plain = await runner.run("applescript", { script });
+    assert.match(resultText(plain.result), /refused: that script needs an administrator password/, script.split("\n")[0]);
+  }
   assert.equal(hands.calls.filter((c) => c.op === "user_idle").length, reads, "a script that fronts nothing reads nothing");
   clock.t += 2_000;
   const quiet = await runner.run("applescript", { script: `tell application "Notes" to activate${ADMIN}` });

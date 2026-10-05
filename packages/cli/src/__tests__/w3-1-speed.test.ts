@@ -6,9 +6,9 @@ import { delegate, settle, until, world, type World } from "../../../engine/src/
 import { analyzeSpeed, renderSpeed } from "../ledger-speed.ts";
 
 /**
- * W3-1, PERF-5: the `now:` line the observer adds to an acting result is on the ledger, so `pnpm jarhead ledger
- * --speed` can count it (before, the base runner recorded the step before the observer annotated the result, and the
- * report read 0 % whatever happened). And `ledger --speed` leaves a negative interval out of its figures and says how
+ * W3-1, PERF-5: the `now:` line the observer adds to an acting result is on the ledger, as a note after the step,
+ * so `pnpm jarhead ledger --speed` can count it (before, nothing recorded the line, and the report read 0 % whatever
+ * happened). And `ledger --speed` leaves a negative interval out of its figures and says how
  * many it left out: a speech end stamped after the action (PERF-6's skewed clock, in rows written before W3-1) is not a
  * latency. Fake hands, fake Live, the fake clock; the one shell line prints zeros.
  */
@@ -57,7 +57,7 @@ test("PERF-5 (audit repro): an acting result the model saw with a now: line is c
   }
 });
 
-test("PERF-5: the step is recorded once, after the line is in, and a long result keeps its now: line past the 600-character cut", async () => {
+test("PERF-5: each acting step is recorded once, as its call returned, and the now: line follows it as a note, whole however long the result", async () => {
   let w!: World;
   const seen: string[] = [];
   w = world({ brain: scripted(() => w, [["run_shell", { command: "printf '%0900d\\n' 0" }], ["mouse_move", { coordinate: [10, 20] }]], seen) });
@@ -71,13 +71,18 @@ test("PERF-5: the step is recorded once, after the line is in, and a long result
     assert.equal(seen.length, 2, seen.join(" | "));
     assert.ok((seen[0]?.length ?? 0) > 900, "the model read the whole output");
     assert.match(seen[0] ?? "", /\nnow: /);
-    const steps = (w.engine.ledger.read(w.clock.t) as LedgerRow[]).filter((r): r is Extract<LedgerRow, { type: "delegation.step" }> => r.type === "delegation.step").map((r) => r.step).filter((s) => s.tool !== undefined && s.tool.name !== "screenshot");
+    const all = (w.engine.ledger.read(w.clock.t) as LedgerRow[]).filter((r): r is Extract<LedgerRow, { type: "delegation.step" }> => r.type === "delegation.step").map((r) => r.step);
+    const steps = all.filter((s) => s.tool !== undefined && s.tool.name !== "screenshot");
     assert.deepEqual(steps.map((s) => s.tool?.name), ["run_shell", "mouse_move"], "one step per call");
     const shell = steps[0]!;
     assert.equal(typeof shell.tool?.output, "string");
     const output = shell.tool!.output as string;
     assert.ok(output.length < 900, "the recorded output is cut as before");
-    assert.match(output, /…\nnow: /, "and still ends with the observation line");
+    assert.doesNotMatch(output, /now: /, "the step is the result as it landed");
+    const notes = all.filter((s) => s.kind === "note" && /^now:/.test(s.text ?? ""));
+    assert.equal(notes.length, 2, "each acting call's now: line is a note");
+    assert.ok(all.indexOf(notes[0]!) > all.indexOf(shell), "after the step it observed");
+    assert.ok((seen[0] ?? "").endsWith(notes[0]!.text ?? "-"), "the line the model read, whole");
     const report = analyzeSpeed(w.engine.ledger.read(w.clock.t));
     assert.deepEqual([report.observed.withLine, report.observed.steps], [2, 2]);
   } finally {

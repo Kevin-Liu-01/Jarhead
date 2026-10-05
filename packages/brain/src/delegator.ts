@@ -785,7 +785,10 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     // The record first: the scroll about to happen is on the ledger whatever Live decides.
     const at = this.now();
     const id = newId("dlg");
-    const timings: DelegationTimingsExtra = { delegatedAt: at, reflex: true };
+    // PERF-6: when Kevin stopped talking, as of this prefire (never after it). The delegation that adopts the record
+    // keeps it: a delta that joins the utterance after the prefire moves the utterance's stamp past this delegatedAt.
+    const spokeAt = this.speechEndOf(last);
+    const timings: DelegationTimingsExtra = { delegatedAt: at, reflex: true, ...(spokeAt !== undefined ? { speechEndAt: Math.min(spokeAt, at) } : {}) };
     const delegation: Delegation = { id, liveId: `prefire:${last.id}`, createdAt: at, offsetMs: last.endMs, request: last.text, status: "running", steps: [], timings: timings as DelegationTimings };
     this.pushDelegation(delegation);
     this.opts.ledger?.append({ at, type: "delegation.created", delegation });
@@ -1181,7 +1184,11 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const prefired = this.claimPrefired(requestItems);
     let delegation: Delegation;
     if (prefired && this.current(prefired.id)?.status === "running") {
-      delegation = this.update(prefired.id, (d) => ({ ...d, liveId, offsetMs, request, timings: { ...d.timings, ...(speechEndAt !== undefined ? { speechEndAt } : {}) } }))!;
+      // PERF-6: the prefire's own speech end stands; without one, the request's, never later than the prefire.
+      delegation = this.update(prefired.id, (d) => {
+        const end = d.timings.speechEndAt ?? (speechEndAt !== undefined ? Math.min(speechEndAt, d.timings.delegatedAt) : undefined);
+        return { ...d, liveId, offsetMs, request, timings: { ...d.timings, ...(end !== undefined ? { speechEndAt: end } : {}) } };
+      })!;
     } else {
       const id = newId("dlg");
       const timings: DelegationTimings = { delegatedAt: marks.startedAt, ...(speechEndAt !== undefined ? { speechEndAt } : {}) };
@@ -1330,10 +1337,14 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    */
   private speechEndAt(requestItems: readonly TranscriptItem[], offsetMs: number): number | undefined {
     const spoke = requestItems.filter((i) => i.endMs <= offsetMs).at(-1) ?? requestItems.at(-1);
-    if (!spoke) return undefined;
-    if (this.opts.speechEndAt) return this.opts.speechEndAt(spoke);
+    return spoke ? this.speechEndOf(spoke) : undefined;
+  }
+
+  /** When this utterance ended on the wall clock: the host's stamp of its last input delta, else its `endMs` placed through the session's start. */
+  private speechEndOf(item: TranscriptItem): number | undefined {
+    if (this.opts.speechEndAt) return this.opts.speechEndAt(item);
     const sessionStart = this.opts.sessionStartedAt?.() ?? 0;
-    return sessionStart > 0 ? sessionStart + spoke.endMs : undefined;
+    return sessionStart > 0 ? sessionStart + item.endMs : undefined;
   }
 
   /** The spawned thread holding the confirmation floor; undefined when the floor is free or the main brain's own question holds it. */

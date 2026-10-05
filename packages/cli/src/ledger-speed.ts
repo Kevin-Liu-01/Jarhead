@@ -25,7 +25,7 @@ export interface SpeedReport {
   readonly finished: number;
   /** Acting steps (ACTING_TOOLS, ok) and how many were followed by a screenshot or zoom as the very next tool step. */
   readonly acting: { readonly steps: number; readonly thenShot: number; readonly shotShare: number };
-  /** Acting steps whose recorded output carries an observation line (`now: …`). */
+  /** Acting steps the observer's line (`now: …`) followed: the lane runner records it as a note after the step (PERF-5). */
   readonly observed: { readonly steps: number; readonly withLine: number; readonly share: number };
   /** Requests that are a bare yes: each costs a generation today (the confirmation re-call). */
   readonly yesDelegations: number;
@@ -58,7 +58,26 @@ const isShot = (s: DelegationStep): boolean => s.kind === "screenshot" || s.tool
 const isActing = (s: DelegationStep): boolean => s.kind === "tool" && s.tool !== undefined && ACTING_TOOLS.has(s.tool.name) && s.tool.ok;
 /** Steps the model issued: tools and shots, not its thinking, commentary or the runner's notes. */
 const isToolStep = (s: DelegationStep): boolean => (s.kind === "tool" || s.kind === "screenshot") && s.tool !== undefined;
-const hasObservation = (s: DelegationStep): boolean => typeof s.tool?.output === "string" && /(^|\n)now: /.test(s.tool.output);
+/** The lane runner's note after an acting step: the observer's line, as the model read it at the end of the result. */
+const isObservation = (s: DelegationStep): boolean => s.kind === "note" && /^now:/.test(s.text ?? "");
+
+/**
+ * The acting steps a `now:` note followed. The note comes after its own step, so each note is
+ * paired with the oldest acting step before it that has none yet: the count is exact, though two
+ * calls observed at once may swap notes.
+ */
+function observedSteps(steps: readonly DelegationStep[]): Set<DelegationStep> {
+  const pending: DelegationStep[] = [];
+  const observed = new Set<DelegationStep>();
+  for (const s of steps) {
+    if (isActing(s)) pending.push(s);
+    else if (isObservation(s)) {
+      const step = pending.shift();
+      if (step) observed.add(step);
+    }
+  }
+  return observed;
+}
 
 /** The per-step tool class: read-only, acting, or the rest (shell, web, files, agents). */
 export function toolClass(name: string): "readOnly" | "acting" | "other" {
@@ -102,6 +121,7 @@ export function analyzeSpeed(rows: readonly LedgerRow[], days: readonly string[]
   for (const t of turns.values()) {
     if (t.finished) finished++;
     if (YES_PATTERN.test(t.delegation.request) && t.delegation.request.trim().split(/\s+/).length <= 3) yes++;
+    const observed = observedSteps(t.steps);
     const tools = t.steps.filter(isToolStep).sort((a, b) => a.at - b.at);
     // The eyes' pre-warm shot lands before the brain's first step; the first MODEL tool is the first that is not it.
     const model = tools.filter((s, i) => !(i === 0 && isShot(s) && (s.text ?? "").includes("looking")));
@@ -112,7 +132,7 @@ export function analyzeSpeed(rows: readonly LedgerRow[], days: readonly string[]
       if (s.tool) roundTrip[toolClass(s.tool.name)].push(s.tool.ms);
       if (isActing(s)) {
         actingSteps++;
-        if (hasObservation(s)) withLine++;
+        if (observed.has(s)) withLine++;
         const next = model[i + 1];
         if (next && isShot(next)) thenShot++;
       }

@@ -39,7 +39,9 @@ function fixture(): LedgerRow[] {
   rows.push(
     ...delegation("d1", T0, "jarhead click the save button", [
       step(T0 + 100, "screenshot", { text: "looking", ms: 90 }),
-      step(T0 + 4200, "left_click", { ms: 60, output: "OK\nnow: Finder — \"Desktop\"; focused: AXButton \"Save\"; 150 ms after the click" }),
+      step(T0 + 4200, "left_click", { ms: 60, output: "OK" }),
+      // The lane runner's note after the click: the observer's line, as the model read it (PERF-5).
+      { id: `s${++stepSeq}`, at: T0 + 4380, kind: "note", text: "now: Finder — \"Desktop\"; focused: AXButton \"Save\"; 150 ms after the click" },
       step(T0 + 9500, "screenshot", { ms: 120 }),
       step(T0 + 14000, "left_click", { ms: 70, output: "OK" }),
     ], { firstActionAt: T0 + 4200, speechEndAt: T0 - 400 }),
@@ -69,7 +71,7 @@ test("ledger --speed: the counters come out as worked by hand", () => {
   assert.equal(r.delegations, 3);
   assert.equal(r.finished, 3);
   // Acting steps (the delegator's ACTING_TOOLS: the hands' acting members, shell, files, browser, overlays): d1's two clicks, d2's click, d3's shell = 4;
-  // d1's first click is followed by a screenshot; only it carries a now: line.
+  // d1's first click is followed by a screenshot; only it has a now: note after it.
   assert.deepEqual(r.acting, { steps: 4, thenShot: 1, shotShare: 0.25 });
   assert.deepEqual(r.observed, { steps: 4, withLine: 1, share: 0.25 });
   assert.equal(r.yesDelegations, 1);

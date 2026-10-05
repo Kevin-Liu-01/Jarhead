@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Ledger } from "@jarhead/core";
-import { SESSION_LOST_REASON, type LedgerRow } from "@jarhead/protocol";
+import { MAIN_THREAD_ID, SESSION_LOST_REASON, type LedgerRow, type Thread } from "@jarhead/protocol";
 import type { Engine } from "../engine.ts";
 import { world } from "./world.ts";
 
@@ -188,6 +188,89 @@ test("V8 / LM-2: a restart days later puts the lost close in the dead daemon's l
     assert.equal(dayRows(b.engine, b.clock.t).filter((r) => r.type === "session.closed").length, 0, "today's file holds no close for it");
     assert.equal(billed(b.engine), 0, "today's meter: nothing from two days ago");
   } finally {
+    await b?.engine.stop();
+    await a.engine.stop();
+  }
+});
+
+test("V8 / LM-2 (review): `jarhead live` beside a running daemon closes nothing of the daemon's: its open session gets one close, the real one, and the day bills it once; its live thread gets no thread.ended", async () => {
+  const d = world(); // the daemon's engine: it holds the state dir
+  let cli: ReturnType<typeof world> | undefined;
+  let fresh: ReturnType<typeof world> | undefined;
+  try {
+    await d.engine.start();
+    await d.engine.ready();
+    d.engine.updateSettings({ idleSleepMinutes: 0 });
+    await d.engine.wake("test");
+    d.clock.t += 2_000;
+    d.live.reportUsage(120);
+    const at = d.clock.t;
+    const spotify: Thread = { id: "t_live", name: "Spotify", lane: "background", status: "thinking", parentId: MAIN_THREAD_ID, parentDelegationId: "dlg_p", liveId: "item_x", task: "play Focus", apps: [], startedAt: at, updatedAt: at, turns: 1, steps: 2, waits: 0, budget: { steps: 25, seconds: 180 }, canSay: true, canStop: true };
+    d.engine.ledger.append({ at, type: "thread.started", thread: spotify });
+    // `jarhead live` (cli/main.ts withEngine) builds its own engine over the same state dir: it does not hold the lock.
+    cli = world({ ownsStateDir: false }, { dir: d.dir, firstSessionId: "sess_cli" });
+    cli.clock.t = d.clock.t + 1_000;
+    await cli.engine.start();
+    assert.equal(billed(cli.engine), 120, "the CLI's meter counts the daemon's open session once, by its usage row");
+    await cli.engine.stop();
+    // The daemon's session goes on, then closes for real.
+    d.clock.t += 60_000;
+    d.live.reportUsage(180);
+    await d.engine.command({ type: "pause" });
+    const rows = dayRows(d.engine, d.clock.t);
+    const closes = rows.filter((r): r is Closed => r.type === "session.closed" && r.sessionId === "sess_1");
+    assert.equal(closes.length, 1, "one close for one session");
+    assert.notEqual(closes[0]!.reason, SESSION_LOST_REASON, "the daemon's own, not a lost one");
+    assert.equal(closes[0]!.usageSeconds, 180);
+    assert.equal(rows.filter((r) => r.type === "thread.ended" && r.threadId === "t_live").length, 0, "the daemon's live thread was not ended by the CLI");
+    fresh = world({ ownsStateDir: false }, { dir: d.dir, firstSessionId: "sess_z" });
+    fresh.clock.t = d.clock.t + 1_000;
+    const meter = fresh.engine.snapshot().usageToday;
+    const summary = fresh.engine.ledger.sessions().find((x) => x.id === "sess_1");
+    console.log(`[review] a CLI engine started beside the daemon's open session: closes ${closes.length}; a fresh engine's meter ${meter?.seconds} s; walk ${summary?.reason} ${summary?.usageSeconds} s`);
+    assert.equal(meter?.seconds, 180, "the day bills the session once");
+    assert.equal(summary?.usageSeconds, 180);
+  } finally {
+    await fresh?.engine.stop();
+    await cli?.engine.stop();
+    await d.engine.stop();
+  }
+});
+
+test("V8 / LM-2 (review): a lost close that cannot be written (a full or read-only disk) is logged and skipped; the start still resolves, and the next start closes the session once", async () => {
+  const a = world();
+  let b: ReturnType<typeof world> | undefined;
+  let c: ReturnType<typeof world> | undefined;
+  try {
+    await a.engine.start();
+    await a.engine.ready();
+    a.engine.updateSettings({ idleSleepMinutes: 0 });
+    await a.engine.wake("test");
+    a.clock.t += 2_000;
+    a.live.reportUsage(42);
+    // SIGKILL. The next start cannot write its close: the disk is full.
+    b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+    b.clock.t = a.clock.t + 5_000;
+    const ledger = b.engine.ledger as unknown as { append(row: LedgerRow): void };
+    const append = ledger.append.bind(ledger);
+    let refused = 0;
+    ledger.append = (row) => {
+      if (row.type !== "session.closed") return append(row);
+      refused++;
+      throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    };
+    await b.engine.start(); // resolves: the daemon is up
+    await b.engine.stop();
+    assert.equal(refused, 1, "the close was tried once");
+    assert.equal(dayRows(a.engine, a.clock.t).filter((r) => r.type === "session.closed" && r.sessionId === "sess_1").length, 0, "nothing closed yet");
+    // A start that can write closes it, once.
+    c = world({}, { dir: a.dir, firstSessionId: "sess_c" });
+    c.clock.t = b.clock.t + 5_000;
+    await c.engine.start();
+    const closes = dayRows(c.engine, a.clock.t).filter((r): r is Closed => r.type === "session.closed" && r.sessionId === "sess_1");
+    assert.deepEqual(closes.map((x) => [x.reason, x.usageSeconds]), [[SESSION_LOST_REASON, 42]]);
+  } finally {
+    await c?.engine.stop();
     await b?.engine.stop();
     await a.engine.stop();
   }
