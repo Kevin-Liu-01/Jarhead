@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readConfig, type JarheadConfig } from "@jarhead/core";
+import type { JarheadConfig } from "@jarhead/core";
 import type { LiveSession, SessionConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarhead/brain";
 import { FAKE_ACTING_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
@@ -715,6 +715,66 @@ export interface World {
   dir: string;
 }
 
+/** No shell: the engine's own shell-outs (the Dock read) answer "not found" unless a test scripts `exec`, so no test ever reads Kevin's Dock. Every `new Engine` in a test passes it. */
+export const noShell: Exec = () => ({ code: 127, stdout: "", stderr: "no shell in tests" });
+
+const tempDirs = new Set<string>();
+let tempDirsSwept = false;
+
+/**
+ * A fresh dir under the OS temp dir, removed when the test process exits (BL-14). A test may hand
+ * it to a second engine until then (`where.dir`), so nothing is removed earlier. A dir that cannot
+ * be removed at exit stays: a throw inside an 'exit' handler would fail a file whose tests passed.
+ */
+export function tempDir(prefix: string): string {
+  if (!tempDirsSwept) {
+    tempDirsSwept = true;
+    process.once("exit", () => {
+      for (const dir of tempDirs) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // Still busy (a child the test left writing into it): it stays, as the preload's own sweep leaves it.
+        }
+      }
+    });
+  }
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.add(dir);
+  return dir;
+}
+
+/**
+ * The config a test engine runs on: what readConfig() gives on a Mac with nothing set (no key, no
+ * server URL, `auto`, the default models), over `<dir>/state`, with the hands helper at a path that
+ * does not exist. Never readConfig(): it loads ~/.jarhead/env and the shell's keys into the test,
+ * and from there into every request a test engine makes (BL-12). A test names what it needs in `over`.
+ * scripts/__tests__/hermetic.test.ts holds these defaults to readConfig()'s, so a default changed in
+ * packages/core/src/env.ts fails there until this follows.
+ */
+export function testConfig(dir: string, over: Partial<JarheadConfig> = {}): JarheadConfig {
+  return {
+    openaiApiKey: undefined,
+    anthropicApiKey: undefined,
+    liveModel: "gpt-live-1",
+    liveVoice: "ballad",
+    brain: "auto",
+    brainModel: "",
+    brainEffort: "medium",
+    brainBaseUrl: undefined,
+    brainApiKey: undefined,
+    stateDir: join(dir, "state"),
+    socketPath: join(dir, "state", "j.sock"),
+    idleSleepMinutes: 10,
+    logLevel: "info",
+    claudeBin: undefined,
+    codexBin: undefined,
+    handsBin: join(dir, "no-hands"),
+    memoryModel: undefined,
+    ...over,
+  };
+}
+
 /**
  * `where.dir` reuses another world's state dir (its ledger, its settings) — a second engine
  * over the same day. `where.firstSessionId` names that engine's first FakeLive (default
@@ -722,24 +782,9 @@ export interface World {
  * `where.oneHands` gives both helpers the same RecordingHands (a test that patches
  * `hands.request` and does not care which helper answered).
  */
-/** No shell: the engine's own shell-outs (the Dock read) answer "not found" unless a test scripts `exec`, so no test ever reads Kevin's Dock. Every `new Engine` in a test passes it. */
-export const noShell: Exec = () => ({ code: 127, stdout: "", stderr: "no shell in tests" });
-
 export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string; readonly firstSessionId?: string; readonly noHands?: boolean; readonly oneHands?: boolean } = {}): World {
-  const dir = where.dir ?? mkdtempSync(join(tmpdir(), "jh-engine-"));
-  const config: JarheadConfig = {
-    ...readConfig(),
-    openaiApiKey: "sk-test-not-used",
-    brain: "auto",
-    brainModel: "",
-    brainBaseUrl: undefined,
-    anthropicApiKey: undefined,
-    claudeBin: undefined,
-    codexBin: undefined,
-    handsBin: join(dir, "no-hands"),
-    stateDir: join(dir, "state"),
-    socketPath: join(dir, "state", "j.sock"),
-  };
+  const dir = where.dir ?? tempDir("jh-engine-");
+  const config = testConfig(dir, { openaiApiKey: "sk-test-not-used" });
   let engine!: Engine;
   const brainState: BrainState = { cancels: 0, cancelDelayMs: 0, resolve: undefined, tasks: [] };
   const brain: Brain = {

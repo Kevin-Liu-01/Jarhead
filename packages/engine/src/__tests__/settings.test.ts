@@ -1,18 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_AUDIO, DEFAULT_AUTOMATIONS, DEFAULT_SETTINGS, SETTINGS_KEYS, type AudioState } from "@jarhead/protocol";
-import { readConfig } from "@jarhead/core";
 import { Engine } from "../engine.ts";
-import { FakeMemoryService } from "./world.ts";
+import { FakeMemoryService, tempDir, testConfig } from "./world.ts";
 
-/** A bare engine over a temp state dir; the memory module is a fake so nothing loads by name or touches a store. */
-const bare = (stateDir: string): Engine => new Engine({ config: { ...readConfig(), stateDir, socketPath: join(stateDir, "j.sock") }, connectors: [], memory: { service: new FakeMemoryService() } });
+/** A bare engine over a temp state dir (the test config, no key); the memory module is a fake so nothing loads by name or touches a store. */
+const bare = (stateDir: string): Engine => new Engine({ config: testConfig(stateDir, { stateDir, socketPath: join(stateDir, "j.sock") }), connectors: [], memory: { service: new FakeMemoryService() } });
 
 test("settings patches: null clears optional fields, required fields keep their value", () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-"));
+  const stateDir = tempDir("jh-settings-");
   const engine = bare(stateDir);
   engine.updateSettings({ micDeviceId: "AppleUSBAudioEngine:123", voice: "marin" });
   assert.equal(engine.snapshot().settings.micDeviceId, "AppleUSBAudioEngine:123");
@@ -35,7 +33,7 @@ test("settings patches: null clears optional fields, required fields keep their 
 });
 
 test("settings from an older settings.json still carry the wake defaults", () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-old-"));
+  const stateDir = tempDir("jh-settings-old-");
   writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ voice: "marin", wake: { enabled: false } }));
   const engine = bare(stateDir);
   assert.equal(engine.snapshot().settings.voice, "marin");
@@ -47,7 +45,7 @@ test("English by default: DEFAULT_SETTINGS says ballad / en / british / memory o
   assert.equal(DEFAULT_SETTINGS.language, "en");
   assert.equal(DEFAULT_SETTINGS.accent, "british");
   assert.equal(DEFAULT_SETTINGS.memory, true);
-  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-lang-"));
+  const stateDir = tempDir("jh-settings-lang-");
   const before = JSON.stringify({ voice: "marin", wake: { enabled: false } });
   writeFileSync(join(stateDir, "settings.json"), before);
   const engine = bare(stateDir);
@@ -73,7 +71,7 @@ test("English by default: DEFAULT_SETTINGS says ballad / en / british / memory o
 const OLD_THREADS_FLAG = "workers"; // before 2026-09-13
 
 test("a settings.json from before 2026-09-13: the old threads flag becomes `threads`, a retired key is dropped, and the file is rewritten once without them; a file holding only known keys is never rewritten", () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-migrate-"));
+  const stateDir = tempDir("jh-settings-migrate-");
   const path = join(stateDir, "settings.json");
   writeFileSync(path, JSON.stringify({ [OLD_THREADS_FLAG]: false, replayFinish: true, voice: "marin" })); // a file from before 2026-09-13: the old flag and a retired key
   const engine = bare(stateDir);
@@ -97,7 +95,7 @@ test("a settings.json from before 2026-09-13: the old threads flag becomes `thre
 });
 
 test("brain `local` round-trips through settings.json with an empty model (best fit) and a pinned server; SETTINGS_KEYS is unchanged — no key was added for the local brain", () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-local-"));
+  const stateDir = tempDir("jh-settings-local-");
   const engine = bare(stateDir);
   engine.updateSettings({ brain: "local", brainModel: "", brainBaseUrl: "http://10.0.0.5:11434" });
   const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as Record<string, unknown>;
@@ -123,7 +121,7 @@ test("brain `local` round-trips through settings.json with an empty model (best 
 });
 
 test("set-settings-migration: a settings.json from before the automations block loads DEFAULT_AUTOMATIONS and is not rewritten; a patch to the block persists whole and null keeps the default", () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-automations-"));
+  const stateDir = tempDir("jh-settings-automations-");
   const path = join(stateDir, "settings.json");
   const before = JSON.stringify({ voice: "marin", wake: { enabled: false } }); // before 2026-09-14: no `automations`
   writeFileSync(path, before);
@@ -144,7 +142,7 @@ test("set-settings-migration: a settings.json from before the automations block 
 // ---- design12 · V6: the audio block's migration and the read-back frame in the snapshot.
 
 test("V6 · a settings.json from before 2026-09-16 (no `audio`) loads DEFAULT_AUDIO and is not rewritten; `audio: {}` merges recording: false; a patch persists the block whole; null keeps it", () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-audio-"));
+  const stateDir = tempDir("jh-settings-audio-");
   const path = join(stateDir, "settings.json");
   const before = JSON.stringify({ voice: "marin", wake: { enabled: false } }); // before 2026-09-16: no `audio`
   writeFileSync(path, before);
@@ -194,7 +192,7 @@ const RECORDING_STATE: AudioState = {
 };
 
 test("reportAudioState keeps the app's frame in the snapshot with `since` stamped on the first running frame, coalesces equal frames, and clears on undefined (the app disconnected)", () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "jh-audio-state-"));
+  const stateDir = tempDir("jh-audio-state-");
   const engine = bare(stateDir);
   assert.equal(engine.snapshot().audioState, undefined, "absent until the app reports");
   engine.reportAudioState(RECORDING_STATE);
@@ -214,7 +212,7 @@ test("reportAudioState keeps the app's frame in the snapshot with `since` stampe
 
 test("a hand-edited settings.json with `userName: null` or a number loads as unset (\"\"), and a later patch that leaves the name alone still saves — the setter's rename check never sees a non-string", () => {
   for (const bad of [null, 42]) {
-    const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-"));
+    const stateDir = tempDir("jh-settings-");
     writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ userName: bad, voice: "marin" }));
     const engine = bare(stateDir);
     assert.equal(engine.currentSettings.userName, "", `${JSON.stringify(bad)} reads as unset`);

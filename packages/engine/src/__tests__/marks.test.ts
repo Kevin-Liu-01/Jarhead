@@ -1,16 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readConfig, type JarheadConfig } from "@jarhead/core";
 import type { LiveSession } from "@jarhead/live";
 import type { Brain, BrainTask } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import type { OverlayCommand } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
-import { FakeMemoryService, noShell, until } from "./world.ts";
+import { FakeMemoryService, noShell, tempDir, testConfig, until } from "./world.ts";
 
 /**
  * The marks lifecycle: mark.add records a ScreenMark at once (asleep or awake),
@@ -75,20 +73,8 @@ interface World {
 }
 
 function world(): World {
-  const dir = mkdtempSync(join(tmpdir(), "jh-marks-engine-"));
-  const config: JarheadConfig = {
-    ...readConfig(),
-    openaiApiKey: "sk-test-not-used",
-    brain: "auto",
-    brainModel: "",
-    brainBaseUrl: undefined,
-    anthropicApiKey: undefined,
-    claudeBin: undefined,
-    codexBin: undefined,
-    handsBin: join(dir, "no-hands"),
-    stateDir: join(dir, "state"),
-    socketPath: join(dir, "state", "j.sock"),
-  };
+  const dir = tempDir("jh-marks-engine-");
+  const config = testConfig(dir, { openaiApiKey: "sk-test-not-used" });
   const tasks: BrainTask[] = [];
   const brainState = { fail: false };
   const brain: Brain = {
@@ -373,20 +359,8 @@ function bboxOf(pts: readonly { x: number; y: number }[]): { x: number; y: numbe
 }
 
 test("marks: the stroke snaps to the LARGEST frame mostly inside it — a circled dialog is the dialog, not the label under the centroid; a circled button is the button; a window barely touched leaves the box", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jh-marks-snap-"));
-  const config: JarheadConfig = {
-    ...readConfig(),
-    openaiApiKey: "sk-test-not-used",
-    brain: "auto",
-    brainModel: "",
-    brainBaseUrl: undefined,
-    anthropicApiKey: undefined,
-    claudeBin: undefined,
-    codexBin: undefined,
-    handsBin: join(dir, "no-hands"),
-    stateDir: join(dir, "state"),
-    socketPath: join(dir, "state", "j.sock"),
-  };
+  const dir = tempDir("jh-marks-snap-");
+  const config = testConfig(dir, { openaiApiKey: "sk-test-not-used" });
   const brain: Brain = { kind: "fake", start: async () => ({ ready: true, detail: "fake" }), handle: async () => ({ status: "done", summary: "done." }), cancel: async () => undefined, stop: async () => undefined };
   const hands = new SnapHands();
   const engine = new Engine({ config, connectors: [], brain, hands, fallbackUserName: "Kevin", makeLive: () => new FakeLive() as unknown as LiveSession, exec: noShell, memory: { service: new FakeMemoryService() } });

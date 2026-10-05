@@ -13,12 +13,13 @@
   "type": "module",
   "packageManager": "pnpm@10.30.0",
   "engines": {
-    "node": ">=24"
+    "node": ">=24",
+    "pnpm": ">=10"
   },
   "scripts": {
     "doctor": "tsx scripts/doctor.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test --test-concurrency=4 'packages/*/src/**/*.test.ts' 'scripts/**/*.test.ts'",
+    "test": "node --import tsx --import ./scripts/test-preload.mjs --test --test-concurrency=4 'packages/*/src/**/*.test.ts' 'scripts/**/*.test.ts'",
     "check": "pnpm run typecheck && pnpm run test && pnpm run doctor",
     "jarhead": "tsx packages/cli/src/main.ts",
     "build:hands": "tsx scripts/build-hands.ts",
