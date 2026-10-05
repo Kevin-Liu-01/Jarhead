@@ -243,15 +243,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Setup wizard on first run (once the daemon has told us the settings: the empty
-        // snapshot's defaults are skipped), and the launch path's permission asks, which wait
-        // for that same answer. The payload carries the value; the snapshot itself is still
-        // the old one in here.
+        // snapshot's defaults are skipped, and so is the client's own `daemon` row laid over
+        // them while nothing answers: only a snapshot that arrives connected is the daemon's),
+        // and the launch path's permission asks, which wait for that same answer. The payload
+        // carries the value; the snapshot itself is still the old one in here.
         state.$snapshot
-            .filter { $0 != .empty }
+            .filter { [weak self] (s: Snapshot) -> Bool in s != .empty && MainActor.assumeIsolated { self?.state.connected ?? false } }
             .map { (s: Snapshot) -> Bool in s.settings.onboarded }
             .removeDuplicates()
             .sink { [weak self] (onboarded: Bool) in MainActor.assumeIsolated { self?.onboardedPublished(onboarded) } }
             .store(in: &cancellables)
+        // A daemon that never answers on a Mac that is not set up yet (a fresh install whose
+        // daemon dies at start): Setup's Welcome opens anyway, after `noSnapshotSetupAfter`,
+        // and says what the daemon is doing and the last telling line of daemon.log.
+        DispatchQueue.main.asyncAfter(deadline: .now() + AppDelegate.noSnapshotSetupAfter) { [weak self] in
+            MainActor.assumeIsolated { self?.noSnapshotYet() }
+        }
 
         // Surface.
         let actions = makeActions()
@@ -430,6 +437,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !firstRunChecked, state.connected else { return }
         firstRunChecked = true
         if !onboarded { onboarding.show() }
+    }
+
+    /// How long a launch waits for the daemon's first snapshot before Setup opens without it.
+    static let noSnapshotSetupAfter: TimeInterval = 10
+
+    /// `noSnapshotSetupAfter` into the launch with no snapshot from any daemon. On a Mac that has
+    /// never finished Setup (settings.json says so, or there is none) the wizard opens on Welcome,
+    /// whose daemon line now carries daemon.log's last telling line, so a first launch whose
+    /// daemon cannot start says why instead of showing nothing. Once: a snapshot arriving later
+    /// finds the wizard open (`firstRunChecked`).
+    private func noSnapshotYet() {
+        guard !firstRunChecked, !state.connected else { return }
+        guard !AppDelegate.onboardedOnDisk(stateDir: AppDelegate.stateDir()) else { return }
+        firstRunChecked = true
+        if let daemon {
+            daemon.explainOutage()
+        } else if let tail = DaemonLog.telling(at: AppDelegate.stateDir().appendingPathComponent("daemon.log")) {
+            state.daemonDetail = "\(state.daemonDetail) · daemon.log: \(tail)"
+        }
+        appLog("setup: no snapshot from the daemon in \(Int(AppDelegate.noSnapshotSetupAfter)) s on a Mac not set up yet; opening Setup (\(state.daemonDetail))")
+        onboarding.show()
+    }
+
+    /// Whether `<stateDir>/settings.json` says Setup finished (`onboarded: true`). Read only, for
+    /// the launch that has no daemon to ask; the daemon stays the file's one writer.
+    static func onboardedOnDisk(stateDir: URL) -> Bool {
+        guard let data = try? Data(contentsOf: stateDir.appendingPathComponent("settings.json")),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return obj["onboarded"] as? Bool ?? false
     }
 
     /// The Speech Recognition grant as it stands, without a prompt: one Setup's sweep (or
