@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
-import { HANDS_OFF_APPS, REPO_ROOT, classifyAction, classifyAppleScript, classifyPath, classifyUrl, expandPath, logger, newId, shellCwdReason, type ActionContext, type Decision, Ledger } from "@jarhead/core";
+import { HANDS_OFF_APPS, REPO_ROOT, classifyAction, classifyAppleScript, classifyPath, classifyUrl, expandPath, logger, newId, shellCwdReason, shellSteals, type ActionContext, type Decision, Ledger } from "@jarhead/core";
 import type { AgentRegistry } from "@jarhead/agents";
 import { DaemonClient } from "@jarhead/daemon";
 import { ComputerToolset, KEVIN_QUIET_MS, type ToolResult, type UserIdle } from "@jarhead/hands";
@@ -37,6 +37,9 @@ const log = logger("brain.runner");
 
 /** Words in a script that post keys or clicks, or set a field through accessibility: they land in the app in front. */
 const SCRIPT_INPUT = /\b(keystroke|key ?code|click|set (the )?value|perform action)\b/i;
+
+/** Words in a script that bring an app to the front over whatever Kevin is typing in. */
+const SCRIPT_FRONTS = /\b(?:activate|reopen|open location|set\s+frontmost)\b/i;
 
 /**
  * Foreign input this close after Jarhead's own scripted post is that post. The helper
@@ -115,6 +118,12 @@ export interface RunOutcome {
   readonly ms: number;
 }
 
+/** A call `execute` ran (dispatched, redacted, a screenshot archived) whose step `record` has not written yet. */
+export interface Executed {
+  readonly args: Record<string, unknown>;
+  readonly out: RunOutcome;
+}
+
 export class ToolRunner {
   private readonly notes: { at: number; note: string }[] = [];
   private sink: BrainSink | undefined;
@@ -134,7 +143,7 @@ export class ToolRunner {
   readonly selfEdit: SelfEditManager;
   /** The browser fast path (page scripting when the browser allows it, accessibility otherwise). */
   readonly browser: BrowserTools;
-  /** Secret values (Jarhead's keys, everything in ~/.jarhead/env, secret-shaped strings) are struck from every result. */
+  /** Struck from every result: Jarhead's keys, everything in the state dir's env file (~/.jarhead/env by default), secret-shaped strings. */
   readonly redactor: SecretRedactor;
   /** The user's name as the results and questions say it (the engine's effective name; "Kevin" when none is wired). */
   get userName(): string {
@@ -202,6 +211,17 @@ export class ToolRunner {
   }
 
   async run(name: string, input: unknown): Promise<RunOutcome> {
+    const done = await this.execute(name, input);
+    this.record(name, done);
+    return done.out;
+  }
+
+  /**
+   * `run` up to its step: the call dispatched, its result redacted, a screenshot archived
+   * and announced. `record` writes the step. A lane runner that ends an acting result with
+   * an observation line (the engine's `now:`) records it once the line is in (PERF-5).
+   */
+  protected async execute(name: string, input: unknown): Promise<Executed> {
     const started = this.now();
     const args = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
     let result: ToolResult;
@@ -218,14 +238,26 @@ export class ToolRunner {
       screenshotPath = this.archive(result.pngBase64);
       this.sink?.screenshot(screenshotPath, result.note);
     }
+    return { args, out: { result, ...(screenshotPath ? { screenshotPath } : {}), ms } };
+  }
+
+  /**
+   * The step for a call `execute` ran. `observed`: a line a subclass added to the end of
+   * the text result after it landed. The step's output keeps it past the 600-character
+   * cut, so the ledger holds what the model read.
+   */
+  protected record(name: string, done: Executed, observed?: string): void {
+    const { args, out } = done;
+    const { result, screenshotPath, ms } = out;
+    const summary = summarize(result);
+    const output = observed && typeof summary === "string" ? `${summary}\n${observed}` : summary;
     this.sink?.step({
       kind: result.kind === "needs-confirmation" ? "confirm" : result.kind === "error" ? "error" : "tool",
       ...(result.kind === "needs-confirmation" ? { text: result.question } : result.kind === "error" ? { text: result.message } : {}),
-      tool: { name, input: redact(args), output: summarize(result), ok: result.kind !== "error", ms },
+      tool: { name, input: redact(args), output, ok: result.kind !== "error", ms },
       ...(screenshotPath ? { screenshotPath } : {}),
     });
     if (result.kind === "error") log.warn(`${name}: ${result.message}`);
-    return { result, ...(screenshotPath ? { screenshotPath } : {}), ms };
   }
 
   /** No text a model reads carries a secret value, whichever tool produced it and however the value got there. */
@@ -649,7 +681,9 @@ export class ToolRunner {
     if (url) return { kind: "error", message: `refused: ${url}` };
     // Keys and clicks sent through osascript land in the app in front, as the applescript tool's do: the gate learns which, and Kevin's hands hold them.
     const posts = osascriptMayPost(command);
-    const [app, held] = posts ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", undefined];
+    // A line that brings an app forward (`open -a`, `open -b`, an `activate`) lands over his typing as a click does: his hands hold it too.
+    const fronts = !posts && shellFronts(command);
+    const [app, held] = posts ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", fronts ? await this.heldByKevin("run") : undefined];
     if (held) return held;
     // A yes covers this command, in this folder (both spellings), in this mode, with this limit, and for keystrokes, with this app in front.
     const key = confirmKey({ command, cwd, realCwd, background, timeoutMs, ...(posts ? { app } : {}) });
@@ -789,7 +823,9 @@ export class ToolRunner {
     if (url) return { kind: "error", message: `refused: ${url}` };
     // Keystrokes without a named target land in the frontmost app: the gate needs to know which, as the hands' type tool does, and Kevin's hands hold them.
     const posts = SCRIPT_INPUT.test(script) || osascriptMayPost(script);
-    const [app, held] = posts ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", undefined];
+    // A script that activates an app lands over his typing as a click does: his hands hold it too.
+    const fronts = !posts && SCRIPT_FRONTS.test(script);
+    const [app, held] = posts ? await Promise.all([this.frontmostApp(), this.heldByKevin()]) : ["", fronts ? await this.heldByKevin("run") : undefined];
     if (held) return held;
     // A yes covers this script, and for keystrokes, with this app in front.
     const key = confirmKey({ script, ...(posts ? { app } : {}) });
@@ -812,6 +848,9 @@ export class ToolRunner {
       return { kind: "error", message: `"${url.slice(0, 80)}" is not a URL` };
     }
     if (u.protocol !== "http:" && u.protocol !== "https:") return { kind: "error", message: `refused: only http and https URLs are opened (got ${u.protocol})` };
+    // The browser comes to the front over whatever Kevin is typing in: his hands hold it, as they hold the helper's open_app.
+    const held = await this.heldByKevin("opened");
+    if (held) return held;
     // The one URL table, as web_fetch and browser_navigate: https from the internet; http or a private host only when Kevin named it.
     const allowed = classifyUrl({ url: u.toString(), request: this.request, userName: this.userName });
     if (allowed.verdict !== "run") return { kind: "error", message: `refused: ${allowed.reason}` };
@@ -830,16 +869,18 @@ export class ToolRunner {
   }
 
   /**
-   * Kevin's hands win over scripted input too. Keys and clicks sent through osascript
-   * never meet the helper's own busy check, so the runner reads `user_idle` first: his
-   * key, click or scroll within KEVIN_QUIET_MS holds the script. The answer is the
-   * helper's own busy refusal, word for word in its head (`busy: Kevin used the
-   * keyboard/mouse`), so a lane retries it with no row on the timeline once he stops.
-   * No helper, no answer: nothing is held. The helper counts osascript's posts as
-   * foreign too, so input no later than this runner's own last scripted post (plus
-   * OWN_INPUT_SLACK_MS) is taken as that post and holds nothing.
+   * Kevin's hands win over scripted input too, and over what brings an app forward
+   * without the helper. Keys and clicks sent through osascript, `open_url`, and a shell
+   * line or script that fronts an app (`open -a`, `open -b`, an `activate`) never meet
+   * the helper's own busy check, so the runner reads `user_idle` first: his key, click
+   * or scroll within KEVIN_QUIET_MS holds them. The answer is the helper's own busy
+   * refusal, word for word in its head (`busy: Kevin used the keyboard/mouse`), so a
+   * lane retries it with no row on the timeline once he stops. No helper, no answer:
+   * nothing is held. The helper counts osascript's posts as foreign too, so input no
+   * later than this runner's own last scripted post (plus OWN_INPUT_SLACK_MS) is taken
+   * as that post and holds nothing.
    */
-  private async heldByKevin(): Promise<ToolResult | undefined> {
+  private async heldByKevin(nothing: "sent" | "opened" | "run" = "sent"): Promise<ToolResult | undefined> {
     let idle: UserIdle | undefined;
     try {
       idle = await this.opts.toolset.hands.request<UserIdle>("user_idle", {}, 1500);
@@ -850,7 +891,7 @@ export class ToolRunner {
     if (typeof ms !== "number" || !(ms < KEVIN_QUIET_MS)) return undefined;
     if (this.now() - ms <= this.ownInputAt + OWN_INPUT_SLACK_MS) return undefined;
     const who = this.userName;
-    return { kind: "error", message: `busy: ${who} used the keyboard/mouse ${Math.max(0, Math.round(ms))} ms ago. Nothing was sent. Try again once ${who} stops.` };
+    return { kind: "error", message: `busy: ${who} used the keyboard/mouse ${Math.max(0, Math.round(ms))} ms ago. Nothing was ${nothing}. Try again once ${who} stops.` };
   }
 
   private async clipboardRead(): Promise<ToolResult> {
@@ -1085,6 +1126,16 @@ function dequote(text: string): string {
 
 /** `osascript` as a word, under a path or not, once quotes and backslashes are read away. */
 const OSASCRIPT_WORD = /(?<![\w.-])osascript(?![\w.-])/gi;
+
+/**
+ * Whether a shell line brings an app forward without the helper: core's `shellSteals`
+ * (an `open` with no background flag, or an osascript, in any segment or inner shell)
+ * where the line opens something or its script activates. An osascript that only reads
+ * or plays is not held. Fails toward holding: a false positive costs one busy retry.
+ */
+function shellFronts(command: string): boolean {
+  return shellSteals(command) && (/\bopen\b/.test(command) || SCRIPT_FRONTS.test(command));
+}
 
 /**
  * Whether a line may post keys or clicks through osascript: osascript is in it, and its

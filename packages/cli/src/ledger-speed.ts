@@ -35,9 +35,15 @@ export interface SpeedReport {
   readonly gaps: { readonly afterShot: Stat; readonly afterAction: Stat; readonly other: Stat };
   /** Per-step tool round trips by tool class. */
   readonly roundTrip: { readonly readOnly: Stat; readonly acting: Stat; readonly other: Stat };
-  /** delegatedAt → firstActionAt, and speechEndAt → firstActionAt, ms. */
+  /** delegatedAt → firstActionAt, and speechEndAt → firstActionAt, ms. A negative interval is left out of both. */
   readonly firstActionMs: Stat;
   readonly speechToActionMs: Stat;
+  /**
+   * The negative intervals left out: an action stamped before its delegation, or a speech end stamped after the action
+   * (Live's session timeline drifting from the wall clock, in rows written before PERF-6). A clock that disagrees with
+   * itself is not a latency.
+   */
+  readonly negative: { readonly firstAction: number; readonly speechToAction: number };
   /** Spawned threads: how many started, ended, and their steps/seconds. */
   readonly threads: { readonly started: number; readonly ended: number; readonly seconds: Stat; readonly steps: Stat };
 }
@@ -85,6 +91,12 @@ export function analyzeSpeed(rows: readonly LedgerRow[], days: readonly string[]
   const roundTrip = { readOnly: [] as number[], acting: [] as number[], other: [] as number[] };
   const firstAction: number[] = [];
   const speechToAction: number[] = [];
+  const negative = { firstAction: 0, speechToAction: 0 };
+  /** One interval into its samples, or into the count of the negative ones left out. */
+  const interval = (into: number[], ms: number, which: keyof typeof negative): void => {
+    if (ms < 0) negative[which]++;
+    else into.push(ms);
+  };
   let finished = 0;
 
   for (const t of turns.values()) {
@@ -112,8 +124,8 @@ export function analyzeSpeed(rows: readonly LedgerRow[], days: readonly string[]
     }
     const tm = (t.finished?.timings ?? t.delegation.timings) as { delegatedAt: number; firstActionAt?: number; speechEndAt?: number };
     if (tm.firstActionAt !== undefined) {
-      firstAction.push(tm.firstActionAt - tm.delegatedAt);
-      if (tm.speechEndAt !== undefined) speechToAction.push(tm.firstActionAt - tm.speechEndAt);
+      interval(firstAction, tm.firstActionAt - tm.delegatedAt, "firstAction");
+      if (tm.speechEndAt !== undefined) interval(speechToAction, tm.firstActionAt - tm.speechEndAt, "speechToAction");
     }
   }
 
@@ -129,6 +141,7 @@ export function analyzeSpeed(rows: readonly LedgerRow[], days: readonly string[]
     roundTrip: { readOnly: stat(roundTrip.readOnly), acting: stat(roundTrip.acting), other: stat(roundTrip.other) },
     firstActionMs: stat(firstAction),
     speechToActionMs: stat(speechToAction),
+    negative,
     threads: { started: threadStarted.size, ended: threadEnded.length, seconds: stat(threadEnded.map((t) => t.seconds * 1000)), steps: stat(threadEnded.map((t) => t.steps)) },
   };
 }
@@ -158,7 +171,8 @@ export function renderSpeed(r: SpeedReport): string[] {
   out.push(`  acting step → screenshot next   ${r.acting.thenShot}/${r.acting.steps} (${pct(r.acting.shotShare)})   target ≤ 15 % — the observation line makes the verifying shot unnecessary`);
   out.push(`  acting results with a now: line ${r.observed.withLine}/${r.observed.steps} (${pct(r.observed.share)})   target ≥ 95 % with Settings.observe on`);
   out.push(`  bare-yes delegations            ${r.yesDelegations} (each costs a generation today)`);
-  out.push(`  first action after delegation   ${cell(r.firstActionMs)}   after speech end ${cell(r.speechToActionMs)}`);
+  const left = r.negative.firstAction || r.negative.speechToAction ? `   left out: ${r.negative.firstAction} negative after delegation, ${r.negative.speechToAction} negative after speech end` : "";
+  out.push(`  first action after delegation   ${cell(r.firstActionMs)}   after speech end ${cell(r.speechToActionMs)}${left}`);
   out.push(`  generation gap after a shot     ${cell(r.gaps.afterShot)}`);
   out.push(`  generation gap after an action  ${cell(r.gaps.afterAction)}`);
   out.push(`  generation gap otherwise        ${cell(r.gaps.other)}`);

@@ -22,6 +22,7 @@ import {
   DEFAULT_WAKE,
   LOCAL_NONE,
   MAIN_THREAD_ID,
+  SESSION_LOST_REASON,
   SETTINGS_KEYS,
   grantOf,
   THREAD_PAGE,
@@ -760,6 +761,15 @@ export class Engine extends EventEmitter<EngineEvents> {
   private sessionStartedAt = 0;
   private brainStarted: Promise<void> | undefined;
   private usageSeconds = 0;
+  /**
+   * V8 / LM-2: the open session's last `session.usage` row (when, and the seconds it said); `written` is false until
+   * its first row. Set at session start, dropped at its close: `noteUsage` writes nothing for a session that closed.
+   */
+  private usageRow: { readonly sessionId: string; readonly at: number; readonly seconds: number; readonly written: boolean } | undefined;
+  /** PERF-6: the wall clock each of Kevin's utterances last grew at (its last input delta), by transcript item id. */
+  private readonly speechEnds = new Map<string, number>();
+  /** LM-1: the `thread.ended` rows the rebuild owes the threads a dead daemon left live; read at construction, appended by start(). */
+  private orphanRows: readonly LedgerRow[] = [];
   private contextRatio: number | undefined;
 
   constructor(private readonly opts: EngineOptions = {}) {
@@ -842,7 +852,6 @@ export class Engine extends EventEmitter<EngineEvents> {
       settings: () => this.settings,
       updateSettings: (patch) => this.updateSettings(patch),
       hands: this.pool.focus,
-      reader: this.pool.background,
       redact: (s) => this.runner.redactor.redact(s),
       emit: (e) => this.emit("event", e),
       problem: (kind, text, remedy) => this.problemOf(kind, text, remedy),
@@ -906,9 +915,12 @@ export class Engine extends EventEmitter<EngineEvents> {
         ...(this.config.claudeBin ? { claudeBin: this.config.claudeBin } : {}),
       },
     };
-    // The table: what the last daemon left — a thread live when it died is ended `failed` with one row each,
-    // and nothing acts — plus the main thread's own record, idle. Every summary, event and status line reads from it.
-    const rebuilt = ThreadTable.rebuildFrom(this.ledger, { now: this.now });
+    // The table: what the last daemon left — a thread live when it died is ended `failed`, and nothing acts — plus
+    // the main thread's own record, idle. Every summary, event and status line reads from it. Read here, written by
+    // start(): building an engine writes nothing to the ledger (LM-1); its one `thread.ended` row each waits there.
+    const at = this.now();
+    const rebuilt = ThreadTable.rebuild([...this.ledger.read(at - 86_400_000), ...this.ledger.read(at)], { now: this.now });
+    this.orphanRows = rebuilt.rows;
     const table = rebuilt.table;
     if (!table.get(MAIN_THREAD_ID)) table.started(this.mainRecord());
     // Threads get the same runner and toolset options over their own lane (hands, Screen, desk lane), the memory
@@ -1021,6 +1033,22 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.on("audio", () => {
       if (this.outputLevel >= Engine.AUDIBLE_OUTPUT_LEVEL) this.lastAudibleOutputAt = this.now();
     });
+  }
+
+  /** Utterances whose last input delta is remembered for PERF-6: a request reaches back a few utterances at most. */
+  static readonly SPEECH_ENDS_KEPT = 64;
+
+  /**
+   * PERF-6: the wall clock Kevin's utterance last grew at, stamped as its input delta arrives. The Delegator's
+   * `speechEndAt` reads it: a delta that has arrived is never later than a delegation handled after it, whatever
+   * Live's session timeline says (24 of 88 timeline stamps landed after their delegation).
+   */
+  private stampSpeechEnd(itemId: string): void {
+    this.speechEnds.delete(itemId);
+    this.speechEnds.set(itemId, this.now());
+    if (this.speechEnds.size <= Engine.SPEECH_ENDS_KEPT) return;
+    const oldest = this.speechEnds.keys().next();
+    if (!oldest.done) this.speechEnds.delete(oldest.value);
   }
 
   /** A session's transcript: every finalized utterance goes on the ledger (heard / said) and out as an event. */
@@ -1247,6 +1275,10 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** Spawn the helper, probe permissions, start the brain. Does not open a session. */
   async start(): Promise<void> {
     this.startedAt = this.now();
+    // What the dead daemon left open, written before anything else this process writes: its session's close
+    // (V8 / LM-2, W2-5's contract), then one `thread.ended` row for each thread it left live (LM-1).
+    this.closeLostSessions();
+    this.appendOrphanRows();
     this.tickTimer = setInterval(() => this.tick(), 1000);
     if (this.settingsBad) this.problemOf("other", this.settingsBad.text, { label: "Reveal", open: this.settingsBad.path });
     // What the previous process left behind: a pause to hold again, a session it was cut
@@ -2610,6 +2642,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.sessionStartedAt = at;
       if (!reconnect) this.addressed();
       this.usageSeconds = 0;
+      this.usageRow = { sessionId: res.id, at, seconds: 0, written: false };
       this.contextRatio = undefined;
       // A new session starts with an empty input buffer: the cap the last one held went with it (V11).
       this.capReopenPending = false;
@@ -2718,6 +2751,9 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   private detachLive(live: LiveSession): void {
     if (this.live !== live) return;
+    // The session's last usage row before its close (nothing when it already closed, or never started).
+    this.noteUsage("detach");
+    this.usageRow = undefined;
     // The meter never dips: what the session has billed so far counts now; the closed row adds the rest.
     this.foldUsage(live, this.usageSeconds);
     this.live = undefined;
@@ -2737,6 +2773,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.transcript.settle(Number.MAX_SAFE_INTEGER);
     this.heldTranscript = [...this.heldTranscript, ...this.transcript.all()].slice(-Engine.HELD_TRANSCRIPT_ITEMS);
     this.transcript = this.newTranscript();
+    this.speechEnds.clear();
     if (this.dictating) this.stopDictation("asleep");
     this.outputGateUntil = 0;
     this.gatedFrames = 0;
@@ -2754,15 +2791,26 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.usageFolded.set(live, total);
   }
 
-  /** Today's Live seconds from the ledger: closed sessions' usage, and how many sessions started. */
+  /**
+   * Today's Live seconds from the ledger, each session once: a closed session's `session.closed` row (a lost close
+   * included); a session with no closed row its last `session.usage` row (a daemon died with it open, and no start has
+   * closed it yet); the open session is the meter's own (`usageToday`). And how many sessions started.
+   */
   private loadUsageToday(): void {
     const now = this.now();
     let seconds = 0;
     let sessions = 0;
+    const closed = new Set<string>();
+    const lastUsage = new Map<string, number>();
     for (const row of this.ledger.read(now)) {
-      if (row.type === "session.closed") seconds += Number(row.usageSeconds) || 0;
+      if (row.type === "session.closed") {
+        seconds += Number(row.usageSeconds) || 0;
+        closed.add(row.sessionId);
+      } else if (row.type === "session.usage") lastUsage.set(row.sessionId, Number(row.usageSeconds) || 0);
       else if (row.type === "session.started") sessions += 1;
     }
+    const open = this.live?.session?.id;
+    for (const [id, usage] of lastUsage) if (!closed.has(id) && id !== open) seconds += usage;
     // A session open across midnight is one of today's sessions too.
     if (this.live?.session) sessions += 1;
     const day = Ledger.fileNameFor(now);
@@ -2771,6 +2819,72 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.usageDay = day;
     // A new local day (K1): the retention sweep runs once, at the next tick with no session up (`runPendingSweep`); the day that just ended is today − 1 and never moves.
     if (rolled) this.sweepPending = true;
+  }
+
+  /** At most one `session.usage` row per open session this often (V8 / LM-2): a crash loses no more than this. */
+  static readonly USAGE_ROW_MS = 60_000;
+
+  /**
+   * V8 / LM-2: the open session's billed seconds on the ledger, so a daemon that dies with a session open leaves
+   * them behind. The figure is the server's, never less than the seconds the session has been open (it bills per
+   * second, and `session.usage.updated` arrives late), as the pause row counts it. A `report` is written at once
+   * while the session has no row yet; after that a report or the `tick` writes at most one row a USAGE_ROW_MS;
+   * `detach` writes whatever moved. Only for the open session, and only while it is not closed.
+   */
+  private noteUsage(why: "report" | "tick" | "detach"): void {
+    const row = this.usageRow;
+    const id = this.live?.session?.id;
+    if (!row || row.sessionId !== id) return;
+    const now = this.now();
+    const seconds = Math.max(this.usageSeconds, Math.floor((now - this.sessionStartedAt) / 1000));
+    if (!(seconds > row.seconds)) return;
+    const due = why === "detach" || now - row.at >= Engine.USAGE_ROW_MS || (why === "report" && !row.written);
+    if (!due) return;
+    this.usageRow = { sessionId: id, at: now, seconds, written: true };
+    this.ledger.append({ at: now, type: "session.usage", sessionId: id, usageSeconds: seconds });
+  }
+
+  /**
+   * V8 / LM-2 (W2-5's contract): the session a dead daemon left open, closed before this process writes anything.
+   * Each session the ledger calls open (no closed row, no later start) gets `session.closed` with SESSION_LOST_REASON,
+   * the seconds of its last `session.usage` row (a ledger from before those rows: its last pause row's, else 0), and
+   * as its `at` the newest `at` in the newest day file: the dead daemon's last write, never earlier than any row of
+   * the session. So the close lands in the dead daemon's last day however late this start is, and sorts after the
+   * session's rows. Every reader then counts the session once, from that row.
+   */
+  private closeLostSessions(): void {
+    let ids: string[];
+    let at = Number.NEGATIVE_INFINITY;
+    try {
+      ids = this.ledger.unclosedSessionIds();
+      if (ids.length === 0) return;
+      const newest = this.ledger.days().at(-1);
+      if (newest) for (const row of this.ledger.read(Date.parse(`${newest.replace(/\.jsonl$/, "")}T12:00:00`))) if (row.at > at) at = row.at;
+    } catch (e) {
+      log.warn(`sessions left open: the ledger could not be read (${(e as Error).message}); nothing closed`);
+      return;
+    }
+    if (!Number.isFinite(at)) return;
+    for (const id of ids) {
+      const rows = this.ledger.readSession(id);
+      const usage = rows.findLast((r) => r.type === "session.usage" && r.sessionId === id) ?? rows.findLast((r) => r.type === "pause" && r.sessionId === id);
+      const usageSeconds = usage && "usageSeconds" in usage ? Number(usage.usageSeconds) || 0 : 0;
+      this.ledger.append({ at, type: "session.closed", sessionId: id, reason: SESSION_LOST_REASON, usageSeconds });
+      log.info(`session ${id} was open when the previous engine ended; closed it as ${SESSION_LOST_REASON} at ${new Date(at).toISOString()} with ${usageSeconds} s billed`);
+    }
+  }
+
+  /** LM-1: the `thread.ended` rows the construction-time rebuild owes (one per thread the dead daemon left live), written once. */
+  private appendOrphanRows(): void {
+    const rows = this.orphanRows;
+    this.orphanRows = [];
+    for (const row of rows) {
+      try {
+        this.ledger.append(row);
+      } catch (e) {
+        log.warn(`a thread.ended row was not written: ${(e as Error).message}`);
+      }
+    }
   }
 
   /** The meter: today's closed sessions plus what the open one has billed so far. */
@@ -2821,7 +2935,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         r = { status: "failed", error: (e as Error).message };
       }
       const said = this.noteBrainResult(b, r);
-      return said ? { ...r, error: said } : r;
+      // The typed line is what Kevin hears, as it is: a failed result's summary is said without the error's head.
+      return said ? { ...r, error: said, summary: said } : r;
     },
     cancel: () => this.brain?.cancel() ?? Promise.resolve(),
     stop: () => this.brain?.stop() ?? Promise.resolve(),
@@ -2874,8 +2989,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       onStop: (reason) => void this.interrupt(reason, "said"),
       // …and with ≥ 2 threads live the speech half comes first, on the stop word, while the work cut waits for a name.
       onGateSpeech: () => this.gateSpeech(`${this.userName} said stop`),
-      // The session timeline's zero on the wall clock: the triggering utterance's end becomes timings.speechEndAt.
-      sessionStartedAt: () => this.sessionStartedAt,
+      // PERF-6: when the triggering utterance ended, on the wall clock: its last input delta's arrival (a typed line's
+      // own time). Never Live's timeline placed through session.started: the two clocks drift.
+      speechEndAt: (item) => this.speechEnds.get(item.id) ?? (item.source === "typed" ? item.at : undefined),
       // Live's path for a dismissal (the voice's attention gate is the addressing test there): the one sleep function.
       onSleep: (phrase) => void this.fallAsleep("said", { phrase, farewell: true }),
       // The table and the scheduler: thread verbs and follow-ups by name answered before the supersede, the 350 ms stop rule,
@@ -2927,6 +3043,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.markKevin();
       if (this.sleepClause) this.sleepClause.heard = true;
       const item = this.transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
+      this.stampSpeechEnd(item.id);
       // Words that name Jarhead are a turn for the idle clock, judged on the new words only (with the few characters
       // before them, so "Jar" + "head" counts) and once per utterance: a TV that says the name once and talks on is
       // one turn, not one per fragment. Not "Jared" or "Jarred": the ear needs them for its mishearings, the clock
@@ -2961,6 +3078,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (!current()) return;
       this.usageSeconds = seconds;
       this.contextRatio = ratio;
+      this.noteUsage("report");
       this.scheduleSnapshot();
     });
     live.on("error", (e, cid) => {
@@ -2975,6 +3093,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       // reached session.started has no started row and gets no closed row.
       this.foldUsage(live, usage);
       const id = live.session?.id;
+      // Its closed row is its last word on usage: no `session.usage` row after it.
+      if (id && this.usageRow?.sessionId === id) this.usageRow = undefined;
       // The playback figures first, so the row sits inside the session it describes.
       const playout = id ? this.audioTelemetry.close(id, this.audioState) : undefined;
       if (playout) this.ledger.append(playout);
@@ -5613,6 +5733,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.recomputePhase();
     this.pruneMarks();
     if (Ledger.fileNameFor(now) !== this.usageDay) this.loadUsageToday();
+    this.noteUsage("tick");
     if (this.sweepPending) this.runPendingSweep();
     this.watchdog();
     this.watchLiveFrames(now);
@@ -6378,8 +6499,8 @@ export class Engine extends EventEmitter<EngineEvents> {
    * `pause` row means he paused it: the pause is held again (`pauseInfo` from the row,
    * phase `paused`, the meter still stopped) unless its decay has passed, in which case
    * it sleeps as it would have. No `session.closed` row (or one the engine would have
-   * reconnected from: `expired`, `connection_lost`) and a last row inside
-   * LOST_SESSION_MAX_AGE_MS means the process died mid-conversation: `lostSession` is set,
+   * reconnected from: `expired`, `connection_lost`; or the lost close start() just wrote)
+   * and a last row inside LOST_SESSION_MAX_AGE_MS means the process died mid-conversation: `lostSession` is set,
    * and the first Go within AUTO_RESUME_WINDOW_MS resumes it (`resumeFromLedger`).
    */
   private restoreFromLedger(): void {
@@ -6404,7 +6525,10 @@ export class Engine extends EventEmitter<EngineEvents> {
       log.debug(`last session ${latest.id} was stopped by ${this.userName}; nothing to resume`);
       return;
     }
-    const lastAt = inside.reduce((m, r) => Math.max(m, r.at), latest.startedAt);
+    // A lost close (this start's own sweep, V8 / LM-2) is dated at the dead daemon's last write: when the session was
+    // last alive is its own rows' word.
+    const lostClose = (r: LedgerRow): boolean => r.type === "session.closed" && r.reason === SESSION_LOST_REASON;
+    const lastAt = inside.reduce((m, r) => (lostClose(r) ? m : Math.max(m, r.at)), latest.startedAt);
     const pauseRow = [...inside].reverse().find((r): r is Extract<LedgerRow, { type: "pause" }> => r.type === "pause");
     if (pauseRow) {
       const sleepsAt = pauseRow.at + this.pauseHoldMs();
@@ -6420,7 +6544,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       return;
     }
     const closed = inside.find((r): r is Extract<LedgerRow, { type: "session.closed" }> => r.type === "session.closed" && r.sessionId === latest.id);
-    if (closed && closed.reason !== "expired" && closed.reason !== "connection_lost") return; // ended on purpose: sleep, idle, the server
+    // Ended on purpose: sleep, idle, the server. A lost close says the process died in it, as a cut does.
+    if (closed && closed.reason !== "expired" && closed.reason !== "connection_lost" && closed.reason !== SESSION_LOST_REASON) return;
     // Kevin's Stop inside the reconnect window after connection_lost is written after the
     // session's closed row — outside its span — so the day's own rows are asked.
     if (closed && this.stoppedAfter(closed.at, now)) {

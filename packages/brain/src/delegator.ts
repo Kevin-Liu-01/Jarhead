@@ -127,10 +127,16 @@ export interface DelegatorOptions {
   /** How long a prefired reflex waits to be adopted by Live's delegation before its record is closed as never delegated (default 8 s). */
   readonly prefireTtlMs?: number | undefined;
   /**
-   * Wall clock of the session timeline's zero (the engine's `session.started`), or
-   * 0 when no session is open. With it, the triggering utterance's `endMs` becomes
-   * `DelegationTimings.speechEndAt` — the moment Kevin stopped talking, on the same
-   * clock as every other stamp. Without it the field stays absent.
+   * When Kevin's triggering utterance ended, on the wall clock every other stamp is on:
+   * the engine stamps each utterance's last input delta as it arrives (PERF-6), and this
+   * becomes `DelegationTimings.speechEndAt`. Undefined for an utterance it has no stamp
+   * for: the field stays absent.
+   */
+  readonly speechEndAt?: ((item: TranscriptItem) => number | undefined) | undefined;
+  /**
+   * A host with no stamps: the wall clock of the session timeline's zero, or 0 when no
+   * session is open; the utterance's `endMs` is placed on it. That timeline drifts from
+   * the wall clock, so `speechEndAt` wins whenever it is given.
    */
   readonly sessionStartedAt?: (() => number) | undefined;
   /**
@@ -1287,7 +1293,9 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       // The brain never got to work on it ("restarting", "already handling a task", a
       // spawn failure): the circles are still Kevin's next question, not spent.
       if (markIds.length > 0) this.opts.marks?.release(markIds);
-      say(`Something went wrong: ${(result.error ?? "unknown error").slice(0, 300)}`);
+      // A typed failure carries its own words as the summary (the engine's proxy: "Codex is signed out. Switching to
+      // the next brain. Ask again."): said as they are. A raw error gets the head.
+      say(result.summary ? result.summary.slice(0, 300) : `Something went wrong: ${(result.error ?? "unknown error").slice(0, 300)}`);
     } else if (result.summary && result.status === "done") {
       // Only speak the summary when the brain did not already speak it.
       const spokenAlready = this.current(id)?.steps.some((s) => s.kind === "commentary" && s.text === result.summary);
@@ -1317,12 +1325,15 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   /**
    * When Kevin stopped talking: the last of his utterances that ended before Live's
    * delegation event (the request's last item when the transcript lagged the event),
-   * placed on the wall clock through the session's start. Absent without a session clock.
+   * on the wall clock: the host's stamp of its last input delta (PERF-6), or else its
+   * `endMs` placed through the session's start. Absent with neither.
    */
   private speechEndAt(requestItems: readonly TranscriptItem[], offsetMs: number): number | undefined {
     const spoke = requestItems.filter((i) => i.endMs <= offsetMs).at(-1) ?? requestItems.at(-1);
+    if (!spoke) return undefined;
+    if (this.opts.speechEndAt) return this.opts.speechEndAt(spoke);
     const sessionStart = this.opts.sessionStartedAt?.() ?? 0;
-    return spoke && sessionStart > 0 ? sessionStart + spoke.endMs : undefined;
+    return sessionStart > 0 ? sessionStart + spoke.endMs : undefined;
   }
 
   /** The spawned thread holding the confirmation floor; undefined when the floor is free or the main brain's own question holds it. */

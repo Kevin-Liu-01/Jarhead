@@ -19,8 +19,9 @@ import { ACTING_TOOLS, FOCUS_APPLESCRIPT } from "@jarhead/brain";
  * (Kevin's hands > the main lane > threads by age; the lease's `rank` is the lease's
  * business — taken here as an option and handed through). Two hooks for the speed
  * pass ride as options: an `observer` that annotates every ACTING tool's result with
- * what is now in front (after `super.run`, never inside the rail) and a `serializer`
- * that orders acting calls under the lease.
+ * what is now in front (after the base ran the call, never inside the rail; the base's
+ * step is recorded once the line is in, PERF-5) and a `serializer` that orders acting
+ * calls under the lease.
  */
 
 const log = logger("engine.threads.runner");
@@ -253,18 +254,36 @@ export abstract class LeasedRunner extends ToolRunner {
   /**
    * The base runner's run, with the two hooks around it: the serializer orders an
    * acting call; the observer annotates its result once it landed. Never inside the
-   * rail — after `super.run`, before the step is finished for the sink's reader.
+   * rail: the base executes the call, the observer adds its line (outside the
+   * serializer, as before), and the base records the step then, with the line in it,
+   * so the ledger holds what the model read (PERF-5). A call the serializer halted
+   * never ran and records nothing, as before.
    */
   protected async runBase(name: string, input: unknown): Promise<RunOutcome> {
     const acting = this.actingTools.has(name);
-    const out = acting && this.serializer ? await this.serializer.run(name, () => super.run(name, input)) : await super.run(name, input);
-    if (!acting || !this.observer || out.result.kind !== "text") return out;
-    try {
-      return await this.observer.annotate(name, argsOf(input), out);
-    } catch (e) {
-      log.debug(`observer for ${name}: ${(e as Error).message}`);
-      return out;
+    const observer = acting ? this.observer : undefined;
+    const serializer = acting ? this.serializer : undefined;
+    if (!observer) return serializer ? serializer.run(name, () => super.run(name, input)) : super.run(name, input);
+    const ran: { done?: { readonly args: Record<string, unknown>; readonly out: RunOutcome } } = {};
+    const execute = async (): Promise<RunOutcome> => {
+      ran.done = await this.execute(name, input);
+      return ran.done.out;
+    };
+    const out = serializer ? await serializer.run(name, execute) : await execute();
+    const done = ran.done;
+    if (!done) return out;
+    let seen = out;
+    if (out.result.kind === "text") {
+      try {
+        seen = await observer.annotate(name, done.args, out);
+      } catch (e) {
+        log.debug(`observer for ${name}: ${(e as Error).message}`);
+      }
     }
+    // The line the observer added after the result's own text, if any.
+    const line = seen !== out && seen.result.kind === "text" && out.result.kind === "text" ? seen.result.text.slice(out.result.text.length).replace(/^\n/, "") : "";
+    this.record(name, done, line || undefined);
+    return seen;
   }
 
   /** The screen tool itself, under the lease: in flight for its duration, `busy` retried silently. */
