@@ -43,6 +43,14 @@ import type { EngineCommand, LedgerRow, LocalFlavor, MemoryItem, MemoryKind, Mem
  * `relink()` rebuilds the service when that identity moves and `reembed` heals the
  * vectors at quiet ticks.
  *
+ * Off means off: with `Settings.memory` false nothing is extracted, injected or embedded —
+ * the service is built over keywords and rules, so no model list is asked and no probe is
+ * embedded, and turning memory on rebuilds it over the providers the settings name at the
+ * next tick. The Memory rail's filter is ranked by words, as is a filter the redactor changed. A
+ * conversation in the Trash is never read, and what was learned only from it is left out
+ * of every read (the brain's and the voice's blocks, the rail, the counts) until Restore;
+ * the store keeps it (decision D5).
+ *
  * Tests inject a FakeMemoryService through `EngineOptions.memory.service`; a store
  * that cannot start leaves memory off with one warning and the engine runs on.
  */
@@ -73,10 +81,16 @@ const REMEMBER_PLAIN = /^(?:remember that|keep in mind(?: that)?|note that)\s+\S
 /** The clause to keep, from the ORIGINAL text so names keep their case; the trailing full stop goes. */
 const REMEMBER_CLAUSE = /\b(?:remember that|keep in mind(?: that)?|note that)\s+(.{8,200}?)[.!?]*\s*$/i;
 
+/** What a read leaves out: the session ids whose conversation is in the Trash (the package's ReadOptions). */
+interface HiddenRead {
+  readonly hidden?: ReadonlySet<string>;
+}
+
 /**
  * The memory service as the bridge uses it — the public surface of the package's
  * MemoryService (assigning the real one below is the type check), and what a test's
- * FakeMemoryService implements.
+ * FakeMemoryService implements. The read options are optional to honour: a fake that
+ * ignores them reads everything.
  */
 export interface MemoryServiceLike {
   /** The store, for the extraction watermark per conversation (the bridge's cheap gate before a run). */
@@ -85,8 +99,8 @@ export interface MemoryServiceLike {
   ingestSession(sessionId: string, rows: readonly LedgerRow[], opts?: IngestOptions): Promise<IngestResult>;
   /** Embed a line Kevin just said so the delegation-time query is a cache hit (QUERY_LRU); never throws. */
   prime(text: string): Promise<void>;
-  retrieveForBrain(query: string, opts?: { readonly signal?: AbortSignal; readonly timeoutMs?: number }): Promise<Rendered>;
-  retrieveForVoice(): Rendered;
+  retrieveForBrain(query: string, opts?: { readonly signal?: AbortSignal; readonly timeoutMs?: number } & HiddenRead): Promise<Rendered>;
+  retrieveForVoice(opts?: HiddenRead): Rendered;
   /** An explicit "remember that …" (origin kevin) or a Console/CLI add; undefined = refused (a secret shape, the redactor changed it). */
   remember(text: string, kind?: MemoryKind, origin?: "extracted" | "kevin" | "tool"): Promise<RememberResult | undefined>;
   /** Tombstone every live item said in the last `ms` (and write the exclusion window); returns how many. */
@@ -94,9 +108,10 @@ export interface MemoryServiceLike {
   forget(id: string, by: "kevin" | "reflex" | "cli"): boolean;
   restore(id: string): boolean;
   edit(id: string, text: string, kind?: MemoryKind): boolean;
-  list(state?: MemoryState | "all", limit?: number): MemoryItem[];
-  search(query: string, limit?: number, state?: MemoryState | "all"): Promise<MemoryItem[]>;
-  summary(): Omit<MemorySummary, "enabled" | "pending">;
+  list(state?: MemoryState | "all", limit?: number, opts?: HiddenRead): MemoryItem[];
+  /** `vectors: false` ranks by words with no embedding call. */
+  search(query: string, limit?: number, state?: MemoryState | "all", opts?: HiddenRead & { readonly vectors?: boolean }): Promise<MemoryItem[]>;
+  summary(opts?: HiddenRead): Omit<MemorySummary, "enabled" | "pending">;
   /** One slice of housekeeping (≤ 200 pair checks); the cursor carries across calls; `done` ends the pass. */
   consolidateStep(opts?: { readonly signal?: AbortSignal }): Promise<{ readonly merged: number; readonly archived: number; readonly done: boolean }>;
   /** Live items with no vector in the current embedding space, `limit` at a time; returns how many were embedded, 0 when every item has one. */
@@ -158,6 +173,8 @@ type MemoryCommand = Extract<EngineCommand, { type: `memory.${string}` }>;
 /** How long the start waits for the key's model list before running the package default. */
 const PICK_TIMEOUT_MS = 8_000;
 
+const NONE: ReadonlySet<string> = new Set();
+
 export class MemoryBridge {
   private service: MemoryServiceLike | undefined;
   /** Closed conversations (chain roots) waiting for a quiet tick, oldest first. */
@@ -181,14 +198,22 @@ export class MemoryBridge {
   private pickedOnce = false;
   /** The build or relink under way; `ready()` waits on it. */
   private building: Promise<void> | undefined;
-  /** Which providers the service is built over ("local|url|embed|chat", "openai|model", "keyword"); relink() rebuilds only when it moves. */
+  /** Which providers the service is built over ("local|url|embed|chat", "openai|model", "keyword", "off"); relink() rebuilds only when it moves. */
   private identity: string | undefined;
+  /** The toggle `follow()` last relinked for, until the service matches it (one try per move of the toggle). */
+  private followed: boolean | undefined;
   /** A relink changed the embedding space: `reembed()` runs at quiet ticks until it returns 0. */
   private reembedPending = false;
   /** A reembed slice is the run in flight (not a conversation: the summary's `pending` leaves it out). */
   private reembedding = false;
+  /** `hidden()`'s answer until a row that can change it lands (a tombstone, a carried decision, a day moved either way). */
+  private hiddenIds: ReadonlySet<string> | undefined;
 
   constructor(private readonly opts: MemoryBridgeOptions) {
+    // Every snapshot reads the counts: the Trash's sessions are asked of the ledger once per change, not per snapshot.
+    opts.ledger.onRow((row) => {
+      if (row.type.startsWith("conversation.") || row.type === "ledger.moved") this.hiddenIds = undefined;
+    });
     if (opts.service) {
       this.service = opts.service;
       return;
@@ -201,9 +226,10 @@ export class MemoryBridge {
   /** Build the service (once) over the providers the settings name and read what the ledger holds; a store that cannot start is one warning. */
   private async start(): Promise<void> {
     const target = this.opts.local();
+    const on = this.opts.enabled();
     try {
-      this.service = await this.build(target);
-      this.identity = this.identityOf(target);
+      this.service = await this.build(target, on);
+      this.identity = this.identityOf(target, on);
     } catch (e) {
       // The store lives under <stateDir>/memory; a dir that cannot be made or read is one warning, not a dead engine.
       log.warn(`could not start the memory store: ${(e as Error).message.split("\n")[0]}; memory is off until it does`);
@@ -241,10 +267,11 @@ export class MemoryBridge {
     return this.building ?? Promise.resolve();
   }
 
-  /** The providers a target names, as one string: what `relink()` compares. */
-  private identityOf(target: LocalMemoryTarget | "offline" | undefined): string {
+  /** The providers a target names, as one string: what `relink()` compares. Memory off is its own identity (keywords and rules). */
+  private identityOf(target: LocalMemoryTarget | "offline" | undefined, on: boolean): string {
     // The user's name is part of every identity: the extractors and the renderer are built with it, so a rename rebuilds them.
     const who = `|who=${this.userName()}`;
+    if (!on) return `off${who}`;
     if (target === "offline") return `keyword${who}`;
     // The token's presence is part of the identity: a `config.set-secrets` that adds one relinks onto a server that wanted it.
     if (target) return `local|${target.baseUrl}|${target.embedModel ?? ""}|${target.chatModel}|${this.opts.brainApiKey() ? "token" : ""}${who}`;
@@ -264,9 +291,11 @@ export class MemoryBridge {
    * skipped even with a key. Under `local` with nothing answering: keywords and
    * rules. Otherwise Kevin's OpenAI key when there is one (embeddings and the Responses extractor,
    * which is also the decider — the key's model list is asked once when no model is pinned),
-   * rules and keywords when there is not.
+   * rules and keywords when there is not. Memory off (`on` false): keywords and rules whatever
+   * the settings name, so nothing is asked of any server; Forget, Restore and Edit still reach
+   * the store, and the vectors it holds wait for memory to come back on.
    */
-  private async build(target: LocalMemoryTarget | "offline" | undefined): Promise<MemoryServiceLike> {
+  private async build(target: LocalMemoryTarget | "offline" | undefined, on: boolean): Promise<MemoryServiceLike> {
     const dir = join(this.opts.stateDir, "memory");
     const fetchImpl = this.opts.fetchImpl;
     let embedder: Embedder;
@@ -274,7 +303,11 @@ export class MemoryBridge {
     let decider: Decider;
     let maxChars: number | undefined;
     const userName = this.userName();
-    if (target === "offline") {
+    if (!on) {
+      embedder = new KeywordEmbedder();
+      extractor = new RulesExtractor(userName);
+      decider = new RulesDecider();
+    } else if (target === "offline") {
       embedder = this.opts.embedder ?? new KeywordEmbedder();
       extractor = this.opts.extractor ?? new RulesExtractor(userName);
       decider = this.opts.decider ?? new RulesDecider();
@@ -345,19 +378,25 @@ export class MemoryBridge {
     if (this.opts.service) return;
     await this.ready();
     const target = this.opts.local();
-    const id = this.identityOf(target);
+    const on = this.opts.enabled();
+    const id = this.identityOf(target, on);
     if (this.service && id === this.identity) return;
     this.building = (async () => {
       await this.running?.catch(() => undefined);
       this.service?.flush();
       try {
-        this.service = await this.build(target);
+        this.service = await this.build(target, on);
       } catch (e) {
         log.warn(`memory could not move to ${id.split("|")[0]}: ${(e as Error).message.split("\n")[0]}; the store stays as it was`);
         return;
       }
       this.identity = id;
       this.reembedPending = true;
+      if (!on) {
+        log.info("memory off: keywords and rules, nothing asked of any server");
+        this.opts.onChange();
+        return;
+      }
       const s = this.service.summary();
       const where = target && target !== "offline" ? `extractor ${target.chatModel || "rules"} on ${target.baseUrl}` : target === "offline" ? "rules (the local server is down)" : this.opts.apiKey() ? "the Responses extractor" : "rules";
       log.info(`memory now ${s.embeddings} matching${s.embeddingModel ? ` (${s.embeddingModel}, ${s.embeddingDims ?? "?"} dims)` : ""} · ${where}; vectors heal at quiet ticks`);
@@ -378,6 +417,18 @@ export class MemoryBridge {
     }
   }
 
+  /** The session ids whose conversation is in the Trash: what every read leaves out. Empty when the ledger cannot say. */
+  private hidden(): ReadonlySet<string> {
+    if (this.hiddenIds) return this.hiddenIds;
+    try {
+      this.hiddenIds = this.opts.ledger.trashedSessionIds();
+      return this.hiddenIds;
+    } catch (e) {
+      log.debug(`trashed sessions unknown: ${(e as Error).message}`);
+      return NONE;
+    }
+  }
+
   /**
    * The closed conversations of the last week, newest first: one entry per chain, closed
    * when every member is (a member without a closed row is the open one — or a lost one
@@ -385,8 +436,10 @@ export class MemoryBridge {
    */
   private closedChains(): { root: string; closedAt: number }[] {
     let sessions;
+    let roots: ReadonlyMap<string, string>;
     try {
       sessions = this.opts.ledger.sessions();
+      roots = this.opts.ledger.chainRoots();
     } catch (e) {
       log.debug(`ledger walk skipped: ${(e as Error).message}`);
       return [];
@@ -394,7 +447,7 @@ export class MemoryBridge {
     const since = this.opts.now() - CATCHUP_WINDOW_MS;
     const byRoot = new Map<string, { closedAt: number; open: boolean; trashed: boolean }>();
     for (const s of sessions) {
-      const root = this.rootOf(s.id);
+      const root = roots.get(s.id) ?? s.id;
       const cur = byRoot.get(root) ?? { closedAt: 0, open: false, trashed: false };
       if (s.closedAt === undefined) cur.open = true;
       else cur.closedAt = Math.max(cur.closedAt, s.closedAt);
@@ -488,6 +541,7 @@ export class MemoryBridge {
    * nothing pending, one slice of consolidation when a pass is due. Never two runs at once.
    */
   drain(quiet: boolean): void {
+    this.follow();
     if (!quiet || this.running || !this.opts.enabled()) return;
     const service = this.service;
     if (!service) return;
@@ -547,6 +601,23 @@ export class MemoryBridge {
         this.running = undefined;
         this.opts.onChange();
       });
+  }
+
+  /**
+   * Memory turned on or off since the service was built: rebuild it (`relink`) over what the
+   * toggle now names. Checked every tick (`drain`), since a settings change relinks only on a
+   * rename. A rebuild that fails is not retried until the toggle moves again.
+   */
+  private follow(): void {
+    if (this.opts.service || this.building || this.identity === undefined) return;
+    const on = this.opts.enabled();
+    if (this.identity.startsWith("off|") !== on) {
+      this.followed = undefined;
+      return;
+    }
+    if (this.followed === on) return;
+    this.followed = on;
+    void this.relink();
   }
 
   /** One `reembed` slice after a relink: the live items without a vector in the new space, ≤ 96 a tick, until none is left. */
@@ -635,7 +706,7 @@ export class MemoryBridge {
         }, RETRIEVE_RACE_MS);
         timer.unref?.();
       });
-      const r = await Promise.race([service.retrieveForBrain(q, { signal: race.signal, timeoutMs: RETRIEVE_RACE_MS }), timeout]);
+      const r = await Promise.race([service.retrieveForBrain(q, { signal: race.signal, timeoutMs: RETRIEVE_RACE_MS, hidden: this.hidden() }), timeout]);
       if (!r) {
         log.debug(`retrieval past ${RETRIEVE_RACE_MS} ms; the turn goes out without memory`);
         return undefined;
@@ -659,7 +730,7 @@ export class MemoryBridge {
     const service = this.service;
     if (!service) return undefined;
     try {
-      const r = service.retrieveForVoice();
+      const r = service.retrieveForVoice({ hidden: this.hidden() });
       this.budgetUsed = { ...this.budgetUsed, voice: r.tokens };
       return r.text;
     } catch (e) {
@@ -672,7 +743,7 @@ export class MemoryBridge {
   summary(): MemorySummary {
     let base: Omit<MemorySummary, "enabled" | "pending"> | undefined;
     try {
-      base = this.service?.summary();
+      base = this.service?.summary({ hidden: this.hidden() });
     } catch (e) {
       log.debug(`summary failed: ${(e as Error).message}`);
     }
@@ -757,14 +828,21 @@ export class MemoryBridge {
 
   // ---------------------------------------------------------- daemon reads
 
-  /** The Memory rail's list (default live). Vectors never leave the store. */
+  /** The Memory rail's list (default live, less what the Trash hides). Vectors never leave the store. */
   list(state?: MemoryState | "all", limit?: number): MemoryItem[] {
-    return MemoryBridge.clean(this.service?.list(state, limit) ?? []);
+    return MemoryBridge.clean(this.service?.list(state, limit, { hidden: this.hidden() }) ?? []);
   }
 
+  /**
+   * The Memory rail's filter and `jarhead memory search`. The query is embedded only with
+   * memory on and only when the redactor leaves it as it is; otherwise it is ranked by
+   * words and nothing leaves the Mac (off means no embedding call; a key read into the
+   * filter never reaches the endpoint).
+   */
   async search(query: string, limit?: number): Promise<MemoryItem[]> {
     if (!this.service) return [];
-    return MemoryBridge.clean(await this.service.search(query, limit));
+    const vectors = this.opts.enabled() && this.opts.redact(query) === query;
+    return MemoryBridge.clean(await this.service.search(query, limit, "live", { vectors, hidden: this.hidden() }));
   }
 
   flush(): void {

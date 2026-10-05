@@ -172,9 +172,13 @@ export function applyRow(state: ReplayState, row: MemoryRow): void {
       return;
     }
     case "merge": {
+      // Only a live item merges (the store writes no other). A merge row for one that was not
+      // live — a Forget pressed while a merge waited on the decider, before 2026-10-05 — stays
+      // in the log and applies to nothing, so a replay gives Restore its item back.
       const older = state.items.get(row.id);
       const newer = state.items.get(row.into);
-      if (older) state.items.set(row.id, { ...older, state: "merged", mergedInto: row.into });
+      if (!older || older.state !== "live") return;
+      state.items.set(row.id, { ...older, state: "merged", mergedInto: row.into });
       if (older && newer && row.fold) {
         const sources = [...newer.sources, ...older.sources].sort((a, b) => a.at - b.at);
         state.items.set(row.into, {

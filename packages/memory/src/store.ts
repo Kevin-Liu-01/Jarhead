@@ -285,9 +285,13 @@ export class MemoryStore {
     return this.state.items.get(id);
   }
 
-  /** Fold `id` into `into` (fold: same fact, evidence combines) or mark it superseded (fold false). */
+  /**
+   * Fold `id` into `into` (fold: same fact, evidence combines) or mark it superseded (fold
+   * false). Only a live item merges: a forgotten or archived one stays what Kevin (or the
+   * decay) made it, so Restore still brings it back.
+   */
   merge(id: string, into: string, fold: boolean): void {
-    if (id === into || !this.state.items.has(id) || !this.state.items.has(into)) return;
+    if (id === into || this.state.items.get(id)?.state !== "live" || !this.state.items.has(into)) return;
     this.write({ at: this.now(), op: "merge", id, into, fold });
   }
 

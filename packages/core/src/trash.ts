@@ -1,7 +1,7 @@
 import { appendFileSync, copyFileSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Settings, TrashInfo } from "@jarhead/protocol";
-import { Ledger } from "./ledger.ts";
+import type { LedgerRow, Settings, TrashInfo } from "@jarhead/protocol";
+import { type CarryResult, Ledger } from "./ledger.ts";
 
 /**
  * The Trash: <stateDir>/trash. Jarhead never deletes Kevin's data — bytes move only
@@ -19,6 +19,15 @@ import { Ledger } from "./ledger.ts";
  * a day holding a session of a chain still open. The retention sweep (`sweep()`)
  * applies `Settings.ledgerRetentionDays` / `shotsRetentionDays` (0 = never): it
  * lists what it would move first, logged, then moves.
+ *
+ * A ledger day holds Kevin's decisions as well as his conversations: a pin, a Move to
+ * Trash, a name, a hide, a cleared Now sit in the file of the day he made them. Before
+ * a ledger day moves, the decisions still in force on it are carried into today's file
+ * (`Ledger.carry`: rows marked `carried: true`, append-only), so moving a day never
+ * undoes what was decided that day — and a conversation whose root sits on that day
+ * keeps its decisions on the sessions that stay. The move's own `ledger.moved` row
+ * carries the lineage (`lineage`: which sessions that stay continue the ones that left),
+ * so what memory learned from a conversation follows it after its days move.
  *
  * Shots are the one folder another writer shares: the screenshot cap (runner.ts
  * `evictShots`) renames single files into `trash/shots/<day>/` as it goes, so that
@@ -139,28 +148,31 @@ export class Trash {
   }
 
   /**
-   * The sessions of that day decide: the open (or paused) session's day stays; a day
+   * The sessions of that day decide, at any age (the ledger reads every day file for
+   * this, not only the rail's window): the open (or paused) session's day stays; a day
    * holding any session of a pinned conversation stays; a day holding any session of
    * a conversation still open stays — its root or a link, moving either would split
    * the chain under the Console. "Open" is the engine's word first (`openSessionIds`)
    * and the ledger's second (a session with no closed row and no later start).
    */
   private guard(day: string): string | undefined {
-    const sessions = this.ledger.sessions();
     const openIds = new Set<string>(this.opts.openSessionIds?.() ?? []);
-    for (const s of sessions) if (s.closedAt === undefined) openIds.add(s.id);
+    for (const id of this.ledger.unclosedSessionIds()) openIds.add(id);
+    const roots = this.ledger.chainRoots();
     const openRoots = new Set<string>();
-    for (const id of openIds) openRoots.add(this.ledger.chainRootOf(id) ?? id);
-    for (const s of sessions) {
-      if (s.day !== day) continue;
+    for (const id of openIds) openRoots.add(roots.get(id) ?? id);
+    for (const s of this.ledger.sessionsOn(day)) {
       if (openIds.has(s.id)) return "the open session's day";
       if (s.pinned) return "a pinned conversation";
-      if (openRoots.has(this.ledger.chainRootOf(s.id) ?? s.id)) return "a conversation still open has a session that day";
+      if (openRoots.has(roots.get(s.id) ?? s.id)) return "a conversation still open has a session that day";
     }
     return undefined;
   }
 
-  /** Move one day's ledger file or shots folder to the Trash. Refused with a reason, or moved and recorded. */
+  /**
+   * Move one day's ledger file or shots folder to the Trash. Refused with a reason, or moved
+   * and recorded. A ledger day's decisions in force are carried into today's file first.
+   */
   moveDay(day: string, what: TrashWhat, by: TrashBy): MoveResult {
     const reason = this.refusal(day, what);
     if (reason) {
@@ -170,6 +182,14 @@ export class Trash {
     const from = this.livePath(day, what);
     const to = this.trashPath(day, what);
     const merged = what === "shots" && existsSync(to);
+    let lineage: CarryResult["lineage"];
+    if (what === "ledger") {
+      // Before the bytes go: what Kevin decided that day still holds (a carry is a restatement, so a move that then
+      // fails changes nothing), and the move's row says which conversations continue the sessions that leave.
+      const carried = this.ledger.carry(day, this.now());
+      lineage = carried.lineage;
+      if (carried.rows > 0) this.log(`trash: ledger ${day}: carried ${carried.rows} decision(s) into today's file`);
+    }
     try {
       mkdirSync(dirname(to), { recursive: true });
       if (merged) this.merge(from, to);
@@ -179,7 +199,7 @@ export class Trash {
       this.log(`trash: ${what} ${day} kept — ${why}`);
       return { ok: false, day, what, reason: why };
     }
-    this.record({ day, what, from, to }, "trash", by);
+    this.record({ day, what, from, to }, "trash", by, lineage);
     this.log(`trash: ${what} ${day} ${merged ? "merged into" : "moved to"} the Trash (${by})`);
     return { ok: true, move: { day, what, from, to } };
   }
@@ -368,10 +388,15 @@ export class Trash {
     return Ledger.dayFor(d.getTime());
   }
 
-  /** The row in today's ledger and the line in the manifest, for one move in either direction. */
-  private record(move: TrashMove, to: "trash" | "live", by: TrashBy): void {
+  /**
+   * The row in today's ledger and the line in the manifest, for one move in either direction.
+   * A ledger day's move to the Trash also writes the carry's `lineage` on its row (a field the
+   * protocol's row type does not name; readers that do not know it read the move as before).
+   */
+  private record(move: TrashMove, to: "trash" | "live", by: TrashBy, lineage?: CarryResult["lineage"]): void {
     const at = this.now();
-    this.ledger.append({ at, type: "ledger.moved", day: move.day, what: move.what, to, path: move.to, by });
+    const row: LedgerRow = { at, type: "ledger.moved", day: move.day, what: move.what, to, path: move.to, by };
+    this.ledger.append(lineage ? ({ ...row, lineage } as LedgerRow) : row);
     try {
       mkdirSync(this.dir, { recursive: true });
       appendFileSync(this.manifestPath, `${JSON.stringify({ at, day: move.day, what: move.what, to, from: move.from, path: move.to, by })}\n`);
