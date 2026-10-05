@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readlinkSync, renameSync, statSync } from "node:
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, classifyUrl, clockOf, openPathReason, pressKeyReason, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
 import { runShell, type Brain, type BrainResult, type BrainSink, type BrainTask } from "@jarhead/brain";
-import type { FocusedText, FrontmostInfo, NativeHands } from "@jarhead/hands";
+import { KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_POLL_MS, WAIT_MAX_MS, isHandsBusyMessage, type FocusedText, type FrontmostInfo, type NativeHands, type UserIdle } from "@jarhead/hands";
 import { AUTOMATION_LINE_CHARS, automationKind, recipeNamed, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
 import type { LaneRunner } from "../threads/runner.ts";
 
@@ -141,6 +141,8 @@ export interface ExecutorOptions {
   readonly reserveBrain: (automationId: string, seconds: number) => void;
   /** The user's name as the lines say it (the engine's effective name; "Kevin" when none is wired). */
   readonly userName?: (() => string) | undefined;
+  /** How a busy `open` or `press` waits between `user_idle` reads (tests move a virtual clock); default setTimeout. */
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
 }
 
 export interface FireContext {
@@ -195,8 +197,38 @@ export function freeName(dir: string, name: string): string {
   return candidate;
 }
 
+/** The helper refused because the user's key, click or scroll is within its quiet window: nothing was posted. */
+function isHandsBusy(e: unknown): boolean {
+  if (e instanceof NativeRequestError && e.detail.code === "busy") return true;
+  return e instanceof Error && isHandsBusyMessage(e.message);
+}
+
 export class AutomationExecutor {
   constructor(private readonly opts: ExecutorOptions) {}
+
+  private sleep(ms: number): Promise<void> {
+    return this.opts.sleep ? this.opts.sleep(ms) : new Promise((r) => setTimeout(r, ms));
+  }
+
+  /**
+   * The helper held an `open` or a `press` because the user's hands are on the machine (W2-4). Nobody is asked and
+   * nothing is billed: `user_idle` is read every USER_IDLE_POLL_MS until the quiet window (KEVIN_QUIET_MS) has passed,
+   * for at most WAIT_MAX_MS. True when it passed in time (or `user_idle` cannot be read), so the caller sends once more.
+   */
+  private async waitForQuiet(): Promise<boolean> {
+    const until = this.opts.now() + WAIT_MAX_MS;
+    for (;;) {
+      const idle = await this.opts.hands.request<UserIdle>("user_idle", {}, 1500).catch(() => undefined);
+      if (idle === undefined || idle.foreignMs >= KEVIN_QUIET_MS) return true;
+      if (this.opts.now() >= until) return false;
+      await this.sleep(USER_IDLE_POLL_MS);
+    }
+  }
+
+  /** The step's failure when the user's hands never left the machine: "Kevin was using the keyboard or mouse, so Zoom was not opened." */
+  private busyDetail(what: string): string {
+    return `${this.userName} was using the keyboard or mouse, so ${what}.`;
+  }
 
   /** The user's name as every line here says it. */
   private get userName(): string {
@@ -339,19 +371,29 @@ export class AutomationExecutor {
     return { ok: true, ring: true, ...(action.open ? { open: action.open } : {}) };
   }
 
-  /** `open`: an app through the hands (the policy re-judged, presence absent), an https URL or a path through `/usr/bin/open`; one soft Pop. */
+  /** `open`: an app through the hands (the policy re-judged, presence absent; a busy hold waits out the user's quiet window once), an https URL or a path through `/usr/bin/open`; one soft Pop. */
   private async open(action: Extract<AutomationAction, { kind: "open" }>, automationId: string): Promise<StepOutcome> {
     if (action.app) {
       if (HANDS_OFF_APPS.test(action.app)) return { ok: false, detail: `${action.app} is hands-off; not opened unattended` };
       const d = classifyAction({ kind: "open_app", app: action.app, target: action.app, presence: { recent: false }, home: this.opts.home, userName: this.userName });
       if (d.verdict !== "run") return { ok: false, detail: d.hold ? `${action.app}: ${d.reason}` : `${action.app}: would need a yes; nobody to ask (${d.reason})` };
+      const openApp = (): Promise<{ readonly app?: string }> => this.opts.hands.request<{ readonly app?: string }>("open_app", { name: action.app, activate: true }, 8000);
+      const notOpened = this.busyDetail(`${action.app} was not opened`);
+      let r: { readonly app?: string };
       try {
-        const r = await this.opts.hands.request<{ readonly app?: string }>("open_app", { name: action.app, activate: true }, 8000);
-        this.opts.emit({ type: "local.say", sound: "Pop", automationId });
-        return { ok: true, what: `opened ${r.app ?? action.app}` };
+        r = await openApp();
       } catch (e) {
-        return { ok: false, detail: `could not open ${action.app}: ${(e as Error).message}` };
+        if (!isHandsBusy(e)) return { ok: false, detail: `could not open ${action.app}: ${(e as Error).message}` };
+        // The helper holds an activating open while the user types (W2-4): wait out the quiet window, then once more.
+        if (!(await this.waitForQuiet())) return { ok: false, detail: notOpened };
+        try {
+          r = await openApp();
+        } catch (e2) {
+          return { ok: false, detail: isHandsBusy(e2) ? notOpened : `could not open ${action.app}: ${(e2 as Error).message}` };
+        }
       }
+      this.opts.emit({ type: "local.say", sound: "Pop", automationId });
+      return { ok: true, what: `opened ${r.app ?? action.app}` };
     }
     if (action.url) {
       const d = classifyUrl({ url: action.url });
@@ -428,28 +470,38 @@ export class AutomationExecutor {
     return { ok: true, what: `recipe ${recipe.name} exit 0${tail}` };
   }
 
-  /** `press`: the front app and the focused field are probed; only the named app in front with no secure field gets the key. */
+  /** `press`: the front app and the focused field are probed; only the named app in front with no secure field gets the key. A busy hold waits out the user's quiet window and probes again. */
   private async press(action: Extract<AutomationAction, { kind: "press" }>): Promise<StepOutcome> {
     if (HANDS_OFF_APPS.test(action.app)) return { ok: false, detail: `${action.app} is hands-off; nothing is pressed there` };
     // The combo itself, re-read at fire: a delete, a quit, a log-out, a force-quit never goes, whatever an older journal row says.
     const never = pressKeyReason(action.key);
     if (never) return { ok: false, detail: never };
-    let front: FrontmostInfo | undefined;
-    let focused: FocusedText | undefined;
-    try {
-      [front, focused] = await Promise.all([this.opts.hands.request<FrontmostInfo>("frontmost", {}, 1500), this.opts.hands.request<FocusedText>("focused_text", {}, 1500).catch(() => undefined)]);
-    } catch (e) {
-      return { ok: false, detail: `could not see the screen: ${(e as Error).message}` };
-    }
-    if (!front || front.app.toLowerCase() !== action.app.toLowerCase()) return { ok: false, detail: `${action.app} is not in front${front?.app ? ` (${front.app} is)` : ""}` };
-    if (front.locked || focused?.locked) return { ok: false, detail: "the screen is locked" };
-    if (focused?.secure) return { ok: false, detail: "a password field has focus" };
-    try {
-      await this.opts.hands.request("key", { combo: action.key, repeat: 1, expectFront: { pid: front.pid } }, 3000);
-    } catch (e) {
-      return { ok: false, detail: `could not press ${action.key} in ${action.app}: ${(e as Error).message}` };
-    }
-    return { ok: true, what: `pressed ${action.key} in ${action.app}` };
+    // The probes and the key; a retry after the user's quiet window probes the front app again, since he may have switched.
+    const attempt = async (): Promise<StepOutcome | "busy"> => {
+      let front: FrontmostInfo | undefined;
+      let focused: FocusedText | undefined;
+      try {
+        [front, focused] = await Promise.all([this.opts.hands.request<FrontmostInfo>("frontmost", {}, 1500), this.opts.hands.request<FocusedText>("focused_text", {}, 1500).catch(() => undefined)]);
+      } catch (e) {
+        return { ok: false, detail: `could not see the screen: ${(e as Error).message}` };
+      }
+      if (!front || front.app.toLowerCase() !== action.app.toLowerCase()) return { ok: false, detail: `${action.app} is not in front${front?.app ? ` (${front.app} is)` : ""}` };
+      if (front.locked || focused?.locked) return { ok: false, detail: "the screen is locked" };
+      if (focused?.secure) return { ok: false, detail: "a password field has focus" };
+      try {
+        await this.opts.hands.request("key", { combo: action.key, repeat: 1, expectFront: { pid: front.pid } }, 3000);
+      } catch (e) {
+        if (isHandsBusy(e)) return "busy";
+        return { ok: false, detail: `could not press ${action.key} in ${action.app}: ${(e as Error).message}` };
+      }
+      return { ok: true, what: `pressed ${action.key} in ${action.app}` };
+    };
+    const notPressed = this.busyDetail(`${action.key} was not pressed`);
+    const first = await attempt();
+    if (first !== "busy") return first;
+    if (!(await this.waitForQuiet())) return { ok: false, detail: notPressed };
+    const again = await attempt();
+    return again === "busy" ? { ok: false, detail: notPressed } : again;
   }
 
   // ---------------------------------------------------------- wake-brain
