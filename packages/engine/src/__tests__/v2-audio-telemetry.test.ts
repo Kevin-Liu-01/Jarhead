@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { addLogSink } from "@jarhead/core";
 import type { AudioState, LedgerRow, LiveAudio } from "@jarhead/protocol";
-import { AudioTelemetry, audioLine, type LoopMonitor } from "../audio-telemetry.ts";
+import { AudioTelemetry, FigureWindow, audioLine, type LoopMonitor } from "../audio-telemetry.ts";
 import { rows, settle, world, type World } from "./world.ts";
 
 /**
@@ -225,7 +225,7 @@ function telemetry(): { t: AudioTelemetry; clock: { t: number }; lines: string[]
   const t = new AudioTelemetry({
     now: () => clock.t,
     log: (line) => {
-      if (line.startsWith("audio:")) lines.push(line);
+      if (/^audio(:| \(session )/.test(line)) lines.push(line);
     },
     loopMonitor: () => {
       const l = new FakeLoop();
@@ -313,4 +313,102 @@ test("v2 telemetry: liveAudio leaves out what it has not measured: one delta has
   t.close("sess_a", undefined);
   t.open("sess_b", undefined);
   assert.deepEqual(Object.keys(t.snapshotField().liveAudio!).sort(), ["deltas", "gatedFrames", "loopDelayMaxMs"], "nothing heard yet: the counts and the loop");
+});
+
+/** The nearest rank over a plain sorted copy: what FigureWindow replaces, kept here as the reference. */
+function sortedRank(values: readonly number[], p: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))]!;
+}
+
+test("v2 telemetry: FigureWindow's percentiles equal the rounded nearest rank of the newest figures, with and without the reply under way", () => {
+  let seed = 11;
+  const rnd = (): number => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31;
+  for (const keep of [1, 2, 7, 64]) {
+    const w = new FigureWindow(keep);
+    const all: number[] = [];
+    for (let i = 0; i < 400; i++) {
+      // Jittered gaps, repeats, a few far outliers and the odd negative (a clock step back).
+      const v = rnd() < 0.05 ? rnd() * 5000 : rnd() < 0.3 ? 40 : rnd() * 200 - 3;
+      w.add(v);
+      all.push(v);
+      const newest = all.slice(-keep);
+      assert.equal(w.size, newest.length);
+      for (const p of [0.01, 0.5, 0.99, 1]) {
+        assert.equal(w.percentile(p), Math.round(sortedRank(newest, p)), `keep ${keep}, n ${all.length}, p ${p}`);
+        const extra = rnd() * 300 - 10;
+        assert.equal(w.percentile(p, extra), Math.round(sortedRank([...newest, extra], p)), `keep ${keep}, n ${all.length}, p ${p}, extra ${extra}`);
+      }
+    }
+  }
+  assert.equal(new FigureWindow().percentile(0.5), 0, "empty");
+  assert.equal(new FigureWindow().percentile(0.5, 12.4), 12, "only the reply under way");
+});
+
+test("v2 telemetry: at the cap the snapshot's percentiles read the newest 4096 figures and the maxima the whole session, as the sorted reference does", () => {
+  const { t, clock } = telemetry();
+  t.open("sess_a", { type: "audio/pcm", rate: 24_000 });
+  const sizes: number[] = [];
+  const gaps: number[] = [];
+  let seed = 3;
+  const rnd = (): number => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31;
+  for (let i = 0; i < 5000; i++) {
+    const gap = 20 + Math.floor(rnd() * 30);
+    if (i > 0) {
+      clock.t += gap;
+      gaps.push(gap);
+    }
+    const ms = 20 + Math.floor(rnd() * 40);
+    sizes.push(ms);
+    t.delta("sess_a", ms * 48, false);
+  }
+  const live = t.snapshotField().liveAudio!;
+  assert.equal(live.deltas, 5000);
+  assert.equal(live.deltaMsP50, sortedRank(sizes.slice(-4096), 0.5), "the newest 4096 sizes");
+  assert.equal(live.arrivalP99Ms, sortedRank(gaps.slice(-4096), 0.99), "the newest 4096 gaps");
+  assert.equal(live.deltaMsMax, Math.max(...sizes), "the maxima are the session's");
+  assert.equal(live.arrivalMaxMs, Math.max(...gaps));
+});
+
+test("v2 telemetry: the audio: line's late max is the longest wait in any frame since the last line, and the graph's figure rides beside it", () => {
+  const { t, clock, lines } = telemetry();
+  t.open("sess_a", undefined);
+  t.delta("sess_a", 40 * 48, false);
+  const at = (lateMaxMs: number, extra: Partial<NonNullable<AudioState["playout"]>> = {}): AudioState => ({ ...FRAME, playout: { ...FRAME.playout!, lateMaxMs, ...extra } });
+  t.frame(at(7, { lateMaxGraphMs: 31 }));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, / · late max 7 ms \(31 ms since start\) · /);
+  // A 300 ms stall lands in a frame a second later: the rate limit keeps it out of the log for now.
+  clock.t += 1000;
+  t.frame(at(300, { chunks: 20, lateMaxGraphMs: 300 }));
+  assert.equal(lines.length, 1);
+  // The next frame's own window is calm; the line carries the stall anyway.
+  clock.t += 4500;
+  t.frame(at(4, { chunks: 40, lateMaxGraphMs: 300 }));
+  assert.equal(lines.length, 2);
+  assert.match(lines[1]!, / · late max 300 ms \(300 ms since start\) · /);
+  // The line closed the fold: the next one says what came after it.
+  clock.t += 5000;
+  t.frame(at(5, { chunks: 60, lateMaxGraphMs: 300 }));
+  assert.equal(lines.length, 3);
+  assert.match(lines[2]!, / · late max 5 ms \(300 ms since start\) · /);
+  // An app before lateMaxGraphMs: the window's figure alone, as before.
+  clock.t += 5000;
+  t.frame(at(6, { chunks: 80 }));
+  assert.match(lines[3]!, / · late max 6 ms · duck /);
+  // A stall between the last line and the close: the summary carries it, the row keeps the app's own figures.
+  clock.t += 1000;
+  t.frame(at(220, { chunks: 90 }));
+  clock.t += 1000;
+  const last = at(3, { chunks: 95 });
+  t.frame(last);
+  const row = t.close("sess_a", last);
+  assert.match(lines.at(-1)!, /^audio \(session sess_a closed\): .* · late max 220 ms · /);
+  assert.equal(row?.type === "audio.playout" ? row.playout?.lateMaxMs : undefined, 3, "the ledger row is the app's frame as it came");
+  // A new session starts its own fold.
+  t.open("sess_b", undefined);
+  t.delta("sess_b", 40 * 48, false);
+  t.frame(at(2, { chunks: 1 }));
+  assert.match(lines.at(-1)!, /^audio: .* · late max 2 ms · /);
 });

@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var audioFrameLast: AudioStateInfo?
     private var audioFrameSentAt: CFAbsoluteTime = 0
     private var audioFramePending = false
+    /// The playout windows of the frames since the last one sent (voice PLAN §3): the next frame out carries them all.
+    private var audioFrameWindows = PlayoutWindowFold()
     /// The engine's last read-back as the island needs it (the guard's edge, who shares the mic).
     private var audioGuardHeld = false
     private var audioSharedWith: String?
@@ -600,10 +602,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func sendAudioFrame(_ info: AudioStateInfo) {
         guard info != audioFrameLast else { return }
         audioFrameLast = info
+        // Every frame's window counts, including the ones the trailing send below folds away.
+        if let p = info.playout { audioFrameWindows.note(lateMaxMs: p.lateMaxMs, queuedMinMs: p.queuedMinMs) }
         let now = CFAbsoluteTimeGetCurrent()
         if now - audioFrameSentAt >= 1 {
             audioFrameSentAt = now
-            client.sendAudioState(info)
+            client.sendAudioState(withWindows(info))
             return
         }
         guard !audioFramePending else { return }
@@ -614,9 +618,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, let last = self.audioFrameLast else { return }
                 self.audioFramePending = false
                 self.audioFrameSentAt = CFAbsoluteTimeGetCurrent()
-                self.client.sendAudioState(last)
+                self.client.sendAudioState(self.withWindows(last))
             }
         }
+    }
+
+    /// The frame going out, its `lateMaxMs` and `queuedMinMs` covering every window since the last frame sent.
+    private func withWindows(_ info: AudioStateInfo) -> AudioStateInfo {
+        let windows = audioFrameWindows.take()
+        guard var p = info.playout else { return info }
+        if let late = windows.lateMaxMs { p.lateMaxMs = late }
+        if let queued = windows.queuedMinMs { p.queuedMinMs = queued }
+        var out = info
+        out.playout = p
+        return out
     }
 
     /// The island's mute box and peek chip (`NotchDock.audioNotification`): the setting, the guard's edge, who shares.

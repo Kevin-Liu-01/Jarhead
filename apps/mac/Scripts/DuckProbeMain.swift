@@ -1122,6 +1122,26 @@ struct PureSections {
                 func w(_ p: PlayoutReadback?) -> String { "late \(p?.lateMaxMs ?? -1) graph \(p?.lateMaxGraphMs ?? -1) min \(p?.queuedMinMs.map(String.init) ?? "nil")" }
                 return ok ? nil : "\(w(first)) | \(w(second)) | \(w(third)) | \(w(fourth))"
             }),
+            ("a coalesced frame carries the longest wait and the smallest backlog of every window since the last frame sent", {
+                // AppDelegate.sendAudioFrame forwards at most one frame a second, the newest of a burst. Frames 1 to 3
+                // close their windows in the reader; only frame 3 goes out, so it carries frame 2's 300 ms stall.
+                var fold = PlayoutWindowFold()
+                fold.note(lateMaxMs: 7, queuedMinMs: 96)
+                fold.note(lateMaxMs: 300, queuedMinMs: nil)
+                fold.note(lateMaxMs: 4, queuedMinMs: 40)
+                let burst = fold.take()
+                // The next frame goes out alone: its own figures, nothing carried over.
+                fold.note(lateMaxMs: 5, queuedMinMs: nil)
+                let alone = fold.take()
+                let empty = fold.take()
+                // A non-finite figure (a corrupted mirror) never wins.
+                fold.note(lateMaxMs: .infinity, queuedMinMs: .nan)
+                fold.note(lateMaxMs: 2, queuedMinMs: 80)
+                let guarded = fold.take()
+                let ok = burst.lateMaxMs == 300 && burst.queuedMinMs == 40 && alone.lateMaxMs == 5 && alone.queuedMinMs == nil
+                    && empty.lateMaxMs == nil && empty.queuedMinMs == nil && guarded.lateMaxMs == 2 && guarded.queuedMinMs == 80
+                return ok ? nil : "burst \(burst) · alone \(alone) · empty \(empty) · guarded \(guarded)"
+            }),
             ("the fade ramp is monotonic, finite, inside (0, 1], and ends at 1", {
                 let n = PlayoutModel.fadeFrames
                 let g = (0 ..< n).map { PlayoutModel.fadeGain($0) }

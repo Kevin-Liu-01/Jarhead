@@ -427,3 +427,24 @@ final class PlaybackTelemetry: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+/// The per-window playout figures of frames a coalescing send folds away (voice PLAN §3). The reader closes a
+/// window at every frame it publishes, and the app forwards at most one frame a second, the newest of a burst.
+/// Each window's `lateMaxMs` and `queuedMinMs` are noted here, sent or not, and the frame that goes out carries the
+/// longest wait and the smallest backlog of every window since the last frame sent, not only its own.
+struct PlayoutWindowFold: Equatable {
+    private(set) var lateMaxMs: Double?
+    private(set) var queuedMinMs: Double?
+
+    /// One frame's window, whether or not the frame goes out.
+    mutating func note(lateMaxMs: Double, queuedMinMs: Double?) {
+        if lateMaxMs.isFinite { self.lateMaxMs = max(self.lateMaxMs ?? lateMaxMs, lateMaxMs) }
+        if let q = queuedMinMs, q.isFinite { self.queuedMinMs = min(self.queuedMinMs ?? q, q) }
+    }
+
+    /// The figures of every window noted since the last take; the fold starts over.
+    mutating func take() -> (lateMaxMs: Double?, queuedMinMs: Double?) {
+        defer { self = PlayoutWindowFold() }
+        return (lateMaxMs, queuedMinMs)
+    }
+}
