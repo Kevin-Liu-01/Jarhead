@@ -374,7 +374,8 @@ test("marks: the stroke snaps to the LARGEST frame mostly inside it — a circle
     // A circled dialog: element_at at the centroid is a label inside it; the dialog window is what Kevin surrounded.
     const dialog = { windowId: 2, pid: 2, app: "Finder", title: "Move to Trash?", x: 320, y: 320, w: 560, h: 360, layer: 0 };
     hands.element = { role: "AXStaticText", title: "Are you sure?", frame: { x: 500, y: 480, w: 200, h: 40 }, app: "Finder" };
-    hands.windows = [{ windowId: 1, pid: 1, app: "Finder", title: "Desktop", x: 0, y: 0, w: 1440, h: 900, layer: 0 }, dialog];
+    // Front to back, as CGWindowList gives them: the dialog sits in front of the Finder window it belongs to.
+    hands.windows = [dialog, { windowId: 1, pid: 1, app: "Finder", title: "Desktop", x: 0, y: 0, w: 1440, h: 900, layer: 0 }];
     let path = strokeAround(dialog, 20);
     await engine.command({ type: "mark.add", rect: bboxOf(path), path });
     let m = engine.snapshot().marks[0]!;

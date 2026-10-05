@@ -290,11 +290,23 @@ async function hands(op: string | undefined, json: string | undefined): Promise<
   }
 }
 
+/**
+ * The day files, read and nothing more: no Engine, so no helper, no brain, no key check and no row written (LM-1).
+ * An Engine built here would end a running daemon's live threads `failed` in today's file.
+ */
+function readLedger(): Ledger {
+  return new Ledger(readConfig().stateDir);
+}
+
+/** "20:15:00": a row's time on this Mac's clock, as the day file it sits in is named (LM-8). */
+function localClock(at: number): string {
+  return new Date(at).toTimeString().slice(0, 8);
+}
+
 function ledger(date: string | undefined): void {
-  const engine = new Engine();
   const at = date ? Date.parse(`${date}T12:00:00`) : Date.now();
-  for (const row of engine.ledger.read(at)) {
-    const t = new Date(row.at).toISOString().slice(11, 19);
+  for (const row of readLedger().read(at)) {
+    const t = localClock(row.at);
     if (row.type === "heard" || row.type === "said") console.log(`${t} ${row.type === "heard" ? "you    " : "jarhead"}: ${(row.item as TranscriptItem).text}`);
     else if (row.type === "delegation.created") console.log(`${t} ▶ ${(row.delegation as Delegation).request}`);
     else if (row.type === "delegation.step") console.log(`${t}    ${row.step.kind} ${row.step.tool?.name ?? row.step.text ?? ""}`);
@@ -852,16 +864,16 @@ try {
       break;
     case "ledger":
       if (flags.has("--speed")) {
-        // The day files are read here, no daemon needed (the Engine's Ledger opens the state dir).
+        // The day files are read here, no daemon needed.
         const days = Math.max(1, Number(flagValue("days") ?? 1) || 1);
-        for (const line of renderSpeed(ledgerSpeed(new Engine().ledger, days))) console.log(line);
+        for (const line of renderSpeed(ledgerSpeed(readLedger(), days))) console.log(line);
         break;
       }
       await ledgerCommand(rest);
       break;
     case "reflex-miss": {
       const days = Math.max(1, Number(flagValue("days") ?? 7) || 7);
-      const { days: picked, groups } = reflexMisses(new Engine().ledger, days);
+      const { days: picked, groups } = reflexMisses(readLedger(), days);
       for (const line of renderMisses(picked, groups)) console.log(line);
       break;
     }

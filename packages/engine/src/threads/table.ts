@@ -169,6 +169,24 @@ export class ThreadTable {
     return out;
   }
 
+  /**
+   * One line for the main brain's task while spawned threads are live (TH-3): each by name, what it is doing and
+   * the task it was given, so a thread started on an earlier request is one the brain can read, wait for or stop by
+   * name. Undefined with none live.
+   */
+  liveNote(userName = "Kevin"): string | undefined {
+    const parts: string[] = [];
+    for (const id of this.live) {
+      if (id === MAIN_THREAD_ID) continue;
+      const t = this.byId.get(id)?.thread;
+      if (!t) continue;
+      const doing = t.status === "waiting-kevin" ? `waiting for ${userName}` : t.status === "waiting-screen" ? "waiting for the screen" : t.status;
+      const task = t.task.replace(/\s+/g, " ").trim();
+      parts.push(`${t.name} (${doing}${task ? `: ${task.length > 80 ? `${task.slice(0, 79)}…` : task}` : ""})`);
+    }
+    return parts.length ? `Threads still running: ${parts.join("; ")}. thread_read, thread_wait and thread_stop take these names.` : undefined;
+  }
+
   /** Every record in memory, oldest first (tests, the CLI). */
   all(): readonly Thread[] {
     const out: Thread[] = [];
