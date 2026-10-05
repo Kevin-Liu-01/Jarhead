@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, openSync, closeSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { logger, newId } from "@jarhead/core";
+import { envFilePath, logger, newId } from "@jarhead/core";
 import { SECRET_KEYS } from "@jarhead/protocol";
 import { PERMISSIONS_HINT, macOSBlockedLine, tccGrantFor } from "./files.ts";
 
@@ -63,10 +63,13 @@ const SECRET_NAME = /(^|_)(API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|CRED
 
 /**
  * The secret values Jarhead knows about: its own keys from the environment and
- * every secret-named value in ~/.jarhead/env (the file also carries settings such
- * as JARHEAD_BRAIN_MODEL, which must not be blanked out of results). A value
- * shorter than 8 characters is not redacted (it would blank ordinary words); a
- * file that cannot be read adds nothing.
+ * every secret-named value in the state dir's env file (the file also carries
+ * settings such as JARHEAD_BRAIN_MODEL, which must not be blanked out of results).
+ * The file is core's envFilePath() over this env and home, the one loadEnv reads:
+ * <JARHEAD_STATE_DIR>/env, or ~/.jarhead/env when the variable is unset or empty.
+ * Never $HOME/.jarhead/env behind a state dir set elsewhere (W2-9).
+ * A value shorter than 8 characters is not redacted (it would blank ordinary
+ * words); a file that cannot be read adds nothing.
  */
 export function secretValues(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
   const values = new Set<string>();
@@ -75,7 +78,7 @@ export function secretValues(env: NodeJS.ProcessEnv = process.env, home: string 
     if (v && v.length >= 8) values.add(v);
   }
   try {
-    const text = readFileSync(join(home, ".jarhead", "env"), "utf8");
+    const text = readFileSync(envFilePath(env, home), "utf8");
     for (const line of text.split("\n")) {
       const m = /^\s*(?:export\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$/.exec(line);
       if (!m) continue;
@@ -138,9 +141,9 @@ export function redactSecrets(text: string, values: readonly string[]): string {
 }
 
 /**
- * The redactor the runner applies to every text a model reads. The env file is
- * re-read when it changed, so a key Kevin rotates through Setup is covered without
- * a restart.
+ * The redactor the runner applies to every text a model reads. The state dir's
+ * env file is re-read when it changed, so a key Kevin rotates through Setup is
+ * covered without a restart.
  */
 export class SecretRedactor {
   private values: string[] = [];
@@ -155,7 +158,7 @@ export class SecretRedactor {
     this.readAt = t;
     let mtime = 0;
     try {
-      mtime = statSync(join(this.home, ".jarhead", "env")).mtimeMs;
+      mtime = statSync(envFilePath(this.env, this.home)).mtimeMs;
     } catch {
       mtime = 0;
     }

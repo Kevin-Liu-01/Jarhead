@@ -9,8 +9,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** Repo root, resolved from this file rather than cwd so every entry point agrees. */
 export const REPO_ROOT = resolve(HERE, "..", "..", "..");
 
-export function expandHome(p: string): string {
-  return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+export function expandHome(p: string, home: string = homedir()): string {
+  return p.startsWith("~") ? join(home, p.slice(1)) : p;
 }
 
 /** Where a key came from, so the doctor can say so when one of them is stale. */
@@ -80,13 +80,18 @@ export function keySource(key: string): KeySource {
   return sources.get(key) ?? (process.env[key] ? "shell" : "none");
 }
 
-function stateDirFromEnv(): string {
-  return expandHome(process.env["JARHEAD_STATE_DIR"] || "~/.jarhead");
+/** The state dir: JARHEAD_STATE_DIR, or ~/.jarhead when it is unset or empty. A leading ~ is `home`. */
+function stateDirFromEnv(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  return expandHome(env["JARHEAD_STATE_DIR"] || "~/.jarhead", home);
 }
 
-/** Path of the state-dir env file (secrets live here, mode 0600). */
-export function envFilePath(): string {
-  return join(stateDirFromEnv(), "env");
+/**
+ * Path of the state-dir env file (secrets live here, mode 0600), the one loadEnv reads. With no
+ * arguments it is this process's. The brain's SecretRedactor passes the env and home it was built
+ * with, so the rule for which file holds the keys lives here once (W2-9). Reads nothing.
+ */
+export function envFilePath(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  return join(stateDirFromEnv(env, home), "env");
 }
 
 /**

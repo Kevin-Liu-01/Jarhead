@@ -254,22 +254,55 @@ test("testConfig() is what readConfig() gives with nothing set, but for the sock
   }
 });
 
-test(
-  "the brain runner's redactor reads the state dir's env file, never $HOME/.jarhead/env",
-  { todo: "W1-6: SecretRedactor and secretValues() in packages/brain/src/shell.ts read $HOME/.jarhead/env; once they read envFilePath() this passes, and the todo goes" },
-  () => {
-    const { root, env } = canaryHome();
-    try {
-      const script = `
-        import { world } from "./packages/engine/src/__tests__/world.ts";
-        const w = world();
-        console.log(JSON.stringify({ redacted: w.engine.runner.redactor.redact(${JSON.stringify(PLAIN_SECRET)}) }));
-        process.exit(0);
-      `;
-      const r = out<{ redacted: string }>(child(script, env));
-      assert.equal(r.redacted, PLAIN_SECRET, "a value only $HOME/.jarhead/env names is left alone: the redactor never read that file");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  },
-);
+test("the brain runner's redactor reads the state dir's env file, never $HOME/.jarhead/env (W2-9)", () => {
+  const { root, env } = canaryHome();
+  try {
+    const script = `
+      import { readConfig } from "@jarhead/core";
+      import { writeFileSync } from "node:fs";
+      import { join } from "node:path";
+      import { world } from "./packages/engine/src/__tests__/world.ts";
+      // The preload's state dir holds an env file of its own, as ~/.jarhead does on a Mac.
+      writeFileSync(join(readConfig().stateDir, "env"), "JARHEAD_WAKE_PASSPHRASE=state-dir-${CANARY}\\n", { mode: 0o600 });
+      const w = world();
+      const redact = (s) => w.engine.runner.redactor.redact(s);
+      console.log(JSON.stringify({ home: redact(${JSON.stringify(PLAIN_SECRET)}), state: redact("state-dir-${CANARY}") }));
+      process.exit(0);
+    `;
+    const r = out<{ home: string; state: string }>(child(script, env));
+    assert.equal(r.home, PLAIN_SECRET, "a value only $HOME/.jarhead/env names is left alone: the redactor never read that file");
+    assert.equal(r.state, "[redacted secret]", "the state dir's env file is the one it reads");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("JARHEAD_TEST_NET=strict: a file that installs answerKeyProbe starts a world() engine with no problem row, its key check reads 'invalid' as on any Mac, and every other off-Mac fetch still throws by name (W2-9)", () => {
+  const { root, env } = canaryHome();
+  try {
+    const script = `
+      import { answerKeyProbe } from "./packages/engine/src/__tests__/key-probe.ts";
+      import { world } from "./packages/engine/src/__tests__/world.ts";
+      answerKeyProbe();
+      const w = world();
+      await w.engine.start();
+      await w.engine.ready();
+      const setup = await w.engine.probeSetup();
+      let other = null;
+      try { await fetch("https://api.openai.com/v1/responses", { method: "POST" }); } catch (e) { other = e.message; }
+      const problems = w.engine.snapshot().problems.map((p) => p.text);
+      await w.engine.stop();
+      console.log(JSON.stringify({ problems, openaiKey: setup.openaiKey, other }));
+      process.exit(0);
+    `;
+    const r = out<{ problems: string[]; openaiKey: string; other: string | null }>(child(script, { ...env, JARHEAD_TEST_NET: "strict" }));
+    assert.deepEqual(r.problems, [], "no 'could not reach api.openai.com' row: the key check was answered on this Mac");
+    assert.equal(r.openaiKey, "invalid", "OpenAI's answer to a key it does not know");
+    assert.equal(r.other, "fetch failed (JARHEAD_TEST_NET=strict: POST https://api.openai.com/v1/responses is off this Mac)");
+    const log = readFileSync(join(root, "net.log"), "utf8");
+    assert.doesNotMatch(log, /\/v1\/models\//, "the key check never reached the preload");
+    assert.match(log, /^\d+ refused POST https:\/\/api\.openai\.com\/v1\/responses$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
