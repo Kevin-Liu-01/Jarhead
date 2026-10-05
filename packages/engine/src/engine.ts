@@ -877,6 +877,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       },
       present: () => this.kevinPresent(),
       localBrain: () => this.settings.brain === "local",
+      brainKind: () => (this.brainReady && this.brain ? this.brain.kind : this.settings.brain),
       onChange: () => this.scheduleSnapshot(),
       exec: opts.automations?.exec,
       shell: opts.automations?.shell,

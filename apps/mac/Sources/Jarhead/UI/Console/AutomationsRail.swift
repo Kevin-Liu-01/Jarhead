@@ -699,12 +699,10 @@ enum AutomationForm {
         return AutomationDraft(name: clean, whenPhrase: phrase, then: [action], clauses: clauses, echo: echo(name: clean, phrase: phrase, kind: kind))
     }
 
-    /// The brain the cost line names: the one the engine judges the row by, so what Kevin reads is what it records as heard.
-    /// The engine reads Settings' brain until engine.ts hands Automations its `brainKind` (what `auto` resolved to). When it
-    /// does, this reads `snapshot.setup.brainResolved ?? snapshot.settings.brain` in the same change (TRIAGE's W2-1 / W2-2
-    /// contract, at the wave merge). Until then an `auto` that resolved to an API brain still reads "on your plan".
+    /// The brain the cost line names: the one the engine judges the row by (its `brainKind`: what `auto` resolved to once the
+    /// brain is ready, else Settings' brain), so what Kevin reads is what it records as heard.
     static func billedBrain(_ snapshot: Snapshot) -> BrainKind {
-        snapshot.settings.brain
+        snapshot.setup.brainResolved ?? snapshot.settings.brain
     }
 
     /// How a wake-brain fire is paid for: a model on this Mac, a login's plan, tokens on Kevin's API key, or a server he set
