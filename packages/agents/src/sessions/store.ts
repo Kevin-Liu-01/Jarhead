@@ -1,4 +1,4 @@
-import { open, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import type { TurnMark } from "./liveness.ts";
 
 /**
@@ -83,33 +83,80 @@ export interface FileSlices {
 const NEWLINE = 0x0a;
 
 /**
+ * At most this many head/tail reads run at once in this process, each into a buffer the next read reuses (PERF-12).
+ * A cold scan used to read a whole batch of files at once, every one into buffers of its own: about 190 MB at the
+ * peak for 150 Codex rollouts and 60 Claude sessions, 50 MB now. Four is libuv's thread pool, which runs the reads.
+ */
+export const SLICE_READS_AT_ONCE = 4;
+
+/** The read slots and their buffers, shared by every store in the process. */
+class SliceReads {
+  private active = 0;
+  private readonly waiting: (() => void)[] = [];
+  private readonly spare: Buffer[] = [];
+  private largest = 0;
+  /** What the reads cost so far: buffers allocated, reads run, the most in flight at once. Tests and probes read it. */
+  readonly stats = { allocated: 0, reads: 0, peak: 0 };
+
+  async run<T>(bytes: number, read: (buf: Buffer) => Promise<T>): Promise<T> {
+    if (this.active < SLICE_READS_AT_ONCE) this.active += 1;
+    // A read that ends hands its slot straight to the oldest waiter (`active` stays as it is), so none jumps the queue.
+    else await new Promise<void>((resolve) => this.waiting.push(resolve));
+    this.stats.peak = Math.max(this.stats.peak, this.active);
+    this.stats.reads += 1;
+    const buf = this.take(bytes);
+    try {
+      return await read(buf);
+    } finally {
+      if (this.spare.length < SLICE_READS_AT_ONCE) this.spare.push(buf);
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active -= 1;
+    }
+  }
+
+  /** A spare buffer that is big enough, or a new one as big as the largest read so far (a smaller spare is dropped). */
+  private take(bytes: number): Buffer {
+    const buf = this.spare.pop();
+    if (buf && buf.length >= bytes) return buf;
+    this.largest = Math.max(this.largest, bytes);
+    this.stats.allocated += 1;
+    return Buffer.allocUnsafe(this.largest);
+  }
+}
+
+export const sliceReads = new SliceReads();
+
+/**
  * Read the first `headBytes` and last `tailBytes` of a file as complete lines.
  * Small files are read whole. A line torn by a cut point is dropped; a cut that
  * lands exactly on a line break tears nothing, and every line on its side is kept.
+ * The bytes land in a reused buffer, so only the bytes each read returned are decoded.
  */
 export async function readHeadTail(path: string, headBytes: number, tailBytes: number): Promise<FileSlices> {
-  const st = await stat(path);
-  const size = st.size;
-  const fh = await open(path, "r");
-  try {
-    if (size <= headBytes + tailBytes) {
-      const buf = Buffer.alloc(size);
-      await fh.read(buf, 0, size, 0);
-      return { head: splitLines(buf.toString("utf8")), tail: [], whole: true, bytesRead: size, size, mtimeMs: st.mtimeMs };
+  // One byte before the tail slice tells whether the slice starts a line (that byte is
+  // a newline) or lands inside one; the slice itself cannot know.
+  return sliceReads.run(headBytes + tailBytes + 1, async (buf) => {
+    const fh = await open(path, "r");
+    try {
+      const st = await fh.stat();
+      const size = st.size;
+      if (size <= headBytes + tailBytes) {
+        const { bytesRead } = await fh.read(buf, 0, size, 0);
+        return { head: splitLines(buf.toString("utf8", 0, bytesRead)), tail: [], whole: true, bytesRead, size, mtimeMs: st.mtimeMs };
+      }
+      const headBuf = buf.subarray(0, headBytes);
+      const tailBuf = buf.subarray(headBytes, headBytes + tailBytes + 1);
+      const [h, t] = await Promise.all([fh.read(headBuf, 0, headBytes, 0), fh.read(tailBuf, 0, tailBytes + 1, size - tailBytes - 1)]);
+      const headLines = splitLines(headBuf.toString("utf8", 0, h.bytesRead));
+      if (h.bytesRead > 0 && headBuf[h.bytesRead - 1] !== NEWLINE) headLines.pop(); // the cut line
+      const tailLines = splitLines(tailBuf.toString("utf8", 1, Math.max(1, t.bytesRead)));
+      if (t.bytesRead > 0 && tailBuf[0] !== NEWLINE) tailLines.shift(); // the cut line
+      return { head: headLines, tail: tailLines, whole: false, bytesRead: h.bytesRead + Math.max(0, t.bytesRead - 1), size, mtimeMs: st.mtimeMs };
+    } finally {
+      await fh.close();
     }
-    const headBuf = Buffer.alloc(headBytes);
-    // One byte before the tail slice tells whether the slice starts a line (that byte is
-    // a newline) or lands inside one; the slice itself cannot know.
-    const tailBuf = Buffer.alloc(tailBytes + 1);
-    await Promise.all([fh.read(headBuf, 0, headBytes, 0), fh.read(tailBuf, 0, tailBytes + 1, size - tailBytes - 1)]);
-    const headLines = splitLines(headBuf.toString("utf8"));
-    if (headBytes > 0 && headBuf[headBytes - 1] !== NEWLINE) headLines.pop(); // the cut line
-    const tailLines = splitLines(tailBuf.subarray(1).toString("utf8"));
-    if (tailBuf[0] !== NEWLINE) tailLines.shift(); // the cut line
-    return { head: headLines, tail: tailLines, whole: false, bytesRead: headBytes + tailBytes, size, mtimeMs: st.mtimeMs };
-  } finally {
-    await fh.close();
-  }
+  });
 }
 
 function splitLines(text: string): string[] {

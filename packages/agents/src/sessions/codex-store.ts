@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_AGE_DAYS,
   MAX_ASSISTANT_CHARS,
   ParseCache,
+  SLICE_READS_AT_ONCE,
   extrapolateCount,
   isRecord,
   newestFirst,
@@ -52,6 +53,11 @@ import {
 
 const HEAD_BYTES = 256 * 1024;
 const TAIL_BYTES = 256 * 1024;
+/**
+ * Rollouts a scan parses per round (PERF-12). The rounds were cap-sized (60 files, 30 MB of slices at once); the reads
+ * themselves run SLICE_READS_AT_ONCE at a time (store.ts), so a round of twice that keeps them busy.
+ */
+export const SCAN_BATCH = 2 * SLICE_READS_AT_ONCE;
 const ROLLOUT_FILE = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/;
 const TIMESTAMP_RE = /^\{"timestamp":"([^"]+)"/;
 const INTERESTING = /"type":"session_meta"|"payload":\{"type":"(user_message|agent_message|message)"/;
@@ -115,16 +121,17 @@ export class CodexStore {
   /**
    * Newest listed threads within the age window, capped, one per id. Sub-agent and
    * automation rollouts outnumber Kevin's own threads several times over, so the cap
-   * applies after the filter; files are parsed newest-first in cap-sized batches and
-   * the scan stops as soon as the cap is met (usually after the first batch).
+   * applies after the filter; files are parsed newest-first in batches of SCAN_BATCH
+   * and the scan stops as soon as the cap is met, so it parses at most a batch past it.
    */
   async scan(): Promise<DiscoveredSession[]> {
     const [candidates, names] = await Promise.all([this.candidates().then((c) => newestFirst(c, Number.POSITIVE_INFINITY)), this.threadNames()]);
     const out: DiscoveredSession[] = [];
     const ids = new Set<string>();
     const parsed = new Set<string>();
-    for (let i = 0; i < candidates.length && out.length < this.limit; i += this.limit) {
-      const batch = candidates.slice(i, i + this.limit);
+    const size = Math.max(1, Math.min(this.limit, SCAN_BATCH));
+    for (let i = 0; i < candidates.length && out.length < this.limit; i += size) {
+      const batch = candidates.slice(i, i + size);
       const sessions = await Promise.all(batch.map((c) => this.load(c)));
       for (const c of batch) parsed.add(c.path);
       for (const s of sessions) {

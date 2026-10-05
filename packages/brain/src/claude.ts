@@ -591,9 +591,9 @@ export class ClaudeBrain implements Brain {
   }
 }
 
-/** Build the in-process MCP server with the real Agent SDK. */
+/** Build the in-process MCP server with the real Agent SDK, the one loadSdk gave the session (not a second copy through tsx). */
 async function defaultMcpFactory(specs: readonly ToolSpec[], call: (name: string, args: unknown) => Promise<McpResult>, userName: string): Promise<Record<string, unknown>> {
-  const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
+  const sdk = (await loadSdk()) as unknown as {
     createSdkMcpServer: (o: { name: string; version?: string; instructions?: string; tools: unknown[] }) => unknown;
     tool: (name: string, description: string, shape: Record<string, unknown>, handler: (args: Record<string, unknown>) => Promise<McpResult>) => unknown;
   };
