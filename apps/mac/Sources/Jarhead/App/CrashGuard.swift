@@ -11,7 +11,7 @@ import os
 // Kevin noticed. This file is the net under whatever goes wrong next:
 //
 //   1. An uncaught-exception handler and POSIX signal handlers (SIGABRT, SIGSEGV, SIGBUS,
-//      SIGILL, SIGFPE, SIGTRAP) write `<state dir>/crashes/<time>.txt`: the reason, a
+//      SIGILL, SIGFPE, SIGTRAP) write `<state dir>/crashes/<time>-<pid>.txt`: the reason, a
 //      symbolicated backtrace, version and commit, uptime, the phase, the last 40 lines of
 //      the app's own log ring and the daemon's pid — then chain to the previous handler, so
 //      the system's .ips is still written and `lastExceptionBacktrace` is untouched.
@@ -103,7 +103,7 @@ private enum L: Int, CaseIterable {
         case .seconds: return " s\n"
         case .phase: return "phase: "
         case .daemonPid: return "daemon pid: "
-        case .daemonNone: return "daemon pid: none (not spawned by this app)\n"
+        case .daemonNone: return "daemon pid: none (no daemon spawned or attached)\n"
         case .relaunchYes: return "relaunch: yes ("
         case .relaunchYesMid: return " of "
         case .relaunchYesEnd: return " in the last 10 min)\n"
@@ -233,11 +233,16 @@ private func cgStamp(into buf: UnsafeMutablePointer<CChar>, epoch: Int) -> Int {
     return p
 }
 
-/// Open `<crashes>/<stamp>.txt` for this crash and write the head of the report.
+/// Open `<crashes>/<stamp>-<pid>.txt` for this crash and write the head of the report. The pid
+/// keeps two crashes in one second apart: the files are the relaunch counter, and two crashes
+/// sharing one name (O_EXCL fails, the second appends) counted as one, so a crash loop
+/// faster than a second got past the cap.
 private func cgOpenReport(now: Int) {
     guard cgDirFd >= 0, let name = cgNameBuf else { return }
     let n = cgStamp(into: name, epoch: now)
-    name[n] = 46; name[n + 1] = 116; name[n + 2] = 120; name[n + 3] = 116; name[n + 4] = 0 // ".txt"
+    name[n] = 45 // '-'
+    let m = cgPutInt(name, n + 1, Int(getpid()))
+    name[m] = 46; name[m + 1] = 116; name[m + 2] = 120; name[m + 3] = 116; name[m + 4] = 0 // ".txt"
     var fd = openat(cgDirFd, name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
     if fd < 0 { fd = openat(cgDirFd, name, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644) }
     cgReportFd = fd
@@ -493,7 +498,8 @@ enum CrashGuard {
         cgPhase = Phase.allCases.firstIndex(of: phase) ?? 0
     }
 
-    /// The daemon this app spawned (nil once it has exited or when attached to someone else's).
+    /// The daemon's own pid: the one this app spawned (node itself, no wrapper), or the listener
+    /// on the socket when the app attached to a daemon it did not start; nil once it has exited.
     static func setDaemonPid(_ pid: Int32?) {
         cgDaemonPid = pid ?? 0
     }

@@ -14,9 +14,13 @@ final class EngineClient: @unchecked Sendable {
     private var running = false
     private var reconnectDelay: TimeInterval = 0.3
     private var reconnectScheduled = false
+    /// The socket is open (NWConnection `.ready`). Not yet "connected": a wedged daemon's kernel
+    /// accepts the connection into its backlog and nothing ever answers on it. On `net`.
+    private var transportReady = false
+    /// The daemon said `hello` on this connection: it is serving. `connected` means this. On `net`.
     private var isConnected = false
     /// Commands sent while the daemon is (re)connecting. Stop, wake, pause must not
-    /// vanish because a reconnect was in flight; they are delivered on `.ready`,
+    /// vanish because a reconnect was in flight; they are delivered on the daemon's hello,
     /// newest last, dropped after 5 s or beyond 20 entries. On `net`.
     private var outbox: [(at: Date, json: [String: Any])] = []
 
@@ -49,14 +53,18 @@ final class EngineClient: @unchecked Sendable {
     // MARK: - liveness, the daemon row, auto-resume (REDESIGN §16 "Liveness")
     //
     // A daemon that exits is caught by DaemonProcess; a daemon that is alive on the socket
-    // and not answering — a wedged event loop — was invisible. So: one `ping` every 2 s
-    // while connected, answered by the daemon on the wire with no engine work (`pong`);
-    // two unanswered in a row and this client drops the connection and tells
-    // DaemonProcess (a notification: both are the app's, no AppDelegate wiring) to kill and
-    // respawn it. While no daemon answers for more than a beat, the published snapshot
-    // carries one typed problem, `daemon`, whose remedy is "Restart daemon" (the
-    // `daemon.restart` command, routed to DaemonProcess while nothing is connected); the
-    // next real snapshot replaces it. And when the daemon comes back asleep after a session
+    // and not answering — a wedged event loop — was invisible. So: the client counts as
+    // connected only once the daemon's `hello` arrives (the kernel accepts a connection for
+    // a wedged daemon too), and one `ping` goes every 2 s from the moment the socket opens,
+    // answered by the daemon on the wire with no engine work (`pong`); two unanswered in a
+    // row and this client drops the connection and tells DaemonProcess (a notification:
+    // both are the app's, no AppDelegate wiring) to kill and respawn it. While no daemon
+    // answers for more than a beat, the published snapshot carries one typed problem,
+    // `daemon`, whose remedy is "Restart daemon" (the `daemon.restart` command, routed to
+    // DaemonProcess while nothing is connected); the next real snapshot replaces it. The
+    // beat is `daemonProblemAfter` after a drop, and `daemonProblemAtStartAfter` from launch
+    // for a daemon that never answered at all (a fresh install whose daemon dies at start).
+    // And when the daemon comes back asleep after a session
     // was open — a crash, a kill, a self-update mid-conversation — this client sends `go`
     // once, inside 10 s of the reconnect; the engine resumes the conversation from the
     // ledger (Engine.resumeFromLedger). Never after Kevin pressed Stop or Pause since that
@@ -71,6 +79,8 @@ final class EngineClient: @unchecked Sendable {
     static let missedPongsBeforeRespawn = 2
     /// How long disconnected before the `daemon` row appears: a normal respawn is back in 1–3 s and must not flash it.
     static let daemonProblemAfter: TimeInterval = 3
+    /// The same from launch, when no daemon has answered yet: a cold start (tsx compiling the engine on a fresh install) takes a few seconds more.
+    static let daemonProblemAtStartAfter: TimeInterval = 8
     /// After a reconnect, a daemon reporting asleep inside this window gets one `go` when a session was open before the drop.
     static let autoResumeWindow: TimeInterval = 10
     static let daemonProblemText = "The engine is not answering; Jarhead cannot hear or act until it is back"
@@ -97,7 +107,12 @@ final class EngineClient: @unchecked Sendable {
     /// Armed at a drop when a session was open (or opening) and Kevin had not stopped it; consumed by the first snapshot after the reconnect.
     private var resumeCandidate = false
     private var resumeDeadline: Date = .distantPast
+    /// When the current outage began (launch, or the drop), nil while connected. On `net`.
     private var disconnectedAt: Date?
+    /// How long this outage waits before the `daemon` row: `daemonProblemAtStartAfter` until a daemon has answered once. On `net`.
+    private var outageGrace: TimeInterval = EngineClient.daemonProblemAtStartAfter
+    /// The outage whose row is already scheduled, so every failed connect can arm it without stacking timers. On `net`.
+    private var problemArmedFor: Date?
 
     init(socketPath: String, state: AppState) {
         self.socketPath = socketPath
@@ -110,6 +125,11 @@ final class EngineClient: @unchecked Sendable {
         net.async {
             guard !self.running else { return }
             self.running = true
+            // The outage starts now: nothing has answered yet. A daemon that never does (it dies
+            // at every start, its checkout lacks node_modules) gets the `daemon` row like a drop.
+            self.disconnectedAt = Date()
+            self.outageGrace = EngineClient.daemonProblemAtStartAfter
+            self.armDaemonProblem()
             self.openConnection()
         }
     }
@@ -122,6 +142,8 @@ final class EngineClient: @unchecked Sendable {
             self.daemonPid = nil
             self.connection?.cancel()
             self.connection = nil
+            self.transportReady = false
+            self.isConnected = false
             self.failPendingLedger()
             self.publishConnected(false)
         }
@@ -131,22 +153,19 @@ final class EngineClient: @unchecked Sendable {
         guard running else { return }
         connection?.cancel()
         decoder.reset()
+        transportReady = false
         let conn = NWConnection(to: .unix(path: socketPath), using: .tcp)
         connection = conn
         conn.stateUpdateHandler = { [weak self] st in
             guard let self, conn === self.connection else { return }
             switch st {
             case .ready:
-                self.reconnectDelay = 0.3
-                self.isConnected = true
-                self.disconnectedAt = nil
+                // The socket is open; the daemon is not proven until its hello (`helloReceived`).
+                // The pings start now, so a daemon that never says hello is caught like one that
+                // stops answering.
+                self.transportReady = true
                 self.sendHello()
-                self.flushOutbox()
-                self.publishConnected(true)
                 self.startPings()
-                // The window for one `go` if the daemon comes back asleep after a session was open.
-                if self.resumeCandidate { self.resumeDeadline = Date().addingTimeInterval(EngineClient.autoResumeWindow) }
-                if let cb = self.onConnected { DispatchQueue.main.async(execute: cb) }
                 self.receiveLoop(conn)
             case .waiting(let err):
                 // For a unix socket "waiting" means nobody is listening; there is no path
@@ -165,9 +184,26 @@ final class EngineClient: @unchecked Sendable {
         conn.start(queue: net)
     }
 
+    /// On `net`: the daemon's hello on this connection. Only now is the app connected: the
+    /// outbox goes out, `connected` flips, the outage (and its `daemon` row) ends, and the
+    /// app re-sends what a fresh daemon must know.
+    private func helloReceived() {
+        guard transportReady, !isConnected else { return }
+        reconnectDelay = 0.3
+        isConnected = true
+        disconnectedAt = nil
+        problemArmedFor = nil
+        flushOutbox()
+        publishConnected(true)
+        // The window for one `go` if the daemon comes back asleep after a session was open.
+        if resumeCandidate { resumeDeadline = Date().addingTimeInterval(EngineClient.autoResumeWindow) }
+        if let cb = onConnected { DispatchQueue.main.async(execute: cb) }
+    }
+
     private func dropAndReconnect() {
         connection?.cancel()
         connection = nil
+        transportReady = false
         stopPings()
         // The pid lives exactly as long as the connection that hello'd it.
         daemonPid = nil
@@ -176,8 +212,25 @@ final class EngineClient: @unchecked Sendable {
             publishConnected(false)
             failPendingLedger()
             noteDisconnected()
+        } else {
+            // A connect that failed, or a socket that opened and never said hello: the outage
+            // goes on, and its row is armed (once per outage) however it began.
+            armDaemonProblem()
         }
         scheduleReconnect()
+    }
+
+    /// On `net`: the `daemon` row for the current outage, `outageGrace` after it began, unless
+    /// a hello ends the outage first. Idempotent per outage: every failed connect calls it.
+    private func armDaemonProblem() {
+        if disconnectedAt == nil { disconnectedAt = Date() }
+        guard let since = disconnectedAt, problemArmedFor != since else { return }
+        problemArmedFor = since
+        let wait = max(0, outageGrace - Date().timeIntervalSince(since))
+        net.asyncAfter(deadline: .now() + wait) { [weak self] in
+            guard let self, self.running, !self.isConnected, self.disconnectedAt == since else { return }
+            self.publishDaemonProblem()
+        }
     }
 
     /// On `net`, once per drop: arm the auto-resume from what the daemon last said, and
@@ -185,6 +238,7 @@ final class EngineClient: @unchecked Sendable {
     private func noteDisconnected() {
         let now = Date()
         disconnectedAt = now
+        outageGrace = EngineClient.daemonProblemAfter
         recentDrops = recentDrops.filter { now.timeIntervalSince($0) < EngineClient.dropLoopWindow }
         let dropsBefore = recentDrops.count
         recentDrops.append(now)
@@ -210,10 +264,7 @@ final class EngineClient: @unchecked Sendable {
         } else {
             resumeCandidate = false
         }
-        net.asyncAfter(deadline: .now() + EngineClient.daemonProblemAfter) { [weak self] in
-            guard let self, self.running, !self.isConnected, self.disconnectedAt == now else { return }
-            self.publishDaemonProblem()
-        }
+        armDaemonProblem()
     }
 
     // MARK: pings
@@ -239,7 +290,7 @@ final class EngineClient: @unchecked Sendable {
     /// listening: drop the connection — the reconnect loop takes over — and ask
     /// DaemonProcess to kill and respawn it. Otherwise send the next ping.
     private func pingTick() {
-        guard isConnected, connection != nil else { return }
+        guard transportReady, connection != nil else { return }
         if pendingPings.count >= EngineClient.missedPongsBeforeRespawn {
             let seconds = Int(EngineClient.pingInterval * Double(pendingPings.count))
             log("daemon unresponsive: no pong for \(seconds) s (\(pendingPings.count) pings unanswered); dropping the connection and asking for a respawn")
@@ -251,7 +302,7 @@ final class EngineClient: @unchecked Sendable {
         }
         let id = UUID().uuidString
         pendingPings.append(id)
-        rawSend(json: ["type": "ping", "id": id])
+        write(json: ["type": "ping", "id": id])
     }
 
     // MARK: the daemon row
@@ -337,7 +388,7 @@ final class EngineClient: @unchecked Sendable {
     // MARK: - sending
 
     private func sendHello() {
-        rawSend(json: ["type": "hello", "pid": Int(ProcessInfo.processInfo.processIdentifier), "version": appVersion, "audio": true])
+        write(json: ["type": "hello", "pid": Int(ProcessInfo.processInfo.processIdentifier), "version": appVersion, "audio": true])
     }
 
     func send(_ command: EngineCommand) {
@@ -435,8 +486,9 @@ final class EngineClient: @unchecked Sendable {
         if !due.isEmpty { log("delivered \(due.count) queued command(s) after reconnect") }
     }
 
+    /// On `net`. To a daemon that has said hello; a command sent before that waits in the outbox.
     private func rawSend(json: [String: Any]) {
-        guard let conn = connection, isConnected else {
+        guard connection != nil, isConnected else {
             if json["type"] as? String == "command" {
                 outbox.append((Date(), json))
                 if outbox.count > 20 { outbox.removeFirst(outbox.count - 20) }
@@ -444,6 +496,12 @@ final class EngineClient: @unchecked Sendable {
             }
             return
         }
+        write(json: json)
+    }
+
+    /// On `net`. Onto the open socket, hello or not: the app's own hello and the pings.
+    private func write(json: [String: Any]) {
+        guard let conn = connection, transportReady else { return }
         do {
             let frame = try Wire.encodeJSON(json)
             conn.send(content: frame, completion: .contentProcessed { [weak self] err in
@@ -605,6 +663,7 @@ final class EngineClient: @unchecked Sendable {
                 // A daemon process numbers its thread events from 1: the replay guard restarts with it.
                 st.noteDaemonHello()
             }
+            helloReceived()
         case "pong":
             if let id = obj["id"] as? String { pendingPings.removeAll { $0 == id } }
         case "snapshot":

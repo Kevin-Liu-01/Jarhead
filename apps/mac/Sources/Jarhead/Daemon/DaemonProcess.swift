@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Darwin
 
@@ -7,11 +8,19 @@ import Darwin
 /// instead of spawning and only spawn our own if it later goes away. The daemon exits
 /// when its stdin closes, so the stdin pipe is the primary stop signal; SIGTERM is the
 /// fallback.
+///
+/// The daemon is ONE process: `node --import <tsx loader> packages/daemon/src/main.ts`,
+/// never the tsx CLI, which runs the script in a child of its own — the pid this class
+/// held was that wrapper, and the liveness kick SIGKILLed the wrapper and left the wedged
+/// daemon running and answering. Foundation's Process starts the child in its own process
+/// group, so a terminal's ^C never reaches it.
 @MainActor
 final class DaemonProcess {
     private let location: RepoLocation
     private let socketPath: String
     private let state: AppState
+    /// `$JARHEAD_STATE_DIR` or ~/.jarhead: daemon.log and the daemon's lock file (`jarheadd.lock`) live here.
+    private let stateDir: URL
 
     private var process: Process?
     private var stdinPipe: Pipe?
@@ -21,11 +30,21 @@ final class DaemonProcess {
     private var restartTimer: Timer?
     private var attachTimer: Timer?
     private(set) var attached = false
+    /// What `daemonDetail` says before any log tail is added (`explainOutage`).
+    private var detail = "starting"
+    /// Set when the app has waited too long for a first snapshot: until a daemon answers, the
+    /// detail carries daemon.log's last telling line, so Setup's Welcome says why.
+    private var explainWhileDown = false
+    private var connectedObserver: AnyCancellable?
 
     /// Queue-confined; safe to append to from the pipe reader threads.
     nonisolated private let logFile: DaemonLog
     /// The daemon's "restart me" exit code (sysexits EX_TEMPFAIL).
     static let restartRequestedExit: Int32 = 75
+    /// The daemon's "another daemon already serves this state dir or socket" exit code (main.ts EXIT_ALREADY_RUNNING).
+    static let alreadyRunningExit: Int32 = 73
+    /// The lock file the daemon holds for its whole life (server.ts DAEMON_LOCK_FILE); it carries the holder's pid.
+    nonisolated static let lockFileName = "jarheadd.lock"
 
     var pid: Int32? { process.flatMap { $0.isRunning ? $0.processIdentifier : nil } }
 
@@ -35,8 +54,9 @@ final class DaemonProcess {
         self.state = state
         // The log lives in the state dir (~/.jarhead by default) regardless of where the socket is.
         let env = ProcessInfo.processInfo.environment
-        let stateDir = env["JARHEAD_STATE_DIR"].map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        let stateDir = env["JARHEAD_STATE_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarhead")
+        self.stateDir = stateDir
         self.logFile = DaemonLog(url: stateDir.appendingPathComponent("daemon.log"))
         // The client's two liveness signals (EngineClient, REDESIGN §16 "Liveness"): a daemon
         // that stopped answering pings, and the `daemon` row's "Restart daemon" pressed while
@@ -50,6 +70,15 @@ final class DaemonProcess {
             }
             observers.append(observer)
         }
+        // A daemon answered: the log tail added for Setup (`explainOutage`) has done its job.
+        connectedObserver = state.$connected.removeDuplicates().sink { [weak self] (on: Bool) in
+            guard on else { return }
+            MainActor.assumeIsolated {
+                guard let self, self.explainWhileDown else { return }
+                self.explainWhileDown = false
+                self.state.daemonDetail = self.detail
+            }
+        }
     }
 
     deinit {
@@ -61,15 +90,21 @@ final class DaemonProcess {
     private var lastKickAt: Date?
     static let kickDebounce: TimeInterval = 5
 
-    /// The daemon is up and not answering (EngineClient missed two pongs), or Kevin pressed
-    /// "Restart daemon" while nothing answers. What we own is SIGKILLed — its exit runs the
-    /// usual `handleExit` → `scheduleRestart` with the backoff, so a daemon that dies on
-    /// every start is not respawned hot. A daemon we only attached to is killed by the pid
-    /// its hello gave on the connection that just stopped answering — and only when that
-    /// pid is still a `node` (`proc_pidpath`): a pid is a number the kernel reuses, and the
-    /// one thing this must never do is kill one of Kevin's own processes. Then we take over
-    /// on the next probe. A kick inside the debounce window is logged and ignored: the
-    /// previous one is still working.
+    /// The daemon is up and not answering (EngineClient missed two pongs, or a connection got
+    /// no hello), or Kevin pressed "Restart daemon" while nothing answers. The kick reaches the
+    /// process that LISTENS on our socket, whoever started it:
+    ///
+    /// 1. `LOCAL_PEERPID` on a fresh connection names the listener; the kernel knows it even
+    ///    while the daemon's event loop is wedged and has accepted nothing.
+    /// 2. Else the hello pid of the connection that stopped answering.
+    /// 3. Else the pid in `<state dir>/jarheadd.lock`, trusted only while the lock is held.
+    ///
+    /// That pid is SIGKILLed only while it is still a `node` (`proc_pidpath`): a pid is a
+    /// number the kernel reuses, and the one thing this must never do is kill one of Kevin's
+    /// own processes. The daemon we spawned is killed too (it is our child, running, so its pid
+    /// is still its own); its exit runs the usual `handleExit` → `scheduleRestart` with the
+    /// backoff, so a daemon that dies on every start is not respawned hot. A kick inside the
+    /// debounce window is logged and ignored: the previous one is still working.
     func kick(why: String, pid hint: Int32?) {
         guard !stopping else { return }
         if let last = lastKickAt, Date().timeIntervalSince(last) < DaemonProcess.kickDebounce {
@@ -77,29 +112,39 @@ final class DaemonProcess {
             return
         }
         lastKickAt = Date()
-        if let p = process, p.isRunning {
-            log("[app] \(why); killing daemon pid \(p.processIdentifier) and respawning")
+        let own = process.flatMap { $0.isRunning ? $0.processIdentifier : nil }
+        let me = ProcessInfo.processInfo.processIdentifier
+        // The listener first: it is the daemon, whatever the hello or the lock file say.
+        let target = DaemonProcess.peerPid(socketPath) ?? hint ?? DaemonProcess.lockedPid(stateDir: stateDir)
+        if let target, target > 1, target != me, target != own {
+            if let exe = DaemonProcess.executablePath(of: target), isDaemonExecutable(exe) {
+                log("[app] \(why); killing the daemon on the socket, pid \(target) (\(exe))")
+                kill(target, SIGKILL)
+            } else {
+                log("[app] \(why); pid \(target) is not a node process any more (gone, or the number was reused); not killed")
+            }
+        }
+        if let own {
+            log("[app] \(why); killing daemon pid \(own) and respawning")
             setDetail("daemon unresponsive; restarting")
-            kill(p.processIdentifier, SIGKILL)
+            kill(own, SIGKILL)
             return
         }
-        if let hint, hint > 0, hint != ProcessInfo.processInfo.processIdentifier {
-            if let exe = DaemonProcess.executablePath(of: hint), isDaemonExecutable(exe) {
-                log("[app] \(why); killing the attached daemon pid \(hint) (\(exe)) and starting our own")
-                kill(hint, SIGKILL)
-            } else {
-                log("[app] \(why); pid \(hint) from the daemon's hello is not a node process any more (gone, or the number was reused) — not killed; starting our own")
-            }
-        } else {
-            log("[app] \(why); no daemon of ours is running — starting one")
-        }
+        if target == nil { log("[app] \(why); no daemon of ours is running; starting one") }
         attachTimer?.invalidate(); attachTimer = nil
         attached = false
         backoff = 1
         setDetail("starting")
         // Through the restart timer, not spawn() directly: it probes the socket first, so a
-        // daemon that still answers (a wrong pid hint) is attached to again rather than doubled.
+        // daemon that still answers (one we could not kill) is attached to again rather than doubled.
         scheduleRestart(why: why)
+    }
+
+    /// The app waited for a first snapshot and none came (AppDelegate, before it opens Setup):
+    /// from now until a daemon answers, `daemonDetail` ends with daemon.log's last telling line.
+    func explainOutage() {
+        explainWhileDown = true
+        setDetail(detail)
     }
 
     /// The executable behind a pid (`proc_pidpath`), or nil when there is no such process or it is not ours to see.
@@ -124,13 +169,19 @@ final class DaemonProcess {
     func start() {
         stopping = false
         if DaemonProcess.socketAnswers(socketPath) {
-            attached = true
-            setDetail("attached to a running daemon on \(shortPath(socketPath))")
+            attach()
             log("[app] attached to an existing daemon on \(socketPath)")
-            scheduleAttachProbe()
             return
         }
         spawn()
+    }
+
+    /// A daemon we did not spawn answers on the socket: use it, and keep its pid (the listener's) for a crash report.
+    private func attach() {
+        attached = true
+        CrashGuard.setDaemonPid(DaemonProcess.peerPid(socketPath))
+        setDetail("attached to a running daemon on \(shortPath(socketPath))")
+        scheduleAttachProbe()
     }
 
     /// Blocking, ≤ `timeout` seconds. Called from applicationWillTerminate.
@@ -198,7 +249,7 @@ final class DaemonProcess {
 
         let p = Process()
         p.executableURL = location.node
-        p.arguments = [location.tsx.path, location.daemon.path, "--socket", socketPath]
+        p.arguments = DaemonProcess.daemonArguments(location: location, socketPath: socketPath)
         p.currentDirectoryURL = location.repo
 
         var env = ProcessInfo.processInfo.environment
@@ -271,6 +322,13 @@ final class DaemonProcess {
         let how = reason == .uncaughtSignal ? "signal \(status)" : "exit \(status)"
         log("[app] daemon ended: \(how)")
         if stopping { return }
+        if reason == .exit && status == DaemonProcess.alreadyRunningExit {
+            // Another daemon serves this state dir or this socket (its line is in daemon.log). The
+            // restart below attaches when it answers here, and tries again later when it does not.
+            log("[app] another daemon already serves \(shortPath(stateDir.path)); not starting a second one")
+            scheduleRestart(why: "another daemon is running")
+            return
+        }
         // Exit 75 (EX_TEMPFAIL) is the daemon asking to be restarted — after it has
         // rewritten its own code and passed its checks. Fresh start, no backoff.
         if reason == .exit && status == DaemonProcess.restartRequestedExit {
@@ -298,9 +356,7 @@ final class DaemonProcess {
                     guard let self = owner, !self.stopping else { return }
                     // Someone else may have brought a daemon up in the meantime.
                     if DaemonProcess.socketAnswers(self.socketPath) {
-                        self.attached = true
-                        self.setDetail("attached to a running daemon on \(self.shortPath(self.socketPath))")
-                        self.scheduleAttachProbe()
+                        self.attach()
                     } else {
                         self.setDetail("starting")
                         self.spawn()
@@ -377,6 +433,18 @@ final class DaemonProcess {
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
+    // MARK: - the daemon's command line
+
+    /// `--import <tsx's loader> <daemon> --socket <path>`, for `node` itself: one process, the
+    /// daemon. The loader is the file tsx's package exports as `tsx` (`dist/loader.mjs`, beside
+    /// the CLI the location names), passed as a file URL so neither the cwd nor a space in the
+    /// path matters; without it, the bare `tsx`, resolved from the repo (the cwd).
+    nonisolated static func daemonArguments(location: RepoLocation, socketPath: String) -> [String] {
+        let loader = location.tsx.deletingLastPathComponent().appendingPathComponent("loader.mjs")
+        let importArg = FileManager.default.fileExists(atPath: loader.path) ? loader.absoluteString : "tsx"
+        return ["--import", importArg, location.daemon.path, "--socket", socketPath]
+    }
+
     // MARK: - socket probe
 
     /// True when something accepts a connection on the unix socket right now.
@@ -384,6 +452,34 @@ final class DaemonProcess {
         guard let fd = connectSocket(path) else { return false }
         close(fd)
         return true
+    }
+
+    /// The pid of the process listening on the socket (`LOCAL_PEERPID` on a fresh connection),
+    /// or nil when nothing listens. The kernel records it at listen(), so it answers for a
+    /// daemon whose event loop is wedged and has accepted nothing: the kick's target.
+    nonisolated static func peerPid(_ path: String) -> Int32? {
+        guard let fd = connectSocket(path) else { return nil }
+        defer { close(fd) }
+        var pid: pid_t = 0
+        var len = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0, pid > 0 else { return nil }
+        return pid
+    }
+
+    /// The pid in `<stateDir>/jarheadd.lock`, only while a daemon holds the lock: a shared lock
+    /// that cannot be had means the exclusive one is held, so the pid written there is live.
+    /// A free lock means its holder is gone and the number may be anyone's by now: nil.
+    nonisolated static func lockedPid(stateDir: URL) -> Int32? {
+        let path = stateDir.appendingPathComponent(lockFileName).path
+        let probe = open(path, O_RDONLY | O_SHLOCK | O_NONBLOCK | O_CLOEXEC)
+        if probe >= 0 {
+            close(probe)
+            return nil
+        }
+        guard errno == EWOULDBLOCK || errno == EAGAIN,
+              let text = try? String(contentsOfFile: path, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1 else { return nil }
+        return pid
     }
 
     enum ByeOutcome { case acked, unacknowledged, noDaemon }
@@ -459,7 +555,12 @@ final class DaemonProcess {
     }
 
     private func setDetail(_ text: String) {
-        state.daemonDetail = text
+        detail = text
+        if explainWhileDown, !state.connected, let tail = logFile.telling() {
+            state.daemonDetail = "\(text) · daemon.log: \(tail)"
+        } else {
+            state.daemonDetail = text
+        }
     }
 
     private func shortPath(_ p: String) -> String {
@@ -516,6 +617,42 @@ final class DaemonLog: @unchecked Sendable {
 
     func flush() {
         queue.sync { try? handle?.synchronize() }
+    }
+
+    /// daemon.log's last telling line (`tellingLine(in:)`) once what is queued has been written, or nil when there is no log.
+    func telling() -> String? {
+        flush()
+        return DaemonLog.telling(at: url)
+    }
+
+    /// The same for a log file read as it stands (no DaemonLog of this process writes it).
+    static func telling(at url: URL) -> String? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
+        guard let data = try? h.readToEnd(), !data.isEmpty else { return nil }
+        return DaemonLog.tellingLine(in: String(decoding: data, as: UTF8.self))
+    }
+
+    /// The line of a log tail that says why the daemon is not answering: of the last 60 lines,
+    /// the daemon's own (not the app's `[app]` lines, not a stack frame, a `Node.js v…` banner
+    /// or a lone bracket), the last that reads as a failure, else the last of them, else the
+    /// last line at all. Its ISO stamp is dropped and it is cut to 160 characters.
+    static func tellingLine(in text: String) -> String? {
+        let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.suffix(60)
+        func unstamped(_ line: String) -> String {
+            guard line.range(of: #"^\d{4}-\d\d-\d\dT\S+ "#, options: .regularExpression) != nil, let space = line.firstIndex(of: " ") else { return line }
+            return String(line[line.index(after: space)...])
+        }
+        let bodies = lines.map(unstamped)
+        let noise: (String) -> Bool = { line in
+            line.isEmpty || line.hasPrefix("[app]") || line.hasPrefix("at ") || line.hasPrefix("Node.js v") || line.allSatisfy { "^~{}()[],;".contains($0) }
+        }
+        let own = bodies.filter { !noise($0) }
+        let failure = #"(?i)error|refus|cannot|can't|failed|holds|not found|EADDRINUSE|EACCES"#
+        guard let pick = own.last(where: { $0.range(of: failure, options: .regularExpression) != nil }) ?? own.last ?? bodies.last(where: { !$0.isEmpty }) else { return nil }
+        return pick.count > 160 ? String(pick.prefix(159)) + "…" : pick
     }
 
     /// On `queue`. O_APPEND, not a remembered offset: a daemon orphaned by an app crash
