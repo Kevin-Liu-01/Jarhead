@@ -1,7 +1,8 @@
 #!/bin/sh
 # Checks scripts/install.sh without running it for real: a syntax pass, shellcheck when it is
-# installed, a dry run that must exit 0 and print the plan and exactly the README's four commands
-# (README:23-29) in order, and greps for what the script must never do. Also checks that the page's
+# installed, a dry run that must exit 0 and print the plan and exactly its four commands in order
+# (README's quick start, with pnpm install leaving out the site's dependencies per decision D6), and
+# greps for what the script must never do. Also checks that the page's
 # own words never claim a download, a .dmg or a cask (facts-product.md §5.1).
 # Run it from the repo root: `sh site/scripts/check-install.sh`.
 set -eu
@@ -28,9 +29,10 @@ else
   printf 'check-install: skip  shellcheck (not installed)\n'
 fi
 
-# 3  the dry run: exit 0, the plan printed, exactly the four README commands in order. The caller's
-#    JARHEAD_NO_OPEN and JARHEAD_REF are dropped and the clone path is a folder that does not exist, so
-#    the run is the same on every Mac: the checks, a clone, the four commands, the open.
+# 3  the dry run: exit 0, the plan printed, exactly the four README commands in order (pnpm install
+#    without the site's dependencies, decision D6). The caller's JARHEAD_NO_OPEN and JARHEAD_REF are
+#    dropped and the clone path is a folder that does not exist, so the run is the same on every Mac:
+#    the checks, a clone, the four commands, the open.
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 if (unset JARHEAD_NO_OPEN JARHEAD_REF; JARHEAD_DIR="$out.jarhead" JARHEAD_DRY_RUN=1 sh "$script") >"$out" 2>&1; then
@@ -41,19 +43,19 @@ else
 fi
 if grep -q '^jarhead: The plan:$' "$out"; then ok "prints the plan"; else bad "no plan printed"; fi
 if grep -q '^jarhead: Dry run: every step is printed, none is run\.$' "$out"; then ok "says it is a dry run"; else bad "dry run not announced"; fi
-expected='pnpm install
+expected="pnpm install --filter '!./site'
 pnpm build:hands
 pnpm build:mac
-open -a Jarhead'
-# git lines are the clone or the pull; a corepack line is the pnpm fix on a Mac without pnpm; neither is a README command
-actual="$(sed -n 's/^jarhead: \$ //p' "$out" | grep -v -E '^(git|corepack) ' || true)"
+open -a Jarhead"
+# git lines are the clone or the update, not README commands; the script installs no tool itself, so nothing else may appear
+actual="$(sed -n 's/^jarhead: \$ //p' "$out" | grep -v -E '^git ' || true)"
 if [ "$actual" = "$expected" ]; then
-  ok "the four README commands, in order"
+  ok "the four commands, in order"
 else
-  bad "commands differ from README:23-29; got:"
+  bad "the commands are not the expected four (README's, with pnpm install --filter '!./site'); got:"
   printf '%s\n' "$actual" >&2
 fi
-if grep -q -E '^jarhead: \$ git clone .*Kevin-Liu-01/Jarhead\.git |^jarhead: \$ git -C .* pull --quiet --ff-only origin ' "$out"; then
+if grep -q -E '^jarhead: \$ git clone .*Kevin-Liu-01/Jarhead\.git |^jarhead: \$ git .*-C .* (merge --quiet --ff-only|rebase --quiet) ' "$out"; then
   ok "clones, or pulls an existing checkout"
 else
   bad "neither a clone nor a pull was announced"

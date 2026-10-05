@@ -10,6 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The app's jobs install what scripts/install.sh installs: the workspace without the site's
+  # dependencies (decision D6). Only the site job installs those.
   typescript:
     name: typecheck + tests
     runs-on: macos-15
@@ -21,9 +23,13 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!./site'
       - run: pnpm run typecheck
+      # Includes the real ad-hoc install (packages/install adhoc-install.test.ts: codesign into a
+      # temp Applications folder, never /Applications) and install.sh against stubs.
       - run: pnpm test
+      # The one-line installer: syntax, a dry run with its four commands (README's, the site's dependencies left out), what it never does.
+      - run: sh site/scripts/check-install.sh
 
   swift:
     name: swift build (apps/mac + hands)
@@ -36,7 +42,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!./site'
       - run: pnpm build:hands
       - run: swift build --package-path apps/mac
       # The contract probe: the Model, UI and Console sources compiled with the probe's own
@@ -55,11 +61,31 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!./site'
       - run: pnpm build:hands
       # Icon, release build, stage, ad-hoc sign, strict verify — and stop: JARHEAD_BUILD_ONLY=1
       # never installs, so nothing under /Applications is touched on the runner.
       - run: JARHEAD_BUILD_ONLY=1 JARHEAD_SIGN_IDENTITY=- pnpm build:mac
+
+  # The floor install.sh enforces: Swift 5.10 (Xcode 15.3 and 15.4) on macOS 14. The helper and
+  # the app must build with it, or the floor moves to Xcode 16.
+  swift-floor:
+    name: swift build on the floor (macOS 14, Xcode 15.4)
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: xcrun swift --version
+      - run: pnpm install --frozen-lockfile --filter '!./site'
+      - run: pnpm build:hands
+      - run: swift build --package-path apps/mac
 
   site:
     name: site (typecheck + build)

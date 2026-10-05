@@ -23,7 +23,9 @@ import { chooseIdentity, identityLine, identityNames, type IdentityChoice } from
  * written (no snapshot, rsync, install verification, parity, inode check, hygiene or
  * relink). CI runs the icon, the release build and the signing this way; so can a dry run.
  * JARHEAD_SIGN_IDENTITY pins the signing identity (`-` = ad-hoc); without it the order is
- * scripts/sign-identity.ts's, and the pick is printed before the first codesign call.
+ * scripts/sign-identity.ts's, and the pick is printed before the first codesign call. An
+ * ad-hoc pick that was not pinned never installs over a copy an identity signed (every grant
+ * would reset); `-` does.
  */
 
 const OUT = join(REPO_ROOT, "build");
@@ -208,7 +210,9 @@ function accountName(): string | undefined {
   }
 }
 const user = accountName();
-const outcome = performInstall({ stage: APP, installed: INSTALLED, ...(PREVIOUS !== undefined ? { previous: PREVIOUS } : {}), link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1, ...(user !== undefined ? { user } : {}) }, io);
+// An ad-hoc stage nobody asked for (no identity listed) is refused over an identity-signed install; a pinned `-` is not.
+const signing = identity !== undefined ? "identity" : chosen.how === "pinned" ? "adhoc-pinned" : "adhoc";
+const outcome = performInstall({ stage: APP, installed: INSTALLED, ...(PREVIOUS !== undefined ? { previous: PREVIOUS } : {}), link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1, ...(user !== undefined ? { user } : {}), signing }, io);
 if (!outcome.ok) {
   console.error(`[build-mac] ${outcome.what}`);
   for (const l of outcome.lines) console.error(`           ${l}`);

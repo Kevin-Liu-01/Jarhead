@@ -31,8 +31,10 @@ enum LocalAuth {
             default: break
             }
         }
-        if #available(macOS 15.0, *) {
-            if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithCompanion, error: &error) { return "Apple Watch" }
+        // Policy 3 is the companion policy. The macOS 15 SDK names it for companions, the
+        // macOS 14 SDK for the Watch; the raw value compiles against both, so Xcode 15 builds.
+        if #available(macOS 15.0, *), let companion = LAPolicy(rawValue: 3) {
+            if ctx.canEvaluatePolicy(companion, error: &error) { return "Apple Watch" }
         }
         return "your password"
     }

@@ -229,16 +229,55 @@ export function compareTrees(stage: string, installed: string): ParityReport {
 export const CODESIGN = "/usr/bin/codesign";
 /** `--deep` checks the nested jarhead-hands too; `--strict` refuses sideband data (resource forks, FinderInfo) a bad copy could add. */
 export const CODESIGN_VERIFY_ARGS = ["--verify", "--strict", "--deep", "--verbose=1"] as const;
-/** Prints the designated requirement (on stderr): `identifier "com.kevinliu.jarhead" and certificate leaf = H"…"`. */
-export const CODESIGN_REQUIREMENT_ARGS = ["-d", "-r-"] as const;
+/**
+ * The designated requirement and the signature, in one call. `-r-` prints the requirement
+ * on stdout: `designated => identifier "com.kevinliu.jarhead" and certificate leaf = H"…"`
+ * for a real identity, `# designated => cdhash H"…"` for an ad-hoc signature (implicit;
+ * one hash per architecture). `-v` prints `Identifier=…` and `Signature=adhoc` on stderr.
+ */
+export const CODESIGN_REQUIREMENT_ARGS = ["-d", "-v", "-r-"] as const;
+
+/** `-vv` adds one `Authority=` line (stderr) per certificate in the signing chain, the leaf first. An ad-hoc signature has none and says `Signature=adhoc`. */
+export const CODESIGN_AUTHORITY_ARGS = ["-d", "-vv"] as const;
+
+/**
+ * The certificate that signed, from `codesign -d -vv` output (stdout and stderr together):
+ * the leaf `Authority=` line. Undefined for an ad-hoc signature, an unsigned bundle, or
+ * output codesign could not produce (nothing installed, an unreadable bundle).
+ */
+export function signingAuthority(output: string): string | undefined {
+  if (/^Signature=adhoc$/m.test(output)) return undefined;
+  return output.match(/^Authority=(.+)$/m)?.[1]?.trim() || undefined;
+}
 
 export function requirementHasIdentifier(reqText: string, bundleId: string): boolean {
   const escaped = bundleId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`identifier "${escaped}"`).test(reqText);
 }
 
+export type RequirementCheck = { readonly ok: true; readonly adhoc: boolean } | { readonly ok: false; readonly reason: string };
+
+/**
+ * Judges `codesign -d -v -r-` output, stdout and stderr together. A real identity's
+ * designated requirement must name `bundleId`: TCC keys the grants on it. An ad-hoc
+ * signature has no identity to name. Its requirement is the code hash, which changes on
+ * every build, so the grants reset; it is accepted when the signature's own Identifier
+ * is `bundleId`. Ad-hoc is what build-mac.ts signs with on a Mac whose keychain lists no
+ * code-signing identity, and refusing it left a fresh Mac with nothing installed. A
+ * refusal quotes the `designated =>` line.
+ */
+export function checkRequirement(output: string, bundleId: string): RequirementCheck {
+  const designated = output.match(/^#?[ \t]*(designated => .*)$/m)?.[1]?.trim();
+  if (designated !== undefined && requirementHasIdentifier(designated, bundleId)) return { ok: true, adhoc: false };
+  const adhoc = /^Signature=adhoc$/m.test(output);
+  const identifier = output.match(/^Identifier=(.*)$/m)?.[1]?.trim();
+  if (adhoc && identifier === bundleId && designated !== undefined && designated.startsWith('designated => cdhash H"')) return { ok: true, adhoc: true };
+  const said = designated ?? (output.trim().split("\n")[0] || "codesign printed no requirement");
+  return { ok: false, reason: `designated requirement lacks identifier "${bundleId}": ${said}${adhoc ? ` (ad-hoc, signed as ${identifier ?? "no identifier"})` : ""}` };
+}
+
 /** The summary line under `built`: what happened to the bundle directory and its files. */
-export function installLine(i: { readonly plan: InstallPlan; readonly inodeAfter: number | undefined; readonly rsync: RsyncSummary | undefined; readonly installed?: string; readonly bundleId?: string }): string {
+export function installLine(i: { readonly plan: InstallPlan; readonly inodeAfter: number | undefined; readonly rsync: RsyncSummary | undefined; readonly installed?: string; readonly bundleId?: string; readonly adhoc?: boolean }): string {
   const installed = i.installed ?? "/Applications/Jarhead.app";
   const bundleId = i.bundleId ?? "com.kevinliu.jarhead";
   const where =
@@ -256,7 +295,8 @@ export function installLine(i: { readonly plan: InstallPlan; readonly inodeAfter
     : i.plan.kind === "create"
       ? "copied whole"
       : "no files written";
-  return `install    ${where} · ${files} · strict ok · requirement identifier ${bundleId}`;
+  const signature = i.adhoc ? `ad-hoc, identifier ${bundleId}` : `requirement identifier ${bundleId}`;
+  return `install    ${where} · ${files} · strict ok · ${signature}`;
 }
 
 /** The line a failure prints: how to put the snapshot back by hand. */
@@ -282,6 +322,15 @@ export interface InstallSpec {
   readonly uid: number;
   /** The account's short name, for the not-writable line of a first install (the uid stands in when absent). */
   readonly user?: string;
+  /**
+   * How build-mac.ts signed the stage; absent means an identity. `adhoc`: the keychain listed
+   * no code-signing identity. Over an installed copy an identity signed, that is refused before
+   * anything is written: TCC keyed every grant on that identity, so all of them would reset,
+   * and an identity that stopped being listed is usually an expired or removed certificate,
+   * not a choice. `adhoc-pinned`: JARHEAD_SIGN_IDENTITY=- asked for ad-hoc, which installs over
+   * anything. A first install has nothing to downgrade, so either ad-hoc installs.
+   */
+  readonly signing?: "identity" | "adhoc" | "adhoc-pinned";
 }
 
 /** Every side effect of the install, injectable: build-mac.ts passes the real ones, the tests a recorder. */
@@ -311,10 +360,12 @@ export type InstallOutcome =
 /**
  * Step 5 of `pnpm build:mac`, in order: plan (refuse a symlink / file / other uid /
  * no write bit, a parent directory this account cannot write into, or a snapshot path
- * named `.app` — before anything is written) → first install `cp -R`, else snapshot to `previous` when one was asked for, then rsync in
+ * named `.app`, or an ad-hoc stage over a copy an identity signed, unless ad-hoc was pinned —
+ * before anything is written) → first install `cp -R`, else snapshot to `previous` when one was asked for, then rsync in
  * place (never --inplace; `._*` in the itemized output means -E leaked and the build
  * fails) → verify the INSTALLED copy: strict + deep, the designated requirement's
- * identifier, a sha256 parity walk against the stage, the directory inode unchanged →
+ * identifier (or, ad-hoc, the signature's; see checkRequirement), a sha256 parity walk
+ * against the stage, the directory inode unchanged →
  * remove the stage → relink. Any failure keeps the stage and names the rollback when a
  * snapshot was taken.
  */
@@ -326,6 +377,21 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
   if (plan.kind === "refuse") return { ok: false, what: `refusing to install: ${plan.reason}`, lines: [plan.hint] };
   if (spec.previous !== undefined && !snapshotNameOk(spec.previous)) {
     return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} is not a .zip archive`, lines: ["LaunchServices registers any directory holding an Info.plist as a bundle — a second Jarhead; snapshot to a .zip archive (build/previous/Jarhead.app.zip)"] };
+  }
+  if (plan.kind === "update" && spec.signing === "adhoc") {
+    const installedSig = io.exec(CODESIGN, [...CODESIGN_AUTHORITY_ARGS, spec.installed]);
+    const authority = signingAuthority(`${installedSig.stdout}\n${installedSig.stderr}`);
+    if (authority !== undefined) {
+      return {
+        ok: false,
+        what: `refusing to install: this build is signed ad-hoc, and ${spec.installed} is signed by "${authority}"`,
+        lines: [
+          "Installing it would reset every permission grant. The keychain listed no code-signing identity, so that certificate has likely expired or been removed.",
+          `See what the keychain has: security find-identity -v -p codesigning. Renew or recreate "${authority}" in Keychain Access, then run pnpm build:mac again.`,
+          "Or install ad-hoc anyway and grant the permissions again: JARHEAD_SIGN_IDENTITY=- pnpm build:mac",
+        ],
+      };
+    }
   }
   const rollback = spec.previous !== undefined ? rollbackLine(spec.previous, spec.installed) : undefined;
   let rollbackOk = false;
@@ -356,9 +422,8 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
   const verify = io.exec(CODESIGN, [...CODESIGN_VERIFY_ARGS, spec.installed]);
   if (verify.code !== 0) return fail(`the installed bundle does not verify: ${(verify.stderr || verify.stdout).trim()}`);
   const requirement = io.exec(CODESIGN, [...CODESIGN_REQUIREMENT_ARGS, spec.installed]);
-  if (!requirementHasIdentifier(`${requirement.stdout}${requirement.stderr}`, spec.bundleId)) {
-    return fail(`the designated requirement lacks identifier "${spec.bundleId}": ${(requirement.stderr || requirement.stdout).trim()}`);
-  }
+  const signed = checkRequirement(`${requirement.stdout}\n${requirement.stderr}`, spec.bundleId);
+  if (!signed.ok) return fail(`the ${signed.reason}`);
   const parity = io.compare(spec.stage, spec.installed);
   if (!parityOk(parity)) return fail("the installed tree is not the signed stage", `missing: ${parity.missing.join(", ") || "—"}`, `differing: ${parity.differing.join(", ") || "—"}`, `extra: ${parity.extra.join(", ") || "—"}`);
   const after = io.probe(spec.installed);
@@ -366,6 +431,7 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
 
   if (spec.cleanup) io.rmTree(spec.cleanup);
   io.relink(spec.installed, spec.link);
-  const line = installLine({ plan, inodeAfter: after.inode, rsync, installed: spec.installed, bundleId: spec.bundleId });
+  if (signed.adhoc) io.warn("ad-hoc: grants reset on every rebuild");
+  const line = installLine({ plan, inodeAfter: after.inode, rsync, installed: spec.installed, bundleId: spec.bundleId, adhoc: signed.adhoc });
   return { ok: true, plan, inodeAfter: after.inode, rsync, rollback: rollbackOk ? rollback : undefined, line };
 }
