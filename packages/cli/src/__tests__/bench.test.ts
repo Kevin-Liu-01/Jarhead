@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { JarheadConfig } from "@jarhead/core";
 import { BENCH_OPENAI_KEY, EAR_CAREFUL_DISPATCH_TARGET_MS, EAR_DISPATCH_TARGET_MS, EAR_GATE_METRICS, bench, benchConfig, benchReport, earGate, type BenchRow, type BenchRun, type Sample } from "../bench.ts";
 
@@ -184,4 +187,14 @@ test("W2-7: the bench's config keeps the user's settings and none of their secre
   assert.equal(spend.brain, "auto");
   assert.equal(spend.handsBin, "/tmp/jh-bb-1/no-hands", "the brain bench's hands are in process");
   assert.equal(benchConfig({ ...base, openaiApiKey: undefined }, "/tmp/jh-bb-1", { codex: false, fakeHands: true, brainKeys: true }).openaiApiKey, BENCH_OPENAI_KEY, "a wake still wants a key");
+});
+
+test("W2-7: `pnpm jarhead bench --no-duck` reaches bench(); main.ts passes the flag as `duck` and help lists it", { todo: 'main.ts is W2-1\'s this wave. At integration its bench() call gains `duck: !flags.has("--no-duck")` and help gains the --no-duck line. Then this todo goes.' }, () => {
+  // bench() reads no argv, so the flag works only when main.ts passes it. Through the CLI an unwired flag
+  // builds and runs the Swift duck probe, so this reads main.ts instead of running it.
+  const main = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "main.ts"), "utf8");
+  const call = main.split("\n").find((line) => line.includes("await bench({"));
+  assert.ok(call, "main.ts calls bench()");
+  assert.match(call, /\bduck: !flags\.has\("--no-duck"\)/, "the bench() call turns --no-duck into duck: false");
+  assert.match(main, /^ {2}--no-duck +\(bench\) skip the Swift duck probe$/m, "help lists --no-duck with the bench flags");
 });
