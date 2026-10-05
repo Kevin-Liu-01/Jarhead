@@ -1,6 +1,6 @@
 import AppKit
 
-/// One stroke of Kevin's: ⌥⇧C (or the orb menu) makes every overlay window
+/// One stroke of Kevin's: ⌃⌥C (or the orb menu) makes every overlay window
 /// interactive — crosshair, a faint accent wash and frame, a hint pill on the display
 /// under the cursor — and the first mouse-down starts a stroke drawn live in the mark
 /// tone on every display it crosses. The stroke travels the same channel as the

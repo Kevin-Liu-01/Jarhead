@@ -15,10 +15,14 @@ import Foundation
 ///
 /// `JARHEAD_PERMISSIONS_DRY_RUN=1` logs every ask and every pane instead of doing it —
 /// for the harness (`Scripts/permissions-probe.sh`) and for a reviewer at the keyboard.
+/// Everything the centre does to the Mac goes through `io` (`PermissionsIO.system` in the
+/// app), so `Scripts/sweep-check.sh` runs the real sweep with nothing asked or opened.
 @MainActor
 final class PermissionsCenter {
     private let state: AppState
     let dryRun: Bool
+    private let io: PermissionsIO
+    private let watch: Watch
     /// One line per event; NSLog by default, the harness prints.
     var log: (String) -> Void = { NSLog("Permissions: %@", $0) }
     /// The full list, after a read that changed something.
@@ -40,12 +44,18 @@ final class PermissionsCenter {
     private var walkContinuation: CheckedContinuation<Bool, Never>?
     private var summaryClear: Task<Void, Never>?
 
-    static let watchInterval: TimeInterval = 1.5
-    static let watchSpan: TimeInterval = 90
+    /// How often and how long System Settings is watched after a pane opens or a dialog fires.
+    struct Watch: Equatable {
+        var interval: TimeInterval = 1.5
+        var span: TimeInterval = 90
+        static let standard = Watch()
+    }
 
-    init(state: AppState, dryRun: Bool? = nil) {
+    init(state: AppState, dryRun: Bool? = nil, io: PermissionsIO = .system, watch: Watch = .standard) {
         self.state = state
         self.dryRun = dryRun ?? (ProcessInfo.processInfo.environment["JARHEAD_PERMISSIONS_DRY_RUN"] == "1")
+        self.io = io
+        self.watch = watch
         self.list = PermissionsKit.placeholders
         state.permissionList = list
         install()
@@ -72,7 +82,7 @@ final class PermissionsCenter {
     /// Returning from System Settings (or from a dialog's Open System Settings): read
     /// again, fresh, and let a waiting sweep step move on if its grant landed.
     func appActivated() {
-        PermissionsKit.invalidate()
+        io.invalidate()
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.refreshNow()
@@ -102,7 +112,7 @@ final class PermissionsCenter {
         var changed: [PermissionKind] = []
         repeat {
             refreshAgain = false
-            let fresh = await PermissionsKit.readAll()
+            let fresh = await io.readAll()
             changed.append(contentsOf: apply(fresh))
         } while refreshAgain
         return changed
@@ -111,7 +121,7 @@ final class PermissionsCenter {
     /// One kind, read now and applied.
     @discardableResult
     private func refreshOne(_ kind: PermissionKind) async -> PermissionInfo {
-        let info = await PermissionsKit.read(kind)
+        let info = await io.read(kind)
         apply(replacing: info)
         return info
     }
@@ -165,23 +175,29 @@ final class PermissionsCenter {
 
     // MARK: - watching System Settings
 
-    /// Poll every 1.5 s for 90 s (and on activation, which the AppDelegate forwards). A
-    /// sweep step that waits on the user keeps the watch alive past the 90 s.
+    /// Poll every 1.5 s for 90 s from the last pane or dialog (and on activation, which the
+    /// AppDelegate forwards).
     private func startWatch() {
-        watchUntil = Date().addingTimeInterval(PermissionsCenter.watchSpan)
+        watchUntil = Date().addingTimeInterval(watch.span)
         guard watchTimer == nil else { return }
         let owner = self
-        watchTimer = Timer.scheduledTimer(withTimeInterval: PermissionsCenter.watchInterval, repeats: true) { _ in
+        watchTimer = Timer.scheduledTimer(withTimeInterval: watch.interval, repeats: true) { _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { owner.watchTick() } }
         }
     }
 
     private func watchTick() {
-        if Date() > watchUntil, walkContinuation == nil {
+        // APP-7: the watch ends at `watchUntil`, a step waiting or not. Every poll re-reads every
+        // kind and can spawn the helper, and a step left waiting (Setup closed, Kevin gone)
+        // polled forever. Past the span the step parks: still waiting, no polls. Jarhead coming
+        // to the front re-reads it (`appActivated`); Next and Cancel, in Setup or the status
+        // menu, still end it; opening a pane again starts a fresh span.
+        if Date() > watchUntil {
             stopWatch()
+            if walkContinuation != nil { log("sweep: parked · \(state.permissionSweep?.line ?? "waiting")") }
             return
         }
-        PermissionsKit.invalidate()
+        io.invalidate()
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.refreshNow()
@@ -223,7 +239,7 @@ final class PermissionsCenter {
                 // First press: the dialog (it has its own Open System Settings) and the
                 // watch. A later press: the dialog will not come back, so the pane —
                 // after the prompt API, which recreates a row a `tccutil reset` removed.
-                let askedBefore = PermissionsKit.hasAsked(kind)
+                let askedBefore = self.io.hasAsked(kind)
                 let after = await self.ask(kind)
                 guard after.grant != .granted else { return }
                 if askedBefore { self.openSettings(for: kind, reveal: false) } else { self.startWatch() }
@@ -249,9 +265,9 @@ final class PermissionsCenter {
             return await refreshOne(kind)
         }
         log("asking for \(label) via \(PermissionsRequests.describe(kind))")
-        let (grant, detail) = await PermissionsRequests.request(kind)
-        if PermissionsCenter.promptBeforePane.contains(kind) { PermissionsKit.markAsked(kind) }
-        PermissionsKit.invalidate()
+        let (grant, detail) = await io.request(kind)
+        if PermissionsCenter.promptBeforePane.contains(kind) { io.markAsked(kind) }
+        io.invalidate()
         var info = await refreshOne(kind)
         // The request's own answer wins when the re-read is behind it (Screen Recording's
         // in-process read is stale until the helper's fresh one lands).
@@ -272,8 +288,8 @@ final class PermissionsCenter {
             if reveal { log("dry run: would reveal \(PermissionsKit.appBundleURL.path) in Finder") }
         } else {
             log("opening System Settings › \(pane.path)")
-            if reveal { PermissionsKit.revealAppInFinder() }
-            PermissionsKit.openSettings(pane: pane)
+            if reveal { io.revealApp() }
+            io.openSettings(pane)
         }
         startWatch()
     }
@@ -403,7 +419,7 @@ final class PermissionsCenter {
     /// pane is opened right away as well. Returns false only on Cancel.
     private func promptAndWait(_ kind: PermissionKind, total: Int, progress: inout PermissionSweepProgress) async -> Bool {
         let m = PermissionsKit.meta(kind)
-        let askedBefore = PermissionsKit.hasAsked(kind)
+        let askedBefore = io.hasAsked(kind)
         progress.stage = .waiting
         progress.current = kind
         progress.group = [kind]
@@ -457,5 +473,32 @@ final class PermissionsCenter {
         }
         progress.remaining = []
         progress.group = []
+    }
+}
+
+/// What the permissions centre does to the Mac: the reads (never a prompt), the asks, the
+/// asked-before marks, System Settings and Finder. `system` is the app's; the sweep check
+/// passes fakes, so the real sweep runs with nothing asked, opened or written.
+struct PermissionsIO {
+    var readAll: () async -> [PermissionInfo]
+    var read: (PermissionKind) async -> PermissionInfo
+    var request: (PermissionKind) async -> (Grant, String?)
+    /// Forget the readers' throttle, so the next read is fresh.
+    var invalidate: () -> Void
+    var hasAsked: (PermissionKind) -> Bool
+    var markAsked: (PermissionKind) -> Void
+    var openSettings: (PermissionsKit.Pane) -> Void
+    var revealApp: () -> Void
+
+    static var system: PermissionsIO {
+        PermissionsIO(
+            readAll: { await PermissionsKit.readAll() },
+            read: { await PermissionsKit.read($0) },
+            request: { await PermissionsRequests.request($0) },
+            invalidate: { PermissionsKit.invalidate() },
+            hasAsked: { PermissionsKit.hasAsked($0) },
+            markAsked: { PermissionsKit.markAsked($0) },
+            openSettings: { PermissionsKit.openSettings(pane: $0) },
+            revealApp: { PermissionsKit.revealAppInFinder() })
     }
 }

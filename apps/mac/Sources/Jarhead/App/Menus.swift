@@ -51,8 +51,8 @@ final class Menus: NSObject {
         // View menu
         let viewItem = NSMenuItem()
         let view = NSMenu(title: "View")
-        let console = NSMenuItem(title: "Open Console", action: #selector(openConsole), keyEquivalent: "j")
-        console.keyEquivalentModifierMask = [.option, .shift]
+        let console = NSMenuItem(title: "Open Console", action: #selector(openConsole), keyEquivalent: Hotkeys.Action.openConsole.keyEquivalent.0)
+        console.keyEquivalentModifierMask = Hotkeys.Action.openConsole.keyEquivalent.1
         console.target = self
         view.addItem(console)
         let summon = NSMenuItem(title: "Summon Orb to Cursor", action: #selector(summonOrb), keyEquivalent: "")

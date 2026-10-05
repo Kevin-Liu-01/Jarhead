@@ -32,7 +32,7 @@ enum HelpCopy {
     static let stopSpent = Entry(name: "Stop", hint: "Stopped — nothing running", key: "⌘.")
     static let check = Entry(name: "Check", hint: "Probe the brain again")
     static let search = Entry(name: "Search", hint: "Find a line in every conversation", key: "⌘F")
-    static let circle = Entry(name: "Circle", hint: "Circle something — needs Screen Recording", key: "⌥⇧C")
+    static let circle = Entry(name: "Circle", hint: "Circle something — needs Screen Recording", key: "⌃⌥C")
     static let mute = Entry(name: "Mute", hint: "Stop sending — the session and the mic stay open")
     static let unmute = Entry(name: "Unmute", hint: "Listen again")
     static let send = Entry(name: "Send", hint: "Send the line", key: "⏎")
@@ -71,7 +71,7 @@ enum HelpCopy {
     // MARK: automations (design11) — the ring's presses, a row's verbs, the recipes
 
     /// Snooze carries the minutes the island's press would use (Settings.snoozeMinutes).
-    static func snooze(_ minutes: Int) -> Entry { Entry(name: "Snooze", hint: "Snooze — rings again in \(minutes) min", key: "⌥⇧S") }
+    static func snooze(_ minutes: Int) -> Entry { Entry(name: "Snooze", hint: "Snooze — rings again in \(minutes) min", key: "⌃⌥S") }
     static let done = Entry(name: "Done", hint: "Done — stops the ring, the row stays")
     static let skip = Entry(name: "Skip", hint: "Skip — the next fire rolls past without ringing")
     static let pauseAutomation = Entry(name: "Pause", hint: "Pause — keeps it, fires nothing")
@@ -87,7 +87,7 @@ enum HelpCopy {
     /// The peek chip while Recording is on (a glyph, no figure).
     static let recordingChip = Entry(name: "Recording", hint: "Recording — mic shared, echo guarded")
     /// The status menu row (and the Dock menu's); the key rides last as the menu's own equivalent.
-    static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic, guard the echo — apps keep their sound", key: "⌥⇧R")
+    static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic, guard the echo — apps keep their sound", key: "⌃⌥R")
 
     // MARK: voices (design13) — the composer chip, Switch now at rest and while work runs
 

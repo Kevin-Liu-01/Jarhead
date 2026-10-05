@@ -427,7 +427,7 @@ public final class AppState: ObservableObject {
 
     // MARK: - Recording and the echo fuse (design12)
 
-    /// Settings › Audio › Recording, the status menu row, ⌥⇧R: the whole audio block through `set-settings` —
+    /// Settings › Audio › Recording, the status menu row, ⌃⌥R: the whole audio block through `set-settings` —
     /// the only writer of settings, and the only command a flip may enqueue (appstate-bench pins it).
     public func setRecording(_ on: Bool) {
         var a = snapshot.settings.audioSettings

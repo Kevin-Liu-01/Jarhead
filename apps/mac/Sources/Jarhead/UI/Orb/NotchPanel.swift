@@ -1303,7 +1303,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private static let threadShadow: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 0, alpha: 0.55), .paragraphStyle: truncating]
     /// The paused foot, a step dimmer.
     private static let footPausedAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.48), .paragraphStyle: truncating]
-    /// Mono words at the empty step (the hint face; "Circle something · ⌥⇧C" now lives in Circle's tooltip).
+    /// Mono words at the empty step (the hint face; "Circle something · ⌃⌥C" now lives in Circle's tooltip).
     private static let hintAttrs: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor(white: 1, alpha: 0.46), .paragraphStyle: truncating]
     /// The mono "+3" in a thumbnail slot.
     private static let overflowAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72)]
@@ -2457,12 +2457,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         return nil
     }
 
-    /// "Wake up, Kevin · Snooze ⌥⇧S": the line without its clock, and the one press a hotkey reaches.
+    /// "Wake up, Kevin · Snooze ⌃⌥S": the line without its clock, and the one press a hotkey reaches.
     static func ringPillText(_ r: DockContent.RingRow) -> String {
-        RingWords.body(of: r.line) + (r.offersSnooze ? " · Snooze ⌥⇧S" : " · Done")
+        RingWords.body(of: r.line) + (r.offersSnooze ? " · Snooze ⌃⌥S" : " · Done")
     }
     /// The chip's and the pill's tooltip: the whole line, then the way to answer it.
-    static func ringTooltip(_ r: DockContent.RingRow) -> String { r.line + (r.offersSnooze ? " — Snooze ⌥⇧S" : " — Done") }
+    static func ringTooltip(_ r: DockContent.RingRow) -> String { r.line + (r.offersSnooze ? " — Snooze ⌃⌥S" : " — Done") }
     /// "pasta · 4:12" under the lip; "4:12" on the chip.
     static func timerFigure(_ t: DockContent.TimerRow) -> String { OrbStyle.mmss(max(0, t.until.timeIntervalSinceNow)) }
     static func timerPillText(_ t: DockContent.TimerRow) -> String { "\(t.name) · \(timerFigure(t))" }
@@ -3848,7 +3848,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             if c.marking { return "Cancel circling (Esc)" }
             if !c.screenRecordingGranted { return "Circle something — needs Screen Recording (Request below)" }
             let n = c.pendingMarks
-            return n > 0 ? "Circle something — \(n) waiting · ⌥⇧C" : "Circle something · ⌥⇧C"
+            return n > 0 ? "Circle something — \(n) waiting · ⌃⌥C" : "Circle something · ⌃⌥C"
         case .window:
             return c.screenRecordingGranted ? "Capture the front window for Jarhead" : "Capture the front window for Jarhead — needs Screen Recording"
         case .ask:
@@ -3878,7 +3878,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         case .threadStop(let id):
             let name = c.threads.first(where: { $0.id == id })?.name ?? "thread"
             return "Stop \(name)"
-        case .console: return "Console (⌥⇧J)"
+        case .console: return "Console (⌃⌥J)"
         case .sleep: return awake ? "Sleep — back to the notch" : "Asleep"
         case .remedy:
             guard let p = c.problem else { return "" }
