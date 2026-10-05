@@ -46,6 +46,10 @@ final class DaemonProcess {
     /// The lock file the daemon holds for its whole life (server.ts DAEMON_LOCK_FILE); it carries the holder's pid.
     nonisolated static let lockFileName = "jarheadd.lock"
 
+    /// `<socket>.lock` (server.ts socketLockPath): held by the one server listening on the socket, with its pid in it.
+    /// It names the listener even when the socket refuses every connect (a wedged daemon whose accept queue is full).
+    nonisolated static func socketLockPath(_ socketPath: String) -> String { socketPath + ".lock" }
+
     var pid: Int32? { process.flatMap { $0.isRunning ? $0.processIdentifier : nil } }
 
     init(location: RepoLocation, socketPath: String, state: AppState) {
@@ -65,7 +69,7 @@ final class DaemonProcess {
             let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 let pid = note.userInfo?["pid"] as? Int32
                 let seconds = note.userInfo?["seconds"] as? Int
-                let reason = seconds.map { "\(why): no pong for \($0) s" } ?? why
+                let reason = seconds.map { "\(why): silent for \($0) s" } ?? why
                 MainActor.assumeIsolated { self?.kick(why: reason, pid: pid) }
             }
             observers.append(observer)
@@ -90,32 +94,39 @@ final class DaemonProcess {
     private var lastKickAt: Date?
     static let kickDebounce: TimeInterval = 5
 
-    /// The daemon is up and not answering (EngineClient missed two pongs, or a connection got
-    /// no hello), or Kevin pressed "Restart daemon" while nothing answers. The kick reaches the
-    /// process that LISTENS on our socket, whoever started it:
+    /// The daemon is up and not answering (EngineClient heard nothing for
+    /// `EngineClient.silenceBeforeKick` across a fresh connection), a daemon we spawned found
+    /// the socket held by one that accepts nothing (`handleExit`), or Kevin pressed "Restart
+    /// daemon" while nothing answers. The kick reaches the process that LISTENS on our socket,
+    /// whoever started it:
     ///
     /// 1. `LOCAL_PEERPID` on a fresh connection names the listener; the kernel knows it even
     ///    while the daemon's event loop is wedged and has accepted nothing.
     /// 2. Else the hello pid of the connection that stopped answering.
-    /// 3. Else the pid in `<state dir>/jarheadd.lock`, trusted only while the lock is held.
+    /// 3. Else the pid in `<socket>.lock`, trusted only while the lock is held: the listener
+    ///    whose accept queue is full, which refuses the connect that 1 needs.
+    /// 4. Else the pid in `<state dir>/jarheadd.lock`, trusted only while the lock is held.
     ///
     /// That pid is SIGKILLed only while it is still a `node` (`proc_pidpath`): a pid is a
     /// number the kernel reuses, and the one thing this must never do is kill one of Kevin's
     /// own processes. The daemon we spawned is killed too (it is our child, running, so its pid
     /// is still its own); its exit runs the usual `handleExit` → `scheduleRestart` with the
     /// backoff, so a daemon that dies on every start is not respawned hot. A kick inside the
-    /// debounce window is logged and ignored: the previous one is still working.
-    func kick(why: String, pid hint: Int32?) {
-        guard !stopping else { return }
+    /// debounce window is logged and ignored (false): the previous one is still working.
+    @discardableResult
+    func kick(why: String, pid hint: Int32?) -> Bool {
+        guard !stopping else { return false }
         if let last = lastKickAt, Date().timeIntervalSince(last) < DaemonProcess.kickDebounce {
             log("[app] \(why); a restart is already under way (\(Int(Date().timeIntervalSince(last))) s ago)")
-            return
+            return false
         }
         lastKickAt = Date()
         let own = process.flatMap { $0.isRunning ? $0.processIdentifier : nil }
         let me = ProcessInfo.processInfo.processIdentifier
-        // The listener first: it is the daemon, whatever the hello or the lock file say.
-        let target = DaemonProcess.peerPid(socketPath) ?? hint ?? DaemonProcess.lockedPid(stateDir: stateDir)
+        // The listener first: it is the daemon, whatever the hello or the lock files say.
+        let target = DaemonProcess.peerPid(socketPath) ?? hint
+            ?? DaemonProcess.lockedPid(at: DaemonProcess.socketLockPath(socketPath))
+            ?? DaemonProcess.lockedPid(stateDir: stateDir)
         if let target, target > 1, target != me, target != own {
             if let exe = DaemonProcess.executablePath(of: target), isDaemonExecutable(exe) {
                 log("[app] \(why); killing the daemon on the socket, pid \(target) (\(exe))")
@@ -128,7 +139,7 @@ final class DaemonProcess {
             log("[app] \(why); killing daemon pid \(own) and respawning")
             setDetail("daemon unresponsive; restarting")
             kill(own, SIGKILL)
-            return
+            return true
         }
         if target == nil { log("[app] \(why); no daemon of ours is running; starting one") }
         attachTimer?.invalidate(); attachTimer = nil
@@ -138,6 +149,7 @@ final class DaemonProcess {
         // Through the restart timer, not spawn() directly: it probes the socket first, so a
         // daemon that still answers (one we could not kill) is attached to again rather than doubled.
         scheduleRestart(why: why)
+        return true
     }
 
     /// The app waited for a first snapshot and none came (AppDelegate, before it opens Setup):
@@ -323,8 +335,16 @@ final class DaemonProcess {
         log("[app] daemon ended: \(how)")
         if stopping { return }
         if reason == .exit && status == DaemonProcess.alreadyRunningExit {
-            // Another daemon serves this state dir or this socket (its line is in daemon.log). The
-            // restart below attaches when it answers here, and tries again later when it does not.
+            // Another daemon serves this state dir or this socket (its line is in daemon.log).
+            // When it holds our socket and still accepts nothing, it is wedged with its accept
+            // queue full: every connect is refused, so no ping ever reaches it and nothing else
+            // kicks it. Kick it here; the restart that follows spawns a fresh one.
+            if !DaemonProcess.socketAnswers(socketPath), let listener = DaemonProcess.lockedPid(at: DaemonProcess.socketLockPath(socketPath)) {
+                log("[app] daemon pid \(listener) holds \(shortPath(socketPath)) and refuses every connect")
+                if kick(why: "the daemon on the socket accepts nothing", pid: listener) { return }
+            }
+            // Otherwise the restart below attaches when it answers here, and tries again later
+            // when it does not (a daemon of this state dir serving another socket is left alone).
             log("[app] another daemon already serves \(shortPath(stateDir.path)); not starting a second one")
             scheduleRestart(why: "another daemon is running")
             return
@@ -466,11 +486,16 @@ final class DaemonProcess {
         return pid
     }
 
-    /// The pid in `<stateDir>/jarheadd.lock`, only while a daemon holds the lock: a shared lock
-    /// that cannot be had means the exclusive one is held, so the pid written there is live.
-    /// A free lock means its holder is gone and the number may be anyone's by now: nil.
+    /// The pid in `<stateDir>/jarheadd.lock`, only while a daemon holds the lock.
     nonisolated static func lockedPid(stateDir: URL) -> Int32? {
-        let path = stateDir.appendingPathComponent(lockFileName).path
+        lockedPid(at: stateDir.appendingPathComponent(lockFileName).path)
+    }
+
+    /// The pid in a lock file the daemon holds (the state dir's, or the one beside its socket),
+    /// only while it is held: a shared lock that cannot be had means the exclusive one is held,
+    /// so the pid written there is live. A free lock means its holder is gone and the number
+    /// may be anyone's by now: nil.
+    nonisolated static func lockedPid(at path: String) -> Int32? {
         let probe = open(path, O_RDONLY | O_SHLOCK | O_NONBLOCK | O_CLOEXEC)
         if probe >= 0 {
             close(probe)
@@ -650,7 +675,7 @@ final class DaemonLog: @unchecked Sendable {
             line.isEmpty || line.hasPrefix("[app]") || line.hasPrefix("at ") || line.hasPrefix("Node.js v") || line.allSatisfy { "^~{}()[],;".contains($0) }
         }
         let own = bodies.filter { !noise($0) }
-        let failure = #"(?i)error|refus|cannot|can't|failed|holds|not found|EADDRINUSE|EACCES"#
+        let failure = #"(?i)error|refus|cannot|can't|failed|holds|another Jarhead daemon|not found|EADDRINUSE|EACCES"#
         guard let pick = own.last(where: { $0.range(of: failure, options: .regularExpression) != nil }) ?? own.last ?? bodies.last(where: { !$0.isEmpty }) else { return nil }
         return pick.count > 160 ? String(pick.prefix(159)) + "…" : pick
     }

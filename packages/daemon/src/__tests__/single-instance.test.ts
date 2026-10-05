@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { connect } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DAEMON_LOCK_FILE, DaemonLockHeld, DaemonServer, SocketInUseError, acquireDaemonLock, probeSocket, type ToolHost } from "../server.ts";
+import { DAEMON_LOCK_FILE, DaemonLockHeld, DaemonServer, SocketInUseError, acquireDaemonLock, probeSocket, socketInUse, socketLockPath, type ToolHost } from "../server.ts";
 import { DaemonClient } from "../client.ts";
-import { shouldAutoWake } from "../main.ts";
-import { settle, until, world } from "../../../engine/src/__tests__/world.ts";
+import { shouldAutoWake, socketRefusal } from "../main.ts";
+import { delegate, settle, until, world } from "../../../engine/src/__tests__/world.ts";
 
 // W1-10: one daemon per socket and per state dir (APP-4, F-CODEX-SOCKET server half), a
-// session nobody can hear does not keep billing (V7), and the auto-wake rule is a pure
-// function (WG-12, the daemon half).
+// session nobody can hear does not keep billing (V7) while a crash relaunch keeps its work,
+// and the auto-wake rule is a pure function (WG-12, the daemon half).
 
 class MiniEngine extends EventEmitter {
   constructor(readonly name: string) {
@@ -78,16 +78,16 @@ test("APP-4: a second daemon on a live daemon's socket path is refused; the firs
   const cliSaw: { type: string; snapshot?: { engine?: string } }[] = [];
   cli.on("message", (m) => cliSaw.push(m as never));
   await cli.connect({ pid: 2 });
-  await settle(50);
   app.sendJson({ type: "command", command: { type: "go" } });
   cli.sendJson({ type: "command", command: { type: "go" } });
-  await settle(50);
   try {
-    assert.ok(refused, "the second listen() must refuse a socket a live daemon answers on");
+    assert.ok(refused, "the second listen() must refuse a socket a live daemon holds");
     assert.ok(refused instanceof SocketInUseError);
-    assert.match(refused.message, /another Jarhead daemon answers on/);
+    assert.equal(refused.holder, process.pid, "the lock beside the socket names the server that holds it");
+    assert.match(refused.message, /^something already serves .*d\.sock \(pid \d+\)$/);
+    assert.ok(await until(() => first.commands.length === 2 && cliSaw.some((m) => m.type === "snapshot")), "both clients' commands reach the first engine");
     assert.equal(cliSaw.find((m) => m.type === "snapshot")?.snapshot?.engine, "first", "a new client reaches the daemon that was already running");
-    assert.equal(first.commands.length, 2, "both clients' commands reach the first engine");
+    await settle(50);
     assert.equal(second.commands.length, 0);
   } finally {
     app.close();
@@ -101,41 +101,76 @@ test("APP-4: close() unlinks only the socket it owns; a server whose path was ta
   const path = join(socketDir(), "d.sock");
   const a = new DaemonServer(new MiniEngine("first") as never, path);
   await a.listen();
-  // Something removed the first daemon's socket file (a hand, an older build) and a second daemon bound the path.
+  // Something removed the first daemon's socket file (a hand, an older build).
   unlinkSync(path);
-  const b = new DaemonServer(new MiniEngine("second") as never, path);
-  await b.listen();
+  // A server of this build is still refused: the first one holds the path's lock while it lives.
+  await assert.rejects(new DaemonServer(new MiniEngine("second") as never, path).listen(), SocketInUseError);
+  // A server of an older build takes no lock and binds the path.
+  const older = createServer();
+  await new Promise<void>((resolve) => older.listen(path, resolve));
   try {
     await a.close();
     assert.ok(existsSync(path), "the first server's close removed the second server's socket file");
     assert.equal(await reach(path), "connected", "the second server still answers on the path");
+    assert.equal(existsSync(socketLockPath(path)), false, "the first server's lock went with its close");
   } finally {
-    await b.close();
+    await new Promise<void>((resolve) => older.close(() => resolve()));
   }
-  assert.equal(existsSync(path), false, "the owner's close removes its own socket file");
+  assert.equal(existsSync(path), false);
 });
 
-test("V7: the app's socket closes without a bye while a session is open: the session is paused (closed, the conversation held), not left billing", async () => {
+/** The engine of world() behind a real server, a session open and the app attached: what a crash does to it. */
+async function crashWorld(graceMs: number): Promise<{ w: ReturnType<typeof world>; server: DaemonServer; path: string; app: DaemonClient }> {
   const w = world();
-  const { engine } = w;
   const path = join(socketDir(), "d.sock");
-  const server = new DaemonServer(engine as never, path);
+  const server = new DaemonServer(w.engine as never, path, { appGoneGraceMs: graceMs });
   await server.listen();
+  await w.engine.start();
+  await w.engine.ready();
+  w.engine.updateSettings({ idleSleepMinutes: 0 });
+  const app = new DaemonClient(path);
+  await app.connect({ pid: 999_999, audio: true });
+  app.sendJson({ type: "command", command: { type: "go" } });
+  assert.ok(await until(() => w.engine.transportState === "awake"), "the session opened");
+  return { w, server, path, app };
+}
+
+test("V7: the app's socket closes without a bye and the app stays gone: after the grace the session is paused (closed, the conversation held), not left billing through the linger", async () => {
+  const { w, server, app } = await crashWorld(800);
   try {
-    await engine.start();
-    await engine.ready();
-    engine.updateSettings({ idleSleepMinutes: 0 });
-    const app = new DaemonClient(path);
-    await app.connect({ pid: 999_999, audio: true });
-    app.sendJson({ type: "command", command: { type: "go" } });
-    assert.ok(await until(() => engine.transportState === "awake"), "the session opened");
-    // The app dies: its socket closes with no bye.
+    // The app dies: its socket closes with no bye, and nobody comes back.
     app.close();
-    assert.ok(await until(() => engine.transportState !== "awake", 1000), `a session nobody can hear must not keep billing through the linger (transport ${engine.transportState})`);
-    assert.equal(engine.transportState, "paused", "paused: the meter stops and the relaunched app can resume the conversation");
+    await settle(100);
+    assert.equal(w.engine.transportState, "awake", "inside the grace the session waits for the app");
+    assert.ok(await until(() => w.engine.transportState !== "awake", 4000), `a session nobody can hear must not keep billing through the linger (transport ${w.engine.transportState})`);
+    assert.equal(w.engine.transportState, "paused", "paused: the meter stops and the app can resume the conversation when it is back");
   } finally {
     await server.close();
-    await engine.stop();
+    await w.engine.stop();
+  }
+});
+
+test("a crash relaunch inside the grace keeps the work: the session stays open, the running task is not cancelled, nothing is paused", async () => {
+  const grace = 1500;
+  const { w, server, path, app } = await crashWorld(grace);
+  let relaunched: DaemonClient | undefined;
+  try {
+    delegate(w, "draft the reply to Sam in Slack", "call_1");
+    assert.ok(await until(() => w.brain.tasks.length === 1), "the brain got the task");
+    const task = w.brain.tasks[0]!;
+    // The app crashes mid-delegation; the crash guard relaunches it and it attaches again.
+    app.close();
+    await settle(100);
+    relaunched = new DaemonClient(path);
+    await relaunched.connect({ pid: 999_998, audio: true });
+    await settle(grace + 300);
+    assert.equal(w.engine.transportState, "awake", "the session is still open for the relaunched app");
+    assert.equal(task.signal.aborted, false, "the task the app crashed in the middle of goes on");
+    assert.equal(w.brain.cancels, 0, "nothing was cancelled");
+  } finally {
+    relaunched?.close();
+    await server.close();
+    await w.engine.stop();
   }
 });
 
@@ -175,7 +210,8 @@ test("F-CODEX-SOCKET (server half): a second brain's private tool server on a pa
   const main = new DaemonServer(host("main"), path);
   await main.listen();
   const spare = new DaemonServer(host("spare"), path);
-  await assert.rejects(spare.listen(), SocketInUseError);
+  // The brain reads this as its start failure: it names the path, not a daemon.
+  await assert.rejects(spare.listen(), (e: unknown) => e instanceof SocketInUseError && /^something already serves .*codex-tools\.sock/.test(e.message));
   await spare.close();
   assert.ok(existsSync(path), "the refused server's close removed nothing");
   const cli = new DaemonClient(path);
@@ -236,10 +272,11 @@ class SessionEngine extends MiniEngine {
   }
 }
 
-test("V7 (server): only the last app leaving without a bye, with a session open, pauses; a bye, a CLI client leaving, a second app still attached or no session leave the engine alone", async () => {
+test("V7 (server): only the last app leaving without a bye and not back inside the grace, with a session open, pauses; a bye, a CLI client leaving, a second app still attached, an app back in time or no session leave the engine alone", async () => {
   const path = join(socketDir(), "d.sock");
   const engine = new SessionEngine("e");
-  const server = new DaemonServer(engine as never, path);
+  const grace = 600;
+  const server = new DaemonServer(engine as never, path, { appGoneGraceMs: grace });
   await server.listen();
   const pauses = (): number => engine.commands.filter((c) => (c as { type?: string }).type === "pause").length;
   try {
@@ -267,11 +304,23 @@ test("V7 (server): only the last app leaving without a bye, with a session open,
     await b.connect({ pid: 5, audio: true });
     await settle(30);
     a.close();
-    await settle(50);
+    await settle(grace + 100);
     assert.equal(pauses(), 0, "another app is still attached");
-    // The last app crashes: pause.
+
+    // The last app crashes and is relaunched inside the grace: its hello clears the pause.
     b.close();
-    assert.ok(await until(() => pauses() === 1, 1000), "the last app leaving without a bye pauses the open session");
+    await settle(50);
+    const relaunched = new DaemonClient(path);
+    await relaunched.connect({ pid: 7, audio: true });
+    await settle(grace + 100);
+    assert.equal(pauses(), 0, "the app came back in time");
+
+    // It crashes again; only a CLI client comes by (no audio hello): that is not the app back.
+    relaunched.close();
+    const cli2 = new DaemonClient(path);
+    await cli2.connect({ pid: 8 });
+    assert.ok(await until(() => pauses() === 1, grace + 3000), "the last app leaving without a bye and staying gone pauses the open session");
+    cli2.close();
 
     // Asleep (no session): an app crash sends nothing.
     engine.session = undefined;
@@ -279,11 +328,35 @@ test("V7 (server): only the last app leaving without a bye, with a session open,
     await c.connect({ pid: 6, audio: true });
     await settle(30);
     c.close();
-    await settle(50);
+    await settle(grace + 100);
     assert.equal(pauses(), 1, "nothing to pause while asleep");
+
+    // The daemon shutting down inside the grace: the sockets it closes are not a crash, and nothing fires after.
+    engine.session = { id: "sess_2" };
+    const d = new DaemonClient(path);
+    await d.connect({ pid: 9, audio: true });
+    await settle(30);
+    d.close();
+    await settle(20);
   } finally {
     await server.close();
   }
+  await settle(grace + 100);
+  assert.equal(pauses(), 1, "a shutdown inside the grace pauses nothing");
+});
+
+test("a shutdown with the app attached and a session open: server.close() destroys the app's socket and pauses nothing", async () => {
+  const path = join(socketDir(), "d.sock");
+  const engine = new SessionEngine("e");
+  const server = new DaemonServer(engine as never, path, { appGoneGraceMs: 30 });
+  await server.listen();
+  const app = new DaemonClient(path);
+  await app.connect({ pid: 4, audio: true });
+  await settle(30);
+  await server.close();
+  await settle(150);
+  app.close();
+  assert.deepEqual(engine.commands.filter((c) => (c as { type?: string }).type === "pause"), []);
 });
 
 test("WG-12: shouldAutoWake: the wake word gate, the env knob, --no-wake and the setting each keep the daemon from opening a session at start", () => {
@@ -333,7 +406,7 @@ test("jarheadd on a state dir another daemon holds: exits 73 before building an 
   try {
     const { code, stderr } = await runDaemon(stateDir, join(socketDir(), "d.sock"));
     assert.equal(code, 73, stderr);
-    assert.match(stderr, new RegExp(`jarheadd: another Jarhead daemon \\(pid ${process.pid}\\) holds .*jarheadd\\.lock; not starting a second daemon on the same state`));
+    assert.match(stderr, new RegExp(`jarheadd: another Jarhead daemon \\(pid ${process.pid}\\) holds .*jarheadd\\.lock\\. Not starting a second one\\.`));
     assert.equal(existsSync(join(stateDir, "ledger")), false, "nothing was built on the held state dir");
   } finally {
     lock.release();
@@ -349,11 +422,87 @@ test("jarheadd on a socket another daemon answers: exits 73 with one line, leave
   try {
     const { code, stderr } = await runDaemon(stateDir, path);
     assert.equal(code, 73, stderr);
-    assert.match(stderr, /jarheadd: another Jarhead daemon answers on .*d\.sock; not taking it from that daemon/);
+    assert.match(stderr, new RegExp(`jarheadd: another Jarhead daemon \\(pid ${process.pid}\\) holds .*d\\.sock\\. Not starting a second one\\.`));
     assert.deepEqual(await probeSocket(path), { state: "answers" }, "the first daemon still serves its socket");
     const again = acquireDaemonLock(stateDir);
     again.release();
   } finally {
     await server.close();
   }
+});
+
+test("the refusal lines are short sentences: a held socket names its pid; a server of an older build only answered", () => {
+  assert.equal(socketRefusal(new SocketInUseError("/s/jarhead.sock", 4242)), "another Jarhead daemon (pid 4242) holds /s/jarhead.sock");
+  assert.equal(socketRefusal(new SocketInUseError("/s/jarhead.sock")), "another Jarhead daemon answers on /s/jarhead.sock");
+});
+
+/** A child process serving `path` with a real DaemonServer, then wedged (its event loop blocked) until killed. */
+function wedgedServer(path: string): Promise<{ pid: number; kill: () => Promise<void> }> {
+  const server = new URL("../server.ts", import.meta.url).href;
+  const code = [
+    `const m = await import(${JSON.stringify(server)});`,
+    `const s = new m.DaemonServer({ runner: { run: async () => ({ result: { kind: "text", text: "" } }) }, runnerFor: () => undefined }, ${JSON.stringify(path)});`,
+    `await s.listen();`,
+    `console.log("up");`,
+    `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);`,
+  ].join("\n");
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "inherit"] });
+    const gone = new Promise<void>((r) => child.on("exit", () => r()));
+    child.on("error", reject);
+    child.stdout.on("data", (d: Buffer) => {
+      if (d.toString().includes("up"))
+        resolve({
+          pid: child.pid!,
+          kill: async () => {
+            child.kill("SIGKILL");
+            await gone;
+          },
+        });
+    });
+  });
+}
+
+/** Connect until the kernel refuses (the listener's accept queue is full); the sockets stay open in the queue. */
+async function fillAcceptQueue(path: string): Promise<Socket[]> {
+  const held: Socket[] = [];
+  for (let i = 0; i < 2000; i++) {
+    const s = connect(path);
+    const r = await new Promise<string>((resolve) => {
+      s.once("connect", () => resolve("connected"));
+      s.once("error", (e: NodeJS.ErrnoException) => resolve(e.code ?? "error"));
+    });
+    if (r !== "connected") return held;
+    held.push(s);
+  }
+  throw new Error("the accept queue never filled");
+}
+
+test("a wedged server whose accept queue is full reads as stale to the probe, and listen() still refuses its path: the lock beside the socket says it lives; once it is killed the path is taken", async () => {
+  const path = join(socketDir(), "d.sock");
+  const wedged = await wedgedServer(path);
+  let queue: Socket[] = [];
+  try {
+    queue = await fillAcceptQueue(path);
+    assert.deepEqual(await probeSocket(path), { state: "stale" }, "a full queue refuses connects like a socket nobody listens on");
+    const second = new DaemonServer(new MiniEngine("second") as never, path);
+    await assert.rejects(second.listen(), (e: unknown) => e instanceof SocketInUseError && e.holder === wedged.pid);
+    await second.close();
+    assert.ok(existsSync(path), "the wedged server's socket file was not removed");
+    assert.equal((await socketInUse(path))?.holder, wedged.pid, "main.ts's early check names it too");
+    assert.equal(readFileSync(socketLockPath(path), "utf8").trim(), String(wedged.pid), "the lock file carries the listener's pid (the app's kick reads it)");
+  } finally {
+    for (const s of queue) s.destroy();
+    await wedged.kill();
+  }
+  // Killed: the kernel dropped its lock, its socket file is stale, and the next server takes the path.
+  assert.equal(await socketInUse(path), undefined);
+  const next = new DaemonServer(new MiniEngine("next") as never, path);
+  await next.listen();
+  try {
+    assert.deepEqual(await probeSocket(path), { state: "answers" });
+  } finally {
+    await next.close();
+  }
+  assert.deepEqual(readdirNames(path), [], "the socket and its lock file both went with the close");
 });

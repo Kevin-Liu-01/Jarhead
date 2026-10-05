@@ -167,21 +167,47 @@ export interface DaemonServerEvents {
   leave: [count: number];
 }
 
+/**
+ * How long a session stays open after the app's connection closes without a bye, waiting for
+ * the app to come back. A crash relaunch re-attaches in 1 to 3 s, and an app that dropped one
+ * bad frame reconnects in under one: both find the session, the running task and the threads
+ * as they were. An app that is still gone after this is not coming back soon, and Live bills
+ * every second the session is open: the session is paused then (V7).
+ */
+export const APP_GONE_GRACE_MS = 10_000;
+
+export interface DaemonServerOptions {
+  /** The version in the hello. */
+  readonly version?: string;
+  /** APP_GONE_GRACE_MS, shorter in tests. */
+  readonly appGoneGraceMs?: number;
+}
+
 export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   private server: Server | undefined;
   private readonly clients = new Set<Client>();
   private clientSeq = 0;
   private readonly engine: EngineLike;
+  private readonly version: string;
+  private readonly appGoneGraceMs: number;
   /** The socket file this server bound (device and inode): close() removes that file and no other. */
   private owned: { readonly dev: number; readonly ino: number } | undefined;
+  /** `<socket>.lock`, held while this server serves the path (`listen` to `close`). */
+  private socketLock: HeldLock | undefined;
+  /** Armed when the last app leaves without a bye; an app's hello clears it; firing pauses an open session. */
+  private appGoneTimer: NodeJS.Timeout | undefined;
+  /** close() has begun: the sockets it destroys are not apps that crashed. */
+  private closing = false;
 
   /** Over the engine, or over a ToolHost (a brain's private tool socket): then only `tool.run` does anything. */
   constructor(
     engine: EngineLike | ToolHost,
     private readonly socketPath: string,
-    private readonly version = "2.0.0",
+    options: DaemonServerOptions = {},
   ) {
     super();
+    this.version = options.version ?? "2.0.0";
+    this.appGoneGraceMs = options.appGoneGraceMs ?? APP_GONE_GRACE_MS;
     this.engine = isEngine(engine) ? engine : toolOnlyEngine(engine);
     this.engine.on("event", (e) => {
       switch (e.type) {
@@ -218,19 +244,38 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   }
 
   /**
-   * Bind the socket path, or refuse it. A path some server answers on is that server's: a
-   * second daemon (a respawn beside a wedged one, `pnpm jarheadd` beside the app's) gets
-   * SocketInUseError and takes nothing. Only a file nobody listens on (ECONNREFUSED: a
-   * daemon that was killed) is removed first.
+   * Bind the socket path, or refuse it. A path another server holds is that server's: a
+   * second daemon (a respawn beside a wedged one, `pnpm jarheadd` beside the app's) or a
+   * second brain's tool server gets SocketInUseError and takes nothing.
+   *
+   * Two checks say the path is held. First the lock beside it, `<socket>.lock`, which every
+   * server holds from here to close(): a held lock is a live server, even a wedged one whose
+   * accept queue is full and refuses every connect. Then a probe, for a server of an older
+   * build that takes no lock: one that accepts is refused. Only a file nobody holds and
+   * nobody accepts on (ECONNREFUSED: a daemon that was killed) is removed first.
    *
    * The socket is bound under a private name in the same folder and then hard-linked into
-   * place: link(2) refuses a path that exists, so two daemons racing past the probe cannot
+   * place: link(2) refuses a path that exists, so two servers racing past both checks cannot
    * both win, and libuv, which unlinks the name it bound when the server closes, removes
    * only the private name. close() removes the public path itself, and only while it is
    * still this server's inode.
    */
   async listen(): Promise<void> {
     const path = this.socketPath;
+    this.closing = false;
+    const lock = takeLock(socketLockPath(path));
+    if (lock === "held") throw new SocketInUseError(path, lockHolder(socketLockPath(path)));
+    this.socketLock = lock;
+    try {
+      await this.bindPath(path);
+    } catch (e) {
+      this.releaseSocketLock();
+      throw e;
+    }
+    log.info(`listening on ${path}`);
+  }
+
+  private async bindPath(path: string): Promise<void> {
     const found = await probeSocket(path);
     if (found.state === "answers") throw new SocketInUseError(path);
     // A file that is not a socket (ENOTSOCK), or one we may not touch: not ours to delete.
@@ -238,7 +283,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     if (found.state === "stale") {
       try {
         unlinkSync(path);
-        log.info(`removed a stale socket file at ${path} (nobody was listening)`);
+        log.info(`removed a stale socket file at ${path} (nobody held it or accepted on it)`);
       } catch {
         // Gone already, or not ours to remove: the link below reports it.
       }
@@ -273,7 +318,12 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     }
     const st = lstatSync(path);
     this.owned = { dev: st.dev, ino: st.ino };
-    log.info(`listening on ${path}`);
+  }
+
+  private releaseSocketLock(): void {
+    const lock = this.socketLock;
+    this.socketLock = undefined;
+    lock?.release(true);
   }
 
   get clientCount(): number {
@@ -338,6 +388,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       case "hello":
         client.audio = msg.audio === true;
         if (Number.isInteger(msg.pid)) this.engine.registerOwnPid(msg.pid);
+        if (client.audio) this.appBack();
         this.tellViewers();
         return;
       case "command": {
@@ -496,24 +547,53 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   }
 
   /**
-   * The app's connection closed without a bye (it crashed, or it gave up on us) and no other
-   * app is attached. Nobody can hear the voice or speak to it now, and GPT-Live-1 bills every
-   * second the session is open: pause it. A pause closes the session and holds the
-   * conversation, so the relaunched app resumes it with Go or the wake word. A clean quit
-   * stopped the session before its socket closed; the engine then answers "asleep already".
+   * The app's connection closed without a bye (it crashed, or it dropped the connection) and
+   * no other app is attached. Nobody can hear the voice or speak to it now, and GPT-Live-1
+   * bills every second the session is open. But the app is usually back within seconds (the
+   * crash guard relaunches it; a dropped connection reconnects), and a pause cuts everything:
+   * the running task, every thread, the questions waiting for an answer. So wait
+   * `appGoneGraceMs` first. An app's hello inside that window clears it, and the session,
+   * the task and the threads go on. Only an app still gone then pauses the session: it closes
+   * and the conversation is held, so the app resumes it with Go or the wake word when it is
+   * back. A clean quit stopped the session before its socket closed, and said bye.
    */
   private appGone(): void {
-    for (const c of this.clients) if (c.audio) return;
+    if (this.closing || this.hasApp()) return;
+    if (this.appGoneTimer) clearTimeout(this.appGoneTimer);
+    if (this.sessionOpen()) log.warn(`the app left without a bye while a session was open; it is paused in ${Math.round(this.appGoneGraceMs / 1000)} s unless the app comes back`);
+    this.appGoneTimer = setTimeout(() => this.appStayedGone(), this.appGoneGraceMs);
+    this.appGoneTimer.unref?.();
+  }
+
+  /** An app said hello: whatever its leaving armed is off. */
+  private appBack(): void {
+    if (!this.appGoneTimer) return;
+    clearTimeout(this.appGoneTimer);
+    this.appGoneTimer = undefined;
+    log.info("the app is back inside the grace; nothing is paused");
+  }
+
+  private appStayedGone(): void {
+    this.appGoneTimer = undefined;
+    if (this.closing || this.hasApp() || !this.sessionOpen()) return;
+    log.warn(`the app did not come back in ${Math.round(this.appGoneGraceMs / 1000)} s; pausing the session (the meter stops; Go resumes)`);
+    void this.engine.command({ type: "pause" }).catch((e: unknown) => log.warn(`pause after the app left: ${(e as Error).message}`));
+  }
+
+  private hasApp(): boolean {
+    for (const c of this.clients) if (c.audio) return true;
+    return false;
+  }
+
+  /** A Live session is open: the meter runs, and a pause can close it. */
+  private sessionOpen(): boolean {
     let snapshot: unknown;
     try {
       snapshot = this.engine.snapshot();
     } catch {
-      return;
+      return false;
     }
-    const open = typeof snapshot === "object" && snapshot !== null && (snapshot as { session?: unknown }).session != null;
-    if (!open) return;
-    log.warn("the app left without a bye while a session was open; pausing it (the meter stops; Go resumes)");
-    void this.engine.command({ type: "pause" }).catch((e: unknown) => log.warn(`pause after the app left: ${(e as Error).message}`));
+    return typeof snapshot === "object" && snapshot !== null && (snapshot as { session?: unknown }).session != null;
   }
 
   /** The app (the client that said `hello { audio: true }`) is the one looking at the island and the Console; the CLI's join/leave clients are not viewers. */
@@ -574,31 +654,63 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
 
   /** Stop serving. The socket file goes only while it is still the one this server bound: a path another daemon has taken since is left answering. */
   async close(): Promise<void> {
+    // The sockets destroyed here are not apps that crashed: nothing is armed, and nothing armed fires.
+    this.closing = true;
+    if (this.appGoneTimer) clearTimeout(this.appGoneTimer);
+    this.appGoneTimer = undefined;
     for (const c of this.clients) c.socket.destroy();
     this.clients.clear();
     await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
+    this.server = undefined;
     const owned = this.owned;
     this.owned = undefined;
-    if (!owned) return;
-    try {
-      const st = lstatSync(this.socketPath);
-      if (st.dev === owned.dev && st.ino === owned.ino) unlinkSync(this.socketPath);
-      else log.info(`not removing ${this.socketPath}: another server has bound it since`);
-    } catch {
-      // gone already
+    if (owned) {
+      try {
+        const st = lstatSync(this.socketPath);
+        if (st.dev === owned.dev && st.ino === owned.ino) unlinkSync(this.socketPath);
+        else log.info(`not removing ${this.socketPath}: another server has bound it since`);
+      } catch {
+        // gone already
+      }
     }
+    // Last, once the path is gone: a server that takes the lock next finds nothing to refuse.
+    this.releaseSocketLock();
   }
 }
 
 // ----------------------------------------------------------- one instance
 
-/** listen() found a server answering on its path: that daemon keeps it. */
+/**
+ * listen() found the path held: another server keeps it. The message is neutral because a
+ * brain's private tool server reads it as well as the daemon (main.ts says its own line).
+ */
 export class SocketInUseError extends Error {
   readonly code = "EJARHEAD_SOCKET_IN_USE";
-  constructor(readonly socketPath: string) {
-    super(`another Jarhead daemon answers on ${socketPath}`);
+  /** The pid in `<socket>.lock` when the lock said so; undefined when a server of an older build answered the probe. */
+  constructor(
+    readonly socketPath: string,
+    readonly holder?: number,
+  ) {
+    super(`something already serves ${socketPath}${holder !== undefined ? ` (pid ${holder})` : ""}`);
     this.name = "SocketInUseError";
   }
+}
+
+/** `<socket>.lock`: held (flock) by the one server listening on that path, from listen() to close(); it holds that server's pid. */
+export function socketLockPath(socketPath: string): string {
+  return `${socketPath}.lock`;
+}
+
+/**
+ * Whether a server holds `socketPath` right now, without taking it: its lock is held, or
+ * (a server of an older build, which takes no lock) something accepts on it. The error says
+ * which; undefined when the path is free. main.ts asks before it builds an engine.
+ */
+export async function socketInUse(socketPath: string): Promise<SocketInUseError | undefined> {
+  const lock = socketLockPath(socketPath);
+  if (lockHeld(lock)) return new SocketInUseError(socketPath, lockHolder(lock));
+  if ((await probeSocket(socketPath)).state === "answers") return new SocketInUseError(socketPath);
+  return undefined;
 }
 
 export type SocketProbe =
@@ -608,9 +720,14 @@ export type SocketProbe =
   | { readonly state: "other"; readonly code: string };
 
 /**
- * What sits at a unix socket path: a server that accepts (a wedged one too: the kernel
- * accepts into its backlog), a file nobody listens on (ECONNREFUSED), nothing (ENOENT), or
- * something else that is not ours to remove.
+ * What sits at a unix socket path: a server that accepts, a file whose connects are refused
+ * (ECONNREFUSED), nothing (ENOENT), or something else that is not ours to remove.
+ *
+ * A wedged server still "answers" while its accept queue has room: the kernel accepts into
+ * the queue. Once the queue is full (closed connections stay in it until the server accepts
+ * them; the default backlog is kern.ipc.somaxconn, 128), its connects are refused too, and
+ * it reads as "stale" here, the same as a socket file left by a killed daemon. So "stale"
+ * alone does not prove nobody listens: listen() trusts it only when the path's lock is free.
  */
 export function probeSocket(path: string, timeoutMs = 1000): Promise<SocketProbe> {
   return new Promise((resolve) => {
@@ -660,6 +777,8 @@ export const DAEMON_LOCK_FILE = "jarheadd.lock";
 export const EXIT_ALREADY_RUNNING = 73;
 /** Darwin's open(2) O_EXLOCK: the exclusive flock is taken atomically with the open; with O_NONBLOCK a held lock fails at once (EAGAIN). */
 const O_EXLOCK = 0x20;
+/** Darwin's O_SHLOCK: a shared flock, which cannot be had while another open file holds the exclusive one. */
+const O_SHLOCK = 0x10;
 
 /** Another daemon holds the state dir's lock. */
 export class DaemonLockHeld extends Error {
@@ -683,38 +802,69 @@ export interface DaemonLock {
  * Take `<stateDir>/jarheadd.lock`, or throw DaemonLockHeld naming the daemon that has it.
  * Two engines on one state dir would both write the ledger and both fire every alarm; the
  * lock makes the second refuse before it builds anything. The file carries the holder's pid,
- * which the app reads (only while the lock is held) to kick a daemon it did not spawn. The
- * descriptor is close-on-exec, so no child the daemon spawns inherits the lock. (macOS
+ * which the app reads (only while the lock is held) to kick a daemon it did not spawn. (macOS
  * only, like Jarhead: elsewhere the pid is written and nothing is locked.)
  */
 export function acquireDaemonLock(stateDir: string): DaemonLock {
   mkdirSync(stateDir, { recursive: true });
   const path = join(stateDir, DAEMON_LOCK_FILE);
+  const lock = takeLock(path, { strict: true });
+  if (lock === "held") throw new DaemonLockHeld(path, lockHolder(path));
+  return { path, release: () => lock?.release(false) };
+}
+
+interface HeldLock {
+  /** Drop it. `remove`: unlink the file first, while still held (a lock beside a socket); otherwise only blank the pid. */
+  release(remove: boolean): void;
+}
+
+/**
+ * An exclusive flock on `path` (created if missing), taken atomically with the open
+ * (O_EXLOCK | O_NONBLOCK), with this process's pid written in. "held" when another open
+ * file holds it: another process, or another server in this one. undefined when no lock can
+ * be had for a reason other than a holder (a folder we may not write); `strict` throws then.
+ * The descriptor is close-on-exec, so no child inherits the lock.
+ */
+function takeLock(path: string, opts: { strict?: boolean } = {}): HeldLock | "held" | undefined {
   const flags = fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_NONBLOCK | (process.platform === "darwin" ? O_EXLOCK : 0);
   let fd: number;
   try {
     fd = openSync(path, flags, 0o644);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === "EAGAIN" || code === "EWOULDBLOCK") throw new DaemonLockHeld(path, lockHolder(path));
-    throw e;
+    if (code === "EAGAIN" || code === "EWOULDBLOCK") return "held";
+    if (opts.strict) throw e;
+    log.debug(`no lock at ${path} (${code ?? (e as Error).message}); going on without one`);
+    return undefined;
   }
   ftruncateSync(fd, 0);
   writeSync(fd, `${process.pid}\n`, 0);
   let held = true;
   return {
-    path,
-    release: () => {
+    release: (remove) => {
       if (!held) return;
       held = false;
       try {
-        ftruncateSync(fd, 0);
+        if (remove) unlinkSync(path);
+        else ftruncateSync(fd, 0);
       } catch {
         // the pid stays; the app checks the lock before trusting it
       }
       closeSync(fd);
     },
   };
+}
+
+/** Whether another open file holds an exclusive lock on `path` (a shared one cannot be had). False for no file. */
+function lockHeld(path: string): boolean {
+  if (process.platform !== "darwin") return false;
+  try {
+    closeSync(openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | O_SHLOCK));
+    return false;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "EAGAIN" || code === "EWOULDBLOCK";
+  }
 }
 
 /** The pid written in a lock file, when there is one. */

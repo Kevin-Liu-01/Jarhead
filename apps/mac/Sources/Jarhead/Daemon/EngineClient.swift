@@ -56,27 +56,37 @@ final class EngineClient: @unchecked Sendable {
     // and not answering — a wedged event loop — was invisible. So: the client counts as
     // connected only once the daemon's `hello` arrives (the kernel accepts a connection for
     // a wedged daemon too), and one `ping` goes every 2 s from the moment the socket opens,
-    // answered by the daemon on the wire with no engine work (`pong`); two unanswered in a
-    // row and this client drops the connection and tells DaemonProcess (a notification:
-    // both are the app's, no AppDelegate wiring) to kill and respawn it. While no daemon
-    // answers for more than a beat, the published snapshot carries one typed problem,
-    // `daemon`, whose remedy is "Restart daemon" (the `daemon.restart` command, routed to
-    // DaemonProcess while nothing is connected); the next real snapshot replaces it. The
-    // beat is `daemonProblemAfter` after a drop, and `daemonProblemAtStartAfter` from launch
-    // for a daemon that never answered at all (a fresh install whose daemon dies at start).
-    // And when the daemon comes back asleep after a session
-    // was open — a crash, a kill, a self-update mid-conversation — this client sends `go`
-    // once, inside 10 s of the reconnect; the engine resumes the conversation from the
-    // ledger (Engine.resumeFromLedger). Never after Kevin pressed Stop or Pause since that
-    // session's last snapshot; never twice.
+    // answered by the daemon on the wire with no engine work (`pong`). Two unanswered in a
+    // row and this client drops the connection and reconnects. The kick is a SIGKILL that
+    // takes the session, the threads and the turn in flight with it, so it waits longer:
+    // only when the daemon has said nothing for `silenceBeforeKick` (it lands on the second
+    // silent connection, about 12 s after its last answer) does this client tell
+    // DaemonProcess (a notification: both are the app's, no AppDelegate wiring) to kill and
+    // respawn it. A slow synchronous moment in the daemon (a long ledger search on a loaded
+    // Mac) costs a reconnect, not the daemon. While no daemon answers for more than a beat,
+    // the published snapshot carries one typed problem, `daemon`, whose remedy is "Restart
+    // daemon" (the `daemon.restart` command, routed to DaemonProcess while nothing is
+    // connected); the next real snapshot replaces it. The beat is `daemonProblemAfter` after
+    // a drop, and `daemonProblemAtStartAfter` from launch for a daemon that never answered
+    // at all (a fresh install whose daemon dies at start). And when the daemon comes back
+    // asleep after a session was open — a crash, a kill, a self-update mid-conversation —
+    // this client sends `go` once, inside 10 s of the reconnect; the engine resumes the
+    // conversation from the ledger (Engine.resumeFromLedger). Never after Kevin pressed Stop
+    // or Pause since that session's last snapshot; never twice.
 
-    /// Posted on the main queue when `missedPongsBeforeRespawn` pings went unanswered. `userInfo`: `pid` (Int32, the daemon's, when its hello said) and `seconds` (Int).
+    /// Posted on the main queue when the daemon has answered nothing for `silenceBeforeKick`, across a fresh connection. `userInfo`: `pid` (Int32, the daemon's, when this connection's hello said) and `seconds` (Int, the silence).
     nonisolated static let daemonUnresponsiveNotification = Notification.Name("jarhead.daemonUnresponsive")
     /// Posted on the main queue when the "Restart daemon" remedy is pressed while no daemon is connected. No `pid`: nothing is connected, so there is no daemon of ours to name.
     nonisolated static let restartDaemonNotification = Notification.Name("jarhead.restartDaemon")
 
     static let pingInterval: TimeInterval = 2
-    static let missedPongsBeforeRespawn = 2
+    /// Unanswered pings on one connection before it is dropped and opened again.
+    static let missedPongsBeforeDrop = 2
+    /// How long the daemon may say nothing (counted from the first ping it left unanswered)
+    /// before the kick. A connection's two missed pings are 4 s, under it: that drop only
+    /// reconnects. The fresh connection's two are past it, so the kick lands on the second
+    /// silent connection, about 12 s after the daemon's last answer.
+    static let silenceBeforeKick: TimeInterval = 8
     /// How long disconnected before the `daemon` row appears: a normal respawn is back in 1–3 s and must not flash it.
     static let daemonProblemAfter: TimeInterval = 3
     /// The same from launch, when no daemon has answered yet: a cold start (tsx compiling the engine on a fresh install) takes a few seconds more.
@@ -86,8 +96,11 @@ final class EngineClient: @unchecked Sendable {
     static let daemonProblemText = "The engine is not answering; Jarhead cannot hear or act until it is back"
 
     private var pingTimer: DispatchSourceTimer?
-    /// Ping ids sent and not yet answered, oldest first. On `net`.
-    private var pendingPings: [String] = []
+    /// Pings sent on this connection and not yet answered, oldest first. On `net`.
+    private var pendingPings: [(id: String, at: Date)] = []
+    /// When the daemon went quiet: the send time of the first ping it left unanswered. Kept
+    /// across a drop and the fresh connection after it; cleared by any hello or pong. On `net`.
+    private var silentSince: Date?
     /// The daemon's pid from THIS connection's hello, for the kill when it stops answering.
     /// Cleared the moment the connection drops: a pid from a dead connection may have been
     /// reused by one of Kevin's own processes, and is nobody's to kill. On `net`.
@@ -138,6 +151,7 @@ final class EngineClient: @unchecked Sendable {
         net.async {
             self.running = false
             self.stopPings()
+            self.silentSince = nil
             self.resumeCandidate = false
             self.daemonPid = nil
             self.connection?.cancel()
@@ -201,6 +215,9 @@ final class EngineClient: @unchecked Sendable {
     }
 
     private func dropAndReconnect() {
+        // A connect the socket refused or did not have (no file) is not silence: the daemon is
+        // gone or starting, and the one that answers next owes nothing to the last one's quiet.
+        if !transportReady { silentSince = nil }
         connection?.cancel()
         connection = nil
         transportReady = false
@@ -286,22 +303,31 @@ final class EngineClient: @unchecked Sendable {
         pendingPings.removeAll()
     }
 
-    /// On `net`. Two pings unanswered (4 s of silence) is a daemon that is up and not
-    /// listening: drop the connection — the reconnect loop takes over — and ask
-    /// DaemonProcess to kill and respawn it. Otherwise send the next ping.
+    /// On `net`. Two pings unanswered on this connection: drop it, and the reconnect loop opens
+    /// a fresh one. When the daemon has also been silent for `silenceBeforeKick` (so a fresh
+    /// connection got nothing either), it is up and not listening: ask DaemonProcess to kill
+    /// and respawn it as well. Otherwise send the next ping.
     private func pingTick() {
         guard transportReady, connection != nil else { return }
-        if pendingPings.count >= EngineClient.missedPongsBeforeRespawn {
-            let seconds = Int(EngineClient.pingInterval * Double(pendingPings.count))
-            log("daemon unresponsive: no pong for \(seconds) s (\(pendingPings.count) pings unanswered); dropping the connection and asking for a respawn")
-            var info: [AnyHashable: Any] = ["seconds": seconds]
-            if let pid = daemonPid { info["pid"] = pid }
-            DispatchQueue.main.async { NotificationCenter.default.post(name: EngineClient.daemonUnresponsiveNotification, object: nil, userInfo: info) }
+        if pendingPings.count >= EngineClient.missedPongsBeforeDrop {
+            let now = Date()
+            let since = silentSince ?? pendingPings.first?.at ?? now
+            silentSince = since
+            let silence = now.timeIntervalSince(since)
+            let unanswered = "\(pendingPings.count) pings unanswered on this connection"
+            if silence >= EngineClient.silenceBeforeKick {
+                log("daemon unresponsive: nothing for \(Int(silence)) s (\(unanswered)); dropping the connection and asking for a respawn")
+                var info: [AnyHashable: Any] = ["seconds": Int(silence)]
+                if let pid = daemonPid { info["pid"] = pid }
+                DispatchQueue.main.async { NotificationCenter.default.post(name: EngineClient.daemonUnresponsiveNotification, object: nil, userInfo: info) }
+            } else {
+                log("daemon quiet: nothing for \(Int(silence)) s (\(unanswered)); dropping the connection and reconnecting (the kick waits for \(Int(EngineClient.silenceBeforeKick)) s of silence)")
+            }
             dropAndReconnect()
             return
         }
         let id = UUID().uuidString
-        pendingPings.append(id)
+        pendingPings.append((id, Date()))
         write(json: ["type": "ping", "id": id])
     }
 
@@ -663,9 +689,12 @@ final class EngineClient: @unchecked Sendable {
                 // A daemon process numbers its thread events from 1: the replay guard restarts with it.
                 st.noteDaemonHello()
             }
+            silentSince = nil
             helloReceived()
         case "pong":
-            if let id = obj["id"] as? String { pendingPings.removeAll { $0 == id } }
+            // An answer: the daemon's loop is running, whatever came before.
+            silentSince = nil
+            if let id = obj["id"] as? String { pendingPings.removeAll { $0.id == id } }
         case "snapshot":
             guard let sub = obj["snapshot"], let snap: Snapshot = decode(sub) else {
                 log("undecodable snapshot")

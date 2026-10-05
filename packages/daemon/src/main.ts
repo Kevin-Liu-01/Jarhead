@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readConfig, setLogLevel } from "@jarhead/core";
 import { Engine } from "@jarhead/engine";
-import { DaemonLockHeld, DaemonServer, EXIT_ALREADY_RUNNING, Lifeline, SocketInUseError, acquireDaemonLock, probeSocket, type DaemonLock } from "./server.ts";
+import { DaemonLockHeld, DaemonServer, EXIT_ALREADY_RUNNING, Lifeline, SocketInUseError, acquireDaemonLock, socketInUse, type DaemonLock } from "./server.ts";
 
 /**
  * jarheadd — the engine as a process.
@@ -17,9 +17,15 @@ import { DaemonLockHeld, DaemonServer, EXIT_ALREADY_RUNNING, Lifeline, SocketInU
  * process, so the pid the app holds, the pid in the hello and the pid in the lock file
  * are the same, and the liveness kick kills the daemon itself.
  *
- * One daemon per state dir and per socket: the lock (`<stateDir>/jarheadd.lock`) is taken
- * before anything is built, and listen() refuses a socket another daemon answers on. A
- * second daemon says why on one line and exits 73 (EXIT_ALREADY_RUNNING).
+ * One daemon per state dir and per socket: the state dir's lock (`<stateDir>/jarheadd.lock`)
+ * is taken before anything is built, and listen() refuses a socket another daemon holds
+ * (its `<socket>.lock`) or answers on. A second daemon says why on one line and exits 73
+ * (EXIT_ALREADY_RUNNING). So a second daemon needs its own JARHEAD_STATE_DIR as well as its
+ * own --socket.
+ *
+ * The app's connection closing without a bye pauses an open session only when the app is
+ * not back within APP_GONE_GRACE_MS (server.ts): a crash relaunch keeps the session, the
+ * running task and the threads.
  */
 
 /**
@@ -37,6 +43,14 @@ export function shouldAutoWake(
   if (env["JARHEAD_AUTO_WAKE"] === "0") return false;
   if (settings.wake.enabled) return false;
   return settings.autoWake;
+}
+
+/**
+ * What daemon.log says when the socket is taken: Setup's Welcome and the status menu show
+ * the line. A held lock names its pid; a server of an older build only answered.
+ */
+export function socketRefusal(e: SocketInUseError): string {
+  return e.holder !== undefined ? `another Jarhead daemon (pid ${e.holder}) holds ${e.socketPath}` : `another Jarhead daemon answers on ${e.socketPath}`;
 }
 
 /** True when this file is the process's entry point (not imported by a test). */
@@ -62,18 +76,19 @@ async function run(): Promise<void> {
     lock = acquireDaemonLock(config.stateDir);
   } catch (e) {
     if (!(e instanceof DaemonLockHeld)) throw e;
-    console.error(`jarheadd: ${e.message}; not starting a second daemon on the same state`);
+    console.error(`jarheadd: ${e.message}. Not starting a second one.`);
     process.exit(EXIT_ALREADY_RUNNING);
   }
 
   // A daemon of another state dir on our socket: refuse before building an engine. listen()
   // below refuses again if one comes up in between.
   const refuseSocket = (e: SocketInUseError): never => {
-    console.error(`jarheadd: ${e.message}; not taking it from that daemon`);
+    console.error(`jarheadd: ${socketRefusal(e)}. Not starting a second one.`);
     lock.release();
     process.exit(EXIT_ALREADY_RUNNING);
   };
-  if ((await probeSocket(socketPath)).state === "answers") refuseSocket(new SocketInUseError(socketPath));
+  const taken = await socketInUse(socketPath);
+  if (taken) refuseSocket(taken);
 
   const engine = new Engine({ config });
   const server = new DaemonServer(engine, socketPath);
