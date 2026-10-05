@@ -66,6 +66,10 @@ export interface ClaudeSessionOptions {
   readonly name?: string;
   readonly systemPromptAppend?: string;
   readonly mcpServers?: Record<string, unknown>;
+  /** Only the MCP servers in `mcpServers`: none from ~/.claude.json, project `.mcp.json` or plugins. */
+  readonly strictMcpConfig?: boolean;
+  /** The built-in tools that exist at all; `[]` leaves none (MCP tools are separate). Omitted: the CLI's defaults. */
+  readonly tools?: readonly string[];
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly permissionMode?: string;
@@ -96,7 +100,8 @@ export interface SessionEvents {
   assistant: [text: string];
   tool: [event: ToolUseEvent];
   toolResult: [toolUseId: string, content: unknown, isError: boolean];
-  result: [message: SdkMessage];
+  /** `turn` is the number `send()` returned for the message this result answers; 0 for a result no send asked for. */
+  result: [message: SdkMessage, turn: number];
   error: [error: Error];
   closed: [];
 }
@@ -119,9 +124,50 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
   lastActivityAt = Date.now();
   costUsd = 0;
   private stallTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Turn accounting. The CLI runs the user messages it is sent one after another and ends each with exactly one
+   * `result`, an interrupted one included (`error_during_execution`, a little after the interrupt). So the n-th
+   * result answers the n-th send, and a result that arrives after its asker gave up is recognised by its number.
+   * That holds only while each message is sent to an idle CLI: one queued behind a running turn may be folded into
+   * it (one result for two sends), and an interrupt can be lost (no result at all). A caller that cannot wait for
+   * `settled()` should stop sending on this session and open a new one.
+   */
+  private sent = 0;
+  private answered = 0;
 
   constructor(private readonly opts: ClaudeSessionOptions) {
     super();
+  }
+
+  /** The turn the CLI is working on (the oldest send with no result yet), if any. */
+  get runningTurn(): number | undefined {
+    return this.answered < this.sent ? this.answered + 1 : undefined;
+  }
+
+  /** Sends whose result has not arrived. */
+  get turnsInFlight(): number {
+    return Math.max(0, this.sent - this.answered);
+  }
+
+  /** Resolves true once every send has its result, false after `timeoutMs` or when the session ends first. */
+  settled(timeoutMs: number): Promise<boolean> {
+    if (this.turnsInFlight === 0) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      const done = (value: boolean): void => {
+        clearTimeout(timer);
+        this.off("result", onResult);
+        this.off("closed", onClosed);
+        resolve(value);
+      };
+      const onResult = (): void => {
+        if (this.turnsInFlight === 0) done(true);
+      };
+      const onClosed = (): void => done(false);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      timer.unref?.();
+      this.on("result", onResult);
+      this.on("closed", onClosed);
+    });
   }
 
   /** Arm the stall clock while working; every SDK message re-arms it, any other status clears it. */
@@ -166,6 +212,8 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
       ...(o.model ? { model: o.model } : {}),
       ...(o.effort ? { effort: o.effort } : {}),
       ...(o.mcpServers ? { mcpServers: o.mcpServers } : {}),
+      ...(o.strictMcpConfig !== undefined ? { strictMcpConfig: o.strictMcpConfig } : {}),
+      ...(o.tools ? { tools: [...o.tools] } : {}),
       ...(o.allowedTools ? { allowedTools: [...o.allowedTools] } : {}),
       ...(o.disallowedTools ? { disallowedTools: [...o.disallowedTools] } : {}),
       ...(o.permissionMode ? { permissionMode: o.permissionMode } : {}),
@@ -249,6 +297,7 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
       return;
     }
     if (msg.type === "result") {
+      const turn = this.answered < this.sent ? ++this.answered : 0;
       if (this.currentText) this.lastAssistantText = this.currentText;
       this.currentText = "";
       if (typeof msg.total_cost_usd === "number") this.costUsd = msg.total_cost_usd;
@@ -259,13 +308,13 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
       } else {
         this.setStatus("idle");
       }
-      this.emit("result", msg);
+      this.emit("result", msg, turn);
       return;
     }
   }
 
-  /** Push a user turn. Images are Anthropic-shaped image blocks. */
-  send(text: string, images: readonly { pngBase64: string }[] = []): void {
+  /** Push a user turn. Images are Anthropic-shaped image blocks. Returns the turn's number, which its `result` carries. */
+  send(text: string, images: readonly { pngBase64: string }[] = []): number {
     if (this.queue.isClosed) throw new Error("session is closed");
     const content: unknown[] = [];
     for (const img of images) content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: img.pngBase64 } });
@@ -273,6 +322,7 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
     this.currentText = "";
     this.setStatus("working", "thinking");
     this.queue.push({ type: "user", message: { role: "user", content: images.length ? content : text }, parent_tool_use_id: null, session_id: this.sessionId ?? "" });
+    return ++this.sent;
   }
 
   /** Answer a pending permission request. */
@@ -300,7 +350,10 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
 
   async close(): Promise<void> {
     this.queue.close();
-    await this.interrupt(1500);
+    // A session that was never sent anything has no turn to end, and a CLI still booting may not answer an interrupt
+    // for a while. Any other session gets the bounded interrupt: it may be on a turn no send() asked for (a background
+    // task's notification) or on a folded follow-up, which the turn counter does not see.
+    if (this.sent > 0) await this.interrupt(1500);
     const ended = this.consuming ? Promise.race([this.consuming.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 1500))]) : Promise.resolve(true);
     if (!(await ended)) {
       log.warn("claude session did not end on its own; aborting the process");
