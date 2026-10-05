@@ -212,12 +212,12 @@ final class StatusItem: NSObject {
 
         // Go / Pause: the transport's one button (⌥⇧Space).
         let look = AppState.transportLabel(for: phase)
-        let transport = NSMenuItem(title: StatusItem.transportTitle(for: phase), action: #selector(doTransportToggle), keyEquivalent: " ")
-        transport.keyEquivalentModifierMask = [.option, .shift]
+        let transport = NSMenuItem(title: StatusItem.transportTitle(for: phase), action: #selector(doTransportToggle), keyEquivalent: Hotkeys.Action.transportToggle.keyEquivalent.0)
+        transport.keyEquivalentModifierMask = Hotkeys.Action.transportToggle.keyEquivalent.1
         transport.target = self
         transport.isEnabled = connected
         transport.image = StatusItem.symbol(look.symbol)
-        transport.toolTip = look.help + " (⌥⇧Space)"
+        transport.toolTip = look.help + " (\(Hotkeys.Action.transportToggle.glyph))"
         menu.addItem(transport)
 
         // The wake word gate, while the engine is dormant or paused: what it is doing and, if off, why.

@@ -2588,9 +2588,10 @@ public final class OrbPanelController {
         if AppState.transportPress(for: state.phase) == .stop {
             go.isEnabled = false
         } else {
+            // The global Go/Pause hotkey, as the status menu shows it (there is no ⌥⇧P).
             go.toolTip = state.transportLabel.help
-            go.keyEquivalent = "p"
-            go.keyEquivalentModifierMask = [.option, .shift]
+            go.keyEquivalent = Hotkeys.Action.transportToggle.keyEquivalent.0
+            go.keyEquivalentModifierMask = Hotkeys.Action.transportToggle.keyEquivalent.1
         }
         menu.addItem(go)
         // The wake word gate, while asleep: what it is doing (the status menu's row).

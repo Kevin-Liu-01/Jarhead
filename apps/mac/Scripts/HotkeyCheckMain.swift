@@ -3,8 +3,9 @@ import Carbon
 
 // The global hotkeys type nothing (APP-12, decision D3). For every combo App/Hotkeys.swift
 // registers, UCKeyTranslate is asked what the US layout types for that key with those
-// modifiers. A letter hotkey that types a character eats it: ⌥⇧J was Ô, ⌥⇧M Â, ⌥⇧C Ç,
-// ⌥⇧S Í, ⌥⇧R ‰, so a French or Portuguese sentence lost its capitals to the Console.
+// modifiers. A hotkey that types a character eats it: ⌥⇧J was Ô, ⌥⇧M Â, ⌥⇧C Ç, ⌥⇧S Í,
+// ⌥⇧R ‰, so a French or Portuguese sentence lost its capitals to the Console. Every
+// registered combo must type nothing, or be on `typesAllowed` below with its reason.
 //
 // Headless and read-only: nothing is registered (RegisterEventHotKey would take the combos
 // from every other app for as long as this runs), no event is posted, no window opens.
@@ -51,6 +52,14 @@ func spelled(_ s: String) -> String {
     s.unicodeScalars.map { String(format: "U+%04X", $0.value) }.joined(separator: " ")
 }
 
+/// The registered combos allowed to type a character, with exactly what they type. Each entry
+/// is a question on record, never a default. ⌥⇧Space (Go / Pause) types U+00A0, a no-break
+/// space, on the US layout, so no field gets one while Jarhead runs. Whether Go / Pause moves
+/// is open for Kevin (launch decision D8): ⌃⌥Space types nothing but is macOS's "next input
+/// source"; ⌃⌥ + a letter types nothing. Drop the entry once D8 is decided. A new hotkey that
+/// types a character fails here.
+let typesAllowed: [Hotkeys.Action: String] = [.transportToggle: "U+00A0"]
+
 func glyph(_ modifiers: UInt32) -> String {
     var g = ""
     if modifiers & UInt32(controlKey) != 0 { g += "⌃" }
@@ -79,19 +88,21 @@ struct HotkeyCheck {
 
         check(Hotkeys.actionsToRegister() == Hotkeys.Action.allCases, "without the switch every hotkey registers")
 
-        // The combos, as registered. A letter combo must type nothing at all; the others are
-        // reported with what they type.
+        // The combos, as registered. Each must type nothing at all (a control character is a
+        // command to a text view, not text), or exactly what `typesAllowed` records for it.
         let letters: Set<UInt32> = [UInt32(kVK_ANSI_J), UInt32(kVK_ANSI_M), UInt32(kVK_ANSI_C), UInt32(kVK_ANSI_S), UInt32(kVK_ANSI_R)]
         var seen = Set<String>()
         for action in Hotkeys.Action.allCases {
             let (text, dead) = typed(keyCode: action.keyCode, modifiers: action.modifiers, layout: layout)
             let name = "\(glyph(action.modifiers)) key \(action.keyCode) (\(action))"
             let what = dead ? "a dead key" : (text.isEmpty ? "nothing" : spelled(text))
-            if letters.contains(action.keyCode) {
-                check(!dead && !isText(text), "\(name) types no character on the US layout (it types \(what))")
-                check(action.modifiers == UInt32(controlKey | optionKey), "\(name) is ⌃⌥ + its letter (D3)")
+            if let allowed = typesAllowed[action] {
+                check(!dead && spelled(text) == allowed, "\(name) types \(what), allowed as \(allowed) until decision D8")
             } else {
-                print("note: \(name) types \(what)")
+                check(!dead && !isText(text), "\(name) types no character on the US layout (it types \(what))")
+            }
+            if letters.contains(action.keyCode) {
+                check(action.modifiers == UInt32(controlKey | optionKey), "\(name) is ⌃⌥ + its letter (D3)")
             }
             // The menus mirror the hotkey: the same key and the same modifiers.
             let (key, flags) = action.keyEquivalent
