@@ -5,10 +5,20 @@ import Network
 /// frames, and publishes into `AppState` on the main actor. Speaker frames go to the
 /// `AudioEngine`; mic frames come from it through `sendMic`.
 /// Queue-confined (`net`); the class is safe to hand across threads.
+///
+/// Snapshots are decoded once, off `net`, on their own serial queue (voice PLAN W2.2): the speaker's
+/// frames and the `audio` flush ride the same socket and are handed on from `net` in arrival order,
+/// so a 283 KB snapshot decoded inline held every speaker frame behind it for the whole decode.
+/// Every other JSON frame stays on `net`, in order with the PCM.
 final class EngineClient: @unchecked Sendable {
     private let socketPath: String
     private let state: AppState
     private let net = DispatchQueue(label: "jarhead.engine-client")
+    /// Where snapshots are decoded. Serial: they apply in the order they came.
+    private let snapshotQueue = DispatchQueue(label: "jarhead.engine-client.snapshot", qos: .userInitiated)
+    /// Bumped whenever a connection opens, drops or stops (on `net`): a snapshot decoded for a connection
+    /// that has gone since says nothing about the daemon now, and is not applied.
+    private var connectionEpoch = 0
     private var connection: NWConnection?
     private let decoder = FrameDecoder()
     private var running = false
@@ -150,6 +160,7 @@ final class EngineClient: @unchecked Sendable {
     func stop() {
         net.async {
             self.running = false
+            self.connectionEpoch += 1
             self.stopPings()
             self.silentSince = nil
             self.resumeCandidate = false
@@ -166,6 +177,7 @@ final class EngineClient: @unchecked Sendable {
     private func openConnection() {
         guard running else { return }
         connection?.cancel()
+        connectionEpoch += 1
         decoder.reset()
         transportReady = false
         let conn = NWConnection(to: .unix(path: socketPath), using: .tcp)
@@ -220,6 +232,7 @@ final class EngineClient: @unchecked Sendable {
         if !transportReady { silentSince = nil }
         connection?.cancel()
         connection = nil
+        connectionEpoch += 1
         transportReady = false
         stopPings()
         // The pid lives exactly as long as the connection that hello'd it.
@@ -671,6 +684,11 @@ final class EngineClient: @unchecked Sendable {
         case FrameType.speaker.rawValue:
             audio?.play(pcm: frame.payload)
         case FrameType.json.rawValue:
+            // A snapshot goes to its own queue; nothing behind it waits for its decode.
+            if EngineClient.isSnapshotFrame(frame.payload) {
+                decodeSnapshot(frame.payload)
+                return
+            }
             guard let obj = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any],
                   let type = obj["type"] as? String else { return }
             handleMessage(type: type, obj)
@@ -696,12 +714,12 @@ final class EngineClient: @unchecked Sendable {
             silentSince = nil
             if let id = obj["id"] as? String { pendingPings.removeAll { $0.id == id } }
         case "snapshot":
+            // A snapshot frame that does not start with its type (`isSnapshotFrame`), decoded here as before.
             guard let sub = obj["snapshot"], let snap: Snapshot = decode(sub) else {
                 log("undecodable snapshot")
                 return
             }
-            noteSnapshotForResume(snap)
-            queueSnapshot(sanitized(snap))
+            applySnapshot(snap)
         case "levels":
             guard let sub = obj["levels"], let levels: AudioLevels = decode(sub) else { return }
             let clean = AudioLevels(input: finiteLevel(levels.input), output: finiteLevel(levels.output))
@@ -774,6 +792,49 @@ final class EngineClient: @unchecked Sendable {
         default:
             break
         }
+    }
+
+    // MARK: - snapshots, off `net`
+
+    /// `{"type":"snapshot"` opens every snapshot frame: server.ts writes `type` first (JSON.stringify keeps
+    /// insertion order). Checking it costs a few bytes; parsing the frame to learn its type cost the whole decode.
+    static let snapshotPrefix = Data(#"{"type":"snapshot""#.utf8)
+
+    static func isSnapshotFrame(_ payload: Data) -> Bool {
+        payload.count >= snapshotPrefix.count && payload.prefix(snapshotPrefix.count).elementsEqual(snapshotPrefix)
+    }
+
+    /// The frame as the wire spells it, decoded in one pass: no `[String: Any]`, no re-serialisation.
+    private struct SnapshotFrame: Decodable {
+        let snapshot: Snapshot
+    }
+
+    /// On `net`: decode on `snapshotQueue`, then apply back on `net`, unless the connection has changed since.
+    private func decodeSnapshot(_ payload: Data) {
+        let epoch = connectionEpoch
+        snapshotQueue.async { [weak self] in
+            guard let self else { return }
+            var snap: Snapshot?
+            do {
+                snap = try jarheadJSONDecoder.decode(SnapshotFrame.self, from: payload).snapshot
+            } catch {
+                self.log("decode Snapshot: \(error)")
+            }
+            self.net.async {
+                guard epoch == self.connectionEpoch else { return }
+                guard let snap else {
+                    self.log("undecodable snapshot")
+                    return
+                }
+                self.applySnapshot(snap)
+            }
+        }
+    }
+
+    /// On `net`: the snapshot for the auto-resume, then the ≤ 30 Hz publish.
+    private func applySnapshot(_ snap: Snapshot) {
+        noteSnapshotForResume(snap)
+        queueSnapshot(sanitized(snap))
     }
 
     // MARK: - bad numbers
