@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -16,12 +16,19 @@ import type { AudioState, LedgerRow, LiveAudio } from "@jarhead/protocol";
  * v2-audio-lines.test.ts; this test is what fails if main.ts never hands them the snapshot's `liveAudio`
  * and the ledger's last `audio.playout` row (doctor.ts's playbackInputs).
  *
- * TODO until the integrator wires main.ts (TRIAGE, cross-item contracts, "W2-1 / V2"): main.ts is W2-1's
- * file this wave, so the status call still passes no playback inputs. After fix/w2-1 and fix/v2 merge, the
- * integrator applies scratchpad/v2-fix2/main-ts-status.patch and drops the `todo` below. It passes then.
+ * Until the integrator wires main.ts (TRIAGE, cross-item contracts, "W2-1 / V2"), each test marks itself TODO
+ * and passes: main.ts is W2-1's file this wave, so the status call passes no playback inputs and the block has
+ * no `live` and no `last session` line. Once main.ts prints either, every line is asserted. After fix/w2-1 and
+ * fix/v2 merge, the integrator applies scratchpad/v2-fix2/main-ts-status.patch and deletes `unwired()` and its
+ * three calls, so a status that drops the wiring later fails instead of turning back into a TODO.
  */
 
-const WIRED = { todo: "W2-1 / V2: main.ts passes playbackInputs to audioStatusLines once the integrator applies the patch" };
+/** The block has no line main.ts prints only when wired: mark the test TODO (a passing one, no red) and stop. */
+function unwired(t: TestContext, lines: readonly string[]): boolean {
+  if (lines.some((l) => /^ {13}(live {4}|last session)/.test(l))) return false;
+  t.todo("W2-1 / V2: main.ts does not pass playbackInputs to audioStatusLines yet; apply scratchpad/v2-fix2/main-ts-status.patch");
+  return true;
+}
 
 // One temp dir for the state dir, its ledger and the socket; removed at the end.
 const stateDir = mkdtempSync(join(tmpdir(), "jh-v2s-"));
@@ -120,22 +127,25 @@ async function statusAudio(name: string, snap: Record<string, unknown>): Promise
 const LIVE_LINE = "             live    40 ms deltas · arrival p99 31 ms / max 182 ms · ahead 0 ms · loop max 12 ms · 24000 Hz";
 const LAST_LIVE_WORDS = "40 ms deltas · arrival p99 210 ms / max 420 ms · ahead 0 ms · loop max 12 ms · 24000 Hz";
 
-test("v2 status (the command): a session open prints the daemon's live line under the app's playback lines, never the ledger's", WIRED, async () => {
+test("v2 status (the command): a session open prints the daemon's live line under the app's playback lines, never the ledger's", async (t) => {
   const lines = await statusAudio("open", snapshot({ phase: "listening", audioState: APP, liveAudio: LIVE }));
+  if (unwired(t, lines)) return;
   assert.match(lines[0]!, /^ {2}audio {6}voice processing /);
   assert.ok(lines.some((l) => l.startsWith("             playout 0 underruns")), lines.join("\n"));
   assert.equal(lines.at(-1), LIVE_LINE);
   assert.doesNotMatch(lines.join("\n"), /last session/);
 });
 
-test("v2 status (the command): the app connected and no session open, the live line is the last session's, from the ledger, and says so", WIRED, async () => {
+test("v2 status (the command): the app connected and no session open, the live line is the last session's, from the ledger, and says so", async (t) => {
   const lines = await statusAudio("idle", snapshot({ audioState: APP }));
+  if (unwired(t, lines)) return;
   assert.ok(lines.some((l) => l.startsWith("             playout 0 underruns")), "the app's own counters, not the row's");
   assert.equal(lines.at(-1), `             live    ${LAST_LIVE_WORDS} · last session, 2 h ago`);
 });
 
-test("v2 status (the command): no app connected and no session open, the whole block is the ledger's last session, dated", WIRED, async () => {
+test("v2 status (the command): no app connected and no session open, the whole block is the ledger's last session, dated", async (t) => {
   const lines = await statusAudio("noapp", snapshot({}));
+  if (unwired(t, lines)) return;
   assert.deepEqual(lines.slice(0, 2), ["  audio      no app connected", "             last session …0123456789ab · 2 h ago (the ledger)"]);
   assert.ok(lines.some((l) => l.startsWith("             playout 3 underruns")), lines.join("\n"));
   assert.equal(lines.at(-1), `             live    ${LAST_LIVE_WORDS}`);

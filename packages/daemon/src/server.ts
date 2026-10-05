@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import { specByName } from "@jarhead/brain";
-import { isAudioState, isEngineCommand, type AudioState, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
+import { isAudioState, isEngineCommand, type AudioState, type AudioTelemetryShed, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
 import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, parseClientMessage, type DaemonMessage } from "./wire.ts";
 
 /**
@@ -42,6 +42,12 @@ export const MEMORY_LIST_MAX = 200;
  * queued, up to five whole snapshots ahead of the next speaker frame.
  */
 export const SNAPSHOT_BACKLOG_BYTES = 64 * 1024;
+
+/**
+ * How often the `audio-state: shed …` debug line may repeat. A malformed telemetry object comes back in every frame
+ * the app sends (up to 1 Hz), so one line a minute says it, with the number of frames that shed something since.
+ */
+export const AUDIO_SHED_LINE_EVERY_MS = 60_000;
 
 /** What the server needs from the engine; the real Engine satisfies it, and the test fakes implement all of it. */
 export interface EngineLike {
@@ -216,6 +222,9 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   private appGoneTimer: NodeJS.Timeout | undefined;
   /** close() has begun: the sockets it destroys are not apps that crashed. */
   private closing = false;
+  /** The last `audio-state: shed …` line, and the frames that shed something since (W2-5 / V2, PLAN W1.5). */
+  private shedLineAt = Number.NEGATIVE_INFINITY;
+  private shedFrames = 0;
 
   /** Over the engine, or over a ToolHost (a brain's private tool socket): then only `tool.run` does anything. */
   constructor(
@@ -432,15 +441,19 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       case "mic-level":
         this.engine.reportInputLevel(Number(msg.level) || 0);
         return;
-      case "audio-state":
+      case "audio-state": {
         // Data, never a command (design12): the shape is checked here and a malformed frame is dropped with a line, never kept.
-        if (!isAudioState(msg.state)) {
+        // A malformed playout, duck or output costs only itself; what was shed is said too (rate-limited), never lost silently.
+        const shed: AudioTelemetryShed[] = [];
+        if (!isAudioState(msg.state, shed)) {
           log.debug("audio-state frame dropped: malformed");
           return;
         }
+        if (shed.length) this.noteShed(shed);
         client.audioState = true;
         this.engine.reportAudioState?.(msg.state);
         return;
+      }
       case "ear":
         if (typeof msg.text === "string") this.engine.ear(msg.text, msg.isFinal === true, Number(msg.segment ?? 0), Number(msg.at ?? Date.now()));
         return;
@@ -684,6 +697,16 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       frame ??= encodeJson(message);
       c.socket.write(frame);
     }
+  }
+
+  /** An `audio-state` frame passed without what `shed` names: one debug line a minute at most, with the count since the last. */
+  private noteShed(shed: readonly AudioTelemetryShed[]): void {
+    this.shedFrames++;
+    const now = Date.now();
+    if (now - this.shedLineAt < AUDIO_SHED_LINE_EVERY_MS) return;
+    this.shedLineAt = now;
+    log.debug(`audio-state: shed ${shed.join(", ")} (malformed) · ${this.shedFrames} frame${this.shedFrames === 1 ? "" : "s"} shed since the last line`);
+    this.shedFrames = 0;
   }
 
   /** One pane of this client opened (or closed) a conversation; the routing key stays while any of its panes has it. */
