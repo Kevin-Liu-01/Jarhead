@@ -131,7 +131,8 @@ final class ReflexEar {
                     self.transcriptInputs = t
                     if t.jarheadRecent != was.jarheadRecent { BargeInDuck.shared.noteJarheadSaid(t.jarheadRecent) }
                     if let id = t.kevinOpenId, id != was.kevinOpenId || t.kevinOpenLength > was.kevinOpenLength {
-                        BargeInDuck.shared.noteLiveHeardKevin()
+                        // The id lets the duck tell his barge-in's own item from a late one for his last turn.
+                        BargeInDuck.shared.noteLiveHeardKevin(item: id)
                     }
                 }
             }

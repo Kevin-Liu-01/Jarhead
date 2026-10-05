@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 # The barge-in duck and the microphone ranking, without the app or the daemon: feeds
-# synthetic 100 ms tap buffers into Audio/AudioEngine.swift's `BargeInDuck` and prints
-# speech onset → −20 dB per onset, the restore timings, and this Mac's input devices in
-# `MicRanking` order (read-only; nothing is played, recorded or changed). design12 (V4): it
-# opens with the pure sections — `EchoGuardModel` (hold on the first slice after output,
-# release at audibleUntil + tail, no break-through in the first 2 s, +12 dB for 120 ms breaks
-# through, a loud slice never teaches the floor, flush shortens the window, NaN is silence,
-# the counters), `EchoGuard` (detached / attached / frozen) and `VoiceProcessingPolicy` (the
-# ladder per policy, the constants, `firstRung`, the running line, the state words) — one
-# `check: <section> · <name> ok` line each, then `check: pure sections N ok, 0 FAIL`.
-#   Scripts/duck-probe.sh                 # V4 sections, then 3 runs × 5 scenarios, a line per event
+# synthetic 100 ms tap buffers into Audio/BargeInDuck.swift and prints speech onset → duck
+# (−6 dB) per onset, confirmation → −20 dB, the restore timings, and this Mac's input devices
+# in `MicRanking` order (read-only; nothing is played, recorded or changed). It opens with the
+# pure sections — `EchoGuardModel` (hold on the first slice after output, release at
+# audibleUntil + tail, no break-through in the first 2 s, +12 dB for 120 ms breaks through, a
+# loud slice never teaches the floor, flush shortens the window, NaN is silence, the counters),
+# `EchoGuard` (detached / attached / frozen), `VoiceProcessingPolicy` (the ladder per policy,
+# the constants, `firstRung`, the running line, the state words) and `PlayoutModel` (the
+# pre-roll after a reset, contiguous chunks, an underrun and its fade-in, the 0.5 s dry reset,
+# flush, a burst before the first render, the target's growth and cap, the shadow count, the
+# fade ramp) — one `check: <section> · <name> ok` line each, then
+# `check: pure sections N ok, 0 FAIL`. After the five scenarios (live, cough, ear, echo, phase)
+# come the word rounds (stale, revise, late-live: words alone duck nothing), the echo-stale
+# rounds (stale words inside a duck on residual echo leave it at −6 dB) and the residual round
+# (60 s of bursty residual echo at −50 dBFS, Kevin silent: ≤ 1% of speech under −6 dB).
+#   Scripts/duck-probe.sh                 # all of it, 3 runs × 5 scenarios, a line per event
 #   DUCK_PROBE_RUNS=5 DUCK_PROBE_LIVE_MS=1200 Scripts/duck-probe.sh
-#   Scripts/duck-probe.sh --json          # the report as one JSON line (what `pnpm jarhead bench` reads)
+#   DUCK_PROBE_RESIDUAL_S=0 Scripts/duck-probe.sh   # skip the residual round (60 s by default)
+#   Scripts/duck-probe.sh --json          # the report as one JSON line (what `pnpm jarhead bench`
+#                                         # reads); the residual round runs only when DUCK_PROBE_RESIDUAL_S is set
 #   Scripts/duck-probe.sh --build-only
 # Compiles Audio/*.swift + Scripts/DuckProbeMain.swift + the ObjC shim into its own output
 # directory (never the shared .build products), and only when a source is newer than the

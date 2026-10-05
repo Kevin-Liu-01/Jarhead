@@ -1,0 +1,603 @@
+import AVFoundation
+import Foundation
+
+// MARK: - barge-in duck
+
+/// The barge-in duck: the instant the microphone hears Kevin over Jarhead's voice, the
+/// speaker comes down 6 dB, and 20 dB once something confirms it is him — before
+/// GPT-Live-1 has noticed the interruption (its own stop lands ~1.4 s later on the public
+/// model) — and comes back once he has finished, or after 700 ms when nothing follows (a
+/// cough, a chair). The microphone is never touched; only the player's volume moves.
+///
+/// Inputs, from five threads: the mono mic tap in 10 ms slices (`noteMic`, the tap
+/// thread), what the speaker has queued (`noteOutput` / `noteFlush`, the audio queue),
+/// Live's transcript of Kevin and Jarhead's own recent words (`noteLiveHeardKevin`,
+/// `noteJarheadSaid`, main), the engine's phase (`noteVoiceSpeaking`, main) and the
+/// ear's partials (`noteEarWords`, the ear queue). One lock guards the state; the gain
+/// steps and the timers run on `queue`.
+///
+/// Onset: speech energy over the room floor for ≥ 60 ms (six slices), judged inside the
+/// 100 ms tap buffer, while the player has audible output queued (or had within the last
+/// 300 ms — the queue is modelled from the seconds scheduled, so a network burst that
+/// hands the player half a second at once keeps the gate armed until it has played). Only
+/// the gate starts a duck. The ear's words and Live's transcript of Kevin confirm one and
+/// never start one: the ear's partial is the whole segment, Kevin's last turn included, and
+/// Live's items for him arrive revised and late, so words alone ducked replies he never
+/// interrupted (`wordOnsetsSkipped` counts what they would have started). The gain goes to
+/// 0.5 (−6 dB, `unconfirmedGain`) at once: a cough or a residual-echo leak only takes the
+/// edge off. A confirmation takes it to 0.1 (−20 dB) in two 4 ms steps.
+///
+/// Confirmation — Live heard Kevin too — in the order it can arrive: the ear's partial
+/// carrying a new word (100–200 ms), Kevin's non-final item growing in the snapshot's
+/// transcript (Live's `session.input_transcript.delta`, typically around a second), the
+/// phase leaving `speaking` (≥ 1.2 s after Jarhead's last words: a fallback). Only what
+/// arrived after the duck began counts, because the leak that trips the gate is also what
+/// makes the recognizer talk. A new word is one the partial added after the ear's last
+/// partial before the duck (`earBaseline`; past its length when it grew from it, so a word
+/// revised in place adds nothing), that the baseline did not carry and Jarhead did not just
+/// say. With no partial seen before the duck, the ear cannot tell old from new and confirms
+/// nothing. Live's item counts only when it opened `liveTranscriptLag` or more after the
+/// gate's onset: one already open, or one that opened sooner, is transcribing something said
+/// before the duck (a late item for Kevin's last turn).
+///
+/// Release: confirmed, when the mic has been quiet 250 ms (capped at 4 s), a 300 ms ramp
+/// back to 1 and a 500 ms hold-off. Unconfirmed at 700 ms with the mic gone quiet: a
+/// cough — the ramp, and a 1 s hold-off (3 s after two in ten seconds). A mic still hot
+/// at 700 ms is not a cough and not Jarhead's echo (that dropped with the speaker): the
+/// deadline extends 100 ms at a time to 1.5 s from the duck — about when
+/// Live's own stop lands — then the ramp and the hold-off. After an unconfirmed release
+/// the floor takes the level that tripped the gate, so a fan that switched on ducks once,
+/// not every few seconds (the floor falls again the moment the room is quieter).
+///
+/// Off without echo cancellation: the gate would hear Jarhead and duck Jarhead.
+final class BargeInDuck: @unchecked Sendable {
+    static let shared = BargeInDuck()
+
+    /// −20 dB: a confirmed duck.
+    static let duckGain: Float = 0.1
+    /// −6 dB: where a duck nobody has confirmed yet holds.
+    static let unconfirmedGain: Float = 0.5
+    /// A confirmation's way down from `unconfirmedGain`, 4 ms apart.
+    static let deepenSteps: [Float] = [0.25, duckGain]
+    static let sliceSeconds = 0.01
+    /// Six 10 ms slices: 60 ms of speech energy.
+    static let onsetSlices = 6
+    /// The first look at a duck nobody confirmed.
+    static let confirmWindow: TimeInterval = 0.7
+    /// While the mic stays hot, the unconfirmed deadline moves on by this much at a time…
+    static let extendStep: TimeInterval = 0.1
+    /// …up to this long from the duck (GPT-Live-1's own stop on barge-in is ~1.4 s).
+    static let unconfirmedCap: TimeInterval = 1.5
+    /// A hot slice this recent at the deadline means he is still talking (a pause between
+    /// phrases, plus the tap's 100 ms delivery, fits inside it).
+    static let stillSpeakingWindow: TimeInterval = 0.3
+    static let releaseSeconds: TimeInterval = 0.3
+    /// The gate stays armed this long after the last audible sample the player has queued.
+    static let armTail: TimeInterval = 0.3
+    static let quietHold: TimeInterval = 0.25
+    static let maxDuck: TimeInterval = 4
+    /// Below this RMS nothing is speech whatever the floor says (residual echo after AEC sits under it).
+    static let minimumHotRMS = 0.008
+    static let floorFactor = 3.0
+    /// Over the mic level measured while Jarhead speaks unducked (residual echo), by this factor.
+    static let echoFactor = 2.5
+    /// The engine's AUDIBLE_OUTPUT_LEVEL: the silence the API streams between sentences is ~0.
+    static let audibleOutput = 0.02
+    static let holdoff: TimeInterval = 1
+    static let longHoldoff: TimeInterval = 3
+    /// After every release, confirmed or not, at least this long before the next duck.
+    static let releaseHoldoff: TimeInterval = 0.5
+    /// The ear's words and Live's transcript count as an onset only with energy this recent.
+    static let earEnergyWindow: TimeInterval = 0.3
+    /// A word this long that Jarhead did not just say is what lets a partial confirm.
+    static let novelWordMinLength = 3
+    /// Live's transcript of new speech trails its first sound by more than this (0.45–1 s in
+    /// the replays). A Kevin item that opened sooner after the gate's onset, or before it, is
+    /// about something said before the duck, and confirms nothing.
+    static let liveTranscriptLag: TimeInterval = 0.35
+
+    enum Event {
+        /// The gain reached the duck (−6 dB); `latencyMs` is from the first hot slice's capture time.
+        case ducked(source: String, latencyMs: Double)
+        case confirmed(String)
+        /// The 700 ms deadline moved on because the mic was still hot; `afterMs` since the duck.
+        case extended(afterMs: Double)
+        /// A partial with no new word (Jarhead's own words, or words the ear had before the
+        /// duck) was not taken as confirmation.
+        case refusedWords(String)
+        /// A Live item for Kevin that opened before the duck, or too soon after its onset, was
+        /// not taken as confirmation.
+        case refusedLive(String)
+        /// Back at unity; `afterMs` since the duck.
+        case released(String, afterMs: Double)
+    }
+    /// Harnesses and the log; called on `queue`.
+    var onEvent: ((Event) -> Void)?
+
+    struct Stats {
+        var ducks = 0
+        var confirmed = 0
+        var unconfirmed = 0
+        /// Unconfirmed ducks held past 700 ms because the mic stayed hot.
+        var held = 0
+        /// Partials refused as confirmation (Jarhead's own words, or the ear's words from before the duck).
+        var refusedWords = 0
+        /// Live items for Kevin refused as confirmation (opened before the duck, or too soon after it).
+        var refusedLive = 0
+        /// Words (the ear's or Live's) that came with recent energy while nothing was ducked:
+        /// what used to start a duck and now only waits for the gate.
+        var wordOnsetsSkipped = 0
+    }
+
+    private enum State {
+        case idle
+        case ducked(since: CFAbsoluteTime, onsetHost: UInt64, confirmed: Bool)
+        case releasing
+    }
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "jarhead.duck", qos: .userInteractive)
+    private var gain: ((Float) -> Void)?
+    private var echoCancelled = false
+    private var state: State = .idle
+    private var currentGain: Float = 1
+    /// The room: falls to any quieter slice at once, rises with a ~20 s time constant.
+    private var floor = 0.02
+    /// The mic while Jarhead speaks unducked and nobody else does: residual echo.
+    private var echoFloor = 0.0
+    private var hotRun = 0
+    private var hotSinceHost: UInt64 = 0
+    private var lastHotHost: UInt64 = 0
+    /// The player's queue as scheduled: when the last sample handed over will have played,
+    /// and when the last *audible* one will have (silence between sentences arms nothing).
+    private var queueEnd: CFAbsoluteTime = 0
+    private var audibleUntil: CFAbsoluteTime = 0
+    private var voiceSpeaking = false
+    private var holdoffUntil: CFAbsoluteTime = 0
+    private var unconfirmedAt: [CFAbsoluteTime] = []
+    /// Whether the current duck's deadline has been extended at least once.
+    private var extendedThisDuck = false
+    /// Hot slices during the current duck: the level that tripped the gate, for the floor when nothing confirms.
+    private var hotSum = 0.0
+    private var hotCount = 0
+    /// Jarhead's recent words (lowercased, ≥ `novelWordMinLength`), from the snapshot's transcript.
+    private var jarheadWords: Set<String> = []
+    /// The tokens of the ear's last partial seen with no unconfirmed duck waiting: what the
+    /// cumulative segment already held before a duck began. Nil until the ear has posted one.
+    private var earBaseline: [String]?
+    /// The Kevin item Live last grew, and when it first appeared (host time).
+    private var liveItem: String?
+    private var liveItemOpenedHost: UInt64 = 0
+    /// Bumped by every state change that invalidates queued timers.
+    private var generation = 0
+    private var stats = Stats()
+
+    // MARK: wiring
+
+    /// The graph is up: `gain` sets the player's volume. Called on the audio queue.
+    func attach(echoCancelled: Bool, gain: @escaping (Float) -> Void) {
+        lock.lock()
+        self.gain = gain
+        self.echoCancelled = echoCancelled
+        state = .idle
+        currentGain = 1
+        generation += 1
+        hotRun = 0
+        queueEnd = 0
+        audibleUntil = 0
+        lock.unlock()
+        queue.async { gain(1) }
+    }
+
+    /// The graph is going down: unity first, then no player to drive.
+    func detach() {
+        lock.lock()
+        let gain = self.gain
+        self.gain = nil
+        state = .idle
+        currentGain = 1
+        generation += 1
+        queueEnd = 0
+        audibleUntil = 0
+        lock.unlock()
+        if let gain { queue.async { gain(1) } }
+    }
+
+    /// Harnesses: forget floors, hold-offs, words and counts between runs.
+    func resetForHarness() {
+        lock.lock()
+        state = .idle
+        currentGain = 1
+        floor = 0.02
+        echoFloor = 0
+        hotRun = 0
+        hotSinceHost = 0
+        lastHotHost = 0
+        queueEnd = 0
+        audibleUntil = 0
+        voiceSpeaking = false
+        holdoffUntil = 0
+        unconfirmedAt.removeAll()
+        extendedThisDuck = false
+        hotSum = 0
+        hotCount = 0
+        jarheadWords.removeAll()
+        earBaseline = nil
+        liveItem = nil
+        liveItemOpenedHost = 0
+        generation += 1
+        stats = Stats()
+        let gain = self.gain
+        lock.unlock()
+        if let gain { queue.async { gain(1) } }
+    }
+
+    var currentStats: Stats {
+        lock.lock(); defer { lock.unlock() }
+        return stats
+    }
+
+    /// For the mic diag line: empty until something has happened.
+    func diagSuffix() -> String {
+        let s = currentStats
+        guard s.ducks > 0 || s.wordOnsetsSkipped > 0 else { return "" }
+        return ", duck \(s.ducks) (\(s.confirmed) confirmed, \(s.unconfirmed) unconfirmed, \(s.held) held past 700 ms, \(s.refusedWords) old partials refused, \(s.refusedLive) old Live items refused, \(s.wordOnsetsSkipped) word onsets skipped)"
+    }
+
+    // MARK: inputs
+
+    /// What the speaker is about to play (the audio queue): `seconds` of audio at `rms`,
+    /// queued behind whatever is still playing.
+    func noteOutput(rms: Double, seconds: TimeInterval) {
+        guard seconds.isFinite, seconds > 0 else { return }
+        lock.lock()
+        let now = CFAbsoluteTimeGetCurrent()
+        queueEnd = max(queueEnd, now) + seconds
+        if rms >= BargeInDuck.audibleOutput { audibleUntil = queueEnd }
+        lock.unlock()
+    }
+
+    /// The speaker backlog was dropped (a stop, a barge-in the engine confirmed): nothing queued is audible any more.
+    func noteFlush() {
+        lock.lock()
+        let now = CFAbsoluteTimeGetCurrent()
+        queueEnd = now
+        audibleUntil = min(audibleUntil, now)
+        lock.unlock()
+    }
+
+    /// True when no audible output is queued and none has been for `seconds` (the policy
+    /// flip's deferral asks this so a rebuild does not cut Jarhead mid-sentence).
+    func outputQuiet(for seconds: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return CFAbsoluteTimeGetCurrent() >= audibleUntil + seconds
+    }
+
+    /// The engine's phase entered or left `speaking` (main queue). Leaving it while ducked
+    /// unconfirmed is a confirmation: Live heard Kevin too. A fallback — the phase leaves
+    /// `speaking` 1.2 s after Jarhead's last words at the earliest.
+    func noteVoiceSpeaking(_ speaking: Bool) {
+        lock.lock()
+        let was = voiceSpeaking
+        voiceSpeaking = speaking
+        var confirm = false
+        if was, !speaking, case .ducked(_, _, false) = state { confirm = true }
+        if confirm { confirmLocked("voice stopped") }
+        lock.unlock()
+    }
+
+    /// Jarhead's recent words as the snapshot's transcript has them (main queue): a
+    /// partial made only of these may be his echo and confirms nothing.
+    func noteJarheadSaid(_ text: String) {
+        let words = BargeInDuck.words(of: text)
+        lock.lock()
+        jarheadWords = words
+        lock.unlock()
+    }
+
+    /// Live's transcript of Kevin grew: `item` (its transcript id) is a new or longer
+    /// non-final item in the snapshot, main queue. The confirmation when the ear is off, but
+    /// only for an item that opened `liveTranscriptLag` or more after the gate's onset: an
+    /// item already open, or one that opened sooner, transcribes what he said before the duck
+    /// (11% of replies get a late item for his last turn). Never an onset: his items arrive
+    /// revised and late, after Jarhead has started. What would have ducked is counted.
+    func noteLiveHeardKevin(item: String) {
+        lock.lock()
+        let nowHost = mach_absolute_time()
+        if item != liveItem {
+            liveItem = item
+            liveItemOpenedHost = nowHost
+        }
+        switch state {
+        case .ducked(_, let onset, false):
+            let opened = liveItemOpenedHost
+            if opened > onset, AVAudioTime.seconds(forHostTime: opened - onset) >= BargeInDuck.liveTranscriptLag {
+                confirmLocked("live transcript")
+            } else {
+                stats.refusedLive += 1
+                queue.async { [weak self] in self?.onEvent?(.refusedLive(item)) }
+            }
+        case .idle, .releasing:
+            let now = CFAbsoluteTimeGetCurrent()
+            if recentEnergyLocked(), echoCancelled, gain != nil, outputAudibleLocked(now) { stats.wordOnsetsSkipped += 1 }
+        case .ducked:
+            break
+        }
+        lock.unlock()
+    }
+
+    /// The ear produced words (a partial that grew), on the ear queue. The partial is the
+    /// whole segment, Kevin's own last turn included, so it is judged against the last one
+    /// seen before the duck began (`earBaseline`): a word it added, that the baseline did not
+    /// carry and Jarhead did not just say, confirms a duck the gate started. Words the ear
+    /// already had, revised in place or not, and Jarhead's own (residual echo says his words)
+    /// confirm nothing. Never an onset.
+    func noteEarWords(_ text: String) {
+        let tokens = BargeInDuck.tokens(of: text)
+        lock.lock()
+        switch state {
+        case .idle, .releasing:
+            // What used to start a duck: a word Jarhead did not just say, with recent energy.
+            if hasNovelWordLocked(tokens, besides: []), recentEnergyLocked(), armedLocked() { stats.wordOnsetsSkipped += 1 }
+            earBaseline = tokens
+        case .ducked(_, _, false):
+            if let baseline = earBaseline, hasNovelWordLocked(BargeInDuck.added(tokens, after: baseline), besides: Set(baseline)) {
+                earBaseline = tokens
+                confirmLocked("ear words")
+            } else {
+                stats.refusedWords += 1
+                queue.async { [weak self] in self?.onEvent?(.refusedWords(text)) }
+            }
+        case .ducked:
+            earBaseline = tokens
+        }
+        lock.unlock()
+    }
+
+    /// The mono microphone buffer (the tap thread): 10 ms slices, floor, onset.
+    func noteMic(mono: UnsafePointer<Float>, frames: Int, sampleRate: Double, capturedAt: AVAudioTime) {
+        guard frames > 0, sampleRate > 0 else { return }
+        let slice = max(1, Int(sampleRate * BargeInDuck.sliceSeconds))
+        let startHost = capturedAt.isHostTimeValid ? capturedAt.hostTime : mach_absolute_time() &- AVAudioTime.hostTime(forSeconds: Double(frames) / sampleRate)
+        lock.lock()
+        defer { lock.unlock() }
+        guard echoCancelled, gain != nil else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let outputAudible = outputAudibleLocked(now)
+        var offset = 0
+        while offset < frames {
+            let n = min(slice, frames - offset)
+            var acc = 0.0
+            for i in offset ..< offset + n { acc += Double(mono[i] * mono[i]) }
+            let rms = clampLevel((acc / Double(n)).squareRoot())
+            offset += n
+            // The room, and the residual echo of Jarhead's own voice while it plays unducked.
+            if rms < floor { floor = rms } else { floor += (rms - floor) * 0.0005 }
+            if outputAudible, case .idle = state {
+                if rms > echoFloor { echoFloor += (rms - echoFloor) * 0.02 } else { echoFloor *= 0.995 }
+            } else if !outputAudible {
+                echoFloor *= 0.999
+            }
+            let threshold = max(floor * BargeInDuck.floorFactor, BargeInDuck.minimumHotRMS, echoFloor * BargeInDuck.echoFactor)
+            let sliceHost = startHost &+ AVAudioTime.hostTime(forSeconds: Double(offset - n) / sampleRate)
+            if rms > threshold {
+                if hotRun == 0 { hotSinceHost = sliceHost }
+                hotRun += 1
+                lastHotHost = sliceHost &+ AVAudioTime.hostTime(forSeconds: Double(n) / sampleRate)
+                if case .ducked = state {
+                    hotSum += rms
+                    hotCount += 1
+                }
+                if hotRun == BargeInDuck.onsetSlices, armedLocked() {
+                    switch state {
+                    case .idle, .releasing: duckLocked(source: "gate", onsetHost: hotSinceHost)
+                    case .ducked: break
+                    }
+                }
+            } else {
+                hotRun = 0
+            }
+        }
+    }
+
+    // MARK: the machine (under `lock`)
+
+    /// Audible output is queued, or was within `armTail`.
+    private func outputAudibleLocked(_ now: CFAbsoluteTime) -> Bool {
+        now < audibleUntil + BargeInDuck.armTail
+    }
+
+    /// The gate saw speech energy within `earEnergyWindow`.
+    private func recentEnergyLocked() -> Bool {
+        guard lastHotHost > 0 else { return false }
+        let nowHost = mach_absolute_time()
+        return nowHost < lastHotHost || AVAudioTime.seconds(forHostTime: nowHost - lastHotHost) < BargeInDuck.earEnergyWindow
+    }
+
+    /// Seconds since the last hot slice; infinite when none was seen.
+    private func quietForLocked() -> TimeInterval {
+        guard lastHotHost > 0 else { return .infinity }
+        let nowHost = mach_absolute_time()
+        return nowHost < lastHotHost ? 0 : AVAudioTime.seconds(forHostTime: nowHost - lastHotHost)
+    }
+
+    /// The tokens of `text` in order, lowercased, letters and digits only.
+    static func tokens(of text: String) -> [String] {
+        text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    }
+
+    /// What a partial added after `before`, the ear's last partial before the duck: the tokens
+    /// past its length when this one grew from it (the same segment; a word revised in place
+    /// adds nothing), all of them when it did not (a new segment, or a revision that merged words).
+    static func added(_ tokens: [String], after before: [String]) -> ArraySlice<String> {
+        if tokens.count >= before.count, tokens.first == before.first { return tokens.dropFirst(before.count) }
+        return tokens[...]
+    }
+
+    /// Words of `text`, lowercased, letters and digits only, at least `novelWordMinLength` long.
+    static func words(of text: String) -> Set<String> {
+        var out: Set<String> = []
+        for piece in text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) where piece.count >= novelWordMinLength {
+            out.insert(String(piece))
+        }
+        return out
+    }
+
+    /// True when `tokens` has a word (≥ `novelWordMinLength`) that is not in `known` and that
+    /// Jarhead did not just say (nothing of his known yet counts as nothing said).
+    private func hasNovelWordLocked<S: Sequence>(_ tokens: S, besides known: Set<String>) -> Bool where S.Element == String {
+        tokens.contains { $0.count >= BargeInDuck.novelWordMinLength && !known.contains($0) && !jarheadWords.contains($0) }
+    }
+
+    private func armedLocked() -> Bool {
+        guard echoCancelled, gain != nil else { return false }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now >= holdoffUntil else { return false }
+        return outputAudibleLocked(now)
+    }
+
+    /// The gate heard 60 ms of speech over Jarhead: −6 dB at once, nothing deeper until a
+    /// confirmation (`confirmLocked`). The player's mixer smooths the step over ~20 ms.
+    private func duckLocked(source: String, onsetHost: UInt64) {
+        let now = CFAbsoluteTimeGetCurrent()
+        state = .ducked(since: now, onsetHost: onsetHost, confirmed: false)
+        generation += 1
+        let gen = generation
+        stats.ducks += 1
+        extendedThisDuck = false
+        hotSum = 0
+        hotCount = 0
+        guard let gain else { return }
+        queue.async { [weak self] in
+            guard let self, self.stepDown(BargeInDuck.unconfirmedGain, gen: gen, gain: gain) else { return }
+            let nowHost = mach_absolute_time()
+            let ms = nowHost > onsetHost ? AVAudioTime.seconds(forHostTime: nowHost - onsetHost) * 1000 : 0
+            self.onEvent?(.ducked(source: source, latencyMs: ms.isFinite ? ms : 0))
+        }
+        // Nothing follows within 700 ms and the mic is quiet: a cough. Back up, and hold off.
+        queue.asyncAfter(deadline: .now() + BargeInDuck.confirmWindow) { [weak self] in
+            self?.unconfirmedDeadline(gen)
+        }
+    }
+
+    /// Live heard him too: the rest of the way down, −6 dB to −20 dB in two steps 4 ms apart,
+    /// then release once he has finished.
+    private func confirmLocked(_ source: String) {
+        guard case .ducked(let since, let onset, false) = state else { return }
+        state = .ducked(since: since, onsetHost: onset, confirmed: true)
+        stats.confirmed += 1
+        let gen = generation
+        if let gain {
+            for (i, g) in BargeInDuck.deepenSteps.enumerated() {
+                let step: () -> Void = { [weak self] in _ = self?.stepDown(g, gen: gen, gain: gain) }
+                // The first step behind the duck's own −6 dB step (FIFO), the next 4 ms later.
+                if i == 0 { queue.async(execute: step) } else { queue.asyncAfter(deadline: .now() + .milliseconds(4 * i), execute: step) }
+            }
+        }
+        queue.async { [weak self] in
+            self?.onEvent?(.confirmed(source))
+            self?.pollRelease(gen, source: source)
+        }
+    }
+
+    private func stillCurrent(_ gen: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return gen == generation && gain != nil
+    }
+
+    /// On `queue`: one step of the current duck, only ever down, so no step lifts a duck a
+    /// confirmation has already deepened. False when the duck is over (released, detached).
+    private func stepDown(_ g: Float, gen: Int, gain: (Float) -> Void) -> Bool {
+        lock.lock()
+        guard gen == generation, self.gain != nil else {
+            lock.unlock()
+            return false
+        }
+        let lower = g < currentGain
+        if lower { currentGain = g }
+        lock.unlock()
+        if lower { gain(g) }
+        return true
+    }
+
+    private func setGain(_ g: Float) {
+        lock.lock()
+        currentGain = g
+        lock.unlock()
+    }
+
+    /// On `queue`: the deadline for a duck nobody confirmed — 700 ms, moved on while the
+    /// mic stays hot (he is still talking; Jarhead's echo dropped with the speaker) up to
+    /// 1.5 s, unless two ducks in ten seconds already went unconfirmed.
+    private func unconfirmedDeadline(_ gen: Int) {
+        lock.lock()
+        guard gen == generation, case .ducked(let since, _, false) = state else { lock.unlock(); return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let stillSpeaking = quietForLocked() < BargeInDuck.stillSpeakingWindow
+        let recentUnconfirmed = unconfirmedAt.filter { now - $0 < 10 }.count
+        if stillSpeaking, now - since + BargeInDuck.extendStep <= BargeInDuck.unconfirmedCap + 0.001, recentUnconfirmed < 2 {
+            if !extendedThisDuck {
+                extendedThisDuck = true
+                stats.held += 1
+            }
+            lock.unlock()
+            onEvent?(.extended(afterMs: (now - since) * 1000))
+            queue.asyncAfter(deadline: .now() + BargeInDuck.extendStep) { [weak self] in self?.unconfirmedDeadline(gen) }
+            return
+        }
+        stats.unconfirmed += 1
+        unconfirmedAt = unconfirmedAt.filter { now - $0 < 10 } + [now]
+        holdoffUntil = now + (unconfirmedAt.count >= 2 ? BargeInDuck.longHoldoff : BargeInDuck.holdoff)
+        // The level that tripped the gate is the floor now, until the room is quieter than it.
+        if hotCount > 0 { floor = max(floor, min(1, (hotSum / Double(hotCount)) / BargeInDuck.floorFactor)) }
+        let held = extendedThisDuck
+        lock.unlock()
+        beginRelease(held ? "unconfirmed, held to \(Int(((now - since) * 1000).rounded())) ms" : "unconfirmed at 700 ms", since: since)
+    }
+
+    /// On `queue`: once confirmed, release when the mic has been quiet a while (or at the cap).
+    private func pollRelease(_ gen: Int, source: String) {
+        lock.lock()
+        guard gen == generation, case .ducked(let since, _, true) = state else { lock.unlock(); return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let quietFor = quietForLocked()
+        let done = quietFor >= BargeInDuck.quietHold || now - since >= BargeInDuck.maxDuck
+        lock.unlock()
+        if done {
+            beginRelease(quietFor >= BargeInDuck.quietHold ? "quiet after \(source)" : "capped at 4 s", since: since)
+        } else {
+            queue.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in self?.pollRelease(gen, source: source) }
+        }
+    }
+
+    /// On `queue`: the 300 ms ramp back to unity, 15 ms a step, and a hold-off after it.
+    private func beginRelease(_ why: String, since: CFAbsoluteTime) {
+        lock.lock()
+        state = .releasing
+        generation += 1
+        let gen = generation
+        let from = currentGain
+        let gain = self.gain
+        holdoffUntil = max(holdoffUntil, CFAbsoluteTimeGetCurrent() + BargeInDuck.releaseHoldoff)
+        lock.unlock()
+        guard let gain else { return }
+        let steps = max(1, Int(BargeInDuck.releaseSeconds / 0.015))
+        for i in 1 ... steps {
+            queue.asyncAfter(deadline: .now() + .milliseconds(15 * i)) { [weak self] in
+                guard let self, self.stillCurrent(gen) else { return }
+                let t = Float(i) / Float(steps)
+                // Ease out: most of the level comes back early, the tail is smooth.
+                let eased = 1 - (1 - t) * (1 - t)
+                let g = from + (1 - from) * eased
+                gain(g)
+                self.setGain(g)
+                if i == steps {
+                    self.lock.lock()
+                    if gen == self.generation { self.state = .idle }
+                    self.lock.unlock()
+                    self.onEvent?(.released(why, afterMs: (CFAbsoluteTimeGetCurrent() - since) * 1000))
+                }
+            }
+        }
+    }
+}
