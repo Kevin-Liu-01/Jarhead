@@ -3,7 +3,7 @@
 # registers, UCKeyTranslate says what the US layout types; a combo must type no character
 # unless HotkeyCheckMain.swift's `typesAllowed` records it (only ⌥⇧Space, an open question).
 # Then the off switch (`defaults write com.kevinliu.jarhead hotkeys.off -bool YES`), read
-# through the argument domain so no plist is written.
+# through the argument domain so no plist is written: only ⌥⎋ Stop still registers.
 #   Scripts/hotkey-check.sh                # run the checks (a second)
 #   Scripts/hotkey-check.sh --build-only
 # Compiles App/Hotkeys.swift + Scripts/HotkeyCheckMain.swift into its own output directory,

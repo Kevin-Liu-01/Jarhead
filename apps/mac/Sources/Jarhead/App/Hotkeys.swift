@@ -19,7 +19,13 @@ import Carbon
 /// field. ⌃⌥ + a letter types no character. `Scripts/hotkey-check.sh` asks UCKeyTranslate.
 ///
 /// `defaults write com.kevinliu.jarhead hotkeys.off -bool YES` turns every global hotkey off
-/// (for a layout or an app that needs the combos); read at launch. The menus keep working.
+/// but ⌥⎋ (for a layout or an app that needs the combos); read at launch. ⌥⎋ stays. It is
+/// the one key that stops the hands while they hold the pointer and the keyboard, and it
+/// types nothing. ⌥⇧Space does go off: it types a no-break space, which a layout may need.
+/// The menus keep working, and so does the spoken "stop".
+///
+/// This file needs only AppKit and Carbon. The orb harnesses (Scripts/orb-preview.sh,
+/// Scripts/orb-home-probe.sh) and Scripts/hotkey-check.sh compile it without the rest of App/.
 @MainActor
 final class Hotkeys {
     enum Action: UInt32, CaseIterable {
@@ -84,12 +90,15 @@ final class Hotkeys {
         }
     }
 
-    /// The UserDefaults switch that turns every global hotkey off.
+    /// The UserDefaults switch that turns every global hotkey off but Stop.
     static let offKey = "hotkeys.off"
 
-    /// What `register()` registers: every action, or none while `hotkeys.off` is set.
+    /// The hotkeys `hotkeys.off` never turns off: ⌥⎋, Stop.
+    static let alwaysOn: [Action] = [.stop]
+
+    /// What `register()` registers: every action, or only `alwaysOn` while `hotkeys.off` is set.
     static func actionsToRegister(_ defaults: UserDefaults = .standard) -> [Action] {
-        defaults.bool(forKey: offKey) ? [] : Action.allCases
+        defaults.bool(forKey: offKey) ? alwaysOn : Action.allCases
     }
 
     private static let signature: OSType = 0x4A48_4B59 // "JHKY"
@@ -104,9 +113,8 @@ final class Hotkeys {
     func register() {
         guard handlerRef == nil else { return }
         let actions = Hotkeys.actionsToRegister()
-        guard !actions.isEmpty else {
-            NSLog("Hotkeys: off (\(Hotkeys.offKey) is set); none registered")
-            return
+        if actions.count < Action.allCases.count {
+            NSLog("Hotkeys: \(Hotkeys.offKey) is set; only \(actions.map(\.glyph).joined(separator: " ")) registered")
         }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()

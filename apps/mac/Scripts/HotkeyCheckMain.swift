@@ -10,7 +10,8 @@ import Carbon
 // Headless and read-only: nothing is registered (RegisterEventHotKey would take the combos
 // from every other app for as long as this runs), no event is posted, no window opens.
 // Run by Scripts/hotkey-check.sh, once plain and once with `-hotkeys.off YES` (the argument
-// domain, so the off switch is read exactly as the app reads it and no plist is written).
+// domain, so the off switch is read exactly as the app reads it and no plist is written). The
+// switch leaves ⌥⎋ Stop registered and nothing else.
 // One `check:` line per check, "ok" or "FAIL" first; exit 1 on a FAIL.
 
 nonisolated(unsafe) var failures = 0
@@ -80,9 +81,13 @@ struct HotkeyCheck {
         let switchedOff = CommandLine.arguments.contains("-hotkeys.off")
 
         if switchedOff {
-            // The off switch: `defaults write com.kevinliu.jarhead hotkeys.off -bool YES`.
+            // The off switch: `defaults write com.kevinliu.jarhead hotkeys.off -bool YES`. It turns
+            // off every hotkey but ⌥⎋: Stop is the one key that stops the hands mid-drive.
             let actions = Hotkeys.actionsToRegister()
-            check(actions.isEmpty, "hotkeys.off YES: register() registers nothing (\(actions.count) would be)")
+            let names = actions.map(\.glyph).joined(separator: " ")
+            check(actions.contains(.stop), "hotkeys.off YES: ⌥⎋ Stop still registers (registers: \(names))")
+            check(actions == [.stop], "hotkeys.off YES: nothing but ⌥⎋ registers (registers: \(names))")
+            print(failures == 0 ? "hotkey-check: all ok" : "hotkey-check: \(failures) FAIL")
             exit(failures == 0 ? 0 : 1)
         }
 

@@ -56,7 +56,7 @@ jobs:
       # Nothing is asked or opened, and Setup's window is never shown.
       - run: bash apps/mac/Scripts/sweep-check.sh
       # The global hotkeys type nothing on the US layout (UCKeyTranslate). The one allowance, ⌥⇧Space,
-      # is recorded in HotkeyCheckMain.swift's typesAllowed. Nothing is registered.
+      # is recorded in HotkeyCheckMain.swift's typesAllowed. hotkeys.off keeps ⌥⎋ Stop. Nothing is registered.
       - run: bash apps/mac/Scripts/hotkey-check.sh
 
   release:
