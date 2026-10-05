@@ -15,9 +15,12 @@ import AppKit
 // listening cyan and the accent blues to a deep blue), a diagonal ramp (light
 // upper-left → deep lower-right) quantised into `Dither.bands` and dithered with the
 // shared 8×8 Bayer tile in 1.5 pt cells (UI/Dither.swift: the icon's tile, the icon's
-// palette), then blended into pure black toward the notch — longest under
-// the notch, a short rim at the outer corners — so the island reads as the orb's
-// colour pooling out of the black. Rendered once per (size, scale) into a CGImage and
+// palette), then blended into pure black at the top edge by the notch's lip, so the
+// island reads as the orb's colour pooling out of the black. The lip is the notch's
+// black carried a short way into the island and dithered away: its depth per column
+// is a Gaussian across x centred on the notch, so it hangs as a soft bell and never
+// as a wedge, over a thin rim that keeps the whole top edge ink (the site's
+// lib/island.ts is the same math). Rendered once per (size, scale) into a CGImage and
 // cached (an LRU capped at 32 MB by bytes — the 420×184 island at 2× is ≈ 1.24 MB, so
 // about 25 fit; the open and peek sizes are prewarmed and pinned (evicted last), and the
 // peek never grows past `NotchGeometry.peekWidthCap`); the mode's intensity is the alpha
@@ -138,13 +141,27 @@ enum NotchInk {
     /// Where the diagonal ramp starts (0 = the palest cyan) and how far it runs. On the
     /// open island biased so its body — where the face and the words sit — is mid and
     /// deep blue (the face, at the left, over #5b82ff), the cyan the upper-left corner
-    /// only, the lower right the deep blue. On the peek, a 26 pt strip half of which is
+    /// only, the lower right the deep blue; deeper and longer than it was when the black
+    /// under the notch gave the words their ground, since the lip is now a fifth of the
+    /// height. On the peek, a 26 pt strip half of which is
     /// the black under the notch, the bias is lifted toward the cyan so the strip is
     /// unmistakably the orb's colour (a deep blue at 26 pt read as near-black on the
     /// hardware, 2026-09-11) — the eyes keep their ground under-copy and still read.
-    private static let rampBiasIsland: Float = 0.3
+    private static let rampBiasIsland: Float = 0.42
     private static let rampBiasPeek: Float = 0.08
-    private static let rampSpan: Float = 0.78
+    private static let rampSpanIsland: Float = 0.95
+    private static let rampSpanPeek: Float = 0.78
+    /// The notch's lip, as fractions of the height: its depth under the notch's centre
+    /// and the rim's along the rest of the top edge, on the open island and on the peek.
+    /// The peek keeps its top third ink and its shoulders half, so the breathing peek's
+    /// small shoulders stay ink rather than pulsing cyan ears beside the notch.
+    private static let lipIsland: Float = 0.2
+    private static let rimIsland: Float = 0.02
+    private static let lipPeek: Float = 0.34
+    private static let rimPeek: Float = 0.5
+    /// How much wider the bell's left flank is on the open island: the ramp is pale
+    /// there, and a bell of equal depth read lighter left of the notch than right.
+    private static let lipLeftWiden: Float = 0.3
     /// The glassy highlight (the icon's top-left spot): a pale cyan spot hugging the
     /// island's left end just under the black rim, in points so it is the same size
     /// whatever the island's — small enough that the eyes, 57 pt in, sit on the blue.
@@ -156,7 +173,8 @@ enum NotchInk {
         /// Pixels.
         let width: Int
         let height: Int
-        /// The notch's width in pixels (the black pools longest under it).
+        /// The notch's width in pixels: a display with another notch is another key. The
+        /// lip itself is centred on the island, which is centred on the notch.
         let notchWidth: Int
         /// Backing scale × 100.
         let scale100: Int
@@ -351,8 +369,8 @@ enum NotchInk {
     /// Pure Swift over an RGBX buffer: 420×184 pt at 2× is 309k pixels, a few ms
     /// optimised. Pure and thread-agnostic: it reads only the constants and the tile.
     /// The base is `Dither`'s banded diagonal ramp (its LUT, its tile, its quantiser);
-    /// the notch's own shading — the highlight, the black into the notch, the vignette —
-    /// is dithered the same way, in the same pass.
+    /// the notch's own shading (the highlight, the lip, the vignette) is dithered the
+    /// same way, in the same pass.
     static func render(_ key: Key) -> CGImage? {
         let W = key.width, H = key.height
         guard W > 0, H > 0 else { return nil }
@@ -361,27 +379,31 @@ enum NotchInk {
         let noise = Dither.tile, nz = Dither.tileSize
         let cell = Dither.cellPixels(scale: CGFloat(s))
         let nb = Float(bands)
-        // 0 at the peek's height … 1 at the island's: the black under the notch reaches
-        // deeper, the ramp shifts to the blues and the vignette comes in as the island opens.
+        // 0 at the peek's height … 1 at the island's: the lip thins to a fifth of the
+        // height, the ramp shifts to the blues and the vignette comes in as the island opens.
         let sizeT = Dither.smoothstep(Float(NotchGeometry.peekHeight), Float(NotchGeometry.islandHeight), hPt)
         let halfW = wPt / 2
-        let halfNotch = min(halfW, Float(key.notchWidth) / s / 2)
-        let wing = max(1, halfW - halfNotch)
         // The highlight: centred a touch off the left edge, a third of the way down —
         // under the black rim at the corner — so it is the left end's glow, not the face's.
         let hlX = -0.01 * wPt, hlY = 0.36 * hPt
         // Faint on the peek (its face is centred and the spot would pull the eye to one
         // end of a breathing island), full on the open island.
         let hlAmp: Float = 0.3 + 0.5 * sizeT
-        // Into the notch: black at the top edge everywhere, fading over most of the height
-        // under the notch on the open island but only its top third on the peek (the strip
-        // is 26 pt: two thirds of it must be colour to be seen), and over a shorter rim at
-        // the outer corners — never shorter than the peek's half, so the breathing peek's
-        // small shoulders stay ink rather than pulsing cyan ears beside the notch.
-        let deepUnderNotch = Dither.mix(0.34, 0.82, sizeT)
-        let rim = Dither.mix(0.5, 0.26, sizeT)
+        // The lip: black at the top edge everywhere, fading per column over a Gaussian
+        // reach centred on the notch, from `lipDepth` under its centre to `rimEdge` at the
+        // ends. σ is a quarter of the island's width (halfW / 2, so the bell is down to
+        // e⁻² at the island's ends, a wing past the notch's edge), the left flank a little
+        // wider on the open island; on the peek (26 pt: two thirds of it must be colour to
+        // be seen) its top third under the notch, its shoulders half.
+        let lipDepth = Dither.mix(lipPeek, lipIsland, sizeT)
+        let rimEdge = Dither.mix(rimPeek, rimIsland, sizeT)
+        let sigma = max(1, halfW / 2)
+        let bellRight = 2 * sigma * sigma
+        let widen = 1 + lipLeftWiden * sizeT
+        let bellLeft = bellRight * widen * widen
         let vignette = sizeT * 0.34
         let rampBias = Dither.mix(rampBiasPeek, rampBiasIsland, sizeT)
+        let rampSpan = Dither.mix(rampSpanPeek, rampSpanIsland, sizeT)
 
         // The ramp takes only `bands + 1` values once quantised: a table.
         let rampLUT = Dither.lut(stops: stops, bands: bands)
@@ -394,8 +416,8 @@ enum NotchInk {
             colDiag[x] = rampBias + rampSpan * 0.68 * fx
             let hx = (xPt - hlX) / highlightSigma
             colHL[x] = expf(-hx * hx / 2)
-            let fromNotch = Dither.clamp01((abs(xPt - halfW) - halfNotch) / wing)
-            colReach[x] = Dither.mix(deepUnderNotch, rim, Dither.smoothstep(0, 1, fromNotch))
+            let dx = xPt - halfW
+            colReach[x] = Dither.mix(rimEdge, lipDepth, expf(-dx * dx / (dx < 0 ? bellLeft : bellRight)))
             colV[x] = abs(fx - 0.5) * 2
         }
         var px = [UInt8](repeating: 0, count: W * H * 4)
@@ -415,7 +437,7 @@ enum NotchInk {
                     var col = rampLUT[Dither.quantise(colDiag[x] + rowDiag, nb, t)]
                     // The highlight.
                     col = Dither.mix(col, paleCyan, Float(Dither.quantise(rowHL * colHL[x], 6, t)) / 6)
-                    // Into the notch.
+                    // The lip.
                     let black = 1 - Dither.smoothstep(0, colReach[x], fy)
                     col = Dither.mix(col, ink, Float(Dither.quantise(black, nb, t)) / nb)
                     // A slight vignette on the open island, so the words read to the edges.

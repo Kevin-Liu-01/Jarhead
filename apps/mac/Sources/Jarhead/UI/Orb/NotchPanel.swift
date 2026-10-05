@@ -1326,8 +1326,11 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private static let problemClauseAttrs: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor(white: 1, alpha: 0.62), .paragraphStyle: truncating]
     /// The Say box's placeholder at rest, the field's own face at the empty step.
     private static let placeholderAttrs: [NSAttributedString.Key: Any] = [.font: fieldFont, .foregroundColor: NSColor(white: 1, alpha: 0.46), .paragraphStyle: truncating]
-    /// The head's dim figures: `◎ 2` once every mark is used, a film's caption.
-    private static let headDimAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.46), .paragraphStyle: truncating]
+    /// The head's dim figures: `◎ 2` once every mark is used, a film's caption. 0.72, as the
+    /// site's head: the ink under the head is a thin lip now, so 0.46 fell below 4.5:1.
+    private static let headDimAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72), .paragraphStyle: truncating]
+    /// The head's `◎ N` under the pointer, a step brighter than the dim figures.
+    private static let headHotAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.92), .paragraphStyle: truncating]
     /// The mark-landed pill's words, the meter's mono in the mark tone.
     private static let markPillAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: markTone]
     /// The `◎ N` in the head while marks are pending, the mark tone.
@@ -1523,7 +1526,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         _ = Self.wordAttrs; _ = Self.hintAttrs; _ = Self.lipChipAttrs; _ = Self.footPausedAttrs
         _ = Self.heroAttrs; _ = Self.heroBrightAttrs; _ = Self.heroCalmAttrs; _ = Self.heroShadow; _ = Self.actionAttrs
         _ = Self.overflowLargeAttrs; _ = Self.problemNounAttrs; _ = Self.problemClauseAttrs; _ = Self.placeholderAttrs
-        _ = Self.headDimAttrs; _ = Self.headMarkAttrs; _ = Self.threadAttrs; _ = Self.overflowAttrs
+        _ = Self.headDimAttrs; _ = Self.headHotAttrs; _ = Self.headMarkAttrs; _ = Self.threadAttrs; _ = Self.overflowAttrs
     }
 
     required init?(coder: NSCoder) { fatalError("NotchView is code-only") }
@@ -3023,9 +3026,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.restoreGState()
     }
 
-    /// The head's right end: the hovered (else newest) film's caption at 0.46 while films
-    /// show; the ring's `12 min late` / `· +1` at 0.46; otherwise `◎ N` — amber while any is
-    /// pending, 0.46 once all are used.
+    /// The head's right end: the hovered (else newest) film's caption at 0.72 while films
+    /// show; the ring's `12 min late` / `· +1` at 0.72; otherwise `◎ N` — amber while any is
+    /// pending, 0.72 once all are used, 0.92 under the pointer.
     private func drawHeadRight(_ cg: CGContext, _ z: Zones, _ a: Beat, _ base: CGFloat, hot: Bool) {
         let rect = z.headRight.offsetBy(dx: 0, dy: a.dy)
         guard rect.width > 0 else { return }
@@ -3046,9 +3049,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         guard !content.marks.isEmpty else { return }
         let pending = content.pendingMarks > 0
         let figure = "\(content.marks.count)" as NSString
-        let attrs = pending ? Self.headMarkAttrs : (hot ? Self.workAttrs : Self.headDimAttrs)
+        let attrs = pending ? Self.headMarkAttrs : (hot ? Self.headHotAttrs : Self.headDimAttrs)
         let fw = Self.textWidth(figure, attrs)
-        let tint = pending ? Self.markTone : NSColor(white: 1, alpha: hot ? 0.72 : 0.46)
+        let tint = pending ? Self.markTone : NSColor(white: 1, alpha: hot ? 0.92 : 0.72)
         if let img = Self.symbol("scope", pointSize: 10, tint: tint) {
             img.draw(in: NSRect(x: rect.maxX - fw - 4 - img.size.width, y: rect.midY - img.size.height / 2, width: img.size.width, height: img.size.height),
                      from: .zero, operation: .sourceOver, fraction: base, respectFlipped: true, hints: nil)

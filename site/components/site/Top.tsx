@@ -14,8 +14,6 @@ import { MenuBar } from "./MenuBar";
 import { SECTION_KIND } from "./sections";
 
 const SWAP_MS = 160; // --jh-quick
-const NOTCH = 185;
-const WING = 40;
 const ISL_H = 184;
 
 /** The island's face per kind: round eyes listening, the flat pair thinking and asleep, `o o` acting and ringing, `^ ^` speaking. */
@@ -217,7 +215,7 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       const s = tl.current;
       const sc = s.scale || 1;
       s.inkScale = sc;
-      renderIslandInk(cv, { width: 420, height: ISL_H, notchWidth: NOTCH, wing: WING, breath, cell: cellCss(1.5) / sc, stops: s.shown === "asleep" ? QUIET_STOPS : undefined });
+      renderIslandInk(cv, { width: 420, height: ISL_H, breath, cell: cellCss(1.5) / sc, stops: s.shown === "asleep" ? QUIET_STOPS : undefined });
     },
     [refs.ink],
   );
