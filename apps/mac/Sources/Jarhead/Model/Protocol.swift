@@ -6,7 +6,9 @@ import Foundation
 
 /// Mirror of PROTOCOL_VERSION (APP-3). The app sends it in its hello and reads the daemon's; a difference, or a
 /// daemon hello without one, means the two were built from different checkouts (`app.version`). Bump it with the
-/// TypeScript constant: contract-additions.test.ts pins the two equal.
+/// TypeScript constant: contract-additions.test.ts pins the two equal. No daemon sends it yet: W3-3 lands the
+/// daemon's send (server.ts), the app's send and this comparison in one change, since a comparison alone reads every
+/// daemon as a skew.
 public enum ProtocolVersion {
     public static let current = 1
 }
@@ -858,7 +860,11 @@ public struct UsageToday: Codable, Equatable {
 /// and month heads. The reply's `days` list stays beside it; a daemon before the field sends the list alone.
 public struct LedgerDayTotals: Codable, Equatable {
     public var day: String
+    /// The day file's `session.started` rows.
     public var sessions: Int
+    /// Each session's seconds, once, in the day file of the row that carries them. A session with a `session.closed`
+    /// row (a `LedgerRow.lostReason` close included) counts that row's `usageSeconds`. Only a session with no closed
+    /// row yet counts its last `session.usage` row. Never both: a lost close repeats its last usage row's seconds.
     public var billedSeconds: Double
 }
 
@@ -1342,9 +1348,23 @@ public struct AudioStateInfo: Codable, Equatable {
 //
 // Numbers and three closed-vocabulary words (the duck's source and reason, the mix format); nothing quotes what
 // Kevin or Jarhead said. Each one decodes field by field: a field this build reads differently (a newer app or
-// daemon) comes back nil or 0 and never costs the snapshot or the row it rides in. `json` writes finite numbers
-// only (silence is -inf dBFS, which JSONSerialization cannot write) and leaves an absent optional out, so the
-// frame always passes the daemon's isAudioState.
+// daemon) comes back nil or 0. A value that is not an object at all (`"playout": "x"`, `"liveAudio": [1, 2]`)
+// comes back nil where it rides, never a struct of invented zeros. Neither costs the snapshot or the row it rides
+// in. `json` writes finite numbers only (silence is -inf dBFS, which JSONSerialization cannot write) and leaves an
+// absent optional out, so the frame always passes the daemon's isAudioState.
+
+/// The playback telemetry types. Each one's decoder throws when its value is not an object; where one rides
+/// (AudioStateInfo, Snapshot, LedgerRow, AudioDuckInfo), the parent reads it through the `decodeIfPresent` below,
+/// so that throw becomes nil and the parent still decodes.
+protocol SoftTelemetry: Decodable {}
+
+extension KeyedDecodingContainer {
+    /// A telemetry object, or nil when it is absent, null or not an object. Overload resolution prefers this to the
+    /// generic `decodeIfPresent` for a SoftTelemetry type, in the synthesized decoders too.
+    func decodeIfPresent<T: SoftTelemetry>(_ type: T.Type, forKey key: Key) throws -> T? {
+        try? decode(T.self, forKey: key)
+    }
+}
 
 private extension KeyedDecodingContainer {
     /// One telemetry field, or nil when it is absent or typed differently.
@@ -1379,10 +1399,10 @@ public struct AudioPlayoutInfo: Codable, Equatable {
     public var droppedMs: Double = 0
 }
 
-extension AudioPlayoutInfo {
+extension AudioPlayoutInfo: SoftTelemetry {
     public init(from decoder: Decoder) throws {
         self.init()
-        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
         chunks = c.soft(.chunks) ?? 0
         underruns = c.soft(.underruns) ?? 0
         underrunMs = c.soft(.underrunMs) ?? 0
@@ -1421,10 +1441,10 @@ public struct AudioDuckLastInfo: Codable, Equatable {
     public var reason: String?
 }
 
-extension AudioDuckLastInfo {
+extension AudioDuckLastInfo: SoftTelemetry {
     public init(from decoder: Decoder) throws {
         self.init()
-        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
         source = c.soft(.source) ?? ""
         confirmed = c.soft(.confirmed) ?? false
         depthDb = c.soft(.depthDb) ?? 0
@@ -1464,10 +1484,10 @@ public struct AudioDuckInfo: Codable, Equatable {
     public var last: AudioDuckLastInfo?
 }
 
-extension AudioDuckInfo {
+extension AudioDuckInfo: SoftTelemetry {
     public init(from decoder: Decoder) throws {
         self.init()
-        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
         ducks = c.soft(.ducks) ?? 0
         gate = c.soft(.gate) ?? 0
         confirmed = c.soft(.confirmed) ?? 0
@@ -1508,10 +1528,10 @@ public struct AudioOutputInfo: Codable, Equatable {
     public var volume: Double?
 }
 
-extension AudioOutputInfo {
+extension AudioOutputInfo: SoftTelemetry {
     public init(from decoder: Decoder) throws {
         self.init()
-        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
         rmsDbfs = c.soft(.rmsDbfs)
         peakDbfs = c.soft(.peakDbfs)
         heardRmsDbfs = c.soft(.heardRmsDbfs)
@@ -1544,10 +1564,10 @@ public struct LiveAudioInfo: Codable, Equatable {
     public var formatRate: Double?
 }
 
-extension LiveAudioInfo {
+extension LiveAudioInfo: SoftTelemetry {
     public init(from decoder: Decoder) throws {
         self.init()
-        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
         deltas = c.soft(.deltas) ?? 0
         deltaMsP50 = c.soft(.deltaMsP50)
         deltaMsMax = c.soft(.deltaMsMax)
@@ -2066,9 +2086,10 @@ public struct LedgerRow: Codable, Identifiable {
     public var duck: AudioDuckInfo?
     public var output: AudioOutputInfo?
     public var liveAudio: LiveAudioInfo?
-    /// V8 / LM-2: the `session.closed` reason for a session the daemon died in (SESSION_LOST_REASON), closed at the
-    /// next start with the seconds of its last `session.usage` row (sessionId, usageSeconds: the coalesced billed
-    /// seconds, every 60 s and at detach).
+    /// V8 / LM-2: the `session.closed` reason for a session the daemon died in (SESSION_LOST_REASON). The next start
+    /// writes that close with the `usageSeconds` and the `at` of the session's last `session.usage` row (sessionId,
+    /// usageSeconds: the coalesced billed seconds, every 60 s and at detach), or its `session.started` row's `at` and
+    /// 0 s when it has none. The `at` picks the day file, so the close lands in the day the seconds were billed.
     public static let lostReason = "lost"
     /// The row's key: type · at · the first id it carries (item, step, delegation, thread, the wire's own).
     /// An if/else ladder, not a `??` chain inside the interpolation (CI's older Swift).

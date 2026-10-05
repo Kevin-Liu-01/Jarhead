@@ -71,7 +71,12 @@ export class FrameParser {
 
 /** daemon → app */
 export type DaemonMessage =
-  /** `version` is the package's; `protocol` is PROTOCOL_VERSION (APP-3), absent from a daemon before the field. A surface whose number differs raises `app.version`. */
+  /**
+   * `version` is the package's; `protocol` is PROTOCOL_VERSION (APP-3). A surface whose number differs, or that reads
+   * none, raises `app.version`. Optional only until server.ts sends it: W3-3 adds the send and the app's comparison in
+   * one change and then makes it required here (this daemon is always current; only the Swift decoder keeps it
+   * optional, for a daemon from before the field). A comparison without the send reads every daemon as a skew.
+   */
   | { readonly type: "hello"; readonly version: string; readonly pid: number; readonly stateDir: string; readonly protocol?: number }
   | { readonly type: "snapshot"; readonly snapshot: unknown }
   | { readonly type: "levels"; readonly levels: unknown }
@@ -122,7 +127,11 @@ export type DaemonMessage =
 
 /** app → daemon */
 export type ClientMessage =
-  /** `protocol` is the sender's PROTOCOL_VERSION (APP-3; `ProtocolVersion.current` in Swift), absent from a build before the field. The app's hello (`audio: true`) with another number, or with none, is a skew. */
+  /**
+   * `protocol` is the sender's PROTOCOL_VERSION (APP-3; `ProtocolVersion.current` in Swift, sent from EngineClient's
+   * hello by W3-3), absent from a build before the field. Optional for good: a CLI client may send none. The app's
+   * hello (`audio: true`) with another number, or with none, is a skew.
+   */
   | { readonly type: "hello"; readonly pid: number; readonly version?: string; readonly audio?: boolean; readonly protocol?: number }
   | { readonly type: "command"; readonly command: unknown }
   | { readonly type: "mic-level"; readonly level: number }
@@ -131,8 +140,9 @@ export type ClientMessage =
    * processing and its knobs, the winning rung, what it hears and speaks through, the echo
    * guard's counters, who else holds the mic). Sent on start, stop, a route change and every
    * 5 s with the counters, ≤ 1 Hz. The daemon checks the shape (`isAudioState`) and keeps it in
-   * the snapshot for `status`, the doctor and the Console; a malformed frame is dropped. Data,
-   * never a command: nothing here changes a setting or the graph.
+   * the snapshot for `status`, the doctor and the Console; a malformed frame is dropped, and a
+   * malformed playout, duck or output costs only itself. Data, never a command: nothing here
+   * changes a setting or the graph.
    */
   | { readonly type: "audio-state"; readonly state: unknown }
   | { readonly type: "permission"; readonly which: string; readonly state: "granted" | "denied" | "unknown"; readonly detail?: string }

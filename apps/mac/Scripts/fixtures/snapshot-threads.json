@@ -1074,7 +1074,7 @@
       { "at": 1789243300000, "type": "session.started", "sessionId": "sess_e04b7c", "voice": "cedar", "language": "en", "accent": "american" },
       { "at": 1789243360000, "type": "session.usage", "sessionId": "sess_e04b7c", "usageSeconds": 60 },
       { "at": 1789243420000, "type": "session.usage", "sessionId": "sess_e04b7c", "usageSeconds": 120 },
-      { "at": 1789243900000, "type": "session.closed", "sessionId": "sess_e04b7c", "reason": "lost", "usageSeconds": 120 },
+      { "at": 1789243420000, "type": "session.closed", "sessionId": "sess_e04b7c", "reason": "lost", "usageSeconds": 120 },
       { "at": 1789243262800, "type": "worker", "worker": { "id": "w_old", "name": "Spotify", "delegationId": "dlg_old", "task": "play the playlist Focus — a row as day files before 2026-09-13 hold it", "lane": "background", "status": "working", "startedAt": 1789243262500, "steps": 1 } },
       {
         "at": 1789243262900,

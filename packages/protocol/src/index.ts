@@ -1146,16 +1146,32 @@ const PLAYOUT_REQUIRED = ["chunks", "underruns", "underrunMs", "longestUnderrunM
 const DUCK_REQUIRED = ["ducks", "gate", "confirmed", "unconfirmed", "held", "refusedWords", "wordOnsetsSkipped", "duckedMs", "deepMs"] as const;
 const DUCK_OPTIONAL = ["refusedLive", "residualP50Dbfs", "residualP99Dbfs", "echoFloorDbfs"] as const;
 
-function duckOk(value: unknown): boolean {
-  if (!telemetryOk(value, DUCK_REQUIRED, DUCK_OPTIONAL)) return false;
-  const last = (value as Record<string, unknown>)["last"];
-  if (last === undefined) return true;
-  if (!telemetryOk(last, ["depthDb"], ["runDbfs", "thresholdDbfs", "releasedAfterMs"], ["reason"])) return false;
-  const l = last as Record<string, unknown>;
+function duckLastOk(value: unknown): boolean {
+  if (!telemetryOk(value, ["depthDb"], ["runDbfs", "thresholdDbfs", "releasedAfterMs"], ["reason"])) return false;
+  const l = value as Record<string, unknown>;
   return typeof l["source"] === "string" && typeof l["confirmed"] === "boolean";
 }
 
-/** The wire's shape check for an `audio-state` frame: the booleans and counters the readers index on must be there and typed; a frame that fails is dropped, never kept. */
+/** The duck's check. A malformed `last` costs only itself: it is deleted and the duck's own counts pass. */
+function duckOk(value: unknown): boolean {
+  if (!telemetryOk(value, DUCK_REQUIRED, DUCK_OPTIONAL)) return false;
+  const d = value as Record<string, unknown>;
+  return d["last"] === undefined || duckLastOk(d["last"]) || Reflect.deleteProperty(d, "last");
+}
+
+/** The telemetry objects an `audio-state` frame may carry, each with its own check. */
+const TELEMETRY_CHECKS: readonly (readonly [key: "playout" | "duck" | "output", ok: (value: unknown) => boolean])[] = [
+  ["playout", (v) => telemetryOk(v, PLAYOUT_REQUIRED, ["queuedMinMs"])],
+  ["duck", duckOk],
+  ["output", (v) => telemetryOk(v, [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "volume"], ["mixFormat"])],
+];
+
+/**
+ * The wire's shape check for an `audio-state` frame: the booleans and counters the readers index on must be there
+ * and typed; a frame that fails is dropped, never kept. The playback telemetry (`playout`, `duck`, `output`) is
+ * checked as strictly, but a malformed one costs only itself: it is deleted from the frame (a parsed object the
+ * caller owns) and the rest passes, so the devices, the guard counters and the `audio.guard` row still land.
+ */
 export function isAudioState(value: unknown): value is AudioState {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
@@ -1175,11 +1191,13 @@ export function isAudioState(value: unknown): value is AudioState {
   if (!(typeof v["wiring"] === "string" && typeof v["tapFormat"] === "string")) return false;
   if (!(optNum("duckLevel") && optBool("advancedDucking") && optBool("agc") && optBool("bypassed") && optNum("guardHeldMs") && optNum("since"))) return false;
   if (!(device("hears") && device("speaks"))) return false;
-  if (v["playout"] !== undefined && !telemetryOk(v["playout"], PLAYOUT_REQUIRED, ["queuedMinMs"])) return false;
-  if (v["duck"] !== undefined && !duckOk(v["duck"])) return false;
-  if (v["output"] !== undefined && !telemetryOk(v["output"], [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "volume"], ["mixFormat"])) return false;
   const shared = v["sharedWith"];
-  return shared === undefined || (Array.isArray(shared) && shared.every((s) => typeof s === "string"));
+  if (!(shared === undefined || (Array.isArray(shared) && shared.every((s) => typeof s === "string")))) return false;
+  // Only a frame that passed sheds anything. A frozen frame that cannot shed is dropped whole.
+  for (const [key, ok] of TELEMETRY_CHECKS) {
+    if (v[key] !== undefined && !ok(v[key]) && !Reflect.deleteProperty(v, key)) return false;
+  }
+  return true;
 }
 
 export type Accent = "american" | "british" | "none";
@@ -1300,13 +1318,19 @@ export interface UsageToday {
 }
 
 /**
- * LM-6: one day of the `ledger.days` reply's `totals`, for the Ledger tab's day rows and month heads: Jarhead's
- * sessions that day and the Live seconds they billed (closed rows, a lost session's last usage row included).
+ * LM-6: one day of the `ledger.days` reply's `totals`, for the Ledger tab's day rows and month heads. Each session
+ * counts once, the way the meter (`usageToday`) and the Ledger tab's page stats count it.
  */
 export interface LedgerDayTotals {
   /** YYYY-MM-DD local, as the day list spells it. */
   readonly day: string;
+  /** The day file's `session.started` rows. */
   readonly sessions: number;
+  /**
+   * Each session's seconds, once, in the day file of the row that carries them. A session with a `session.closed`
+   * row (a SESSION_LOST_REASON close included) counts that row's `usageSeconds`. Only a session with no closed row
+   * yet counts its last `session.usage` row. Never both: a lost close repeats its last usage row's seconds.
+   */
   readonly billedSeconds: number;
 }
 
@@ -1538,7 +1562,12 @@ export type OverlayCommand =
 
 // ----------------------------------------------------------------- ledger ---
 
-/** V8 / LM-2: the `session.closed` reason for a session the daemon died in, written at the next start with the seconds of its last `session.usage` row. */
+/**
+ * V8 / LM-2: the `session.closed` reason for a session the daemon died in. The next start writes that close with
+ * the `usageSeconds` and the `at` of the session's last `session.usage` row (its `session.started` row's `at` and
+ * 0 s when it has none). The `at` picks the day file (`Ledger.append`), so the close lands in the day the seconds
+ * were billed, however many midnights the restart comes after. That is still an append.
+ */
 export const SESSION_LOST_REASON = "lost";
 
 /**
@@ -1550,7 +1579,7 @@ export const SESSION_LOST_REASON = "lost";
  */
 export type LedgerRow =
   | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string; readonly resumedFrom?: string; readonly language?: string; readonly accent?: Accent }
-  /** `reason` is the close's own word (`sleep:said`, Live's), or SESSION_LOST_REASON for a session the daemon died in. */
+  /** `reason` is the close's own word (`sleep:said`, Live's), or SESSION_LOST_REASON for a session the daemon died in (its `at` and seconds are its last usage row's). */
   | { readonly at: number; readonly type: "session.closed"; readonly sessionId: string; readonly reason: string; readonly usageSeconds: number }
   /** V8 / LM-2: the open session's billed seconds so far, coalesced every 60 s and at detach. A daemon that dies with the session open leaves this as its last word. */
   | { readonly at: number; readonly type: "session.usage"; readonly sessionId: string; readonly usageSeconds: number }
