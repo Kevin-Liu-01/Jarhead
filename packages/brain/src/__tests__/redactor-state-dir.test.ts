@@ -2,8 +2,8 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { readConfig } from "@jarhead/core";
+import { dirname, join, resolve, sep } from "node:path";
+import { envFilePath } from "@jarhead/core";
 import { SecretRedactor, secretValues } from "../shell.ts";
 
 /**
@@ -11,7 +11,9 @@ import { SecretRedactor, secretValues } from "../shell.ts";
  * state dir's env file, the one loadEnv reads. That is <JARHEAD_STATE_DIR>/env when the variable is
  * set and ~/.jarhead/env when it is not, exactly as readConfig() picks the state dir. It never reads
  * $HOME/.jarhead/env behind a state dir that lives somewhere else. On a Mac where the state dir is
- * ~/.jarhead nothing changes. Every value here is a canary in a temp dir.
+ * ~/.jarhead nothing changes. Every value here is a canary in a temp dir, and every file is written
+ * under this file's own scratch dir: a bare run with no preload (`node --import tsx --test <file>`,
+ * as the README runs one file) never touches ~/.jarhead.
  */
 
 const scratch = mkdtempSync(join(tmpdir(), "jh-w29-"));
@@ -67,15 +69,43 @@ test("SecretRedactor watches the state dir's env file: its value is struck, a va
   assert.equal(redactor.count, 2);
 });
 
+test("the redactor's file is core's envFilePath() for every form of JARHEAD_STATE_DIR: unset, empty, absolute, ~/x and ~", () => {
+  const root = mkdtempSync(join(scratch, "forms-"));
+  const home = join(root, "home");
+  const abs = join(root, "abs-state");
+  const forms: readonly { readonly name: string; readonly env: NodeJS.ProcessEnv; readonly file: string }[] = [
+    { name: "unset", env: {}, file: join(home, ".jarhead", "env") },
+    { name: "empty", env: { JARHEAD_STATE_DIR: "" }, file: join(home, ".jarhead", "env") },
+    { name: "absolute", env: { JARHEAD_STATE_DIR: abs }, file: join(abs, "env") },
+    { name: "~/x", env: { JARHEAD_STATE_DIR: "~/x" }, file: join(home, "x", "env") },
+    { name: "~", env: { JARHEAD_STATE_DIR: "~" }, file: join(home, "env") },
+  ];
+  // Every candidate file names its own canary, so the value struck says which file was read.
+  const files = [...new Set(forms.map((f) => f.file))];
+  const canary = (file: string): string => `form-canary-w29-${files.indexOf(file)}`;
+  for (const file of files) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `SERVICE_TOKEN=${canary(file)}\n`, { mode: 0o600 });
+  }
+  for (const f of forms) {
+    assert.equal(envFilePath(f.env, home), f.file, `core's rule, ${f.name}`);
+    assert.deepEqual(secretValues(f.env, home), [canary(f.file)], `the redactor reads core's file, ${f.name}`);
+  }
+});
+
 test("the redactor the runner builds with the daemon's own env strikes what the configured state dir's env file holds", () => {
-  // The preload points JARHEAD_STATE_DIR at a temp dir: readConfig().stateDir is that dir, the one loadEnv reads.
-  const { stateDir } = readConfig();
-  const file = join(stateDir, "env");
-  mkdirSync(stateDir, { recursive: true });
-  writeFileSync(file, `JARHEAD_BRAIN_API_KEY=${STATE_ONLY}\n`, { mode: 0o600 });
+  // The case sets JARHEAD_STATE_DIR itself, so it holds with or without the preload, and writes only under its scratch dir.
+  const saved = process.env["JARHEAD_STATE_DIR"];
+  const stateDir = mkdtempSync(join(scratch, "state-"));
+  process.env["JARHEAD_STATE_DIR"] = stateDir;
   try {
+    const file = envFilePath();
+    assert.equal(file, join(stateDir, "env"), "core's env file, the one loadEnv reads, is the configured state dir's");
+    assert.ok(resolve(file).startsWith(resolve(scratch) + sep), `the case writes only under its scratch dir (${file})`);
+    writeFileSync(file, `JARHEAD_BRAIN_API_KEY=${STATE_ONLY}\n`, { mode: 0o600 });
     assert.equal(new SecretRedactor().redact(STATE_ONLY), "[redacted secret]");
   } finally {
-    rmSync(file, { force: true });
+    if (saved === undefined) delete process.env["JARHEAD_STATE_DIR"];
+    else process.env["JARHEAD_STATE_DIR"] = saved;
   }
 });

@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, openSync, closeSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { logger, newId } from "@jarhead/core";
+import { envFilePath, logger, newId } from "@jarhead/core";
 import { SECRET_KEYS } from "@jarhead/protocol";
 import { PERMISSIONS_HINT, macOSBlockedLine, tccGrantFor } from "./files.ts";
 
@@ -62,21 +62,12 @@ const SECRET_SHAPES: readonly RegExp[] = [
 const SECRET_NAME = /(^|_)(API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|CREDENTIALS?|PRIVATE_KEY|ACCESS_KEY|AUTH)(_|$)/i;
 
 /**
- * The state dir's env file, the one loadEnv reads: <JARHEAD_STATE_DIR>/env, or
- * ~/.jarhead/env when the variable is unset or empty. It is core's envFilePath()
- * over the redactor's own env and home, so a runner built with either injected
- * reads the file they name. Never $HOME/.jarhead/env behind a state dir set
- * elsewhere (W2-9).
- */
-function stateEnvFile(env: NodeJS.ProcessEnv, home: string): string {
-  const dir = env["JARHEAD_STATE_DIR"] || "~/.jarhead";
-  return join(dir.startsWith("~") ? join(home, dir.slice(1)) : dir, "env");
-}
-
-/**
  * The secret values Jarhead knows about: its own keys from the environment and
  * every secret-named value in the state dir's env file (the file also carries
  * settings such as JARHEAD_BRAIN_MODEL, which must not be blanked out of results).
+ * The file is core's envFilePath() over this env and home, the one loadEnv reads:
+ * <JARHEAD_STATE_DIR>/env, or ~/.jarhead/env when the variable is unset or empty.
+ * Never $HOME/.jarhead/env behind a state dir set elsewhere (W2-9).
  * A value shorter than 8 characters is not redacted (it would blank ordinary
  * words); a file that cannot be read adds nothing.
  */
@@ -87,7 +78,7 @@ export function secretValues(env: NodeJS.ProcessEnv = process.env, home: string 
     if (v && v.length >= 8) values.add(v);
   }
   try {
-    const text = readFileSync(stateEnvFile(env, home), "utf8");
+    const text = readFileSync(envFilePath(env, home), "utf8");
     for (const line of text.split("\n")) {
       const m = /^\s*(?:export\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$/.exec(line);
       if (!m) continue;
@@ -167,7 +158,7 @@ export class SecretRedactor {
     this.readAt = t;
     let mtime = 0;
     try {
-      mtime = statSync(stateEnvFile(this.env, this.home)).mtimeMs;
+      mtime = statSync(envFilePath(this.env, this.home)).mtimeMs;
     } catch {
       mtime = 0;
     }

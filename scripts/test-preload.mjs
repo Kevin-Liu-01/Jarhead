@@ -16,10 +16,8 @@
 // JARHEAD_TEST_NET_LOG=<file> appends one line per off-Mac attempt: pid, verdict, method and URL.
 // Never a header or a body.
 //
-// One read of ~/.jarhead is left. The brain runner's SecretRedactor (packages/brain/src/shell.ts)
-// reads $HOME/.jarhead/env to learn which values to strike from results. It only reads: what it
-// holds is never sent and never in a config. It goes when the redactor reads the state dir's env
-// file, the one loadEnv reads (handed to W1-6).
+// The brain runner's SecretRedactor reads the state dir's env file (<JARHEAD_STATE_DIR>/env), so a
+// test never reads ~/.jarhead (W2-9).
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";

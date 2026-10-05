@@ -1,4 +1,4 @@
-export { writeEnvSecrets, secretsPresent, REPO_ROOT, readConfig, keySource } from "./env.ts";
+export { writeEnvSecrets, secretsPresent, envFilePath, REPO_ROOT, readConfig, keySource } from "./env.ts";
 export type { JarheadConfig } from "./env.ts";
 export { newId } from "./ids.ts";
 export { LineSplitter } from "./ndjson.ts";
