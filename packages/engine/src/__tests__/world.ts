@@ -723,13 +723,20 @@ let tempDirsSwept = false;
 
 /**
  * A fresh dir under the OS temp dir, removed when the test process exits (BL-14). A test may hand
- * it to a second engine until then (`where.dir`), so nothing is removed earlier.
+ * it to a second engine until then (`where.dir`), so nothing is removed earlier. A dir that cannot
+ * be removed at exit stays: a throw inside an 'exit' handler would fail a file whose tests passed.
  */
 export function tempDir(prefix: string): string {
   if (!tempDirsSwept) {
     tempDirsSwept = true;
     process.once("exit", () => {
-      for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+      for (const dir of tempDirs) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // Still busy (a child the test left writing into it): it stays, as the preload's own sweep leaves it.
+        }
+      }
     });
   }
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -742,6 +749,8 @@ export function tempDir(prefix: string): string {
  * server URL, `auto`, the default models), over `<dir>/state`, with the hands helper at a path that
  * does not exist. Never readConfig(): it loads ~/.jarhead/env and the shell's keys into the test,
  * and from there into every request a test engine makes (BL-12). A test names what it needs in `over`.
+ * scripts/__tests__/hermetic.test.ts holds these defaults to readConfig()'s, so a default changed in
+ * packages/core/src/env.ts fails there until this follows.
  */
 export function testConfig(dir: string, over: Partial<JarheadConfig> = {}): JarheadConfig {
   return {

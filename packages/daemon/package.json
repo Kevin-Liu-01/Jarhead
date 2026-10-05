@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "node --import tsx --test 'src/**/*.test.ts'"
+    "test": "node --import tsx --import ../../scripts/test-preload.mjs --test 'src/**/*.test.ts'"
   },
   "dependencies": {
     "@jarhead/core": "workspace:*",

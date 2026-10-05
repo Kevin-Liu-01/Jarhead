@@ -1,9 +1,12 @@
-// The test preload. `pnpm test` imports it after tsx, into the runner and into every test file's
-// process (node --test hands its execArgv to each child). It makes the suite hermetic on any Mac:
+// The test preload. `pnpm test`, and each package's own `test` script, imports it after tsx, into
+// the runner and into every test file's process (node --test hands its execArgv to each child). It
+// makes the suite hermetic on any Mac:
 //
-// - JARHEAD_STATE_DIR is a fresh temp dir, so ~/.jarhead (its env file, settings, ledger, socket)
-//   is never read or written. The secret keys (SECRET_KEYS) and JARHEAD_SOCKET are unset, so a key
-//   exported by the shell never reaches a test. JARHEAD_AUTO_WAKE=0 and JARHEAD_NO_AUDIO=1.
+// - JARHEAD_STATE_DIR is a fresh temp dir, so the state dir (its env file, settings, ledger,
+//   socket) is never ~/.jarhead. Every other JARHEAD_* variable is unset, all but the suite's own
+//   JARHEAD_TEST_* knobs, and so is every secret key (SECRET_KEYS). A key or a setting exported by
+//   the shell, or loaded from ~/.jarhead/env into the daemon that runs a self-edit's tests, never
+//   reaches a test. JARHEAD_AUTO_WAKE=0 and JARHEAD_NO_AUDIO=1.
 // - fetch to anything but loopback never leaves the Mac. It answers a synthetic 401, as a server
 //   would for a key it does not know. Under JARHEAD_TEST_NET=strict (CI) it throws instead, so a
 //   test that reaches for the network fails by name.
@@ -12,6 +15,11 @@
 //
 // JARHEAD_TEST_NET_LOG=<file> appends one line per off-Mac attempt: pid, verdict, method and URL.
 // Never a header or a body.
+//
+// One read of ~/.jarhead is left. The brain runner's SecretRedactor (packages/brain/src/shell.ts)
+// reads $HOME/.jarhead/env to learn which values to strike from results. It only reads: what it
+// holds is never sent and never in a config. It goes when the redactor reads the state dir's env
+// file, the one loadEnv reads (handed to W1-6).
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -47,8 +55,11 @@ process.on("exit", () => {
 
 // ---- state and keys ----------------------------------------------------------------------------
 
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("JARHEAD_") && !key.startsWith("JARHEAD_TEST_")) delete process.env[key];
+}
+for (const key of SECRET_KEYS) delete process.env[key];
 process.env["JARHEAD_STATE_DIR"] = fs.mkdtempSync(join(tmpdir(), "jh-test-state-"));
-for (const key of [...SECRET_KEYS, "JARHEAD_SOCKET"]) delete process.env[key];
 process.env["JARHEAD_AUTO_WAKE"] = "0";
 process.env["JARHEAD_NO_AUDIO"] = "1";
 
