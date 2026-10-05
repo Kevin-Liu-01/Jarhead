@@ -13,15 +13,20 @@ import { ConfirmationState, type ArmedConfirmation, type ConfirmationGrant, type
  * having its question spoken over the first or silently overwrite it. `consume` is
  * true only for the floor's lane: a yes never lands another lane's action. When the
  * floor clears the next queued question is promoted — re-asked on the root and spoken
- * with its hand's name — so Kevin hears one question at a time, each one once.
+ * with its hand's name — so Kevin hears one question at a time, each one once. Only a
+ * cut, a new conversation or the lane itself takes a queued question away: a hand told
+ * to wait is never left waiting on a question nobody will ask. A promotion speaks, so it
+ * happens only on a write or the engine's tick (`promote`, `drop`, `consume`, `ask`),
+ * never on a read of the floor: a yes is never armed on a question spoken in the same
+ * breath, before Kevin could have heard it.
  *
  * Grants are the conversation's, not a lane's: `granted`, `arm`, `beginConversation`
  * and `endConversation` forward to the root, so a recorded yes to "clicks in Slack"
  * covers every hand in Slack, and the policy's never-grant apps stay ungrantable in
  * every lane (the policy decides that; nothing here can grant).
  *
- * Built over the public members of `ConfirmationState` only — the handshake in
- * toolset.ts is a rail and is not edited.
+ * Built over the public members of `ConfirmationState` only; the handshake itself
+ * (what a yes is, what it lands, when it expires) lives in toolset.ts.
  */
 
 const log = logger("hands.desk");
@@ -103,11 +108,12 @@ export class ConfirmationDesk {
    * the next queued question comes up. Nothing else's is touched.
    */
   drop(laneId: string): void {
+    // Its queued question first, so reading the floor never promotes the very question being dropped.
+    this.unqueue(laneId);
     if (this.floor?.laneId === laneId) {
       this.root.dropQuestion();
       this.floorState = undefined;
     }
-    this.unqueue(laneId);
     this.promote();
   }
 
@@ -134,22 +140,36 @@ export class ConfirmationDesk {
   /**
    * Whose question is on the root right now. Heals itself: when the root's pending is
    * no longer the one the floor posted, the floor is free. A question that VANISHED
-   * (the root's pending is undefined) went the way the engine drops them directly on
-   * the root — Kevin moved on, a cut, a yes that came after the TTL — and none of
-   * those should have another lane's question spoken next: the queue goes with it,
-   * as `dropQuestion()` would have taken it. Only `consume` and `drop(laneId)` promote.
+   * from the root went the way the engine drops one there directly (Kevin moved on from
+   * Jarhead's own question, an ear reflex's or a dictation's question nobody relayed).
+   * That was the floor lane's question alone: the queue behind it stays, and the next
+   * one comes up at the next `promote` (the engine's tick, within a second) or the next
+   * ask, never here. The Delegator reads the floor to route a yes and then arms it, so
+   * a read that promoted would speak a question and arm it on the same yes. A cut and a
+   * new conversation empty the queue themselves (`clear`, `dropQuestion`). A question
+   * past its TTL is not vanished: it holds the floor, so a late yes reaches its own lane
+   * (`arm` answers `expired` and the lane asks again).
    */
   get floor(): Floor | undefined {
     const f = this.floorState;
     if (!f) return undefined;
-    const p = this.root.pending;
-    if (p?.id === f.pendingId) return f;
+    if (this.root.pending?.id === f.pendingId) return f;
     this.floorState = undefined;
-    if (p === undefined && this.queue.length > 0) {
-      log.debug(`${f.laneName}'s question went from the root; ${this.queue.length} queued behind it dropped`);
-      this.queue.length = 0;
-    }
+    if (this.queue.length > 0) log.debug(`${f.laneName}'s question went from the root; the next queued question comes up at the next promote`);
     return undefined;
+  }
+
+  /**
+   * Does this lane have a question Kevin can still answer: on the floor and inside the
+   * root's TTL (or answered in time, with the yes still landing), or queued and inside
+   * the desk's TTL? Read-only: it heals nothing, promotes nothing and speaks nothing, so
+   * a tick may ask it of every lane. False is the cue to ask the lane's question again.
+   */
+  holds(laneId: string): boolean {
+    const f = this.floorState;
+    if (f?.laneId === laneId && this.root.pending?.id === f.pendingId && (!this.root.expired || this.root.landing)) return true;
+    const t = this.now();
+    return this.queue.some((q) => q.laneId === laneId && t - q.at <= this.ttlMs);
   }
 
   /** The lane on the floor, if any (the Delegator's yes-routing reads this). */
@@ -167,17 +187,22 @@ export class ConfirmationDesk {
     return pendingId.startsWith(QUEUED_ID_PREFIX);
   }
 
-  /** A lane asks. The floor's lane (or a free floor) posts to the root; anyone else queues. */
+  /**
+   * A lane asks. The floor's lane (or a free floor) posts to the root; anyone else queues.
+   * A free floor with questions still waiting (the root's went since the last tick) brings
+   * the oldest up first: they were asked before this one.
+   */
   ask(lane: LaneConfirmationState, description: string, member: string, input: Record<string, unknown>, grantable?: Grantable): PendingConfirmation {
+    // One queued question per lane: a retry replaces it (and the promote below never brings up the one being replaced).
+    this.unqueue(lane.id);
+    if (!this.floor && this.queue.length > 0) this.promote();
     const floor = this.floor;
     if (!floor || floor.laneId === lane.id) {
       const pending = this.root.ask(description, member, input, grantable);
       this.floorState = { laneId: lane.id, name: lane.name, laneName: lane.name, pendingId: pending.id, description };
-      this.unqueue(lane.id);
       return pending;
     }
-    // Behind the floor: one queued question per lane (a retry replaces, it does not multiply).
-    this.unqueue(lane.id);
+    // Behind the floor.
     const q: QueuedQuestion = { id: `${QUEUED_ID_PREFIX}${++this.seq}`, laneId: lane.id, laneName: lane.name, description, member, input, ...(grantable && grantable.app ? { grantable } : {}), at: this.now() };
     this.queue.push(q);
     log.debug(`${lane.name} queued behind ${floor.laneName}: ${description}`);
@@ -286,6 +311,11 @@ export class LaneConfirmationState extends ConfirmationState {
   /** The floor's lane only. Kevin's yes stays on the root — the Delegator arms it there. */
   override consume(member: string, input: Record<string, unknown>): boolean {
     return this.desk.consume(this, member, input);
+  }
+
+  /** The root's yes is landing and this lane holds the floor it was given on. */
+  override get landing(): boolean {
+    return this.onFloor && this.desk.root.landing;
   }
 
   override arm(record?: (grant: ConfirmationGrant) => void): ArmedConfirmation | undefined {
