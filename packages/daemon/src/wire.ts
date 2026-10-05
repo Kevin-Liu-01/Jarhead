@@ -72,13 +72,12 @@ export class FrameParser {
 /** daemon → app */
 export type DaemonMessage =
   /**
-   * `version` is the package's; `protocol` is PROTOCOL_VERSION (APP-3). A surface whose number differs, or that reads
-   * none, raises `app.version`. Optional only until server.ts sends it: W3-3 adds the send and the app's comparison in
-   * one change and then makes it required here (this daemon is always current; only the Swift decoder keeps it
-   * optional, for a daemon from before the field). A comparison without the send reads every daemon as a skew.
-   * The daemon's contract-additions.test.ts pins the field absent from a live server's hello; W3-3 flips that pin.
+   * `version` is the package's; `protocol` is PROTOCOL_VERSION (APP-3), which server.ts always sends. A surface whose
+   * number differs, or that reads none (a daemon from before the field), raises `app.version` and refuses Go until it
+   * clears (EngineClient). Required here because this daemon is always current; only the Swift decoder reads it as
+   * optional.
    */
-  | { readonly type: "hello"; readonly version: string; readonly pid: number; readonly stateDir: string; readonly protocol?: number }
+  | { readonly type: "hello"; readonly version: string; readonly pid: number; readonly stateDir: string; readonly protocol: number }
   | { readonly type: "snapshot"; readonly snapshot: unknown }
   | { readonly type: "levels"; readonly levels: unknown }
   | { readonly type: "toast"; readonly text: string; readonly tone: "info" | "warn" | "error" }
@@ -96,8 +95,12 @@ export type DaemonMessage =
   | { readonly type: "pong"; readonly id: string; readonly at: number }
   /** Words the on-device ear should be biased toward right now: visible control titles, the front app and window, agent names. */
   | { readonly type: "ear.hints"; readonly strings: readonly string[] }
-  /** Full-text hits over the ledger for the Console's search box. */
-  | { readonly type: "ledger.hits"; readonly id: string; readonly hits: unknown[] }
+  /**
+   * One page of full-text hits over the live ledger (the Console's search box, `jarhead ledger search`), newest first.
+   * `older` is set when the page's byte bound stopped the read with older days unread: the day to send as the next
+   * request's `before`. Absent: nothing older is left to read.
+   */
+  | { readonly type: "ledger.hits"; readonly id: string; readonly hits: unknown[]; readonly older?: string }
   /** A page of an agent's conversation: sent to the clients viewing that agent (`agent.open`), never to the CLI's join/leave clients. */
   | { readonly type: "agent.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" | "prepend" }
   /** One change on one thread (a ThreadEvent; ≤ 200 B once the table caps its text, `started` excepted — it carries the record): broadcast, so the orb's satellites and the rail follow without a snapshot. */
@@ -130,8 +133,8 @@ export type DaemonMessage =
 export type ClientMessage =
   /**
    * `protocol` is the sender's PROTOCOL_VERSION (APP-3; `ProtocolVersion.current` in Swift, sent from EngineClient's
-   * hello by W3-3), absent from a build before the field. Optional for good: a CLI client may send none. The app's
-   * hello (`audio: true`) with another number, or with none, is a skew.
+   * hello), absent from a build before the field. Optional for good: a CLI client may send none. The app judges the
+   * skew from the daemon's hello and from a snapshot it cannot decode; the daemon reads this one as data only.
    */
   | { readonly type: "hello"; readonly pid: number; readonly version?: string; readonly audio?: boolean; readonly protocol?: number }
   | { readonly type: "command"; readonly command: unknown }
@@ -159,8 +162,12 @@ export type ClientMessage =
   /** A whole conversation in one read: every session of the chain `rootId` names (any member id will do), oldest first; answered with `ledger.rows` (+ `truncated`). */
   | { readonly type: "ledger.chain"; readonly id: string; readonly rootId: string }
   | { readonly type: "ping"; readonly id: string }
-  /** Search heard/said text and delegation requests across the live ledger (not the trash); `limit` default 50. */
-  | { readonly type: "ledger.search"; readonly id: string; readonly query: string; readonly limit?: number }
+  /**
+   * Search heard/said text and delegation requests and summaries across the live ledger (not the trash), one page per
+   * request: the newest SEARCH_PAGE_BYTES of day files before `before` (YYYY-MM-DD, exclusive; absent: from today),
+   * `limit` hits at most (default 50, 200 at most). Answered with `ledger.hits`, whose `older` is the next `before`.
+   */
+  | { readonly type: "ledger.search"; readonly id: string; readonly query: string; readonly limit?: number; readonly before?: string }
   /** The Memory rail: items by state (default live; "all"), `limit` default 50, at most 200; answered with `memory.items`. */
   | { readonly type: "memory.list"; readonly id: string; readonly state?: string; readonly limit?: number }
   | { readonly type: "memory.search"; readonly id: string; readonly query: string; readonly limit?: number }

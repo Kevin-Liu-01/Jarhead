@@ -1595,6 +1595,20 @@ export type OverlayCommand =
 export const SESSION_LOST_REASON = "lost";
 
 /**
+ * A decision a ledger day's move to the Trash carried (core's `Ledger.carry`): a `conversation.*`, `now.*` or
+ * `agent.hidden` row still in force when its day left, written again into the day file of the move (append-only;
+ * the original moved with its day) with `carried: true`, `at` the move's instant and `decidedAt` the instant Kevin
+ * decided. A part of a conversation that stays gets its own copy under its own root (`chainId`). `ledger.session`
+ * and `ledger.chain` answer a copy at `decidedAt`, and leave out one whose original is in the same answer; a day's
+ * rows (`ledger.read`) hold the copy where the move wrote it, so a surface showing a day says it was carried rather
+ * than show a fresh decision at the move's time.
+ */
+export interface CarriedDecision {
+  readonly carried?: true;
+  readonly decidedAt?: number;
+}
+
+/**
  * One line of ~/.jarhead/ledger/<date>.jsonl. Append-only; the Console is a view
  * over this. `at` is wall-clock ms.
  *
@@ -1638,18 +1652,24 @@ export type LedgerRow =
   // conversation stay where they were written. `chainId` is any session id of the chain
   // (the walk resolves it to the root); the last row by `at` wins; `restored` undoes both
   // `trashed` and `archived`. Nothing is ever deleted: whole day files MOVE to
-  // <stateDir>/trash by rename(2) (`ledger.moved`), and move back on restore.
-  | { readonly at: number; readonly type: "conversation.trashed"; readonly chainId: string; readonly by: "kevin" | "retention" }
-  | { readonly at: number; readonly type: "conversation.restored"; readonly chainId: string }
-  | { readonly at: number; readonly type: "conversation.archived"; readonly chainId: string }
-  | { readonly at: number; readonly type: "conversation.renamed"; readonly chainId: string; readonly name: string }
-  | { readonly at: number; readonly type: "conversation.pinned"; readonly chainId: string; readonly pinned: boolean }
+  // <stateDir>/trash by rename(2) (`ledger.moved`), and move back on restore. A decision
+  // still in force when its day moves is carried into that day's file (CarriedDecision).
+  | ({ readonly at: number; readonly type: "conversation.trashed"; readonly chainId: string; readonly by: "kevin" | "retention" } & CarriedDecision)
+  | ({ readonly at: number; readonly type: "conversation.restored"; readonly chainId: string } & CarriedDecision)
+  | ({ readonly at: number; readonly type: "conversation.archived"; readonly chainId: string } & CarriedDecision)
+  | ({ readonly at: number; readonly type: "conversation.renamed"; readonly chainId: string; readonly name: string } & CarriedDecision)
+  | ({ readonly at: number; readonly type: "conversation.pinned"; readonly chainId: string; readonly pinned: boolean } & CarriedDecision)
   /** Kevin cleared the Now stream: items at or before `at` of `sessionId` are hidden from the live view (the ledger keeps them). */
-  | { readonly at: number; readonly type: "now.cleared"; readonly sessionId: string }
-  | { readonly at: number; readonly type: "now.restored"; readonly sessionId: string }
-  /** A whole day's ledger file or shots folder moved between the live dirs and <stateDir>/trash (never unlinked). */
-  | { readonly at: number; readonly type: "ledger.moved"; readonly day: string; readonly what: "ledger" | "shots"; readonly to: "trash" | "live"; readonly path: string; readonly by: "kevin" | "retention" }
-  | { readonly at: number; readonly type: "agent.hidden"; readonly agentId: string; readonly hidden: boolean }
+  | ({ readonly at: number; readonly type: "now.cleared"; readonly sessionId: string } & CarriedDecision)
+  | ({ readonly at: number; readonly type: "now.restored"; readonly sessionId: string } & CarriedDecision)
+  /**
+   * A whole day's ledger file or shots folder moved between the live dirs and <stateDir>/trash (never unlinked).
+   * `lineage` (a ledger day's move to the Trash): per session id that stays and continues a conversation, the
+   * session ids that leave (or left before) whose conversation it continues. Memory hides by it (decision D5), so
+   * what was learned from a conversation follows the part of it that stays, whichever day moved.
+   */
+  | { readonly at: number; readonly type: "ledger.moved"; readonly day: string; readonly what: "ledger" | "shots"; readonly to: "trash" | "live"; readonly path: string; readonly by: "kevin" | "retention"; readonly lineage?: Readonly<Record<string, readonly string[]>> }
+  | ({ readonly at: number; readonly type: "agent.hidden"; readonly agentId: string; readonly hidden: boolean } & CarriedDecision)
   /** A confirmation Kevin gave that stays good for the rest of the conversation (same app, same action class); `until` is wall-clock ms. */
   | { readonly at: number; readonly type: "grant"; readonly chainId: string; readonly app: string; readonly actionClass: string; readonly until: number }
   // ---- automations: the record, never a session's rows (META_TYPES). The schedule itself lives in automations/jobs.ndjson.

@@ -2513,9 +2513,10 @@ struct LeavesSection: View {
 // MARK: - Ledger
 
 /// The Ledger tab: `Filter days` past eight days, the days folded by month (`September 4 ·
-/// 62 min · $3.10` — the head sums the days read so far), one 28 pt row per day with `›` and
-/// its figures once that day has been read (`ConsoleSession.ledgerDayStats`; `—` until then),
-/// the picked day's bar gliding, ↑↓ ⏎ over the days and the month heads (`ConsoleListKeys`).
+/// 62 min · $3.10`: the head sums its days), one 28 pt row per day with `›` and its figures
+/// (`17.0 min · $0.85`): every day's from the daemon's totals (`ConsoleSession.ledgerTotals`,
+/// LM-6), else a read day's own (`ledgerDayStats`), `—` while neither is known; the picked
+/// day's bar gliding, ↑↓ ⏎ over the days and the month heads (`ConsoleListKeys`).
 struct LedgerPanel: View {
     let days: [String]?
     let picked: String?
@@ -2532,9 +2533,9 @@ struct LedgerPanel: View {
     /// Bumped when a month folds, so the keyboard's ids follow the folds.
     @State private var folds = 0
 
-    /// The day's figures on its row: `17.0 min · $0.85` once read, `—` until then.
-    static func figures(_ day: String, in cache: [String: LedgerStats]) -> String {
-        cache[day].map { ConsoleFormat.billed($0.billedSeconds) } ?? LedgerWords.unread
+    /// The day's figures on its row: `17.0 min · $0.85` from its total (or its read rows), `—` while neither is known.
+    static func figures(_ day: String, in stats: [String: LedgerStats], totals: [String: LedgerDayTotals] = [:]) -> String {
+        ConsoleSession.billed(day, totals: totals, stats: stats).map { ConsoleFormat.billed($0) } ?? LedgerWords.unread
     }
 
     /// The days whose words or date contain the query (`sep`, `thu`, `2026-08`).
@@ -2619,15 +2620,15 @@ struct LedgerPanel: View {
         .animation(Motion.snappy, value: picked)
     }
 
-    /// A month: its head with the read days' figures, the days inside (the first month open).
+    /// A month: its head with its days' figures summed, the days inside (the first month open).
     private func monthGroup(_ month: ConsoleListModel.Month, first: Bool) -> some View {
         let id = LedgerWords.monthFold(month.id)
-        let sum = ConsoleSession.monthStats(month.days, in: session.ledgerDayStats)
+        let sum = ConsoleSession.monthStats(month.days, totals: session.ledgerTotals, stats: session.ledgerDayStats)
         return ConsoleDisclosure(id: id, title: month.title, count: "\(month.days.count)",
                                  summary: ConsoleDisclosureSummary.ledgerMonth(read: sum.read, billedSeconds: sum.billedSeconds),
                                  size: .group, defaultOpen: first, focused: focus.ringOn(id)) {
             ForEach(month.days, id: \.self) { day in
-                ConsoleRow(title: ConsoleFormat.day(day), value: Self.figures(day, in: session.ledgerDayStats), trailing: .chevron,
+                ConsoleRow(title: ConsoleFormat.day(day), value: Self.figures(day, in: session.ledgerDayStats, totals: session.ledgerTotals), trailing: .chevron,
                            selected: day == picked, focused: focus.ringOn(day), selection: selection, accessibilityHint: day,
                            onHover: { if $0 { focus.hovered(day) } }, primary: { pick(day) })
             }
@@ -2643,7 +2644,9 @@ struct LedgerPanel: View {
                         KV(LedgerWords.sessions, "\(stats.sessions)")
                         KV(LedgerWords.utterances, "\(stats.utterances)")
                         KV(LedgerWords.delegations, "\(stats.delegations)")
-                        KV(LedgerWords.billed, ConsoleFormat.billed(stats.billedSeconds))
+                        // The day's total when the daemon sent one: the row above says the same (an open session's
+                        // seconds are on its usage rows, which the read's closes do not count).
+                        KV(LedgerWords.billed, ConsoleFormat.billed(session.ledgerTotals[picked]?.billedSeconds ?? stats.billedSeconds))
                     }
                     .transition(Motion.appear)
                 } else {

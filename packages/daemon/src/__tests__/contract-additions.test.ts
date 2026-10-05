@@ -1,8 +1,8 @@
 // W2-5 on the socket: the two hellos carry PROTOCOL_VERSION (APP-3) and the ledger.days reply carries the
-// day totals (LM-6). Both are optional, so a peer from before them still parses. The frames go through the
-// wire's own encoder and parser, the way the server and the app read them. On a live DaemonServer: an
-// audio-state frame with malformed playback telemetry loses only that object (voice PLAN W1.5), and the hello
-// carries no `protocol` yet: a pin W3-3 flips to PROTOCOL_VERSION when server.ts sends it.
+// day totals (LM-6). The app's `protocol` and the totals are optional, so a peer from before them still parses.
+// The frames go through the wire's own encoder and parser, the way the server and the app read them. On a live
+// DaemonServer: an audio-state frame with malformed playback telemetry loses only that object (voice PLAN W1.5),
+// and the hello carries PROTOCOL_VERSION (W3-3), which the app compares with its own.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -71,6 +71,15 @@ function audioEngine(audioStates: (AudioState | undefined)[]): EngineLike {
 
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 50));
 
+/** Wait until the socket delivered what the test expects: a fixed pause is too short under a loaded full run. */
+async function until(check: () => boolean, what: string, ms = 5000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 test("PLAN W1.5 on the socket: an audio-state frame whose playout, duck or output is malformed reaches the engine without that object; a frame whose own counters are malformed is still dropped", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "jh-w25-audio-")), "d.sock");
   const audioStates: (AudioState | undefined)[] = [];
@@ -87,8 +96,11 @@ test("PLAN W1.5 on the socket: an audio-state frame whose playout, duck or outpu
     const output = { rmsDbfs: -21.8, mixFormat: "48000 Hz ×2" };
     app.sendJson({ type: "audio-state", state: { ...frame, playout: { chunks: 1, queuedMinMs: null }, duck: "x", output } });
     app.sendJson({ type: "audio-state", state: { ...frame, gated: "13", output } });
-    await settle();
-    assert.deepEqual(audioStates, [{ ...frame, output }], "the devices and the guard counters landed; only the bad playout and duck were shed; the bad-counter frame never landed");
+    // A well-formed frame last: once it has landed, the server has read the two before it (one socket, in order).
+    const last: AudioState = { ...frame, gated: 14 };
+    app.sendJson({ type: "audio-state", state: last });
+    await until(() => audioStates.length >= 2, "the first frame and the last one to reach the engine");
+    assert.deepEqual(audioStates, [{ ...frame, output }, last], "the devices and the guard counters landed; only the bad playout and duck were shed; the bad-counter frame never landed");
   } finally {
     app.close();
     await settle();
@@ -96,10 +108,9 @@ test("PLAN W1.5 on the socket: an audio-state frame whose playout, duck or outpu
   }
 });
 
-// A pin, not a todo: a todo prints a red failure inside every green run. W3-3 sends `protocol` from server.ts, which
-// trips this, and in the same change flips it to `PROTOCOL_VERSION` and makes `protocol` required on the
-// DaemonMessage hello (wire.ts).
-test("APP-3 on the socket: a live DaemonServer's hello carries no protocol yet (W3-3 flips this to PROTOCOL_VERSION)", async () => {
+// W3-3 sends `protocol` from server.ts and makes it required on the DaemonMessage hello (wire.ts): the app reads a
+// hello without it, or with another number, as a skew (`app.version`, Go refused).
+test("APP-3 on the socket: a live DaemonServer's hello carries PROTOCOL_VERSION", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "jh-w25-hello-")), "d.sock");
   const server = new DaemonServer(audioEngine([]), path);
   await server.listen();
@@ -110,7 +121,7 @@ test("APP-3 on the socket: a live DaemonServer's hello carries no protocol yet (
     const first = await hello;
     assert.equal(first.type, "hello", "the hello is the first frame");
     assert.ok(first.type === "hello");
-    assert.equal(first.protocol, undefined, `server.ts does not send protocol yet (W3-3 flips this to PROTOCOL_VERSION ${PROTOCOL_VERSION})`);
+    assert.equal(first.protocol, PROTOCOL_VERSION, "the daemon's hello names the contract it was built in");
   } finally {
     client.close();
     await settle();

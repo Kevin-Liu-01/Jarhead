@@ -56,6 +56,14 @@ struct LedgerStats: Equatable {
     var billedSeconds: Double = 0
 }
 
+/// How a ledger read is read. `.record`, a session or a chain (`ledger.session`, `ledger.chain`): a decision a day's
+/// move to the Trash carried (`LedgerRow.carried`) is the decision itself, already given back at `decidedAt` by the
+/// daemon, and reads as Kevin made it. `.day`, a day's rows (`ledger.read`): the copy sits where the move wrote it,
+/// stamped at the move, so its line says it was carried and when it was decided, never a fresh decision at the move.
+enum LedgerReading: Equatable {
+    case record, day
+}
+
 enum StreamBuilder {
     /// `clearedAt`: Kevin cleared the Now stream then (AppState.nowClearedAt) — items at or
     /// before it are hidden here at once, and by the engine's snapshot a round trip later.
@@ -71,7 +79,8 @@ enum StreamBuilder {
     /// Rebuilds delegations from created/step/finished rows so a past day reads
     /// exactly like it did live. System ids carry the row index: the engine
     /// writes problem rows back to back, so two rows can share a millisecond.
-    static func fromLedger(_ rows: [LedgerRow]) -> [StreamEntry] {
+    /// `reading`: a day's rows say which decisions a move carried (`LedgerReading`).
+    static func fromLedger(_ rows: [LedgerRow], reading: LedgerReading = .record) -> [StreamEntry] {
         var out: [StreamEntry] = []
         var delegations: [String: Delegation] = [:]
         var order: [String] = []
@@ -194,7 +203,8 @@ enum StreamBuilder {
                 // "Renamed". A type the Console does not know yields no line and is skipped — including
                 // the `worker` rows in day files from before 2026-09-13.
                 if let t = ConsoleFormat.tombstone(row) {
-                    out.append(.system(SystemEntry(id: "tb:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing)))
+                    let trailing = reading == .day && row.carried == true ? [t.trailing, ConsoleFormat.carriedWords(row.decidedAt)].compactMap { $0 }.joined(separator: " · ") : t.trailing
+                    out.append(.system(SystemEntry(id: "tb:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: trailing)))
                 }
             }
         }
@@ -304,6 +314,14 @@ extension ConsoleFormat {
         case "failed": return ConsoleTheme.thread(.failed).symbol
         default: return ConsoleTheme.thread(.stopped).symbol
         }
+    }
+
+    /// A carried decision on a day's rows: `carried · decided Sep 10 14:02` (when Kevin made it; `carried` alone for a
+    /// row that does not say).
+    static func carriedWords(_ decidedAt: Double?) -> String {
+        guard let ms = decidedAt, ms.isFinite, ms > 0 else { return "carried" }
+        let day = Date(timeIntervalSince1970: ms / 1000).formatted(.dateTime.month(.abbreviated).day())
+        return "carried · decided \(day) \(clock(ms))"
     }
 
     /// "HH:mm" — the rail's meta line has no room for seconds.

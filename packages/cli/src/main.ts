@@ -31,12 +31,14 @@ jarhead — voice-first computer use for your Mac
                                       Nothing is deleted; today, the open session's day and any day of a pinned or open conversation stay, and the answer says why
   pnpm jarhead ledger restore <day>   move a day back from the Trash
   pnpm jarhead ledger sweep           run the retention sweep now (Settings ledgerRetentionDays / shotsRetentionDays, 0 = never; the daemon logs what it would move first)
-  pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, over the live days, newest first (50 by default, 200 at most)
+  pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, newest first (50 by default, 200 at most).
+                                      One page: the newest 32 MB of live day files, months of use. The Console's search reads on, page by page
   pnpm jarhead ledger --speed [--days N]   where the time went over the last N days (1): acting steps followed by a screenshot, results carrying the now: line,
                                       tool round trips by class (read-only target p95 ≤ 80 ms), generation gaps by what came before, first action, threads
   pnpm jarhead reflex-miss [--days N]  the short commands you said that the grammar did not catch, grouped by head word (7 days) — the grammar grows from these
   pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] [--limit N]   what Jarhead durably knows about you: one sentence per item, over the daemon (50 by default, 200 at most)
-  pnpm jarhead memory search "<words>" [--limit N]   the items closest to the words (embeddings when a key is present, keywords without)
+  pnpm jarhead memory search "<words>" [--limit N]   the items closest to the words. Embeddings while memory is on with an embedder (an OpenAI key or a local model);
+                                      keywords otherwise, or when the words hold a secret, and then nothing leaves the Mac
   pnpm jarhead memory forget <id>    hide an item from every prompt; it stays in Jarhead's own record under Forgotten. Nothing is deleted
   pnpm jarhead memory restore <id>   bring a forgotten or archived item back into use
   pnpm jarhead memory add "<text>" [--kind preference|fact|episode|procedure|contact|place]   remember one thing now, in your words (redacted and refused like anything extracted)

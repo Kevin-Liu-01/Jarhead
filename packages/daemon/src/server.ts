@@ -1,11 +1,12 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { EventEmitter } from "node:events";
 import { closeSync, constants as fsConstants, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import { specByName } from "@jarhead/brain";
-import { isAudioState, isEngineCommand, type AudioState, type AudioTelemetryShed, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
+import { PROTOCOL_VERSION, isAudioState, isEngineCommand, type AudioState, type AudioTelemetryShed, type EngineEvent, type Grant, type LedgerDayTotals, type OverlayCommand } from "@jarhead/protocol";
 import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, parseClientMessage, type DaemonMessage } from "./wire.ts";
 
 /**
@@ -74,10 +75,18 @@ export interface EngineLike {
     days(): string[];
     sessions(): unknown[];
     readSession(sessionId: string): unknown[];
-    /** Full-text hits over the live day files (`ledger.search`). */
+    /** Full-text hits over the live day files: every live day in one read. `ledger.search` uses it only on a ledger without `searchPage`. */
     search(query: string, limit?: number): unknown[];
+    /**
+     * One page of `search` (`ledger.search` → `ledger.hits`): the day files before `before`, newest first, until the
+     * page's byte bound (`maxBytes`, the ledger's SEARCH_PAGE_BYTES by default) or `limit` hits; `older` is the next
+     * page's `before` when the bound stopped it. Optional so the test fakes need none.
+     */
+    searchPage?(query: string, opts: { readonly limit?: number; readonly before?: string; readonly maxBytes?: number }): { readonly hits: readonly unknown[]; readonly older?: string };
     /** A whole chain's rows in one read (`ledger.chain`). */
     readChain(rootId: string): { readonly rows: unknown[]; readonly truncated: boolean };
+    /** The folder of the day files (`<stateDir>/ledger`): `ledger.days` reads its totals there (LM-6). A fake without it answers the list alone. */
+    readonly dir?: string;
   };
   /** The memory module's reads (`memory.list` / `memory.search`). */
   readonly memory: { list(state?: string, limit?: number): unknown[]; search(query: string, limit?: number): Promise<unknown[]> };
@@ -205,6 +214,8 @@ export interface DaemonServerOptions {
   readonly version?: string;
   /** APP_GONE_GRACE_MS, shorter in tests. */
   readonly appGoneGraceMs?: number;
+  /** Bytes of day files one `ledger.search` page reads; the ledger's own bound (SEARCH_PAGE_BYTES) when absent. Smaller in tests. */
+  readonly searchPageBytes?: number;
 }
 
 export class DaemonServer extends EventEmitter<DaemonServerEvents> {
@@ -225,6 +236,9 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   /** The last `audio-state: shed …` line, and the frames that shed something since (W2-5 / V2, PLAN W1.5). */
   private shedLineAt = Number.NEGATIVE_INFINITY;
   private shedFrames = 0;
+  private readonly searchPageBytes: number | undefined;
+  /** LM-6: the per-file tallies behind `ledger.days`' totals, made at the first ask (the ledger's folder is known then). */
+  private dayTotals: DayTotals | undefined;
 
   /** Over the engine, or over a ToolHost (a brain's private tool socket): then only `tool.run` does anything. */
   constructor(
@@ -235,6 +249,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     super();
     this.version = options.version ?? "2.0.0";
     this.appGoneGraceMs = options.appGoneGraceMs ?? APP_GONE_GRACE_MS;
+    this.searchPageBytes = options.searchPageBytes;
     this.engine = isEngine(engine) ? engine : toolOnlyEngine(engine);
     this.engine.on("event", (e) => {
       switch (e.type) {
@@ -361,7 +376,8 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, bye: false, audioState: false, viewers: new Set(), panes: new Map(), pendingSnapshot: undefined, drainArmed: false };
     this.clients.add(client);
     socket.setNoDelay(true);
-    this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir });
+    // `protocol` (APP-3): the app compares it with its own, and a difference is `app.version` with Go refused.
+    this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir, protocol: PROTOCOL_VERSION });
     this.writeSnapshot(client, encodeJson({ type: "snapshot", snapshot: this.engine.snapshot() }));
     socket.on("data", (chunk: Buffer) => {
       let frames;
@@ -472,9 +488,27 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         this.send(client, { type: "ledger.rows", id: msg.id, rows: Number.isFinite(t) ? this.engine.ledger.read(t) : [] });
         return;
       }
-      case "ledger.days":
-        this.send(client, { type: "ledger.days", id: msg.id, days: this.engine.ledger.days().map((f) => f.replace(/\.jsonl$/, "")).reverse() });
-        break;
+      case "ledger.days": {
+        // The day list, newest first, and each day's totals beside it (LM-6), so the Ledger tab's day rows and month
+        // heads show every day's figures, not only the days it opened. The totals are read off the day files
+        // asynchronously (a file at a time, kept while unchanged); a read that fails sends the list alone.
+        const id = msg.id;
+        const days = this.engine.ledger.days().map((f) => f.replace(/\.jsonl$/, "")).reverse();
+        const dir = this.engine.ledger.dir;
+        if (!dir) {
+          this.send(client, { type: "ledger.days", id, days });
+          return;
+        }
+        this.dayTotals ??= new DayTotals(dir);
+        void this.dayTotals
+          .totals(days)
+          .then((totals) => this.send(client, { type: "ledger.days", id, days, totals }))
+          .catch((e: unknown) => {
+            log.warn(`ledger.days totals failed: ${(e as Error).message}`);
+            this.send(client, { type: "ledger.days", id, days });
+          });
+        return;
+      }
       case "ledger.sessions":
         this.send(client, { type: "ledger.sessions", id: msg.id, sessions: this.engine.ledger.sessions() });
         break;
@@ -508,13 +542,27 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         return;
       }
       case "ledger.search": {
-        // The Console's search box (K1): heard/said text and delegation requests/summaries over the
-        // LIVE day files, newest first, bounded by the ledger (50 by default, 200 at most). Synchronous
-        // over the walk's parsed cache; the trash is never read.
+        // The Console's search box (K1) and `jarhead ledger search`: heard/said text and delegation requests and
+        // summaries over the LIVE day files, newest first, one page per request (Ledger.searchPage): the day files
+        // before `before`, read until the page's byte bound or `limit` hits (50 by default, 200 at most). Synchronous,
+        // a raw-text prefilter over one page of files with nothing kept, so a year of history never holds the loop for
+        // one long read; `older` says where to go on. The trash is never read.
         const query = typeof msg.query === "string" ? msg.query : "";
         const limit = Number(msg.limit);
-        const hits = this.engine.ledger.search(query, ...(Number.isFinite(limit) && limit > 0 ? [limit] : []));
-        this.send(client, { type: "ledger.hits", id: String(msg.id ?? ""), hits });
+        const asked = Number.isFinite(limit) && limit > 0 ? limit : undefined;
+        const id = String(msg.id ?? "");
+        const ledger = this.engine.ledger;
+        if (!ledger.searchPage) {
+          this.send(client, { type: "ledger.hits", id, hits: ledger.search(query, ...(asked !== undefined ? [asked] : [])) });
+          return;
+        }
+        const before = typeof msg.before === "string" && DAY_RE.test(msg.before) ? msg.before : undefined;
+        const page = ledger.searchPage(query, {
+          ...(asked !== undefined ? { limit: asked } : {}),
+          ...(before !== undefined ? { before } : {}),
+          ...(this.searchPageBytes !== undefined ? { maxBytes: this.searchPageBytes } : {}),
+        });
+        this.send(client, { type: "ledger.hits", id, hits: [...page.hits], ...(page.older !== undefined ? { older: page.older } : {}) });
         return;
       }
       case "tool.run":
@@ -748,6 +796,129 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     }
     // Last, once the path is gone: a server that takes the lock next finds nothing to refuse.
     this.releaseSocketLock();
+  }
+}
+
+// ------------------------------------------------------- the ledger's day totals
+
+/** A day as the day files spell it (YYYY-MM-DD): what `ledger.search`'s `before` may be. */
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** What one day file says for the totals, kept while the file's mtime and size are what was read. */
+interface DayTally {
+  readonly mtimeMs: number;
+  readonly size: number;
+  /** `session.started` rows. */
+  readonly started: number;
+  /** Per session, its last `session.closed` row's seconds in this file. */
+  readonly closes: ReadonlyMap<string, number>;
+  /** Per session, its last `session.usage` row's seconds in this file. */
+  readonly usages: ReadonlyMap<string, number>;
+  /** Closed rows that name no session (day files from before 2026-09-13 hold `"?"`): each counts on its own. */
+  readonly unnamed: number;
+}
+
+/** A row's own spelling of its type (JSON.stringify writes no space): only these lines are parsed. */
+const SESSION_ROW = '"type":"session.';
+
+/**
+ * LM-6: each day's totals for the `ledger.days` reply (`LedgerDayTotals`), read off the day files in `dir`. A
+ * session counts once, in the day file of the row that carries its seconds: its last `session.closed` row (a
+ * SESSION_LOST_REASON close included), else, while it has none, its last `session.usage` row. Never both: a lost
+ * close repeats the seconds of the usage row before it. `sessions` is the file's `session.started` rows.
+ *
+ * Only the lines that hold a session row are parsed, a file is kept while its mtime and size hold (after the first
+ * ask only the day being written is read again), and the reads are async, one file at a time, so a year of history
+ * never holds the event loop for one long read. Live days only: the Trash is another folder.
+ */
+export class DayTotals {
+  private readonly tallies = new Map<string, DayTally>();
+
+  constructor(private readonly dir: string) {}
+
+  /** The totals of `days` (YYYY-MM-DD), in the order given; a day whose file cannot be read reads zero. */
+  async totals(days: readonly string[]): Promise<LedgerDayTotals[]> {
+    const listed = new Set(days);
+    for (const day of [...this.tallies.keys()]) if (!listed.has(day)) this.tallies.delete(day);
+    const oldestFirst = [...listed].sort();
+    const read = new Map<string, DayTally>();
+    for (const day of oldestFirst) {
+      const tally = await this.tally(day);
+      if (tally) read.set(day, tally);
+    }
+    // The file of each session's last closed row, else of its last usage row; later files win (oldest first).
+    const closedIn = new Map<string, { day: string; seconds: number }>();
+    const usedIn = new Map<string, { day: string; seconds: number }>();
+    for (const day of oldestFirst) {
+      const tally = read.get(day);
+      if (!tally) continue;
+      for (const [id, seconds] of tally.closes) closedIn.set(id, { day, seconds });
+      for (const [id, seconds] of tally.usages) usedIn.set(id, { day, seconds });
+    }
+    const billed = new Map<string, number>();
+    const add = (day: string, seconds: number): void => void billed.set(day, (billed.get(day) ?? 0) + seconds);
+    for (const { day, seconds } of closedIn.values()) add(day, seconds);
+    for (const [id, { day, seconds }] of usedIn) if (!closedIn.has(id)) add(day, seconds);
+    return days.map((day) => {
+      const tally = read.get(day);
+      return { day, sessions: tally?.started ?? 0, billedSeconds: (billed.get(day) ?? 0) + (tally?.unnamed ?? 0) };
+    });
+  }
+
+  /** One day file's tally: the kept one while the file is unchanged, else read again. Undefined when it cannot be read (it moved to the Trash meanwhile). */
+  private async tally(day: string): Promise<DayTally | undefined> {
+    const path = join(this.dir, `${day}.jsonl`);
+    let mtimeMs: number;
+    let size: number;
+    try {
+      ({ mtimeMs, size } = await stat(path));
+    } catch {
+      this.tallies.delete(day);
+      return undefined;
+    }
+    const kept = this.tallies.get(day);
+    if (kept && kept.mtimeMs === mtimeMs && kept.size === size) return kept;
+    let text: string;
+    try {
+      text = await readFile(path, "utf8");
+    } catch {
+      this.tallies.delete(day);
+      return undefined;
+    }
+    // The stat before the read: a row appended between the two makes the next ask read the file again.
+    const tally = { mtimeMs, size, ...DayTotals.scan(text) };
+    this.tallies.set(day, tally);
+    return tally;
+  }
+
+  /** The session rows of one day file's text; a torn or malformed line is skipped. */
+  static scan(text: string): Omit<DayTally, "mtimeMs" | "size"> {
+    let started = 0;
+    let unnamed = 0;
+    const closes = new Map<string, number>();
+    const usages = new Map<string, number>();
+    for (let i = text.indexOf(SESSION_ROW); i !== -1; ) {
+      const start = text.lastIndexOf("\n", i) + 1;
+      let end = text.indexOf("\n", i);
+      if (end === -1) end = text.length;
+      let row: { type?: unknown; sessionId?: unknown; usageSeconds?: unknown } | undefined;
+      try {
+        row = JSON.parse(text.slice(start, end)) as typeof row;
+      } catch {
+        row = undefined;
+      }
+      if (row && typeof row === "object") {
+        const id = typeof row.sessionId === "string" && row.sessionId !== "" && row.sessionId !== "?" ? row.sessionId : undefined;
+        const seconds = typeof row.usageSeconds === "number" && Number.isFinite(row.usageSeconds) && row.usageSeconds > 0 ? row.usageSeconds : 0;
+        if (row.type === "session.started") started++;
+        else if (row.type === "session.closed") {
+          if (id === undefined) unnamed += seconds;
+          else closes.set(id, seconds);
+        } else if (row.type === "session.usage" && id !== undefined) usages.set(id, seconds);
+      }
+      i = text.indexOf(SESSION_ROW, end);
+    }
+    return { started, closes, usages, unnamed };
   }
 }
 
