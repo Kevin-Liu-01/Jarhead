@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build and run the Orb/Overlay preview harness without the rest of the app.
 # Compiles Model + UI/Orb + UI/Overlay with -D JARHEAD_ORB_PREVIEW (which enables
-# UI/Orb/OrbPreviewApp.swift's @main) into $OUT and runs it.
+# UI/Orb/OrbPreviewApp.swift's @main) into $OUT and runs it. App/Hotkeys.swift comes too:
+# the orb's context menu reads Go's key from it. It needs only AppKit and Carbon.
 #
 #   Scripts/orb-preview.sh                 # cycle all phases at 200,200 for 30 s
 #   ORB_EXPAND=1 ORB_OVERLAY=1 Scripts/orb-preview.sh
@@ -172,6 +173,7 @@ swiftc -parse-as-library -O -D JARHEAD_ORB_PREVIEW \
   Sources/Jarhead/UI/*.swift \
   Sources/Jarhead/UI/Orb/*.swift \
   Sources/Jarhead/UI/Overlay/*.swift \
+  Sources/Jarhead/App/Hotkeys.swift \
   -o "$BIN"
 
 echo "built $BIN"
