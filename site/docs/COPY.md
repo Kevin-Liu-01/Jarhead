@@ -232,7 +232,7 @@ open -a Jarhead                       # Setup opens: your OpenAI key, a brain, p
 Requirements, head `Requirements · 6`:
 
 1. `macOS 14 or newer on Apple silicon` (README:377)
-2. `Xcode 15.3 or newer` (README:377)
+2. `Xcode 16 or newer` (README:383)
 3. `Node 24 or newer and pnpm 10` (README:378-379)
 4. `An OpenAI API key for the voice` (README:379)
 5. `A brain you are already signed in to` (README:379-380)
@@ -307,7 +307,7 @@ named so a reviewer can put it back.
 - d:101 `The brain is working.` → `The brain has the task.`
 - d:101 `Jarhead is using the computer.` → `The hands are using the Mac.`
 - d:101 `Jarhead is talking.` → `It is talking. Say stop to interrupt.`
-- d:102 plate note `Clones the repo and runs the four build commands. macOS 14+ · Apple silicon · Xcode 15.3+ · Node ≥ 24 · pnpm 10. Read it first: jarhead.kevinliu.studio/install.sh` → `Clones to ~/jarhead and runs the four commands. Never writes your keys. Read it first at …`; the requirement list lives in Install.
+- d:102 plate note `Clones the repo and runs the four build commands. macOS 14+ · Apple silicon · Xcode 16+ · Node ≥ 24 · pnpm 10. Read it first: jarhead.kevinliu.studio/install.sh` → `Clones to ~/jarhead and runs the four commands. Never writes your keys. Read it first at …`; the requirement list lives in Install.
 
 ### Wake (d:121-129)
 

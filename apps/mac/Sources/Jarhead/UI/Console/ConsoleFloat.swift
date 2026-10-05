@@ -276,7 +276,7 @@ final class ConsoleFloatMonitor {
     private var token: Any?
     private var floats: [ConsoleFloat] = []
 
-    /// Nonisolated so `@State private var monitor = ConsoleFloatMonitor()` builds on Swift 5.10 (Xcode 15.3/15.4),
+    /// Nonisolated so `@State private var monitor = ConsoleFloatMonitor()` builds under strict isolation,
     /// where a View's property initializer runs outside the main actor; it only sets the two defaults above.
     nonisolated init() {}
 

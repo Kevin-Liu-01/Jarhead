@@ -32,7 +32,7 @@ enum LocalAuth {
             }
         }
         // Policy 3 is the companion policy. The macOS 15 SDK names it for companions, the
-        // macOS 14 SDK for the Watch; the raw value compiles against both, so Xcode 15 builds.
+        // macOS 14 SDK for the Watch; the raw value compiles against both SDKs (the app's floor is Xcode 16 for its SwiftUI).
         if #available(macOS 15.0, *), let companion = LAPolicy(rawValue: 3) {
             if ctx.canEvaluatePolicy(companion, error: &error) { return "Apple Watch" }
         }
