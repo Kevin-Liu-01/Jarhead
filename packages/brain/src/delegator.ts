@@ -212,8 +212,11 @@ export interface DelegatorThreads {
   drain(delegationId: string, signal: AbortSignal): Promise<void>;
   /** Spawned threads still alive for this delegation, or in total without an id. */
   running(delegationId?: string): number;
-  /** Kevin's yes was armed for the thread holding the question floor: it re-runs its tool on its own brain. */
-  resume(threadId: string): Promise<void>;
+  /**
+   * Kevin's yes was armed for the thread holding the question floor: it re-runs its tool on its own brain.
+   * `words` is his yes as he said it; the confirmation turn quotes it, never "Kevin said yes".
+   */
+  resume(threadId: string, opts?: { readonly words?: string | undefined }): Promise<void>;
   /** True while Jarhead is mid-exchange (spoke or was spoken to a moment ago). Informational here: Live's attention gate is the addressing test for a spoken cue. */
   inExchange?(): boolean;
 }
@@ -1005,7 +1008,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     // row: `arm(record)` writes the row as the grant is born; with no ledger the yes is one-off.
     const ledger = this.opts.ledger;
     const record = ledger ? (g: { app: string; actionClass: string; until: number }): void => ledger.append({ at: this.now(), type: "grant", chainId: confirmations.conversationId, app: g.app, actionClass: g.actionClass, until: g.until }) : undefined;
-    const isYes = YES_PATTERN.test(transcript.last("kevin")?.text ?? "");
+    const yesWords = transcript.last("kevin")?.text ?? "";
+    const isYes = YES_PATTERN.test(yesWords);
 
     // A spawned thread's question on the floor, and whether it is still the last thing Kevin
     // was asked: he has not asked the brain, or another thread, for anything since (`movedOnFrom`).
@@ -1034,7 +1038,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       this.appendIds.set(aside.id, appendId);
       this.addStep(aside.id, { kind: "note", text: `yes for ${floor.name}'s question; the running task carries on`, thread: floor.name });
       try {
-        await threads.resume(floor.id);
+        await threads.resume(floor.id, { words: yesWords });
         this.closeRecord(aside.id, "done", `relayed the yes to ${floor.name}`);
       } catch (e) {
         this.closeRecord(aside.id, "failed", `could not relay the yes to ${floor.name}: ${(e as Error).message.slice(0, 200)}`);

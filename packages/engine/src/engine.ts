@@ -2619,7 +2619,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       // A typed yes while a thread's question holds the floor is that thread's: relayed, the main turn untouched.
       const floor = this.threads.floorThread();
       if (floor && floor.id !== MAIN_THREAD_ID) {
-        const r = await this.threads.answerYes(floor.id);
+        const r = await this.threads.answerYes(floor.id, { words: t });
         if (item) this.delegator?.typedHandled(item);
         live.appendInstructions(null, r.ok ? `${this.userName} just typed "${t}": that yes went to ${floor.name}'s question. Say one word and wait.` : `${this.userName} just typed "${t}", but ${r.reason ?? "it was refused"}. Tell ${this.userName} in one sentence.`);
         log.info(`say-text: yes → ${floor.name} (${r.ok ? "relayed" : (r.reason ?? "refused")}) in ${Math.round(performance.now() - t0)} ms`);
@@ -3032,7 +3032,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     return {
       drain: (id, signal) => t.drain(id, signal),
       running: (id) => t.running(id),
-      resume: (threadId) => t.resume(threadId),
+      resume: (threadId, opts) => t.resume(threadId, opts),
       inExchange: () => this.inExchange(),
       liveNames: () => t.threadNames(),
       recentNames: () =>

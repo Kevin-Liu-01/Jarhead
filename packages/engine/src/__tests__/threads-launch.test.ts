@@ -20,7 +20,7 @@ import { RecordingHands, delegate, nextUtterance, settle, threadNameOf, until, w
  * `stopped` with a line after two re-asks (TH-1); one he heard and then answered no to, or
  * talked past, is never asked again behind his back, so a later "okay" sends nothing (the
  * W1-5 review's TH-1 no); an idle end is `stopped`, never `done`; the confirmation turn carries
- * Kevin's own words (RAIL-2; the engine half is a todo until the wave-1 merge wires the words);
+ * Kevin's own words, from the Delegator's yes and the typed yes (RAIL-2);
  * the main brain reaches its threads by name from any later request (TH-3) and `thread_wait`
  * all reports a finished sibling (TH-7); the background lane leaves the front browser tab
  * alone (TH-4); a step budget of N lets N calls act and never refuses the next turn's eyes
@@ -688,7 +688,6 @@ test("TH-1 no (engine): Slack asks 'send?'; Kevin says 'no, don't send it'; the 
 
 test(
   "RAIL-2 (engine): a spoken yes reaches the confirmation turn as Kevin's own words",
-  { todo: "wiring at the wave-1 merge: the Delegator's yes calls threads.resume(floor.id, { words }) (W1-3), engine.ts passes it through and sayText calls answerYes(floor.id, { words }) (W1-1)" },
   async () => {
     const w = world();
     const { engine } = w;
@@ -711,6 +710,28 @@ test(
     }
   },
 );
+
+test("RAIL-2 (engine, typed): a typed yes reaches the confirmation turn as Kevin's own words", async () => {
+  const w = world();
+  const { engine } = w;
+  try {
+    w.threads.script = async (job): Promise<BrainResult> => {
+      const r = (await job.runner.run("click_element", { name: "Send" })).result;
+      return { status: "done", summary: r.kind === "needs-confirmation" ? r.question : r.kind === "text" ? "sent." : "failed" };
+    };
+    await split(w);
+    await engine.runner.run("thread_start", { name: "Slack", task: "send Ben: I'm running late", lane: "screen" });
+    await until(() => named(w, "Slack")?.status === "waiting-kevin");
+    await engine.command({ type: "say-text", text: "yes, send it" });
+    await until(() => named(w, "Slack")?.status === "done");
+    const turn = w.threads.byName("Slack")!.tasks.at(-1)!;
+    assert.equal(turn.confirmation, true);
+    assert.ok(turn.dialogue.includes('"yes, send it"'), turn.dialogue);
+    assert.match(turn.kevinDialogue ?? "", /yes, send it$/);
+  } finally {
+    await engine.stop();
+  }
+});
 
 test("main lane: a cut of the lease while the task is live is not a stop; the screen is asked for once more and the call acts (a second call's force-take cut the first)", async () => {
   const w = world();
