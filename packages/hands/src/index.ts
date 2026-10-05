@@ -2,7 +2,7 @@ export { NativeHandsProcess, NativeRequestError, HELPER_PERMISSION_KINDS, TYPE_C
 export type { NativeHands, HelloPermissions, HelperPermissionKind, DisplayInfo, ScreenshotResult, FrontmostInfo, WindowInfo, FocusedText, ElementInfo, NativeHandsProcessOptions, AxNodeInfo, FindElementResult, AxTreeResult, BrowserTab, TypeResult, UserIdle } from "./native.ts";
 export { Screen, fitScale, DEFAULT_SHOT_BUDGET, QUICK_SHOT_BUDGET } from "./screen.ts";
 export type { ShotBudget } from "./screen.ts";
-export { ComputerToolset, ConfirmationState, COMPUTER_MEMBERS, DESKTOP_TOOLS, ACTING_MEMBERS, READ_ONLY_TOOLS, YES_PATTERN, GRANT_TTL_MS, HOLD_ID, STALE_FRAME } from "./toolset.ts";
+export { ComputerToolset, ConfirmationState, COMPUTER_MEMBERS, DESKTOP_TOOLS, ACTING_MEMBERS, READ_ONLY_TOOLS, YES_PATTERN, isAffirmative, GRANT_TTL_MS, HOLD_ID, STALE_FRAME } from "./toolset.ts";
 export type { ToolResult, ActionEvent, PendingConfirmation, Grantable, ConfirmationGrant, ArmedConfirmation, ToolsetOptions } from "./toolset.ts";
 export { screencaptureFallback } from "./fallback.ts";
 export { fakeHandsSpawn, FakeHands, FAKE_ACTING_OPS } from "./fake.ts";

@@ -262,10 +262,12 @@ test("grants: the ceiling — a grant nobody ended expires at `until`; a resume 
   assert.ok(!c.granted("com.1password", "type"), "a new chain ends the standing yes, suspended or not");
   assert.equal(c.conversationId, "other");
   assert.equal(c.activeGrants.length, 0);
-  // An expired question leaves no grant.
+  // An expired question leaves no grant: the late yes answers `expired` and arms nothing (W1-4).
   c.ask("type in 1Password", "type", { text: "x" }, { app: "com.1password", actionClass: "type" });
   clock += 61_000;
-  assert.equal(c.arm(record), undefined);
+  const late = c.arm(record);
+  assert.equal(late?.expired, true);
+  assert.equal(late?.grant, undefined);
   assert.ok(!c.granted("com.1password", "type"));
 });
 
@@ -398,7 +400,7 @@ test("presence: without presenceAt wired, the recent leg is unknown and holds no
   const ts = new ComputerToolset({ hands });
   await ts.run("screenshot", {});
   hands.elementTitle = "Send";
-  ts.confirmations.ask("click Send in Mail", "left_click", { coordinate: [100, 100] });
+  assert.equal((await ts.run("left_click", { coordinate: [100, 100] })).kind, "needs-confirmation", "Send asks");
   ts.confirmations.arm();
   assert.equal((await ts.run("left_click", { coordinate: [100, 100] })).kind, "text", "no presenceAt: the yes runs");
   hands.locked = true;
@@ -466,13 +468,14 @@ test("expectFront: every gated acting op carries the pid the gate's own frontmos
   assert.deepEqual(sent("type"), { text: "hello", expectFront: { pid: 1 } });
   await ts.run("key", { text: "Return" });
   assert.deepEqual(sent("key")?.["expectFront"], { pid: 1 });
+  // Gated since W1-4: a scroll and a held key are judged against the front app like a click and a key.
+  await ts.run("scroll", { scroll_direction: "down" });
+  assert.deepEqual(sent("scroll")?.["expectFront"], { pid: 1 });
+  await ts.run("hold_key", { text: "shift", duration: 0 });
+  assert.deepEqual(sent("hold_key")?.["expectFront"], { pid: 1 });
   // No gate, no probe, no expectation.
   await ts.run("left_mouse_up", {});
   assert.equal(sent("mouse_up")?.["expectFront"], undefined);
-  await ts.run("scroll", { scroll_direction: "down" });
-  assert.equal(sent("scroll")?.["expectFront"], undefined);
-  await ts.run("hold_key", { text: "shift", duration: 0 });
-  assert.equal(sent("hold_key")?.["expectFront"], undefined);
   await ts.run("mouse_move", { coordinate: [5, 5] });
   assert.equal(sent("move")?.["expectFront"], undefined);
 

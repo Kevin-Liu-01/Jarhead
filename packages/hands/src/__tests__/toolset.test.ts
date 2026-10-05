@@ -130,12 +130,13 @@ test("zoom maps a screenshot region to a global rect", async () => {
   assert.equal((await ts.run("zoom", { region: [1, 2] })).kind, "error");
 });
 
-test("confirmation state expires", () => {
+test("confirmation state expires: a late yes answers `expired` and arms nothing", () => {
   let t = 0;
   const c = new ConfirmationState(1000, () => t);
   c.ask("send", "left_click", { coordinate: [1, 1] });
   t = 2000;
-  assert.equal(c.arm(), undefined);
+  assert.equal(c.arm()?.expired, true);
+  assert.equal(c.consume("left_click", { coordinate: [1, 1] }), false);
 });
 
 test("fitScale never upscales and respects both limits", () => {
@@ -178,7 +179,7 @@ test("screenshot: quick: true asks the helper for the quick budget (2000 long ed
   await ts.run("screenshot", {});
   assert.equal(hands.calls.filter((c) => c.op === "screenshot")[full.length]!.params["maxLongEdge"], 2000, "the default budget is unchanged");
 
-  // A click probes frontmost + element_at; a key press probes frontmost + focused_text; a scroll probes nothing.
+  // A click probes frontmost + element_at; a key press probes frontmost + focused_text; a scroll at the cursor probes the front app only.
   hands.calls.length = 0;
   await ts.run("left_click", { coordinate: [100, 100] });
   assert.deepEqual(hands.calls.map((c) => c.op).filter((op) => op !== "click"), ["frontmost", "element_at"]);
@@ -187,7 +188,7 @@ test("screenshot: quick: true asks the helper for the quick budget (2000 long ed
   assert.deepEqual(hands.calls.map((c) => c.op).filter((op) => op !== "key"), ["frontmost", "focused_text"]);
   hands.calls.length = 0;
   await ts.run("scroll", { scroll_direction: "down", scroll_amount: 2 });
-  assert.deepEqual(hands.calls.map((c) => c.op), ["scroll"]);
+  assert.deepEqual(hands.calls.map((c) => c.op), ["frontmost", "scroll"]);
 });
 
 test("click_element: the named control's app must be the one in front, and the element under its point must be that control — a background app's tree, a covering control, or a control of another app under the point clicks nothing", async () => {

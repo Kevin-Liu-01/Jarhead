@@ -30,7 +30,7 @@ test("ear → hands: a partial scrolls after the stability window through the ga
     assert.equal(hands.named("scroll").length, 0, "a partial waits for the stability window");
     await until(() => hands.named("scroll").length === 1 && rows.length === 1, 3000); // the fired row lands a tick after the op
     assert.equal(hands.named("scroll").length, 1, "then the scroll was issued to the helper");
-    assert.deepEqual(hands.named("scroll")[0]!.params, { dx: 0, dy: -300, modifiers: [] });
+    assert.deepEqual(hands.named("scroll")[0]!.params, { dx: 0, dy: -300, modifiers: [], expectFront: { pid: 1 } });
     assert.equal(rows.length, 1);
     const row = rows[0] as { phrase: string; action: string; earAt: number; ok: boolean; fired: string };
     assert.deepEqual([row.phrase, row.action, row.earAt, row.ok, row.fired], ["scroll down", "scroll down", heardAt, true, "stable"]);

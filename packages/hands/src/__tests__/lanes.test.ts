@@ -106,7 +106,7 @@ test("consume is false for a non-floor lane even with the same member and target
   assert.equal(root.pending, undefined);
 });
 
-test("dropQuestion (Kevin moved on) drops the floor AND the queue — through a lane, or directly on the root as the Delegator, the ear reflex and dictation do it; clear (a cut) does too and suspends the grants", () => {
+test("dropQuestion through a lane (Kevin moved on) drops the floor AND the queue; a question dropped directly on the root (the Delegator, the ear reflex, dictation) was that lane's alone, so the next queued one comes up; clear (a cut) drops both and suspends the grants", () => {
   const { root, desk, spoken } = world();
   const a = desk.lane("jarhead", "Jarhead");
   const b = desk.lane("w_1", "Spotify");
@@ -122,16 +122,19 @@ test("dropQuestion (Kevin moved on) drops the floor AND the queue — through a 
   assert.equal(desk.promote(), undefined);
   assert.deepEqual(spoken, []);
 
-  // The engine dropped the root directly (the Delegator is wired to the root): the floor heals and the queue goes with it —
-  // Kevin moved on from the question that was spoken; nobody's unspoken question comes up behind his back at the next tick.
+  // The engine dropped the root directly (the Delegator is wired to the root): Kevin moved on from Jarhead's question,
+  // not from Spotify's. The floor heals and Spotify's question comes up, spoken once with its name (W1-4, TH-1: a
+  // thread told to wait is never left waiting on a question nobody will ask).
   a.ask("send the message in Mail", "left_click", { coordinate: [1, 1] });
   b.ask("play Focus in Spotify", "click_element", { name: "Play" });
   root.dropQuestion();
-  assert.equal(desk.floorLane(), undefined, "the root's question is gone, so is the floor");
-  assert.equal(desk.queuedCount, 0, "and the queue behind it");
-  assert.equal(desk.promote(), undefined);
-  assert.deepEqual(spoken, []);
-  assert.equal(b.pending, undefined);
+  assert.equal(desk.floorLane(), "w_1", "the next queued question is on the floor");
+  assert.equal(desk.queuedCount, 0);
+  assert.equal(desk.promote(), undefined, "the floor is taken");
+  assert.deepEqual(spoken, [{ name: "Spotify", question: "play Focus in Spotify" }]);
+  assert.equal(b.pending?.id, desk.root.pending?.id, "Spotify's question is the root's now");
+  desk.dropQuestion();
+  spoken.length = 0;
 
   // A cut.
   a.ask("send the message in Mail", "left_click", { coordinate: [1, 1] });
@@ -228,7 +231,7 @@ test("grants are the conversation's: a recorded yes in one lane is granted() in 
   assert.ok(!desk.lane("jarhead", "Jarhead").granted(armed!.grant!.app, "click"));
 });
 
-test("TTL: a floor question that expired unanswered takes the queue with it; a queued question older than the TTL is dropped by promote, not re-asked; a lane's own drop promotes the next; a lane that ended takes its queued question with it; one lane object per id", () => {
+test("TTL: a floor question that expired keeps its floor for its own re-ask and the queue behind it waits; a queued question older than the TTL is dropped by promote, not re-asked; a lane's own drop promotes the next; a lane that ended takes its queued question with it; one lane object per id", () => {
   const { clock, root, desk, spoken } = world();
   const a = desk.lane("jarhead", "Jarhead");
   const b = desk.lane("w_1", "Spotify");
@@ -237,14 +240,27 @@ test("TTL: a floor question that expired unanswered takes the queue with it; a q
   clock.t += 2 * 60_000;
   b.ask("play Focus in Spotify", "click_element", { name: "Play" });
   clock.t += 60_000 + 1;
-  assert.equal(root.arm(), undefined, "the root's question expired: a late yes lands nothing");
-  assert.equal(desk.floorLane(), undefined);
-  assert.equal(desk.queuedCount, 0, "Kevin never answered the one before it: Spotify's is not asked out of nowhere");
+  // W1-4 (TH-1): a late yes answers `expired` and lands nothing; the question stays on its floor, so the yes
+  // reaches its own lane (which asks again) and never arms or promotes the question queued behind it.
+  assert.equal(root.arm()?.expired, true, "the root's question expired: a late yes lands nothing");
+  assert.equal(a.consume("left_click", { coordinate: [1, 1] }), false);
+  assert.equal(desk.floorLane(), "jarhead", "the floor stays Jarhead's");
+  assert.equal(desk.holds("jarhead"), false, "but nothing answerable is held");
+  assert.equal(desk.queuedCount, 1, "Spotify's waits behind it");
+  assert.equal(desk.holds("w_1"), true, "inside its own TTL");
   assert.equal(desk.promote(), undefined);
   assert.deepEqual(spoken, []);
-  assert.equal(a.onFloor, false);
+  assert.equal(a.onFloor, true);
   assert.equal(b.onFloor, false);
-  assert.equal(desk.pendingOf("w_1"), undefined, "Spotify has nothing waiting any more");
+  // Jarhead's re-ask replaces its question in place; its own drop then brings Spotify's up.
+  a.ask("send the message in Mail", "left_click", { coordinate: [1, 1] });
+  assert.equal(desk.floorLane(), "jarhead");
+  assert.equal(desk.holds("jarhead"), true);
+  desk.drop("jarhead");
+  assert.equal(desk.floorLane(), "w_1", "Spotify's came up");
+  assert.deepEqual(spoken, [{ name: "Spotify", question: "play Focus in Spotify" }]);
+  desk.dropQuestion();
+  spoken.length = 0;
   // A queued question that waited past the TTL is dropped when its turn comes, not re-asked.
   const d = desk.lane("w_3", "Mail");
   a.ask("send the message in Mail", "left_click", { coordinate: [1, 1] });
