@@ -61,6 +61,8 @@ public final class AppState: ObservableObject {
     /// The settings walk's Next: the following pane.
     public func permissionSweepNext() { permissionActions.sweepNext() }
     public func permissionSweepCancel() { permissionActions.sweepCancel() }
+    /// Setup closed: stop watching System Settings now. A waiting step stays open for Next and Cancel.
+    public func permissionSweepPark() { permissionActions.park() }
     public func openPermissionsSetup() { openPermissionsSetupHandler() }
 
     public var permissionsMissingRequired: [PermissionInfo] { permissionList.filter { $0.required && $0.grant != .granted } }
@@ -1163,6 +1165,7 @@ public struct PermissionActions {
     public var refresh: () -> Void = {}
     public var sweepNext: () -> Void = {}
     public var sweepCancel: () -> Void = {}
+    public var park: () -> Void = {}
     public init() {}
 }
 

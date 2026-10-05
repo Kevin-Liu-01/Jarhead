@@ -70,6 +70,7 @@ final class PermissionsCenter {
         a.refresh = { [weak self] in self?.refresh() }
         a.sweepNext = { [weak self] in self?.sweepNext() }
         a.sweepCancel = { [weak self] in self?.sweepCancel() }
+        a.park = { [weak self] in self?.park() }
         state.permissionActions = a
     }
 
@@ -208,6 +209,17 @@ final class PermissionsCenter {
     private func stopWatch() {
         watchTimer?.invalidate()
         watchTimer = nil
+    }
+
+    /// Setup closed (APP-7): the watch stops now, not at its span. Nobody is looking at Setup,
+    /// and every poll re-reads every kind and can spawn the helper. A waiting step stays
+    /// waiting, as it does past the span: Jarhead coming to the front re-reads it, and Next and
+    /// Cancel are in the status menu. A pane or dialog the sweep opens later starts a fresh span.
+    func park() {
+        guard watchTimer != nil else { return }
+        stopWatch()
+        watchUntil = .distantPast
+        log(walkContinuation != nil ? "sweep: parked, Setup closed · \(state.permissionSweep?.line ?? "waiting")" : "watch: stopped, Setup closed")
     }
 
     /// The waiting step's kinds are all granted: the sweep moves on by itself.

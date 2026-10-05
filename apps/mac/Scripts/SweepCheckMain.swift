@@ -1,14 +1,16 @@
 import AppKit
 
-// "Ask for everything" ends (APP-7). The REAL Permissions/PermissionsSweep.swift and Model/,
-// with the centre's Mac side scripted (`PermissionsIO`: fake reads, a Screen Recording dialog
-// that returns at once denied, no helper, no System Settings, no Finder, nothing written to
-// UserDefaults) and a short watch (`PermissionsCenter.Watch`).
+// "Ask for everything" ends (APP-7). The REAL Permissions/PermissionsSweep.swift, Model/ and
+// Setup's window controller (never shown, so no window), with the centre's Mac side scripted
+// (`PermissionsIO`: fake reads, a Screen Recording dialog that returns at once denied, no
+// helper, no System Settings, no Finder, nothing written to UserDefaults) and a short watch
+// (`PermissionsCenter.Watch`).
 //
 // The finding: a sweep step that waits on Kevin (the Screen Recording dialog, a System
 // Settings pane) kept the 1.5 s poll alive for as long as it waited. Setup closed, Kevin gone,
 // and every poll re-read sixteen kinds and spawned the helper: 81 spawns in two minutes, for
-// ever. Now the poll ends at the watch span and the step parks, still resumable.
+// ever. Now the poll ends when Setup closes, or at the watch span, and the step parks, still
+// resumable.
 // One `check:` line per check, "ok" or "FAIL" first; exit 1 on a FAIL.
 
 nonisolated(unsafe) var failures = 0
@@ -61,11 +63,11 @@ struct Rig {
 }
 
 @MainActor
-func rig(denied: [PermissionKind]) async -> Rig {
+func rig(denied: [PermissionKind], span w: PermissionsCenter.Watch = watch) async -> Rig {
     let state = AppState()
     let mac = FakeMac()
     for k in denied { mac.grants[k] = .denied }
-    let center = PermissionsCenter(state: state, dryRun: false, io: mac.io, watch: watch)
+    let center = PermissionsCenter(state: state, dryRun: false, io: mac.io, watch: w)
     center.log = { _ in }
     center.start()
     _ = await until(1) { state.permissionList.contains { $0.checkedAt != nil } }
@@ -118,6 +120,38 @@ struct SweepCheck {
             check(await until(2) { r.done }, "back in Jarhead, the parked step re-reads and moves on to the end",
                   "\(String(describing: r.sweep?.stage)) \(r.sweep?.line ?? "")")
             check(r.sweep?.line.hasPrefix("stopped") == false, "the sweep ends as done, not stopped", r.sweep?.line ?? "")
+        }
+
+        do {
+            print("== setup-closed: a step waits, the poll is live, Setup closes (OnboardingWindowController.close)")
+            // A span far longer than the run: only the close can stop this poll.
+            let long = PermissionsCenter.Watch(interval: watch.interval, span: 30)
+            let r = await rig(denied: [.screenRecording], span: long)
+            r.state.permissionActions.requestAll()
+            _ = await until(2) { r.waiting }
+            let start = r.mac.readAlls
+            await pump(6 * long.interval)
+            check(r.waiting && r.mac.readAlls > start, "inside the span a waiting step polls", "\(r.mac.readAlls - start) reads")
+            // The controller Setup's close button and Done call; never shown, so it has no window.
+            OnboardingWindowController(state: r.state).close()
+            await pump(3 * long.interval) // a poll already in flight may still land
+            let before = r.mac.readAlls
+            await pump(20 * long.interval)
+            check(r.mac.readAlls == before, "Setup closed: 0 reads in 20 more intervals, long before the span ends",
+                  "\(r.mac.readAlls - before) reads after the close")
+            check(r.waiting && r.sweep?.current == .screenRecording, "the step parks, still waiting on Screen Recording")
+            r.state.permissionSweepNext()
+            check(await until(2) { r.done }, "Next from the status menu moves it on, to the end", r.sweep?.line ?? "")
+        }
+
+        do {
+            print("== setup-closed, idle: no sweep and no watch, Setup closes")
+            let r = await rig(denied: [])
+            let before = r.mac.readAlls
+            OnboardingWindowController(state: r.state).close()
+            await pump(10 * watch.interval)
+            check(r.mac.readAlls == before && r.sweep == nil && r.mac.asks.isEmpty, "nothing is read, asked or started",
+                  "reads=\(r.mac.readAlls - before) asks=\(r.mac.asks)")
         }
 
         do {

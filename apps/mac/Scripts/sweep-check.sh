@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # "Ask for everything" ends (APP-7): the real Permissions/PermissionsSweep.swift with the
 # centre's Mac side scripted (PermissionsIO) and a short watch. A step that waits on Kevin
-# parks at the watch span instead of polling for ever; Next, Cancel and coming back to Jarhead
-# still move it on. See Scripts/SweepCheckMain.swift for the list.
+# parks when Setup closes, or at the watch span, instead of polling for ever; Next, Cancel and
+# coming back to Jarhead still move it on. See Scripts/SweepCheckMain.swift for the list.
 #   Scripts/sweep-check.sh                # run the checks (a few seconds)
 #   Scripts/sweep-check.sh --build-only
-# Compiles Model + Permissions + Scripts/SweepCheckMain.swift into its own output directory
+# Compiles Model + Permissions + UI (Setup's window controller, which closes but is never
+# shown) + Scripts/SweepCheckMain.swift into its own output directory
 # (never the shared .build products), and only when a source is newer than the binary.
 # Nothing is asked: no TCC prompt, no helper, no System Settings, no Finder, no UserDefaults
 # write, no window. One `check:` line per check; exit 1 on a FAIL.
@@ -14,7 +15,8 @@ cd "$(dirname "$0")/.."
 BUILD=".build/sweep-check"
 BIN="$BUILD/sweep-check"
 mkdir -p "$BUILD"
-SOURCES=(Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Scripts/SweepCheckMain.swift)
+SOURCES=(Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/*.swift
+  Sources/Jarhead/UI/Console/*.swift Sources/Jarhead/UI/Onboarding/*.swift Scripts/SweepCheckMain.swift)
 needs_build=0
 if [[ ! -x "$BIN" ]]; then
   needs_build=1
