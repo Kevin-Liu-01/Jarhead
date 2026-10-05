@@ -258,7 +258,8 @@ const SHELL_CASES: ReadonlyArray<readonly [string, Verdict, string?]> = [
   ["ls ~/.claude/projects", "run"],
   ["cat \"~/Library/Application Support/Google/Chrome/Default/History\"", "run"],
   ["find ~ -name '*.pdf'", "run", "paths only"],
-  ["grep -r TODO ~/Documents", "run"],
+  ["grep -r --exclude='.env*' TODO ~/Documents", "run", "a folder sweep with .env kept out"],
+  ["grep -r TODO ~/Documents", "refuse", "any folder can hold a .env (W1-6)"],
   // confirms: the environment as a whole
   ["env", "confirm"],
   ["env | grep -c KEY", "confirm"],
@@ -557,7 +558,8 @@ const PRESENCE_CASES: ReadonlyArray<readonly [string, string, string, Presence |
   // Each leg on its own holds a confirm-tier action.
   ["Mail", "left_click", "Send", { recent: false, unlocked: true, frontmost: true }, "confirm", "no ear activity for a minute"],
   ["Messages", "left_click", "Send", { recent: true, unlocked: false, frontmost: true }, "confirm", "the screen is locked"],
-  ["Messages", "key", "Return", { recent: true, unlocked: false, frontmost: true }, "run", "Return is reversible: not confirm-tier, not held"],
+  ["Messages", "key", "Return", { recent: true, unlocked: false, frontmost: true }, "confirm", "Return in Messages is a send: confirm-tier, so held while the screen is locked"],
+  ["Messages", "key", "shift+Return", { recent: true, unlocked: false, frontmost: true }, "run", "shift+Return is a new line: not confirm-tier, not held"],
   ["Slack", "left_click", "Send", { recent: true, unlocked: true, frontmost: false }, "confirm", "Slack is not the app in front"],
   // Unknown legs do not hold.
   ["Mail", "left_click", "Send", { recent: undefined, unlocked: undefined, frontmost: undefined }, "confirm", "unknown legs: the plain confirm, not the presence one"],
@@ -571,7 +573,8 @@ const PRESENCE_CASES: ReadonlyArray<readonly [string, string, string, Presence |
 test("presence: confirm-tier actions in gated apps wait for Kevin at the Mac; each leg alone holds; runs and refusals are untouched", () => {
   for (const [app, kind, target, presence, verdict, note] of PRESENCE_CASES) {
     const secureField = app === "1Password" && kind === "type";
-    const d = classifyAction({ kind, app, target, presence, secureField });
+    // A key row names its combo in the target column; the hands pass a combo as `text`.
+    const d = classifyAction({ kind, app, target, presence, secureField, ...(kind === "key" ? { text: target } : {}) });
     assert.equal(d.verdict, verdict, `${app} ${kind} "${target}" ${JSON.stringify(presence)} → ${d.verdict} (${d.reason}); ${note}`);
   }
   // The reason names the leg and carries the one line the brain reads out.
@@ -596,6 +599,42 @@ test("presence: confirm-tier actions in gated apps wait for Kevin at the Mac; ea
   assert.ok(!presenceGated("Gmail Helper", undefined), "whole word: 'Gmail' is not 'mail'");
   assert.equal(presenceReason({ app: "Mail", presence: undefined }), undefined, "no presence, no gate");
   assert.equal(presenceReason({ app: "Mail", presence: { recent: true, unlocked: true, frontmost: true } }), undefined);
+});
+
+/** [app, key, verdict]: a send by keyboard asks in a mail, chat, money or password app; a new line, a shortcut or another app runs (W1-6, RAIL-1). */
+const SEND_KEY_CASES: ReadonlyArray<readonly [string, string, Verdict]> = [
+  ["Messages", "Return", "confirm"],
+  ["Messages", "Enter", "confirm"],
+  ["Messages", "shift+Return", "run"],
+  ["Messages", "opt+Return", "run"],
+  ["Slack", "Return", "confirm"],
+  ["Slack", "cmd+Return", "confirm"],
+  ["Slack", "shift+Enter", "run"],
+  ["Slack", "cmd+k", "run"],
+  ["Mail", "cmd+shift+d", "confirm"],
+  ["Mail", "cmd+D", "confirm"],
+  ["Mail", "cmd+d", "run"],
+  ["Mail", "Return", "run"],
+  ["Microsoft Outlook", "cmd+Return", "confirm"],
+  ["Discord", "KP_Enter", "confirm"],
+  ["WhatsApp", "ctrl+Return", "confirm"],
+  ["Venmo", "Return", "confirm"],
+  ["TextEdit", "Return", "run"],
+  ["Terminal", "Return", "run"],
+  ["Google Chrome", "Return", "run"],
+];
+
+test("keyboard sends: Return into a chat app, cmd+Return or cmd+shift+D into a mail app, asks every time and keeps no grant; shift or opt is a new line; other apps run", () => {
+  for (const [app, key, verdict] of SEND_KEY_CASES) {
+    const d = classifyAction({ kind: "key", app, text: key });
+    assert.equal(d.verdict, verdict, `${app} ${key} → ${d.verdict} (${d.reason})`);
+    if (verdict === "confirm") assert.equal(d.grant, undefined, `${app} ${key}: a yes covers that one send`);
+  }
+  assert.equal(classifyAction({ kind: "type", app: "Messages", text: "Running late\n" }).verdict, "confirm", "a trailing newline is a Return");
+  assert.equal(classifyAction({ kind: "type", app: "Messages", text: "Running late" }).verdict, "run");
+  assert.equal(classifyAction({ kind: "type", app: "Mail", text: "Hi Ben,\n\nRunning late.\n" }).verdict, "run", "a mail body has paragraphs");
+  assert.equal(classifyAction({ kind: "key", app: "Google Chrome", text: "Return", url: "https://app.slack.com/client/T1/C2" }).verdict, "confirm", "the page decides in a browser");
+  assert.match(classifyAction({ kind: "key", app: "Messages", text: "Return" }).reason, /^that sends the message; ask first$/);
 });
 
 test("grants: the hands-off question carries a class a yes may keep for the conversation; destructive verbs never do; a grant opens the app, not its destructive controls", () => {

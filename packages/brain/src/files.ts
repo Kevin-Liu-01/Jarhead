@@ -14,13 +14,15 @@ import { secretPathReason } from "@jarhead/core";
  */
 
 /**
- * The path with every symlink resolved. For a path that does not exist yet, the
- * nearest existing ancestor is resolved and the rest appended, so a write through
- * a linked folder is judged by where it lands.
+ * The path with every symlink resolved, in the spelling on disk: `realpathSync.native` is
+ * realpath(3), which on APFS answers `~/.AWS/credentials` as `~/.aws/credentials`, so the
+ * secret stores are judged by their real names whatever case the model used (W1-6). For a
+ * path that does not exist yet, the nearest existing ancestor is resolved and the rest
+ * appended, so a write through a linked folder is judged by where it lands.
  */
 export function realPathOf(path: string): string {
   try {
-    return realpathSync(path);
+    return realpathSync.native(path);
   } catch {
     const parent = dirname(path);
     if (parent === path) return path;
@@ -43,29 +45,44 @@ export function secretReasonEither(path: string): string | undefined {
 // the one line the voice can say. They decide nothing: policy ran before the read.
 
 const HOME = homedir();
-const TCC_FOLDERS: readonly { readonly prefix: string; readonly lacks: string }[] = [
-  { prefix: join(HOME, "Desktop"), lacks: "access to the Desktop folder" },
-  { prefix: join(HOME, "Documents"), lacks: "access to the Documents folder" },
-  { prefix: join(HOME, "Downloads"), lacks: "access to the Downloads folder" },
-  { prefix: join(HOME, "Library"), lacks: "Full Disk Access" },
-  { prefix: join(HOME, ".Trash"), lacks: "Full Disk Access" },
+const TCC_FOLDERS: readonly { readonly name: string; readonly lacks: string }[] = [
+  { name: "Desktop", lacks: "access to the Desktop folder" },
+  { name: "Documents", lacks: "access to the Documents folder" },
+  { name: "Downloads", lacks: "access to the Downloads folder" },
+  { name: "Library", lacks: "Full Disk Access" },
+  { name: ".Trash", lacks: "Full Disk Access" },
 ];
+
+/**
+ * One spelling for comparisons: macOS answers /tmp, /var and /etc as /private/tmp…, and a
+ * temp HOME is often one of those, so the home and the path are both read without the
+ * /private in front (BL-07..10); a trailing slash is dropped.
+ */
+function withoutPrivate(path: string): string {
+  let p = path;
+  while (/^\/private(\/|$)/.test(p)) p = p.replace(/^\/private(?=\/|$)/, "") || "/";
+  return p.replace(/\/+$/, "") || "/";
+}
 
 /** Where a grant is obtained, for the line's tail. */
 export const PERMISSIONS_HINT = "Setup › Permissions › Ask for everything";
 
 /** `~/x` and `$HOME/x` as absolute paths; anything else unchanged. */
-function expandHome(path: string): string {
-  if (path === "~") return HOME;
-  if (path.startsWith("~/")) return join(HOME, path.slice(2));
-  if (path.startsWith("$HOME/")) return join(HOME, path.slice(6));
+function expandHome(path: string, home: string = HOME): string {
+  if (path === "~") return home;
+  if (path.startsWith("~/")) return join(home, path.slice(2));
+  if (path.startsWith("$HOME/")) return join(home, path.slice(6));
   return path;
 }
 
 /** What Jarhead lacks when macOS blocks `path`, or undefined for a path TCC does not guard. */
-export function tccGrantFor(path: string): string | undefined {
-  const p = expandHome(path).replace(/^\/private(\/|$)/, "/").replace(/\/+$/, "");
-  for (const f of TCC_FOLDERS) if (p === f.prefix || p.startsWith(f.prefix + sep)) return f.lacks;
+export function tccGrantFor(path: string, home: string = HOME): string | undefined {
+  const p = withoutPrivate(expandHome(path, home));
+  const h = withoutPrivate(home);
+  for (const f of TCC_FOLDERS) {
+    const prefix = join(h, f.name);
+    if (p === prefix || p.startsWith(prefix + sep)) return f.lacks;
+  }
   return undefined;
 }
 

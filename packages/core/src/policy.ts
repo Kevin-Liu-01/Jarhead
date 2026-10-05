@@ -185,6 +185,86 @@ export function presenceGated(app: string | undefined, url: string | undefined):
   }
 }
 
+// ---- keyboard sends (W1-6, RAIL-1): Return in a chat is a Send button with no label ----
+
+/** Chat apps by name: Return sends what was typed (shift or option+Return is a new line). */
+const CHAT_APPS = "Messages|Slack|Discord|WhatsApp|Telegram|Signal|Microsoft Teams|Teams|Messenger|Beeper|Element|Mattermost|Skype|Zulip";
+/** Mail apps by name: Return is a new line; cmd+Return (Outlook, Spark, Airmail, Mimestream) or cmd+shift+D (Mail) sends. */
+const MAIL_APPS = "Mail|Microsoft Outlook|Outlook|Airmail|Spark|Mimestream|Thunderbird";
+/** Both, for AppleScript's `send` (which asks). */
+const MESSAGING_APPS = `${MAIL_APPS}|${CHAT_APPS}`;
+const CHAT_APP = new RegExp(String.raw`\b(${CHAT_APPS})\b`, "i");
+const MAIL_APP = new RegExp(String.raw`\b(${MAIL_APPS})\b`, "i");
+/** The same as web apps: chat hosts, the message pages of sites that are something else first, and mail hosts. */
+const CHAT_HOSTS = /(^|\.)(web\.whatsapp\.com|web\.telegram\.org|app\.slack\.com|discord\.com|messages\.google\.com|teams\.microsoft\.com|teams\.live\.com|messenger\.com|chat\.google\.com|app\.element\.io|web\.skype\.com|zulipchat\.com)$/i;
+const CHAT_PAGES = /^((www\.)?(x|twitter)\.com\/messages|(www\.)?linkedin\.com\/messaging|(www\.)?instagram\.com\/direct|(www\.)?facebook\.com\/messages)(\/|$)/i;
+const MAIL_HOSTS = /(^|\.)(mail\.google\.com|outlook\.(live|office)\.com|mail\.proton\.me|mail\.yahoo\.com)$/i;
+/** A search box: Return there searches, whatever the app (the focused field's title, or its role). */
+const SEARCH_FIELD = /^\s*(AXSearchField\b|search\b)/i;
+const KEY_MODIFIERS: Readonly<Record<string, string>> = { cmd: "cmd", command: "cmd", super: "cmd", meta: "cmd", super_l: "cmd", super_r: "cmd", meta_l: "cmd", meta_r: "cmd", win: "cmd", windows: "cmd", ctrl: "ctrl", control: "ctrl", control_l: "ctrl", control_r: "ctrl", alt: "opt", opt: "opt", option: "opt", alt_l: "opt", alt_r: "opt", shift: "shift", shift_l: "shift", shift_r: "shift", fn: "fn", function: "fn" };
+
+/** Where a keyboard send would land: a chat, a mail composer, or a form in another presence-gated app or page (money, passwords). */
+type SendSurface = "chat" | "mail" | "form";
+
+function sendSurface(app: string | undefined, url: string | undefined): SendSurface | undefined {
+  if (app && CHAT_APP.test(app)) return "chat";
+  if (app && MAIL_APP.test(app)) return "mail";
+  if (url) {
+    try {
+      const u = new URL(url.trim());
+      const host = u.hostname.toLowerCase();
+      if (CHAT_HOSTS.test(host) || CHAT_PAGES.test(`${host}${u.pathname}`)) return "chat";
+      if (MAIL_HOSTS.test(host)) return "mail";
+    } catch {
+      // not a URL: the app decides
+    }
+  }
+  return presenceGated(app, url) ? "form" : undefined;
+}
+
+/**
+ * Whether a key with these modifiers sends there: in a chat or a form, Return, Enter or keypad
+ * Enter without shift or option (those make a new line), cmd or ctrl held or not; in a mail
+ * composer, cmd+Return or cmd+shift+D (Mail's Send).
+ */
+function keySends(surface: SendSurface, key: string, mods: ReadonlySet<string>): boolean {
+  const ret = key === "return" || key === "enter" || key === "kp_enter";
+  const newline = mods.has("shift") || mods.has("opt");
+  if (surface === "mail") return (ret && !newline && mods.has("cmd")) || (key === "d" && mods.has("cmd") && mods.has("shift"));
+  return ret && !newline;
+}
+
+/** A helper combo (`cmd+shift+d`, `Return`, `cmd+D`) as a key and its modifiers; an upper-case letter carries shift, as the helper presses it. */
+function parseCombo(combo: string): { readonly key: string; readonly mods: ReadonlySet<string> } {
+  if (combo === "\n" || combo === "\r") return { key: "return", mods: new Set() };
+  const parts = combo.trim().split("+").map((p) => p.trim()).filter(Boolean);
+  const raw = parts.pop() ?? "";
+  const mods = new Set(parts.map((p) => KEY_MODIFIERS[p.toLowerCase()] ?? p.toLowerCase()));
+  if (/^[A-Z]$/.test(raw)) mods.add("shift");
+  return { key: raw.toLowerCase(), mods };
+}
+
+const SEND_REASON: Readonly<Record<SendSurface, string>> = { chat: "that sends the message", mail: "that sends the message", form: "that submits what was typed" };
+
+/**
+ * Why a key, a held key or typed text sends a message or submits a form, if it does: a send
+ * key for that app (above), or a newline typed into a chat or a form (a newline in a mail
+ * body is a new line). Not in a search field. The question has no grant: a yes covers that
+ * one send.
+ */
+function keyboardSendReason(kind: string, ctx: Pick<ActionContext, "app" | "url" | "text" | "target">): string | undefined {
+  if (SEARCH_FIELD.test(ctx.target ?? "")) return undefined;
+  const surface = sendSurface(ctx.app, ctx.url);
+  if (!surface) return undefined;
+  const text = ctx.text ?? "";
+  let sends = false;
+  if (kind === "key" || kind === "hold_key") {
+    const { key, mods } = parseCombo(text);
+    sends = keySends(surface, key, mods);
+  } else if (kind === "type" || kind === "browser_type") sends = surface !== "mail" && /[\r\n]/.test(text);
+  return sends ? SEND_REASON[surface] : undefined;
+}
+
 /** Why a confirm-tier action in a presence-gated app waits for Kevin, if it does: the first leg known to be false. */
 export function presenceReason(ctx: Pick<ActionContext, "app" | "url" | "presence" | "userName">): string | undefined {
   const p = ctx.presence;
@@ -214,28 +294,81 @@ export const TEMP_ROOTS: readonly string[] = ["/tmp", "/private/tmp", "/var/fold
  * Files and folders that hold secrets. Never read, never written, never named in
  * a shell command, confirmed or not: keys, tokens, cookies, saved logins, the
  * wake gate's passphrase. Each entry matches inside an absolute path and inside
- * a command line (hence the lookahead instead of `$`).
+ * a command line (hence the lookahead instead of `$`). Case is folded (W1-6): APFS
+ * is case-insensitive by default, so `~/.AWS/credentials` IS `~/.aws/credentials`.
+ * The browser stores' bare names are the one exception: as a bare word ("grep
+ * cookies src") they keep their case, and as a path component they fold.
  */
 const END = String.raw`(?=$|[\s"'/;|&)>])`;
 const START = String.raw`(^|[\s"'=/])`;
+const BROWSER_STORES = String.raw`(Cookies|Cookies-journal|Cookies\.binarycookies|Login Data|Login Data-journal|Login Data For Account|Web Data)`;
 const SECRET_PATHS: ReadonlyArray<{ readonly re: RegExp; readonly what: string }> = [
-  { re: new RegExp(String.raw`\.jarhead/env(\.[\w.-]+)?${END}`), what: "~/.jarhead/env" },
-  { re: new RegExp(String.raw`\.jarhead/wake-auth\.json${END}`), what: "the wake gate's passphrase file" },
-  { re: /(^|[\s"'=/])~?\/?\.ssh(\/|(?=$|[\s"';|&)]))/, what: "~/.ssh" },
-  { re: /(^|[\s"'=/])~?\/?\.aws(\/|(?=$|[\s"';|&)]))/, what: "~/.aws" },
-  { re: /(^|[\s"'=/])~?\/?\.gnupg(\/|(?=$|[\s"';|&)]))/, what: "~/.gnupg" },
-  { re: /(^|\/)Library\/Keychains(\/|(?=$|[\s"';|&)]))/, what: "the keychain" },
-  { re: /(^|\/)Library\/Cookies(\/|(?=$|[\s"';|&)]))/, what: "the browser cookie store" },
-  { re: new RegExp(String.raw`${START}(Cookies|Cookies-journal|Cookies\.binarycookies|Login Data|Login Data-journal|Login Data For Account|Web Data)${END}`), what: "a browser cookie or saved-login store" },
+  { re: new RegExp(String.raw`\.jarhead/env(\.[\w.-]+)?${END}`, "i"), what: "~/.jarhead/env" },
+  { re: new RegExp(String.raw`\.jarhead/wake-auth\.json${END}`, "i"), what: "the wake gate's passphrase file" },
+  { re: /(^|[\s"'=/])~?\/?\.ssh(\/|(?=$|[\s"';|&)]))/i, what: "~/.ssh" },
+  { re: /(^|[\s"'=/])~?\/?\.aws(\/|(?=$|[\s"';|&)]))/i, what: "~/.aws" },
+  { re: /(^|[\s"'=/])~?\/?\.gnupg(\/|(?=$|[\s"';|&)]))/i, what: "~/.gnupg" },
+  { re: /(^|\/)Library\/Keychains(\/|(?=$|[\s"';|&)]))/i, what: "the keychain" },
+  { re: /(^|\/)Library\/Cookies(\/|(?=$|[\s"';|&)]))/i, what: "the browser cookie store" },
+  { re: new RegExp(String.raw`${START}${BROWSER_STORES}${END}`), what: "a browser cookie or saved-login store" },
+  { re: new RegExp(String.raw`\/${BROWSER_STORES}${END}`, "i"), what: "a browser cookie or saved-login store" },
   { re: new RegExp(String.raw`\.(pem|p12|pfx)${END}`, "i"), what: "a private key or certificate bundle" },
-  { re: /(^|\/)\.codex\/auth\.json/, what: "~/.codex/auth.json" },
-  { re: /(^|\/)\.claude\/\.credentials/, what: "~/.claude/.credentials" },
-  { re: new RegExp(String.raw`${START}\.env(\.(?!example|sample|template|dist)[\w.-]+)?${END}`), what: "a .env file" },
-  { re: new RegExp(String.raw`${START}\.(netrc|git-credentials|pypirc|npmrc)${END}`), what: "a credentials file" },
-  { re: /(^|\/)\.docker\/config\.json/, what: "the Docker credentials store" },
-  { re: /(^|\/)\.config\/gh\/hosts\.yml/, what: "the GitHub CLI token store" },
-  { re: new RegExp(String.raw`${START}\.kube/config${END}`), what: "the kubeconfig" },
+  { re: /(^|\/)\.codex\/auth\.json/i, what: "~/.codex/auth.json" },
+  { re: /(^|\/)\.claude\/\.credentials/i, what: "~/.claude/.credentials" },
+  { re: new RegExp(String.raw`${START}\.env(\.(?!example|sample|template|dist)[\w.-]+)?${END}`, "i"), what: "a .env file" },
+  { re: new RegExp(String.raw`${START}\.(netrc|git-credentials|pypirc|npmrc)${END}`, "i"), what: "a credentials file" },
+  { re: /(^|\/)\.docker\/config\.json/i, what: "the Docker credentials store" },
+  { re: /(^|\/)\.config\/gh\/hosts\.yml/i, what: "the GitHub CLI token store" },
+  { re: new RegExp(String.raw`${START}\.kube/config${END}`, "i"), what: "the kubeconfig" },
 ];
+
+/**
+ * Hidden names that are a secret store or hold one, for a wildcard to be tested against:
+ * `cat proj/.e?v` and `ls ~/.[s]sh` reach them without spelling them.
+ */
+const HIDDEN_SECRETS: ReadonlyArray<{ readonly name: string; readonly what: string }> = [
+  { name: ".env", what: "a .env file" },
+  { name: ".env.local", what: "a .env file" },
+  { name: ".env.production", what: "a .env file" },
+  { name: ".ssh", what: "~/.ssh" },
+  { name: ".aws", what: "~/.aws" },
+  { name: ".gnupg", what: "~/.gnupg" },
+  { name: ".netrc", what: "a credentials file" },
+  { name: ".git-credentials", what: "a credentials file" },
+  { name: ".pypirc", what: "a credentials file" },
+  { name: ".npmrc", what: "a credentials file" },
+  { name: ".jarhead", what: "~/.jarhead, which holds env" },
+  { name: ".codex", what: "~/.codex, which holds auth.json" },
+  { name: ".claude", what: "~/.claude, which holds its credentials" },
+  { name: ".credentials.json", what: "~/.claude/.credentials" },
+  { name: ".docker", what: "the Docker credentials store" },
+  { name: ".kube", what: "the kubeconfig" },
+];
+
+/**
+ * A shell glob as a regex over one name (or, with `slash`, over a path: find's -path, where
+ * `*` crosses `/`). Case-insensitive, for APFS. A malformed class reads as "matches anything".
+ */
+function globRegExp(glob: string, slash = false): RegExp {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]!;
+    if (c === "*") re += slash ? ".*" : "[^/]*";
+    else if (c === "?") re += slash ? "." : "[^/]";
+    else if (c === "[") {
+      const close = glob.indexOf("]", i + 2);
+      if (close === -1) return /^/;
+      const body = glob.slice(i + 1, close).replace(/^!/, "^").replace(/\\/g, "\\\\");
+      re += `[${body}]`;
+      i = close;
+    } else re += escapeRe(c);
+  }
+  try {
+    return new RegExp(`^${re}$`, "i");
+  } catch {
+    return /^/;
+  }
+}
 
 /** Which secret store a path or command names, if any. */
 export function secretPathReason(pathOrCommand: string): string | undefined {
@@ -249,11 +382,11 @@ export function secretPathReason(pathOrCommand: string): string | undefined {
  * the secret without spelling its name; so does running a command from inside it.
  */
 const SECRET_HOLDERS: ReadonlyArray<{ readonly re: RegExp; readonly dir: string; readonly what: string }> = [
-  { re: /(^|[\s"'=])~\/\.jarhead\/?(\.|\*\*?)?(?=$|[\s"';|&)])/, dir: ".jarhead", what: "~/.jarhead, which holds env" },
-  { re: /(^|[\s"'=])~\/\.codex\/?(\.|\*\*?)?(?=$|[\s"';|&)])/, dir: ".codex", what: "~/.codex, which holds auth.json" },
-  { re: /(^|[\s"'=])~\/\.claude\/?(\.|\*\*?)?(?=$|[\s"';|&)])/, dir: ".claude", what: "~/.claude, which holds its credentials" },
-  { re: /~\/Library\/Application Support\/(Google\/Chrome|Chromium|BraveSoftware\/Brave-Browser|Microsoft Edge|Vivaldi|Arc)(\/(Default|Profile \d+|Guest Profile))?\/?(\*\*?)?(?=$|[\s"';|&)])/, dir: "a browser profile", what: "a browser profile, which holds cookies and saved logins" },
-  { re: /~\/Library\/Application Support\/Firefox(\/Profiles(\/[^\s"'/]+)?)?\/?(\*\*?)?(?=$|[\s"';|&)])/, dir: "a browser profile", what: "a Firefox profile, which holds cookies and saved logins" },
+  { re: /(^|[\s"'=])~\/\.jarhead\/?(\.|\*\*?)?(?=$|[\s"';|&)])/i, dir: ".jarhead", what: "~/.jarhead, which holds env" },
+  { re: /(^|[\s"'=])~\/\.codex\/?(\.|\*\*?)?(?=$|[\s"';|&)])/i, dir: ".codex", what: "~/.codex, which holds auth.json" },
+  { re: /(^|[\s"'=])~\/\.claude\/?(\.|\*\*?)?(?=$|[\s"';|&)])/i, dir: ".claude", what: "~/.claude, which holds its credentials" },
+  { re: /~\/Library\/Application Support\/(Google\/Chrome|Chromium|BraveSoftware\/Brave-Browser|Microsoft Edge|Vivaldi|Arc)(\/(Default|Profile \d+|Guest Profile))?\/?(\*\*?)?(?=$|[\s"';|&)])/i, dir: "a browser profile", what: "a browser profile, which holds cookies and saved logins" },
+  { re: /~\/Library\/Application Support\/Firefox(\/Profiles(\/[^\s"'/]+)?)?\/?(\*\*?)?(?=$|[\s"';|&)])/i, dir: "a browser profile", what: "a Firefox profile, which holds cookies and saved logins" },
 ];
 
 /** Commands that only look at a folder's names or size; naming a secret holder to them is fine. */
@@ -389,17 +522,26 @@ export function classifyPath(ctx: PathContext): Decision {
 
 // ------------------------------------------------------------------- shell ---
 
-/** Commands that are never run by voice, confirmed or not. */
-const NEVER_SHELL: ReadonlyArray<{ readonly re: RegExp; readonly why: string }> = [
+/**
+ * Commands that are never run by voice, confirmed or not. Each is read on the line as
+ * written and again as the shell would spell it (quotes, backslashes and braces resolved,
+ * the command's name case-folded), except `literal` ones, whose wording would match words
+ * inside a quoted message once its quotes are gone; their spellings are judged by command
+ * position instead (`neverByStatement`).
+ */
+const NEVER_SHELL: ReadonlyArray<{ readonly re: RegExp; readonly why: string; readonly literal?: true }> = [
   { re: /\bmkfs(\.\w+)?\b/, why: "formats a disk" },
-  { re: /\bdiskutil\s+(erase\w*|reformat|partitionDisk|zeroDisk|randomDisk|secureErase|apfs\s+delete\w*)\b/i, why: "erases a disk" },
-  { re: /\bdd\b[^|;&]*\bof=\/dev\//, why: "writes raw bytes to a device" },
-  { re: /(^|[\s;&|(])(shutdown|reboot|halt|poweroff)\b/, why: "powers the Mac off or restarts it" },
+  { re: /\bnewfs_\w+/, why: "formats a disk" },
+  { re: /\bdiskutil\s+(erase\w*|reformat|partitionDisk|zeroDisk|randomDisk|secureErase|(apfs|ap|cs|coreStorage|appleRAID|ar)\s+(erase|delete)\w*)\b/i, why: "erases a disk" },
+  { re: /\basr\b[^|;&]*\brestore\b[^|;&]*\s--?erase\b/, why: "erases a disk" },
+  { re: /\bdd\b[^|;&]*\bof=["']?\/dev\//, why: "writes raw bytes to a device" },
+  { re: />{1,2}\|?\s*["']?\/dev\/r?disk\d/, why: "writes raw bytes to a device" },
+  { re: /\btee\b[^|;&]*\s["']?\/dev\/r?disk\d/, why: "writes raw bytes to a device" },
+  { re: /(^|[\s;&|(`])(\S*\/)?\\?(shutdown|reboot|halt|poweroff)(?=$|[\s;&|)`])/, why: "powers the Mac off or restarts it", literal: true },
   { re: /\bsecurity\s+(dump-keychain|export|delete-keychain|delete-(generic|internet)-password|find-(generic|internet)-password|unlock-keychain|set-keychain-password)\b/, why: "reads or destroys the keychain" },
-  { re: /\btccutil\s+reset\b(?![^|;&]*jarhead)/i, why: "resets another app's privacy grants" },
   { re: /\bcrontab\s+(-\w*r|--remove)\b/, why: "wipes the crontab" },
   { re: /:\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:\s*&[^}]*\}\s*;?\s*:/, why: "is a fork bomb" },
-  { re: /\brm\s+(-\w+\s+)*(--\s+)?("?(\/|~|\$\{?HOME\}?|\/Users\/[\w.-]+|\/System|\/Library|\/usr|\/etc|\/var|\/private)\/?"?)(\s|$)/, why: "deletes the system or the home folder" },
+  { re: /\brm\s+(--?[\w-]+\s+)*(--\s+)?("?(\/|~|\$\{?HOME\}?|\/Users\/[\w.-]+|\/System|\/Library|\/usr|\/etc|\/var|\/private)\/?(\*|\.\*)?"?)(\s|$)/, why: "deletes the system or the home folder" },
   { re: /\b(chmod|chown)\s+(-\w+\s+)*\S+\s+\/(\s|$)/, why: "changes permissions on the root of the disk" },
   { re: /\blaunchctl\s+(bootout|unload|remove|disable)\s+system\b/, why: "unloads system services" },
   { re: /\b(csrutil|nvram|sysadminctl)\b/, why: "changes system security settings" },
@@ -585,14 +727,218 @@ function expandInner(text: string, depth = 0): string[] {
   return out;
 }
 
-/** Home, `$HOME` and `/Users/<name>` as `~`; `/./` and `//` collapsed, so a path reads the same however it was spelt. */
+/** Home, `$HOME` and `/Users/<name>` as `~` (in any case: APFS folds it); `/./` and `//` collapsed, so a path reads the same however it was spelt. */
 export function normalizeShell(text: string, home: string): string {
   let s = text;
-  if (home && home !== "/") for (const h of new Set([home, canon(home), `/private${canon(home)}`])) s = s.replaceAll(h, "~");
+  if (home && home !== "/") {
+    const spellings = [...new Set([home, canon(home), `/private${canon(home)}`])].sort((a, b) => b.length - a.length).map(escapeRe);
+    s = s.replace(new RegExp(`(${spellings.join("|")})(?![\\w.-])`, "gi"), "~");
+  }
   s = s.replace(/\$\{?HOME\}?(?=\/|\s|$|["'])/g, "~");
   s = s.replace(/(?<![:/])\/(\.\/)+/g, "/");
   s = s.replace(/(?<![:/])\/{2,}/g, "/");
   return s;
+}
+
+// ---- spellings: the command line as the shell would read it (W1-6) ----
+
+/** The escapes bash and zsh expand inside `$'…'`: `$'\x73'sh` is `ssh`. */
+function ansiC(body: string): string {
+  const named: Readonly<Record<string, string>> = { n: "\n", t: "\t", r: "\r", a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", v: "\v" };
+  return body.replace(/\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[0-7]{1,3}|[\s\S])/g, (_, e: string) => {
+    if (/^x[0-9a-f]/i.test(e)) return String.fromCharCode(parseInt(e.slice(1), 16));
+    if (/^[uU][0-9a-f]/i.test(e)) return String.fromCodePoint(parseInt(e.slice(1), 16));
+    if (/^[0-7]+$/.test(e)) return String.fromCharCode(parseInt(e, 8));
+    return named[e] ?? e;
+  });
+}
+
+/**
+ * The line with its quoting gone, the way the shell joins a word back together:
+ * `.s'sh'`, `.s""sh`, `.s\sh` and `$'\x73'sh` all read `.ssh`. A backslash inside double
+ * quotes is dropped too (fail closed: `"\s"` is kept by the shell, but no secret store
+ * has a backslash in its name). Separators inside quotes become separators, which only
+ * makes the gate read more statements.
+ */
+function unquote(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === "\\") {
+      if (text[i + 1] !== "\n") out += text[i + 1] ?? "";
+      i++;
+    } else if (c === "$" && text[i + 1] === "'") {
+      let j = i + 2;
+      while (j < text.length && text[j] !== "'") j += text[j] === "\\" ? 2 : 1;
+      out += ansiC(text.slice(i + 2, j));
+      i = j;
+    } else if (c === "'") {
+      const j = text.indexOf("'", i + 1);
+      out += j === -1 ? text.slice(i + 1) : text.slice(i + 1, j);
+      i = j === -1 ? text.length : j;
+    } else if (c === '"' || (c === "$" && text[i + 1] === '"')) {
+      let j = i + (c === "$" ? 2 : 1);
+      while (j < text.length && text[j] !== '"') {
+        if (text[j] === "\\") j++;
+        if (j < text.length) out += text[j];
+        j++;
+      }
+      i = j;
+    } else out += c;
+  }
+  return out;
+}
+
+/** `{a,b}` in a word, expanded the way the shell does before anything runs (bounded); `${…}` is a variable, not a brace. */
+function braceWords(word: string, depth = 0): string[] {
+  const m = /^(.*?)(?<!\$)\{([^{}]*,[^{}]*)\}(.*)$/.exec(word);
+  if (!m || depth > 4) return [word];
+  const out: string[] = [];
+  for (const alt of m[2]!.split(",")) {
+    for (const w of braceWords(`${m[1]}${alt}${m[3]}`, depth + 1)) {
+      out.push(w);
+      if (out.length >= 64) return out;
+    }
+  }
+  return out;
+}
+
+function expandBraces(text: string): string {
+  return text
+    .split(/(\s+)/)
+    .map((tok) => (/\{[^{}\s]*,[^{}\s]*\}/.test(tok) ? braceWords(tok).join(" ") : tok))
+    .join("");
+}
+
+/** The line as the shell would spell it: quotes, backslashes and `{a,b}` braces resolved. */
+function shellSpelling(text: string): string {
+  return expandBraces(unquote(text));
+}
+
+/** Each statement of a spelled line with its command's name lower-cased: on APFS `SHUTDOWN` and `Diskutil` run the real thing. */
+function foldCommandNames(spelled: string): string {
+  return statements(spelled)
+    .map((st) => {
+      const s = stripWrappers(st);
+      const head = s.split(/\s+/)[0] ?? "";
+      return head ? `${head.toLowerCase()}${s.slice(head.length)}` : s;
+    })
+    .join(" ; ");
+}
+
+/**
+ * A hidden name (a path segment starting with `.`) the gate cannot read: built from a
+ * variable or a command (`~/.s$Dh`, `.env.$STAGE`, `."$(x)"`), or a wildcard that can
+ * expand to a secret store (`.e?v`, `.env*`, `.[s]sh`, `.*`). Text is spelled and normalised.
+ */
+function hiddenNameReason(spelled: string): string | undefined {
+  const words = spelled.split(/\s+/);
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!;
+    // A name pattern handed to a filter (`-name '.*'`, `--exclude='.env*'`, `-g '!.env*'`) is matched, not expanded.
+    if (FILTER_FLAGS.has(words[i - 1] ?? "") || /^--(include|exclude|exclude-dir|include-dir|glob|iglob|ignore|ignore-dir|ignore-file)=/.test(word) || /^-g\S/.test(word)) continue;
+    for (const part of word.split(/[=:;|&()<>]+/)) {
+      for (const seg of part.split("/")) {
+        if (!seg.startsWith(".") || seg === "." || seg === "..") continue;
+        if (/[$`]/.test(seg)) return "that builds a hidden file's name from a variable the gate cannot read; spell the path out";
+        if (/[*?[]/.test(seg)) {
+          const re = globRegExp(seg);
+          const hit = HIDDEN_SECRETS.find((s) => re.test(s.name));
+          if (hit) return `a wildcard there can expand to ${hit.what}`;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Flags whose next word is a name pattern for a filter, never a path the shell expands. */
+const FILTER_FLAGS: ReadonlySet<string> = new Set(["-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex", "--include", "--exclude", "--exclude-dir", "--include-dir", "-g", "--glob", "--iglob", "--ignore", "--ignore-dir", "--ignore-file"]);
+
+/** Roots whose deletion is the never list's "the system or the home folder", spelled after normalising (home is `~`). */
+const DELETE_ROOT = /^(\/|~|\/Users\/[^/\s]+|\/System|\/Library|\/usr|\/etc|\/var|\/private)$/;
+
+/** A statement's words with a subshell's or a group's brackets off its ends. */
+function wordsOf(stmt: string): string[] {
+  return stripWrappers(stmt.replace(/^[({]\s*/, ""))
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.replace(/[)}]+$/, ""))
+    .filter(Boolean);
+}
+
+/** Where `cd X` leaves the shell, as far as the gate can say: `~`, `/` or an absolute path; undefined for a relative one or `cd -`. */
+function cdTarget(arg: string | undefined): string | undefined {
+  if (arg === undefined || arg === "~" || arg === "~/") return "~";
+  if (arg.startsWith("/") || arg.startsWith("~/")) return arg.replace(/\/+$/, "") || "/";
+  return undefined;
+}
+
+/** `rm -rf /*`, `rm -rf build ~`, `cd ~ && rm -rf *`, `find ~ -delete`: the system or the home folder by another spelling. */
+function deleteRootReason(norm: string, cwd: string | undefined): string | undefined {
+  let dir = cwd;
+  for (const stmt of statements(norm)) {
+    const words = wordsOf(stmt);
+    const cmd = (words[0] ?? "").replace(/^.*\//, "").toLowerCase();
+    if (cmd === "cd" || cmd === "pushd") {
+      dir = cdTarget(words.slice(1).find((w) => !/^-[A-Za-z]+$/.test(w)));
+      continue;
+    }
+    const atRoot = dir !== undefined && DELETE_ROOT.test(dir);
+    if (cmd === "rm") {
+      const args = words.slice(1);
+      const recursive = args.some((a) => /^-[A-Za-z]*[rR]/.test(a) || a === "--recursive");
+      for (const a of args.filter((x) => !x.startsWith("-"))) {
+        if (DELETE_ROOT.test(a.replace(/\/+$/, "") || "/")) return "deletes the system or the home folder";
+        const glob = /^(.*\/)?(\*|\.\*)$/.exec(a);
+        if (!recursive || !glob) continue;
+        const base = glob[1] === undefined ? "" : glob[1].replace(/\/+$/, "") || "/";
+        if (base !== "" && base !== "." && DELETE_ROOT.test(base)) return "deletes the system or the home folder";
+        if ((base === "" || base === ".") && atRoot) return "deletes the system or the home folder";
+      }
+    }
+    if (cmd === "find") {
+      const rest = words.slice(1);
+      const starts: string[] = [];
+      for (let i = 0; i < rest.length; i++) {
+        const w = rest[i]!;
+        if (/^-[HLPEXsxd]$/.test(w)) continue;
+        if (w === "-f") {
+          if (rest[i + 1]) starts.push(rest[i + 1]!);
+          i++;
+          continue;
+        }
+        if (w.startsWith("-") || w === "!" || w === "(") break;
+        starts.push(w);
+      }
+      const deletes = /\s-delete\b/.test(stmt) || /\s-(exec|execdir|ok|okdir)\s+(\S+\/)?(rm|unlink|shred|srm)\b/.test(stmt);
+      const named = /\s-(i?name|i?path|i?wholename|i?regex)\s/.test(stmt);
+      const root = starts.some((s0) => DELETE_ROOT.test(s0.replace(/\/+$/, "") || "/") || (atRoot && /^\.\/?$/.test(s0)));
+      if (deletes && !named && root) return "deletes the system or the home folder";
+    }
+  }
+  return undefined;
+}
+
+/** A Jarhead bundle id (`com.kevinliu.jarhead`, its probes): the one target `tccutil reset` may name. */
+const JARHEAD_BUNDLE = /^(?:[A-Za-z0-9-]+\.)+jarhead(?:\.[A-Za-z0-9-]+)*$/i;
+
+/**
+ * Statement checks the regexes cannot make: a power command in command position however
+ * it is spelt (`/sbin/shutdown`, `\shutdown`, `'shutdown'`, `SHUTDOWN`), the delete roots,
+ * and `tccutil reset` of anything but exactly one service for Jarhead's own bundle id.
+ */
+function neverByStatement(norm: string, cwd: string | undefined): string | undefined {
+  for (const stmt of statements(norm)) {
+    const w = wordsOf(stmt);
+    const cmd = (w[0] ?? "").replace(/^.*\//, "").toLowerCase();
+    if (/^(shutdown|reboot|halt|poweroff)$/.test(cmd)) return "powers the Mac off or restarts it";
+    if (/\btccutil\b[^|;&]*\breset\b/i.test(stmt)) {
+      const exact = w.length === 4 && cmd === "tccutil" && w[1] === "reset" && /^[A-Za-z]+$/.test(w[2]!) && JARHEAD_BUNDLE.test(w[3]!);
+      if (!exact) return "resets another app's privacy grants";
+    }
+  }
+  return deleteRootReason(norm, cwd);
 }
 
 function pathIsDisposable(raw: string, home: string, scratch: readonly string[]): boolean {
@@ -686,10 +1032,33 @@ const INTERPRETER = /(^|[\s;&|(])(python[\d.]*|node|bun|deno|perl|ruby|php)\s+(?
 const NET_IN_CODE = /(urlopen|urllib|requests\.|http\.client|httpx|aiohttp|\bsocket\b|fetch\(|https?:\/\/|\bnet\.|dgram|XMLHttpRequest|axios|\bLWP\b|Net::|open-uri|\bSocket\b|\bcurl\b|\bwget\b|smtplib|paramiko|ftplib|websocket)/;
 const DELETE_IN_CODE = /(rmtree|os\.remove|os\.unlink|os\.rmdir|\.unlink\(|rmSync|unlinkSync|rmdirSync|fs\.rm\b|promises\.rm\b|FileUtils\.(rm|remove)|\bunlink\b|remove_tree|File\.delete|shutil\.move|renameSync)/;
 
+/** A literal variable name as a quoted string: `"HOME"`, `'PATH'`. */
+const LITERAL_NAME = String.raw`\s*(?:"[A-Za-z_]\w*"|'[A-Za-z_]\w*')\s*`;
+
 /**
- * A script written on the command line that reaches the network or deletes
- * files: the gate cannot read it, so it asks. Judged on the whole line, because
- * the `;` inside the quoted script would otherwise split it into harmless halves.
+ * Whether a one-liner reads the whole environment (or a variable by a computed name, which
+ * can be any key): `process.env`, `os.environ`, `%ENV`, `ENV.to_h`, `getenv()`. A read of one
+ * named variable is not a dump (a secret-named one is refused before this, by secretEnvReason).
+ * Judged per language, so `ENV` in a Python string is not Ruby's ENV.
+ */
+function envDumpInCode(lang: string, code: string): boolean {
+  const every = (re: RegExp, literal: RegExp): boolean => [...code.matchAll(re)].some((m) => !literal.test(code.slice((m.index ?? 0) + m[0].length)));
+  if (/^python/.test(lang)) {
+    return every(/(?<!import\s)\benvironb?\b/g, new RegExp(String.raw`^(\s*\[${LITERAL_NAME}\]|\.get\(${LITERAL_NAME}[,)])`)) || every(/\bgetenv\b/g, new RegExp(String.raw`^\(${LITERAL_NAME}[,)]`));
+  }
+  if (lang === "node" || lang === "bun" || lang === "deno") {
+    return every(/\b(process|Bun)\.env\b/g, new RegExp(String.raw`^(\.[A-Za-z_$][\w$]*|\[${LITERAL_NAME}\])`)) || every(/\bDeno\.env\b/g, new RegExp(String.raw`^\.get\(${LITERAL_NAME}\)`));
+  }
+  if (lang === "perl") return /%ENV\b/.test(code) || every(/\$ENV\{/g, /^\s*["']?[A-Za-z_]\w*["']?\s*\}/);
+  if (lang === "ruby") return every(/(?<![$%\w])ENV\b/g, new RegExp(String.raw`^(\[${LITERAL_NAME}\]|\.fetch\(${LITERAL_NAME}[,)])`));
+  if (lang === "php") return every(/\bgetenv\b/g, new RegExp(String.raw`^\(${LITERAL_NAME}\)`)) || every(/\$_(ENV|SERVER)\b/g, new RegExp(String.raw`^\[${LITERAL_NAME}\]`));
+  return false;
+}
+
+/**
+ * A script written on the command line that reaches the network, deletes files or reads
+ * the whole environment: the gate cannot read it, so it asks. Judged on the whole line,
+ * because the `;` inside the quoted script would otherwise split it into harmless halves.
  */
 function interpreterReason(text: string): string | undefined {
   const m = INTERPRETER.exec(text);
@@ -697,6 +1066,8 @@ function interpreterReason(text: string): string | undefined {
   const code = text.slice(m.index);
   if (NET_IN_CODE.test(code)) return "that script reaches the network from code the gate cannot read";
   if (DELETE_IN_CODE.test(code)) return "that script deletes or moves files from code the gate cannot read";
+  const lang = (m[2] ?? "").replace(/[\d.]+$/, "");
+  if (envDumpInCode(lang, code)) return "that script reads the whole environment, which can carry keys";
   return undefined;
 }
 
@@ -729,10 +1100,100 @@ function egressReason(text: string): string | undefined {
 }
 
 /** Sweeping the home folder or its Library: a recursive reader prints secrets; an archiver copies them. */
-const HOME_ROOT = /(^|[\s"'=])(~|~\/|~\/Library|~\/Library\/)(?=$|[\s"';|&)])/;
-const RECURSIVE_READER = /^(grep\s+(-\w*[rR]\w*|--recursive|--dereference-recursive)|rg\b|ag\b|ack\b|ugrep\b|ripgrep\b)/;
+const HOME_ROOT = /(^|[\s"'=])(~|~\/|~\/Library|~\/Library\/)(?=$|[\s"';|&)])/i;
+const RECURSIVE_READER = /^((e|f|g)?grep\b[^|;&]*\s(-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)(\s|$)|rg\b|ag\b|ack\b|ugrep\b|ug\b|ripgrep\b)/;
 const FIND_EXEC_READER = /\bfind\b[^|;&]*\s-(exec|execdir|ok|okdir)\s+(\S+\/)?(cat|head|tail|grep|rg|base64|xxd|strings|less|more|cp|scp|curl|wget|tar|zip|(ba|z|k)?sh|python\S*|node|perl|ruby)\b/;
 const ARCHIVER = /^(tar|zip|7z|7za|ditto|hdiutil|rsync|cp\s+(-\w*[rRa]\w*|--recursive)|cpio|pax)\b/;
+
+/** The names a `.env` sweep is tested against: the bare file, a variant, and APFS's other case. */
+const DOTENV_PROBES = [".env", ".env.local", ".ENV"];
+
+/** Whether a reader with these name filters can still open a .env: nothing excludes it, and the includes (if any) let it in. */
+function reachesDotenv(includes: readonly string[], excludes: readonly string[], slash = false): boolean {
+  return DOTENV_PROBES.some((name) => {
+    const probe = slash ? `./x/${name}` : name;
+    const included = includes.length === 0 || includes.some((g) => globRegExp(g, slash).test(probe));
+    return included && !excludes.some((g) => globRegExp(g, slash).test(probe));
+  });
+}
+
+/** `--flag=V` or `--flag V` (or a glued short `-gV`), every occurrence. */
+function flagValues(words: readonly string[], names: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    for (const n of names) {
+      if (w === n && words[i + 1] !== undefined) out.push(words[i + 1]!);
+      else if (n.startsWith("--") && w.startsWith(`${n}=`)) out.push(w.slice(n.length + 1));
+      else if (/^-[A-Za-z]$/.test(n) && w.startsWith(n) && w.length > 2 && !w.startsWith("--")) out.push(w.slice(2));
+    }
+  }
+  return out;
+}
+
+/**
+ * A recursive reader over a folder (W1-6, RAIL-3): any folder can hold a `.env`, and the gate
+ * cannot see which, so `grep -r`, `rg`/`ag` with hidden files on, `ack`, `ugrep -r` and
+ * `find … -exec cat` are refused unless their own filters keep `.env*` out (an exclude that
+ * covers it, or includes none of which can match it). rg and ag skip hidden files by
+ * default, so a plain `rg x ~/code` runs. Text is spelled and normalised.
+ */
+function recursiveReadReason(norm: string): string | undefined {
+  for (const stmt of statements(norm)) {
+    const words = wordsOf(stmt);
+    const cmd = (words[0] ?? "").replace(/^.*\//, "").toLowerCase();
+    const rest = words.slice(1);
+    const shorts = rest.filter((w) => /^-[^-]/.test(w));
+    if (/^(e|f|g)?grep$/.test(cmd)) {
+      const recursive = shorts.some((w) => /^-[A-Za-z]*[rR]/.test(w)) || rest.some((w) => w === "--recursive" || w === "--dereference-recursive" || w === "--directories=recurse") || flagValues(rest, ["-d", "--directories"]).includes("recurse");
+      if (recursive && reachesDotenv(flagValues(rest, ["--include"]), flagValues(rest, ["--exclude"]))) return "that reads every file under the folder, .env files included; add --exclude='.env*'";
+      continue;
+    }
+    if (cmd === "rg" || cmd === "ripgrep") {
+      const us = shorts.reduce((n, w) => n + (/^-[A-Za-z.]+$/.test(w) ? (w.match(/u/g) ?? []).length : 0), 0) + rest.filter((w) => w === "--unrestricted").length;
+      const hidden = us >= 2 || rest.includes("--hidden") || shorts.some((w) => /^-[A-Za-z]*\.[A-Za-z.]*$/.test(w));
+      const globs = flagValues(rest, ["-g", "--glob", "--iglob"]);
+      if (hidden && reachesDotenv(globs.filter((g) => !g.startsWith("!")), globs.filter((g) => g.startsWith("!")).map((g) => g.slice(1)))) return "that reads hidden files under the folder, .env files included; drop --hidden, or add -g '!.env*'";
+      continue;
+    }
+    if (cmd === "ag") {
+      const hidden = rest.includes("--hidden") || rest.includes("--unrestricted") || shorts.some((w) => /^-[A-Za-z]*u/.test(w));
+      if (hidden && reachesDotenv([], flagValues(rest, ["--ignore"]))) return "that reads hidden files under the folder, .env files included; drop --hidden, or add --ignore '.env*'";
+      continue;
+    }
+    if (cmd === "ack") {
+      if (!flagValues(rest, ["--ignore-file"]).some((v) => /env/i.test(v))) return "ack reads every file under the folder, .env files included; rg skips hidden files";
+      continue;
+    }
+    if (cmd === "ugrep" || cmd === "ug") {
+      const recursive = cmd === "ug" || shorts.some((w) => /^-[A-Za-z]*[rR]/.test(w)) || rest.includes("--recursive");
+      const globs = flagValues(rest, ["-g", "--glob", "--iglob"]);
+      const includes = [...flagValues(rest, ["--include"]), ...globs.filter((g) => !g.startsWith("!"))];
+      const excludes = [...flagValues(rest, ["--exclude"]), ...globs.filter((g) => g.startsWith("!")).map((g) => g.slice(1))];
+      if (recursive && reachesDotenv(includes, excludes)) return "that reads every file under the folder, .env files included; add --exclude='.env*'";
+      continue;
+    }
+    if (cmd === "find" && FIND_EXEC_READER.test(stmt)) {
+      const positive: string[] = [];
+      const positivePaths: string[] = [];
+      const negative: string[] = [];
+      const negativePaths: string[] = [];
+      for (let i = 0; i < rest.length; i++) {
+        const m = /^-(i?name|i?path|i?wholename)$/.exec(rest[i]!);
+        const value = rest[i + 1];
+        if (!m || value === undefined) continue;
+        const negated = rest[i - 1] === "!" || rest[i - 1] === "-not";
+        const path = m[1] !== "name" && m[1] !== "iname";
+        (negated ? (path ? negativePaths : negative) : path ? positivePaths : positive).push(value);
+      }
+      const ors = rest.some((w) => w === "-o" || w === "-or");
+      const excluded = !reachesDotenv([], negative) || !reachesDotenv([], negativePaths, true);
+      const filtered = !ors && (positive.length > 0 || positivePaths.length > 0) && !(positive.length > 0 && reachesDotenv(positive, [])) && !(positivePaths.length > 0 && reachesDotenv(positivePaths, [], true));
+      if (!excluded && !filtered) return "that reads every file it finds, .env files included; add ! -name '.env*'";
+    }
+  }
+  return undefined;
+}
 
 function homeSweepReason(norm: string): { readonly refuse?: string; readonly confirm?: string } {
   for (const stmt of statements(norm)) {
@@ -749,7 +1210,7 @@ function secretSweepReason(norm: string): string | undefined {
   for (const stmt of statements(norm)) {
     const s = stripWrappers(stmt);
     const cmd = commandOf(stmt);
-    if (/~\/\.(jarhead|codex|claude)\/[^\s"']*[*?[]/.test(stmt)) return "a wildcard inside that folder can expand to its secret file";
+    if (/~\/\.(jarhead|codex|claude)\/[^\s"']*[*?[]/i.test(stmt)) return "a wildcard inside that folder can expand to its secret file";
     if (/(^|[\s"'=])~\/\.[\w-]*[*?[][^\s"']*/.test(stmt)) return "a wildcard over the hidden folders in the home can reach a secret store";
     for (const holder of SECRET_HOLDERS) {
       if (!holder.re.test(stmt)) continue;
@@ -833,23 +1294,44 @@ function withoutIdentityFlags(stmt: string): string {
   return stmt.replace(/(^|\s)(-i|-F)\s+\S+/g, "$1").replace(/IdentityFile=\S+/g, "");
 }
 
-/** Why a shell command is refused outright, if it is. */
-export function shellNeverReason(text: string, home: string = homedir(), userName = "Kevin"): string | undefined {
+/**
+ * Why a shell command is refused outright, if it is. Each command (and each inner command
+ * of `bash -c` / `eval`) is read as written and as the shell would spell it: quotes,
+ * backslashes and braces resolved, the command's name case-folded. `cwd` is where it runs
+ * (a glob there is that folder).
+ */
+export function shellNeverReason(text: string, home: string = homedir(), userName = "Kevin", cwd?: string): string | undefined {
   const who = userName || "Kevin";
+  const dir = cwd === undefined ? undefined : normalizeShell(canon(expandPath(cwd, home)), home);
   for (const expansion of expandInner(text)) {
     for (const { re, why } of NEVER_SHELL) if (re.test(expansion)) return `that command ${withName(why, who)}`;
+    const spelled = shellSpelling(expansion);
+    const folded = foldCommandNames(spelled);
+    if (folded !== expansion) for (const { re, why, literal } of NEVER_SHELL) if (!literal && re.test(folded)) return `that command ${withName(why, who)}`;
     const norm = normalizeShell(expansion, home);
-    const cleaned = statements(norm).map(withoutIdentityFlags).join(" ; ");
-    const secret = secretPathReason(cleaned);
-    if (secret) return `that command touches ${secret}, which holds secrets`;
-    const env = secretEnvReason(expansion);
+    const spelledNorm = normalizeShell(spelled, home);
+    const views = spelledNorm === norm ? [norm] : [norm, spelledNorm];
+    for (const view of views) {
+      const cleaned = statements(view).map(withoutIdentityFlags).join(" ; ");
+      const secret = secretPathReason(cleaned);
+      if (secret) return `that command touches ${secret}, which holds secrets`;
+    }
+    const env = secretEnvReason(expansion) ?? secretEnvReason(spelled);
     if (env) return env;
-    const sweep = secretSweepReason(norm);
-    if (sweep) return sweep;
-    const trash = trashReason(norm);
-    if (trash) return withName(trash, who);
-    const home_ = homeSweepReason(norm);
-    if (home_.refuse) return home_.refuse;
+    for (const view of views) {
+      const sweep = secretSweepReason(view);
+      if (sweep) return sweep;
+      const trash = trashReason(view);
+      if (trash) return withName(trash, who);
+      const home_ = homeSweepReason(view);
+      if (home_.refuse) return home_.refuse;
+    }
+    const hidden = hiddenNameReason(spelledNorm);
+    if (hidden) return hidden;
+    const stmt = neverByStatement(spelledNorm, dir);
+    if (stmt) return `that command ${withName(stmt, who)}`;
+    const reader = recursiveReadReason(spelledNorm);
+    if (reader) return reader;
   }
   return undefined;
 }
@@ -861,7 +1343,7 @@ export function shellCwdReason(cwd: string, home: string = homedir(), realCwd?: 
     const secret = secretPathReason(p);
     if (secret) return `the working directory is inside ${secret}, which holds secrets`;
     const rel = normalizeShell(p, home);
-    if (/^~\/\.(jarhead|codex|claude)\/?$/.test(rel)) return `commands run from ${rel} reach its secrets by their bare names; run them from another folder with full paths`;
+    if (/^~\/\.(jarhead|codex|claude)\/?$/i.test(rel)) return `commands run from ${rel} reach its secrets by their bare names; run them from another folder with full paths`;
   }
   return undefined;
 }
@@ -900,13 +1382,21 @@ function repoWriteReason(norm: string, repoNorm: string, cwdInRepo: boolean): st
   return undefined;
 }
 
-/** Why a shell command needs a yes, if it does. */
-export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "ownedPids" | "scratchRoots" | "home" | "cwd" | "repoRoot" | "userName"> = {}): string | undefined {
+/**
+ * Why a shell command needs a yes, if it does. Read as written and as the shell would spell
+ * it (`'rm' -rf x`, `g\it push`, `GIT push` are the same commands); `ctx.app` is the app in
+ * front, where an osascript keystroke lands.
+ */
+export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "ownedPids" | "scratchRoots" | "home" | "cwd" | "repoRoot" | "userName" | "app"> = {}): string | undefined {
   const home = ctx.home ?? homedir();
   const who = nameOf(ctx);
   const repo = expandPath(ctx.repoRoot ?? REPO_ROOT, home);
   const cwdInRepo = ctx.cwd ? isUnder(expandPath(ctx.cwd, home), repo) : false;
-  for (const expansion of expandInner(text)) {
+  const views = expandInner(text).flatMap((e) => {
+    const folded = foldCommandNames(shellSpelling(e));
+    return folded === e ? [e] : [e, folded];
+  });
+  for (const expansion of views) {
     for (const { re, why } of DESTRUCTIVE_SHELL) if (re.test(expansion)) return withName(why, who);
     const rm = rmReason(expansion, home, ctx.scratchRoots ?? []);
     if (rm) return rm;
@@ -932,7 +1422,7 @@ export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "o
     if (SYSTEM_WRITE.test(expansion)) return "that writes into a system directory";
     if (SYSTEM_PATH.test(expansion) && !READ_ONLY_SHELL.test(expansion)) return "that touches a system directory";
     if (/\bosascript\b/.test(expansion)) {
-      const as = classifyAppleScript({ script: expansion, confirmed: false, home, userName: ctx.userName });
+      const as = classifyAppleScript({ script: expansion, confirmed: false, home, userName: ctx.userName, ...(ctx.app ? { app: ctx.app } : {}) });
       if (as.verdict === "confirm") return as.reason.replace(/; ask first$/, "");
     }
   }
@@ -943,14 +1433,14 @@ function classifyShell(text: string, ctx: ActionContext): Decision {
   const home = ctx.home ?? homedir();
   const who = nameOf(ctx);
   if (!text.trim()) return refuse("empty command");
-  const never = shellNeverReason(text, home, who);
+  const never = shellNeverReason(text, home, who, ctx.cwd);
   if (never) return refuse(`${never}; it is on the never list`);
   if (ctx.cwd) {
     const cwd = shellCwdReason(ctx.cwd, home);
     if (cwd) return refuse(`${cwd}; it is on the never list`);
   }
   if (/\bosascript\b/.test(text)) {
-    const as = classifyAppleScript({ script: text, confirmed: ctx.confirmed, home, ownedPids: ctx.ownedPids, userName: ctx.userName });
+    const as = classifyAppleScript({ script: text, confirmed: ctx.confirmed, home, ownedPids: ctx.ownedPids, userName: ctx.userName, ...(ctx.app ? { app: ctx.app } : {}) });
     if (as.verdict === "refuse") return as;
   }
   const risk = shellDestructiveReason(text, ctx);
@@ -973,8 +1463,21 @@ export interface AppleScriptContext {
 
 const TELL_APP = /\btell\s+(?:application|app|process)\s+"([^"]+)"/gi;
 const INPUT_WORDS = /\b(keystroke|key code|click|set value|set the value|perform action)\b/i;
-const MESSAGING_APPS = "Mail|Messages|Microsoft Outlook|Outlook|Slack|Discord|WhatsApp|Telegram|Signal|Airmail|Spark";
 const SENDS_MESSAGE = new RegExp(String.raw`\btell\s+(application|app)\s+"(${MESSAGING_APPS})"[\s\S]*\bsend\b`, "i");
+/** Return pressed by AppleScript: `keystroke return`, `keystroke "x" & return`, `key code 36` (76 on the keypad), a typed newline. */
+const RETURN_BY_KEYSTROKE = /\bkeystroke\b[^\n]*\b(return|linefeed|enter)\b|\bkey code\s*\{?\s*(36|76)\b|\bkeystroke\s+"[^"\n]*\\[nr]/i;
+const APPLESCRIPT_MODIFIERS: Readonly<Record<string, string>> = { command: "cmd", shift: "shift", option: "opt", control: "ctrl" };
+
+/** Whether a script presses a key that sends there (keySends): each line's Return or `keystroke "d"`, with the modifiers its `using {…}` holds. */
+function sendsByKeystroke(script: string, surface: SendSurface): boolean {
+  return script.split("\n").some((line) => {
+    const mods = new Set([...line.matchAll(/\b(command|shift|option|control) down\b/gi)].map((m) => APPLESCRIPT_MODIFIERS[m[1]!.toLowerCase()]!));
+    if (RETURN_BY_KEYSTROKE.test(line)) return keySends(surface, "return", mods);
+    const letter = /\bkeystroke\s+"([dD])"/.exec(line);
+    if (letter) return keySends(surface, "d", letter[1] === "D" ? new Set([...mods, "shift"]) : mods);
+    return false;
+  });
+}
 
 /** `"a" & "b"` → `"ab"`, repeatedly, so a path split across literals is still one path. */
 export function foldAppleScriptLiterals(script: string): string {
@@ -1029,6 +1532,12 @@ export function classifyAppleScript(ctx: AppleScriptContext): Decision {
   }
   const landsInFront = ctx.app && INPUT_WORDS.test(s) && targets.every((t) => /^system events$/i.test(t));
   if (landsInFront && HANDS_OFF_APPS.test(ctx.app!)) asks.push(`${ctx.app} is in front and holds credentials or system settings; the keystrokes would land there`);
+  // A Return by keystroke into a mail or chat app is a send (W1-6, RAIL-1): the app in front, or one the script names.
+  if (INPUT_WORDS.test(s)) {
+    const lands = landsInFront ? [ctx.app!] : targets.filter((t) => !/^system events$/i.test(t));
+    const surface = lands.map((a) => sendSurface(a, undefined)).find((x) => x !== undefined && sendsByKeystroke(s, x));
+    if (surface) asks.push(SEND_REASON[surface]);
+  }
   const builtPath = /\bset\s+\w+\s+to\s+[^\n]*&[^\n]*/i.test(folded) || /\(\s*[^"\n()]*&[^"\n()]*\)/.test(folded);
   if (builtPath && /\b(read|open for access|POSIX file|POSIX path|alias|file)\b/i.test(folded)) asks.push("that script builds a file path from pieces the gate cannot read; one literal path, or read_file, would not need asking");
   if (SENDS_MESSAGE.test(s) || /^\s*send\b/im.test(s)) asks.push(`that sends a message on ${who}'s behalf`);
@@ -1157,6 +1666,8 @@ function classifyBrowser(kind: string, ctx: ActionContext): Decision {
   if (HANDS_OFF_APPS.test(app)) return ctx.confirmed ? run(`${who} confirmed acting in ${app}`) : confirm(`${app} holds credentials or system settings; ask before acting there`);
   const target = ctx.target ?? "";
   if (IRREVERSIBLE.test(target)) return ctx.confirmed ? run(`${who} confirmed "${target}"`) : confirm(`"${target}" looks irreversible or leaves the machine; ask first`);
+  const send = kind === "browser_type" ? keyboardSendReason(kind, ctx) : undefined;
+  if (send) return ctx.confirmed ? run(`${who} confirmed sending`) : confirm(`${send}; ask first`);
   const risky = riskyUrlReason(ctx.url);
   if (risky) return ctx.confirmed ? run(`${who} confirmed ${kind} on that page`) : confirm(`${risky}; ask first`);
   return run(`${kind} is reversible on an ordinary page`);
@@ -1208,6 +1719,11 @@ function classifyActionCore(ctx: ActionContext): Decision {
   if (ctx.secureField && KEYS.has(kind)) {
     return refuse(`the focused field is a password field; ${who} types secrets`);
   }
+
+  // A send by keyboard (W1-6, RAIL-1): Return in Messages is the Send button. It asks every time,
+  // ahead of any standing grant, and its yes covers that one send (no grant class).
+  const send = KEYS.has(kind) ? keyboardSendReason(kind, ctx) : undefined;
+  if (send) return ctx.confirmed ? run(`${who} confirmed sending`) : confirm(`${send}; ask first`);
 
   if (kind === "run_shell") return classifyShell(text, ctx);
 
@@ -1309,14 +1825,25 @@ export const BACKGROUND_SHELL_REFUSE = /^(?:open|osascript)$/;
 export const OPEN_BACKGROUND_FLAG = /^-[A-Za-z]*[gj][A-Za-z]*$|^--(?:background|hide)$/;
 const SHELL_PREFIXES: ReadonlySet<string> = new Set(["sudo", "env", "nohup", "exec", "command", "time", "nice", "caffeinate", "builtin", "doas"]);
 
-/** Does any command in this line front an app? Every segment of `a; b && c | d` is judged past its wrappers and the head's directory. */
+/**
+ * Does any command in this line front an app? Every segment of `a; b && c | d` is judged past
+ * its wrappers and the head's directory, and so is the command an inner shell runs
+ * (`bash -c '…'`, `sh -c`, `eval`, `su -c`), a few levels deep (W1-6, RAIL-8).
+ */
 export function shellSteals(command: string): boolean {
+  return stealsAt(command, 0);
+}
+
+function stealsAt(command: string, depth: number): boolean {
   return shellSegments(command).some((segment) => {
     const words = shellWords(segment);
     const head = words[0];
-    if (!head || !BACKGROUND_SHELL_REFUSE.test(head)) return false;
-    if (head === "osascript") return true;
-    return !words.slice(1).some((w) => OPEN_BACKGROUND_FLAG.test(w));
+    if (!head) return false;
+    if (BACKGROUND_SHELL_REFUSE.test(head)) {
+      if (head === "osascript") return true;
+      return !words.slice(1).some((w) => OPEN_BACKGROUND_FLAG.test(w));
+    }
+    return depth < 3 && innerCommands(segment).some((inner) => stealsAt(inner, depth + 1));
   });
 }
 

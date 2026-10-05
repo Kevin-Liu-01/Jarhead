@@ -90,7 +90,39 @@ export function secretValues(env: NodeJS.ProcessEnv = process.env, home: string 
   return [...values];
 }
 
-/** Every known secret value (and its base64 form) and every secret-shaped string in `text`, replaced. */
+/**
+ * Secrets told by their label rather than their shape (W1-6): the line names what follows.
+ * An AWS secret key line (`aws_secret_access_key = …`), a URL's password
+ * (`postgres://app:…@host`), and a `password` / `secret` / `token` key with a literal value.
+ */
+const AWS_SECRET_LINE = /\b(aws_secret_access_key|aws_session_token)(\s*[=:]\s*["']?)([A-Za-z0-9/+=]{16,})/gi;
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]*:)([^\s@/]+)(@)/gi;
+const LABELLED_SECRET = /(\b[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|token)(?:[_.-]?(?:key|value))?["']?\s*[=:]\s*)(?:(["'])([^"'\n]{6,}?)\2|([^\s"'`,;()[\]{}<>]{8,}))/gi;
+
+/**
+ * Whether a labelled value is a literal, not code: an unquoted value is struck only when it
+ * carries a digit or a symbol (a password has one; `getToken`, `required` and
+ * `process.env.SECRET` do not), is not a bare number (a count, a time), is no member chain,
+ * and is not called.
+ */
+function literalSecret(value: string, after: string): boolean {
+  if (after.startsWith("(") || /^\d+$/.test(value)) return false;
+  if (/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)+$/.test(value)) return false;
+  return /[\d!@#$%^&*+=~?]/.test(value);
+}
+
+function redactLabelled(text: string): string {
+  return text
+    .replace(AWS_SECRET_LINE, (_, key: string, sep: string) => `${key}${sep}${REDACTED}`)
+    .replace(URL_PASSWORD, (_, head: string, _pw: string, at: string) => `${head}${REDACTED}${at}`)
+    .replace(LABELLED_SECRET, (whole: string, head: string, quote: string | undefined, quoted: string | undefined, bare: string | undefined, offset: number, all: string) => {
+      if (quoted !== undefined) return quoted.includes(REDACTED) ? whole : `${head}${quote}${REDACTED}${quote}`;
+      if (bare === undefined || bare.startsWith("[") || !literalSecret(bare, all.slice(offset + whole.length))) return whole;
+      return `${head}${REDACTED}`;
+    });
+}
+
+/** Every known secret value (and its base64 form), every secret-shaped string and every labelled secret in `text`, replaced. */
 export function redactSecrets(text: string, values: readonly string[]): string {
   let out = text;
   for (const v of values) {
@@ -102,7 +134,7 @@ export function redactSecrets(text: string, values: readonly string[]): string {
     if (uri !== v) out = out.split(uri).join(REDACTED);
   }
   for (const re of SECRET_SHAPES) out = out.replace(re, REDACTED);
-  return out;
+  return redactLabelled(out);
 }
 
 /**

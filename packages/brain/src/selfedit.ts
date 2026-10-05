@@ -173,6 +173,13 @@ export const RAILS: readonly Rail[] = [
   { name: "the brain's standing orders (brainSystemPrompt in brain.ts)", file: /^packages\/brain\/src\/brain\.ts$/, keywords: ["system prompt", "standing orders", "brain prompt", "brainsystemprompt", "prompt", "brain.ts"] },
   { name: "the voice instructions (packages/live/src/instructions.ts)", file: /^packages\/live\/src\/instructions\.ts$/, keywords: ["instructions", "voice prompt", "live prompt", "personality", "capabilities"] },
   { name: "the confirmation handshake (ConfirmationState / YES_PATTERN)", file: /^packages\/hands\/src\/toolset\.ts$/, hunk: /ConfirmationState|YES_PATTERN|sameTarget|\.consume\(|\.arm\(|confirmations|verdict|refuse|needs-confirmation|policy|gate\(/, keywords: ["confirmation", "handshake", "yes pattern", "yes_pattern", "confirmationstate", "toolset.ts"] },
+  // Where a yes is heard and where a lane's yes is routed (W1-6, RAIL-12): each decides whether an action runs on a plain yes.
+  { name: "the spoken yes (packages/brain/src/delegator.ts)", file: /^packages\/brain\/src\/delegator\.ts$/, keywords: ["delegator", "spoken yes", "confirmation", "handshake", "yes pattern"] },
+  { name: "the lanes' confirmation desk (packages/hands/src/lanes.ts)", file: /^packages\/hands\/src\/lanes\.ts$/, keywords: ["lanes", "confirmation desk", "desk", "confirmation", "handshake"] },
+  { name: "the browser gate (packages/brain/src/browser.ts)", file: /^packages\/brain\/src\/browser\.ts$/, keywords: ["browser gate", "browser tools", "browser.ts"] },
+  { name: "the thread lanes (packages/engine/src/threads/runner.ts)", file: /^packages\/engine\/src\/threads\/runner\.ts$/, keywords: ["thread runner", "lane runner", "background lane", "thread lanes", "needsfocus"] },
+  { name: "the thread confirmation lines (packages/engine/src/threads/lines.ts)", file: /^packages\/engine\/src\/threads\/lines\.ts$/, keywords: ["thread lines", "confirmation resume", "confirmation", "handshake"] },
+  { name: "the typed yes (sayText in packages/engine/src/engine.ts)", file: /^packages\/engine\/src\/engine\.ts$/, hunk: /YES_PATTERN|isAffirmative|isYes|answerYes|confirmations\.arm|\.arm\(/, keywords: ["typed yes", "saytext", "say-text", "confirmation", "handshake"] },
   { name: "the wake gate (apps/mac/Sources/Jarhead/Wake)", file: /^apps\/mac\/Sources\/Jarhead\/Wake\//, keywords: ["wake"] },
   { name: "app signing (scripts/build-mac.ts)", file: /^scripts\/build-mac\.ts$/, hunk: /codesign|identity|sign|entitlements/i, keywords: ["signing", "codesign", "build-mac", "build mac", "identity"] },
   { name: "the self-edit loop (packages/brain/src/selfedit.ts)", file: /^packages\/brain\/src\/selfedit\.ts$/, keywords: ["self-edit", "self edit", "selfedit", "self_apply", "self_edit", "rail"] },

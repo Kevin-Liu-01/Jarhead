@@ -166,7 +166,7 @@ test("file tools: list_dir descends to a depth and skips node_modules; search_fi
 
 test("run_shell: anything non-destructive runs with secrets scrubbed, output is capped and streamed, destructive asks, never refuses, background jobs return a pid Jarhead may kill", async () => {
   const home = fakeHome();
-  const { runner } = makeRunner({ home, env: { ...process.env, OPENAI_API_KEY: "sk-must-not-leak", ANTHROPIC_API_KEY: "ant-must-not-leak" } });
+  const { runner, toolset } = makeRunner({ home, env: { ...process.env, OPENAI_API_KEY: "sk-must-not-leak", ANTHROPIC_API_KEY: "ant-must-not-leak" } });
   const log = makeSink();
   runner.attach(log.sink, makeTask("run things"));
 
@@ -180,7 +180,11 @@ test("run_shell: anything non-destructive runs with secrets scrubbed, output is 
   assert.equal(dump.result.kind, "needs-confirmation");
   assert.match(resultText(dump.result), /dumps the environment/);
   assert.match(resultText((await runner.run("run_shell", { command: "echo $OPENAI_API_KEY" })).result), /refused: .*reveal OPENAI_API_KEY/);
-  const scan = await runner.run("run_shell", { command: `perl -e 'print join(",", grep { $ENV{$_} eq "sk-must-not-leak" || $ENV{$_} eq "ant-must-not-leak" } keys %ENV) || "none"'` });
+  // A script that reads every variable is an environment dump too (W1-6, RAIL-11): it asks, and after the yes it finds nothing.
+  const scanCommand = `perl -e 'print join(",", grep { $ENV{$_} eq "sk-must-not-leak" || $ENV{$_} eq "ant-must-not-leak" } keys %ENV) || "none"'`;
+  assert.equal((await runner.run("run_shell", { command: scanCommand })).result.kind, "needs-confirmation");
+  toolset.confirmations.arm();
+  const scan = await runner.run("run_shell", { command: scanCommand });
   assert.equal(resultText(scan.result).trim(), "none", "Jarhead's keys never enter the child's environment, rc files included");
   const rc = await runShell({ command: 'echo "${OPENAI_API_KEY:-UNSET}"', env: { ...process.env, OPENAI_API_KEY: "sk-must-not-leak" } });
   assert.equal(rc.stdout.trim(), "UNSET", "the login shell's own export is undone before the command runs");
