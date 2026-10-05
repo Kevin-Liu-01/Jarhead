@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_AUTOMATIONS, type Automation, type AutomationEvent, type LedgerRow, type Problem } from "@jarhead/protocol";
@@ -13,7 +13,10 @@ import { rows, settle, until, world, type World } from "./world.ts";
  * - SL-14: a fire that is not a ring does not flash. The `fired` event says `ring: false` when the fire only acted (a
  *   routine that opened Notes), so the app puts no ring up; a chime that rang says `ring: true`.
  * - SL-15: an unattended fire that failed (a nightly recipe's red exit) is an `automation.failed` problem on the island
- *   in the morning, Run now on it (Open Console when a setting has to change first), until the row's next ok fire.
+ *   in the morning, Run now on it, until the row's next ok fire. Every red night is raised fresh (Clear all or the cap
+ *   may have dropped the last one). Open Console when a retry would fail the same way: a setting has to change, a
+ *   folder row has no landed file to give Run now, the executor's own words say the gate refused. A red Run now warns
+ *   and keeps the row red; a green one clears it.
  * - The zone why: a row a time zone move put behind now is missed `zone-moved`, and its words say the time zone moved,
  *   whichever of the tick and the app's clock.changed reads the move.
  * node --test runs this file in its own process, so the zone is this file's to move.
@@ -190,7 +193,59 @@ test("SL-15: a second red exit replaces the row's problem (one per row); the nex
   }
 });
 
-test("SL-15: Run now that goes green clears the problem; Run now is Kevin's press, so its own red exit raises none", async () => {
+test("SL-15: Clear all in the morning, and the same red exit the next night is on the island again", async () => {
+  const { shell, calls } = scriptedShell();
+  const w = world({ automations: { exec, shell, shellGate: gate, home: home() } });
+  const { engine, clock } = w;
+  clock.t = local(2026, 9, 5, 22, 0);
+  try {
+    await engine.start();
+    nightlyBackup(engine, clock);
+    clock.t = local(2026, 9, 5, 23, 0);
+    tick(engine);
+    await settle(60);
+    assert.equal(failedProblems(engine).length, 1, "night one");
+    clock.t = local(2026, 9, 6, 7, 30);
+    tick(engine);
+    await engine.command({ type: "clear-problems" });
+    assert.deepEqual(failedProblems(engine), [], "Kevin cleared the list");
+    // Night two fails the same way, word for word (clockOf gives HH:MM only).
+    clock.t = local(2026, 9, 6, 23, 0);
+    tick(engine);
+    await settle(60);
+    assert.equal(calls.length, 2, "night two ran");
+    assert.deepEqual(failedProblems(engine).map((p) => p.text), ["backup failed 23:00 · recipe backup exit 1 · disk full"], `night two: problems=${JSON.stringify(engine.snapshot().problems)}`);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("SL-15: night two's red exit is a new problem: its since is night two's, and it has its own ledger row", async () => {
+  const { shell } = scriptedShell();
+  const w = world({ automations: { exec, shell, shellGate: gate, home: home() } });
+  const { engine, clock } = w;
+  clock.t = local(2026, 9, 5, 22, 0);
+  try {
+    await engine.start();
+    nightlyBackup(engine, clock);
+    for (const day of [5, 6]) {
+      clock.t = local(2026, 9, day, 23, 0);
+      tick(engine);
+      await settle(60);
+    }
+    const problems = failedProblems(engine);
+    assert.equal(problems.length, 1);
+    assert.ok(problems[0]!.since >= local(2026, 9, 6, 23, 0), `since=${new Date(problems[0]!.since).toString()}`);
+    const nightTwo = rows<Extract<LedgerRow, { type: "problem" }>>(w, "problem").filter((r) => r.text === problems[0]!.text);
+    assert.equal(nightTwo.length, 1, "night two's problem row is in night two's day file");
+  } finally {
+    await engine.stop();
+  }
+});
+
+const toasts = (w: World): { text: string; tone: string }[] => w.events.flatMap((e) => (e.type === "toast" ? [{ text: e.text, tone: e.tone }] : []));
+
+test("SL-15: a red Run now keeps the row red: the toast warns and the problem stands with the retry's word; a green one clears it", async () => {
   const { shell, calls, code } = scriptedShell();
   const w = world({ automations: { exec, shell, shellGate: gate, home: home() } });
   const { engine, clock, handsBg } = w;
@@ -208,15 +263,109 @@ test("SL-15: Run now that goes green clears the problem; Run now is Kevin's pres
     handsBg.kevinActed();
     await engine.command({ type: "automation.run", id });
     await until(() => calls.length === 2);
-    assert.deepEqual(failedProblems(engine), [], "his press answers the problem; the toast says how it went");
+    assert.deepEqual(toasts(w).at(-1), { text: "backup: recipe backup exit 1 · disk full", tone: "warn" }, "a red retry warns");
+    const after = failedProblems(engine);
+    assert.deepEqual(after.map((p) => p.text), ["backup failed 07:30 · recipe backup exit 1 · disk full"], "the retry's red word replaces the night's");
+    assert.ok(after[0]!.since >= local(2026, 9, 6, 7, 30));
+    assert.deepEqual(after[0]!.remedy, { label: "Run now", command: { type: "automation.run", id } });
+    // The brain's run verb hears the same outcome.
+    handsBg.kevinActed();
+    const verb = await engine.automations.change(id, "run");
+    assert.equal(verb.ok, false, JSON.stringify(verb));
     // He clears space and presses it again: green.
     code.v = 0;
     clock.t += 1000;
     handsBg.kevinActed();
     await engine.command({ type: "automation.run", id });
-    await until(() => calls.length === 3);
-    assert.deepEqual(failedProblems(engine), []);
+    await until(() => calls.length === 4);
+    assert.equal(toasts(w).at(-1)?.tone, "info");
+    assert.deepEqual(failedProblems(engine), [], "the ok fire cleared it");
     assert.equal(engine.automations.table.get(id)!.state, "armed");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("SL-15: Run now on a row with nothing red that goes red raises no problem; the toast warns", async () => {
+  const { shell, calls } = scriptedShell();
+  const w = world({ automations: { exec, shell, shellGate: gate, home: home() } });
+  const { engine, clock, handsBg } = w;
+  clock.t = local(2026, 9, 5, 22, 0);
+  try {
+    await engine.start();
+    const id = nightlyBackup(engine, clock);
+    handsBg.kevinActed();
+    await engine.command({ type: "automation.run", id });
+    await until(() => calls.length === 1);
+    assert.equal(toasts(w).at(-1)?.tone, "warn");
+    assert.deepEqual(failedProblems(engine), [], "he watched it go red; the island has nothing to add");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("SL-15: a folder watcher's failed filing offers Open Console: Run now has no landed file to give it", async () => {
+  const dir = home();
+  const downloads = join(dir, "Downloads");
+  const papers = join(dir, "Papers");
+  mkdirSync(downloads);
+  const w = world({ automations: { exec, home: dir } });
+  const { engine } = w;
+  try {
+    await engine.start();
+    tick(engine);
+    const id = armedId(
+      engine.automations.arm(
+        { name: "file papers", when: { kind: "on", on: { kind: "folder.file", path: downloads, glob: "*.pdf", settleMs: 12_000 } }, then: [{ kind: "file", into: papers }], clauses: { quiet: "respect", cooldown: 0 }, echo: "When a PDF lands in Downloads, file it under Papers." } as never,
+        "brain",
+        false,
+        { request: `when a pdf lands in ${downloads} file it under ${papers}` },
+      ),
+    );
+    // A landed file that is gone before the fire files it: the fire fails unattended.
+    (engine.automations as unknown as { watcherFire(id: string, now: number, file: string, what: string | undefined): void }).watcherFire(id, Date.now(), join(downloads, "gone.pdf"), undefined);
+    await settle(80);
+    const problems = failedProblems(engine);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0]!.text, /^file papers failed \d\d:\d\d · gone\.pdf is gone before it could be filed$/);
+    assert.deepEqual(problems[0]!.remedy, { label: "Open Console", command: { type: "open-console" } });
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("SL-15: the shell gate's refusal at fire offers Open Console; the same words in the recipe's own output do not", async () => {
+  const verdict: { v: "run" | "refuse" } = { v: "run" };
+  const scriptedGate: ShellGate = () => (verdict.v === "run" ? { verdict: "run", reason: "fake gate" } : { verdict: "refuse", reason: "it writes outside the home folder" });
+  const calls: string[] = [];
+  const shell = (async (o: { command: string }) => {
+    calls.push(o.command);
+    return { code: 1, signal: null, stdout: "", stderr: "refused: the server would need a yes from its admin", timedOut: false, cancelled: false, ms: 1 };
+  }) as unknown as ShellRunner;
+  const w = world({ automations: { exec, shell, shellGate: scriptedGate, home: home() } });
+  const { engine, clock } = w;
+  clock.t = local(2026, 9, 5, 22, 0);
+  try {
+    await engine.start();
+    const id = nightlyBackup(engine, clock);
+    // Night one: the recipe ran and exited 1; its output carries the gate's words, which are not the gate's verdict.
+    clock.t = local(2026, 9, 5, 23, 0);
+    tick(engine);
+    await settle(60);
+    assert.equal(calls.length, 1);
+    let problems = failedProblems(engine);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0]!.text, /^backup failed 23:00 · recipe backup exit 1 · refused: /);
+    assert.deepEqual(problems[0]!.remedy, { label: "Run now", command: { type: "automation.run", id } }, "a red exit is worth a retry");
+    // Night two: the gate refuses the saved text at fire; nothing runs, and a retry would be refused the same way.
+    verdict.v = "refuse";
+    clock.t = local(2026, 9, 6, 23, 0);
+    tick(engine);
+    await settle(60);
+    assert.equal(calls.length, 1, "the refused recipe never ran");
+    problems = failedProblems(engine);
+    assert.deepEqual(problems.map((p) => p.text), ["backup failed 23:00 · recipe backup refused: it writes outside the home folder"]);
+    assert.deepEqual(problems[0]!.remedy, { label: "Open Console", command: { type: "open-console" } });
   } finally {
     await engine.stop();
   }

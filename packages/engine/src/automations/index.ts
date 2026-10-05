@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { atClock, classifyAction, classifyAutomation, clockOf, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, isLoopbackHost, logger, newId, nextFire, parseWhen, quietEnds, secretsPresent, snoozeDefault, Ledger, type ActionContext, type AutomationContext, type Decision } from "@jarhead/core";
+import { atClock, classifyAction, classifyAutomation, clockOf, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, isLoopbackHost, logger, newId, nextFire, parseWhen, pressKeyReason, quietEnds, secretsPresent, snoozeDefault, Ledger, type ActionContext, type AutomationContext, type Decision } from "@jarhead/core";
 import { runShell, type AutomationChangeResult, type AutomationSetContext, type AutomationSetResult, type AutomationSource, type AutomationVerb, type RecipeRow } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import {
@@ -14,6 +14,8 @@ import {
   liveRecipes,
   recipeNamed,
   type Automation,
+  type AutomationAction,
+  type AutomationActionKind,
   type AutomationClauses,
   type AutomationDraft,
   type AutomationKind,
@@ -273,7 +275,7 @@ export class Automations implements AutomationSource {
   private zoneCheckedAt = 0;
   /** Rows a zone move put behind now (still ahead in the old zone), for the resync that settles them: missed `zone-moved`. */
   private readonly zoneBehind = new Set<string>();
-  /** The automation.failed problem each row holds (SL-15): one per row, until its next ok fire. */
+  /** The automation.failed text each row last raised (SL-15), until its next ok fire. The engine's list may have dropped it since (Clear all, the cap). */
   private readonly failedProblems = new Map<string, string>();
   /** Signals inside a row's cooldown since its last fire. */
   private readonly cooled = new Map<string, number>();
@@ -725,19 +727,23 @@ export class Automations implements AutomationSource {
    * and re-arms a repeater with the reason. Every fire is an `automation.fired` row and
    * one `fired` event with its presses and `ring`: true only when the fire put a ring up
    * (SL-14), so a fire that only acted never shows as one. A fire nobody pressed that failed
-   * is an `automation.failed` problem until the row's next ok fire (SL-15); `attended` is
-   * Kevin's own Run now, whose toast says how it went.
+   * is an `automation.failed` problem until the row's next ok fire (SL-15). `attended` is
+   * Kevin's own Run now: its toast says how it went, so its red exit only renews a red word
+   * already standing. Returns whether the fire went green (false when one was already running).
    */
-  private async fire(row: Automation, now: number, lateMs: number, o: { readonly dueAt: number; readonly quiet: boolean; readonly file?: string | undefined; readonly what?: string | undefined; readonly muted?: boolean | undefined; readonly attended?: boolean | undefined }): Promise<void> {
-    if (this.firing.has(row.id)) return;
+  private async fire(row: Automation, now: number, lateMs: number, o: { readonly dueAt: number; readonly quiet: boolean; readonly file?: string | undefined; readonly what?: string | undefined; readonly muted?: boolean | undefined; readonly attended?: boolean | undefined }): Promise<boolean> {
+    if (this.firing.has(row.id)) return false;
     this.firing.add(row.id);
     this.releaseHold(row.id);
     const next = this.repeats(row) && row.when.kind !== "on" ? nextFire(row.when, Math.max(o.dueAt, now), row.createdAt) : undefined;
     const started = this.write(mut(row, { state: "firing", updatedAt: now }), "engine", undefined, false);
     let outcome: FireOutcome;
+    // A throw names no step the chain stopped at.
+    let threw = false;
     try {
       outcome = await this.executor.fire({ a: started, now, lateMs, file: o.file, quiet: o.quiet, dueAt: o.dueAt, muted: o.muted }, next);
     } catch (e) {
+      threw = true;
       // The same redaction the executor gives its own details: an error carrying a path or a token reaches no surface.
       outcome = { ok: false, actions: row.then.map((x) => x.kind), line: this.executor.line(row, o.dueAt), detail: cut(this.opts.redact(`failed: ${(e as Error).message}`), DETAIL_CHARS), presses: [], ring: false, ms: 0 };
     } finally {
@@ -772,9 +778,12 @@ export class Automations implements AutomationSource {
     });
     const base: Automation = mut(current, { fires: current.fires + 1, lastFiredAt: at, ...(detail ? { lastDetail: cut(detail, DETAIL_CHARS) } : { lastDetail: undefined }), snoozedUntil: undefined, updatedAt: at });
     const oneShotDone = row.clauses.once === true || row.when.kind === "at" || row.when.kind === "in";
-    // The island's word on the fire: a red one waits there until the row goes green; a green one ends it.
+    // The island's word on the fire: a red one waits there until the row goes green; a green one ends it. Kevin's own
+    // Run now has its toast, so its red exit only renews a red word the row already has.
     if (outcome.ok) this.clearFailed(row.id);
-    else if (!o.attended && current.state !== "trashed") this.raiseFailed(current, at, detail);
+    else if (current.state !== "trashed" && (!o.attended || this.failedProblems.has(row.id))) {
+      this.raiseFailed(current, at, detail, threw ? undefined : stoppedAt(row.then, outcome.actions), outcome.detail ?? "");
+    }
     const rang = !moved && outcome.ok && outcome.ring;
     if (moved) {
       // The count and the detail are the fire's; the state is what Kevin set (trashed rows leave the heap, paused rows wait).
@@ -794,28 +803,25 @@ export class Automations implements AutomationSource {
     this.table.push(row.id, { kind: "fired", actions: outcome.actions, line: cut(outcome.line, EVENT_LINE_CHARS), ok: outcome.ok, ...(detail ? { detail: cut(detail, EVENT_DETAIL_CHARS) } : {}), ...(lateMs > 0 ? { lateMs } : {}), presses: outcome.presses, ring: rang });
     this.opts.onChange();
     this.drainFiles(row.id);
+    return outcome.ok;
   }
 
   /**
-   * SL-15: an unattended fire failed, so the island says so until Kevin is back: "backup failed 23:00 · recipe backup
-   * exit 1 · disk full". One problem per row; a newer failure replaces it. Run now retries it; when a retry would fail the
-   * same way (an action's While-asleep chip is off, its recipe is in the Trash or gone, the shell gate wants a yes or
-   * refuses), the button opens the Console instead.
+   * SL-15: a fire failed, so the island says so until Kevin is back: "backup failed 23:00 · recipe backup exit 1 · disk
+   * full". One problem per row. Every red fire is raised fresh, with its own since and ledger row: the engine's list may
+   * have lost the last one (Clear all, the cap), and a nightly failure reads the same word for word. Run now retries it;
+   * when a retry would fail the same way (retryFailsTheSame), the button opens the Console instead. `said` is the
+   * executor's own detail for the step it `stopped` at.
    */
-  private raiseFailed(a: Automation, at: number, detail: string | undefined): void {
+  private raiseFailed(a: Automation, at: number, detail: string | undefined, stopped: AutomationAction | undefined, said: string): void {
     const text = `${a.name} failed ${clockOf(at)}${detail ? ` · ${detail}` : ""}`;
-    if (this.failedProblems.get(a.id) === text) return;
     this.clearFailed(a.id);
     this.failedProblems.set(a.id, text);
-    const automations = this.opts.settings().automations;
-    const needsChange =
-      a.then.some((x) => !automations.unattended.includes(x.kind) || (x.kind === "run-recipe" && !recipeNamed(automations.recipes, x.recipe))) ||
-      // The executor's words for the shell gate's verdict at fire (executor.ts recipe()).
-      /would need a yes|refused:/.test(detail ?? "");
+    const needsChange = retryFailsTheSame(a, stopped, said, this.opts.settings().automations);
     this.opts.problem("automation.failed", text, needsChange ? { label: "Open Console", command: { type: "open-console" } } : { label: "Run now", command: { type: "automation.run", id: a.id } });
   }
 
-  /** The row's automation.failed problem is over: an ok fire, Kevin's Run now, the row moved to the Trash. */
+  /** The row's automation.failed problem is over: an ok fire, a red one that replaces it, the row moved to the Trash. */
   private clearFailed(id: string): void {
     const text = this.failedProblems.get(id);
     if (text === undefined) return;
@@ -1237,13 +1243,13 @@ export class Automations implements AutomationSource {
     if (this.firing.has(a.id)) return { ok: false, text: `${a.name} is running now` };
     const now = this.now();
     this.opts.clearProblems?.("automation.missed", (text) => text.includes(a.name));
-    // His press answers a red fire too; the toast below says how this one went.
-    this.clearFailed(a.id);
     this.rings.delete(a.id);
-    await this.fire(a, now, 0, { dueAt: now, quiet: false, attended: true });
+    // The fire's own outcome is the toast's tone: a repeater re-arms after a red exit, so its state says nothing. A red
+    // problem the row holds stays until a fire goes green (this one, or a later one).
+    const ok = await this.fire(a, now, 0, { dueAt: now, quiet: false, attended: true });
     void by;
     const after = this.table.get(a.id);
-    return { ok: after?.state !== "failed", text: `${a.name}: ${after?.lastDetail ?? (after?.state === "fired" ? "rang" : "ran")}` };
+    return { ok, text: `${a.name}: ${after?.lastDetail ?? (after?.state === "fired" ? "rang" : "ran")}` };
   }
 
   /** `automation.rename`: ≤ 24 chars, unique among the non-trashed rows; `by` is the surface that sent it (the ledger's `automation.set` row wears it). */
@@ -1461,6 +1467,53 @@ export function keepRecipeTrash(stored: AutomationSettings, incoming: Automation
 /** A row that watches a folder (folder.file / download.done). */
 function isFolderRow(a: Automation): boolean {
   return a.when.kind === "on" && (a.when.on.kind === "folder.file" || a.when.on.kind === "download.done");
+}
+
+/**
+ * The action a red fire stopped at: the last of the kinds the executor ran, matched in Kevin's order. The chain stops at
+ * its first failure, and a muted fire skips every line kind, so the kinds it ran are a subsequence of `then`.
+ */
+function stoppedAt(then: readonly AutomationAction[], ran: readonly AutomationActionKind[]): AutomationAction | undefined {
+  let j = 0;
+  for (const x of then) {
+    if (x.kind !== ran[j]) continue;
+    j += 1;
+    if (j === ran.length) return x;
+  }
+  return undefined;
+}
+
+/**
+ * SL-15: would Run now fail the way this fire did? Run now goes through the same executor, and nobody's presence counts
+ * there, so what the executor decided on fixed facts holds for it too:
+ * - Settings: a While-asleep chip is off, or a recipe is in the Trash or gone.
+ * - A folder row's fire was for one landed file, and Run now has none to give it.
+ * - The step the chain stopped at, by the head of the executor's own detail (`said`), never by a recipe's output after
+ *   it: the shell gate's yes or refusal; the policy's verdict on an app (hands-off, a yes, a hold); a URL or a path
+ *   refused before `open` ran; a key that is never pressed.
+ * A request that failed, a red exit, a timeout, a busy helper or a brain's turn may go green on a retry.
+ */
+function retryFailsTheSame(a: Automation, stopped: AutomationAction | undefined, said: string, automations: AutomationSettings): boolean {
+  if (a.then.some((x) => !automations.unattended.includes(x.kind) || (x.kind === "run-recipe" && !recipeNamed(automations.recipes, x.recipe)))) return true;
+  if (isFolderRow(a) && a.then.some((x) => FILE_KINDS.has(x.kind))) return true;
+  switch (stopped?.kind) {
+    case "run-recipe": {
+      // executor.ts recipe(): "recipe <name> would need a yes; …" and "recipe <name> refused: …".
+      const head = `recipe ${recipeNamed(automations.recipes, stopped.recipe)?.name ?? stopped.recipe} `;
+      return said.startsWith(`${head}would need a yes;`) || said.startsWith(`${head}refused: `);
+    }
+    case "open":
+      // An app: the policy's verdict reads "<app>: …" or "<app> is hands-off; …"; a failed request reads "could not open …".
+      if (stopped.app) return said.startsWith(`${stopped.app}: `) || said.startsWith(`${stopped.app} is hands-off;`);
+      // A URL or a path: anything but `open` itself failing was refused before it ran.
+      return !said.startsWith("could not open ");
+    case "file":
+      return true;
+    case "press":
+      return said.startsWith(`${stopped.app} is hands-off;`) || pressKeyReason(stopped.key) !== undefined;
+    default:
+      return false;
+  }
 }
 
 function whyWords(why: MissedWhy, sleptAt: number | undefined, downSince?: number): string {
