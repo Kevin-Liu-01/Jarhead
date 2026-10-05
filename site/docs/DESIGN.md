@@ -36,18 +36,41 @@ The real blob (`lib/blob.ts` on `lib/orb.ts`'s material, `components/desk/Charac
 in every awake phase, quiet titanium asleep, its halo the phase tone (never violet; thinking wears the accent blue), and
 its face never under 32 px.
 
-- **The face** (`lib/eyes.ts`): drawn as shapes, never type. Open eyes are ink ovals (the blob's own ink) with one paper
-  catchlight toward its gleam, set low, close and round (just above the body's middle, 0.31 R from it each side); the other
-  faces are round-capped lines in the same ink: `- -` a soft lid, `^ ^` an arc drawn a touch bolder, `u u` a deep cup,
-  `_ _` flat, `x x`, `> <` squeezed shut, `~ ~` a soft ripple. The lids are a spring: a blink squashes the oval shut, the
+- **The face** (`lib/eyes.ts`): drawn as shapes, never type. Open eyes are ink ovals (the blob's own ink) that catch the
+  light as a paper four-point star toward its gleam and a small paper dot across from it, set low, close and round (just
+  above the body's middle, 0.31 R from it each side); the other faces are round-capped lines in the same ink: `- -` a
+  soft lid, `^ ^` an arc drawn a touch bolder, `u u` a deep cup, `_ _` flat, `x x`, `> <` squeezed shut, `~ ~` a soft
+  ripple. The lids are a spring: a blink squashes the oval shut, the
   body dips with it, and the eye reopens a touch taller before it settles; a happy squint (`^ ^`) comes now and then while
   it listens; the face travels with the look (0.19 R sideways, 0.13 R up and down) and the far eye narrows. Small blobs
-  grow their eyes (40 % at a 32 px body) and no line goes under 1.75 px. The stills (`lib/orb.ts` `faceField`) rasterise
-  the same geometry: `O O`, `^ ^` and the quiet still's `- -`, their catchlight a touch larger so a small still keeps it;
-  the stills' URLs carry the face's version (`Character.tsx`). The island draws the same face as SVG paths
-  (`faceMarks`, `components/desk/Island.tsx` `islandFace`, crisp at every island scale): the ink pupils with their paper
-  catchlight and the ink lines, each rimmed in the phase-tinted paper so they read on the island's dark; it blinks shut
-  for one tick and the far eye narrows as it turns to the pointer.
+  grow their eyes (40 % at a 32 px body) and no line goes under 1.75 px.
+- **The sparkle** (`lib/eyes.ts` `TWINKLE`, `lib/blob.ts` `SPARK`): the star's sides are four quadratics, so it reads as a
+  star from a 32 px body up; star and dot are solid paper and sit inside the pupil (fitted to 0.96 of its radii, the far
+  eye's star narrowed with it). They breathe in size only (a 3.2 s cycle: the star swells as the dot ebbs). A star
+  flares for 0.38 s: it twists out and back upright as it rises, stretches into a long thin glint whose top arm reaches
+  past the pupil, and shrinks back upright (out-cubic up to its peak at 35 %, in-quad down), the second eye 90 ms after
+  the first, and the dot gives way while it does. The hero flares every 2 to 4.6 s, every other blob every 3 to 6 s, and
+  1.1 to 1.9 s while lit; also 0.32 s after the eyes open from a closed face (the arrival, a demo blob waking), in the
+  eye nearer the key as the Install key lights, and as a squint of joy ends while lit. Never two on one face within
+  0.5 s, a flare playing is never cut off, and the page's faces (every blob and the island) take turns, 0.6 s apart. Lit
+  (starstruck), the dot sharpens through a diamond into a small star of its own. The happy arcs (`^ ^`) wear their own
+  small star and dot off the right eye's outer top: they pop in past their size as the face appears (0.32 s) and pulse
+  40 % larger with each flare. When joy starts (a squint of joy, the key lighting up) two stars of field cells pop
+  round the head 0.12 s apart, then while lit one more every 1.2 to 2 s; never for a happy face it only keeps. Each is
+  a four-point star in the blob's own ramp (on ink a paper middle and light arms, on paper a light middle and blue arms,
+  paper where the body swells into it), solid in its middle and a Bayer scatter toward its tips, that pops up in
+  0.14 s, holds and dissolves through the thresholds by 0.95 s, on the slots above the shoulders, a cell inside the host.
+  The face canvas alone redraws at 60 fps through a flare or a pop; the clock runs only on a face that can show it.
+  No mark draws under 0.7 screen px at its resting size, so none drops out a frame early in a blink. Calm: the
+  catchlights rest whole, nothing flares or pops, and a lit blob keeps one whole star by its head.
+  The stills (`lib/orb.ts` `faceField`) rasterise the same geometry: `O O` with its stars and dots, `^ ^` with its
+  sparkle, and the quiet still's `- -`, the stars a touch larger so a small still keeps them. The stills' URLs carry the
+  face's version (`Character.tsx`, `eyes-3`). The island draws the same face as SVG paths (`faceMarks`, `components/desk/Island.tsx` `islandFace`, crisp
+  at every island scale, the floor judged at its docked 0.6): the ink pupils with their paper star and dot and the ink
+  lines, the ink rimmed in the phase-tinted paper so it reads on the island's dark, every light mark on a thin ink halo
+  shown only over the rims (grown with a flare), so a glint crossing a pupil's rim keeps its points; it blinks shut for
+  one tick, the far eye narrows as it turns to the pointer, its sparkle breathes with the 8 fps loop and flares and pops
+  on frames of its own (whole under calm).
 
 - **The hero** (`components/site/HeroCharacter.tsx`): the h1's full stop is a dot of ink on arrival; the blob, asleep and
   the size of the dot, takes its place, wakes, turns blue and springs up to stand on the baseline (`SPRING_CHAR`), glances
@@ -57,7 +80,8 @@ its face never under 32 px.
   0.26 em breath between the e and a round body (never under a sixth of an em through the wobble; the line is 8.88 em, so
   `--h1` caps at 145.5 px). It loves the glass Install (`components/site/glass.ts`): its first look once it stands is at
   the key (which lights in reply), and while the key is hovered, focused or touched it turns its eyes to it, squints with
-  joy (not again within 2 s), then gazes with lit eyes (a second catchlight) and a brighter halo, and goes back to the
+  joy (not again within 2 s), then gazes with lit eyes (starstruck, quicker flares, stars popping round its head) and a
+  brighter halo, and goes back to the
   pointer when it is let go; a press makes it squint again and hop. Calm: one pose, turned to the key with lit eyes.
 - **The glass Install** (`components/site/InstallKey.tsx`): the one glass surface, as a key. The cap is the frosted glass;
   its body, 6 px of the blob's ramp in 1.5 px cells, shows as a lit wall and as a halo on the paper that pools under the
@@ -162,6 +186,55 @@ The bar keeps its four items at 40 px; the island shrinks to fit and docks at 0.
 its stop, the blob standing over it at 108 px, and the lead, both calls and the terms line all in the first screen. Every
 section stacks words first, then its plate; plates reflow by container query (the router, the cards and the table stack,
 their wires drop). Every control is at least 40 px. No sideways scroll.
+
+## The share pictures (`app/card`, `scripts/make-cards.sh`)
+
+The Open Graph card (`public/og.png`, 1200 × 630), the repository's social preview (1280 × 640), the README's banners
+(1280 × 480, light and dark, stored at 2x) and the README's GIF (798 × 315) are one family: the h1 on one line in Newsreader with the
+blob as its full stop, lit, two stars of a burst round its head and one eye flaring, on the accent dithered up from the
+foot. The card and the social preview add the glass Install as a keycap under the line (the blob looks at it) and the host
+centred at the foot, clear of the chip X lays over a card's corner and of a preview's rounded corners. The banners are the
+line alone over a low pool that thins to the ground before the bottom edge. The GIF is the hero's action without the line
+(the banner just above it in the README is the line; a frame's `line: false`): the blob standing over the two-line key,
+the key pressed (it sinks, the blob squints and hops), the pointer leaving and coming back (the blob looks away, then
+turns back with a squint of joy and a burst of stars), 100 frames at 50 ms, the loop cut on the press, and it opens on a
+lit frame for a reader with animated images off. They are the site's art. The README says what the app is and never shows these eyes as
+the app's.
+
+- **Metadata** (`lib/metadata.ts`): `og:image` is the static `/og.png?v=2`, 1200 × 630, its alt `ALT.og` (the deck); the
+  Twitter card is `summary_large_image` with the same picture. Nothing is rendered at build. Feeds cache a picture by its
+  URL for days, and `/og.png` first served the launch card, so the URL carries a version (`OG_VERSION`): bump it whenever
+  `og.png` changes. After the deploy, re-scrape the home page in LinkedIn's Post Inspector and Facebook's Sharing Debugger;
+  X fetches the new picture once its card cache lets go.
+- **The route** (`app/card/page.tsx`, development only: production answers 404, nothing links to it, `noindex`):
+  `/card?f=<frame>` shows one frame of `app/card/frames.ts` (`og-light`, `og-dark`, `social`, `banner-light`,
+  `banner-dark`, `gif`, `gif-dark`), composed from the page's own pieces: the blob engine (`lib/blob.ts`) mounted directly,
+  `InstallKey`, `renderToneField`, the page's fonts and tokens. Any number in a frame can be tried from the query
+  (`frames.ts` `tuned`: `line=0`, `fs`, `disc`, `drop`, `seed`, `t`, `lit`, `kx=c`, `mark=0`, the pool's `peak`, `r`, `ay` and more).
+- **The clock** (`app/card/clock.ts`): the page's requestAnimationFrame runs on synthetic time at 60 fps, and while a frame
+  runs `performance.now` reads that time and `Math.random` a seeded generator (mulberry32). A frame's `seed`, `lit` (when
+  what it loves lights up) and `t` (when it is captured) give the same picture every run: two runs differ by at most one
+  antialias level in a couple of pixels. A still's moment is read straight from `t`; stepping to the same time plays other
+  frames, so a moment is chosen by opening a run of `&t=` values, never by stepping.
+- **The capture** (`scripts/make-cards.sh` with `scripts/cards.py`, python3 and Pillow; agent-browser, headless): each
+  still is laid out at half its size, captured at 4x and halved with a box filter, so the blob's 1.5 px cells are crisp
+  3 px cells and the pool's 2 px cells are 4 px. The banners keep the whole 4x capture (2560 × 960, cells of 6 and 8 px)
+  and the README shows them at `width="1280"`: GitHub's column is 830 to 1012 px wide, so a 1x banner would be stretched
+  on a Retina screen and its cells would blur. The GIF is laid out at two thirds and captured at 1.5x (whole 2 px cells,
+  nothing resampled), stepped 50 ms a frame by `window.__cardStep` with the pointer's beats from `window.__cardDo`, on one
+  palette of 127 colours with no dither. The README's pictures have rounded corners (12 px on the banners, a hard 8 px on
+  the GIF), so each reads as a plate on GitHub's white and on its dark.
+- **The Apple mark**: the key wears it, as the hero's does. `mark: false` in a frame (or `Q="&mark=0"`) takes it off the
+  card if a picture should travel without it.
+- **To regenerate**: start the dev server (`pnpm -C site dev`), then from the repo root run `site/scripts/make-cards.sh`
+  (its two arguments are the base URL and the media folder, by default `http://localhost:3939` and `docs/media`). It
+  writes `site/public/og.png` and, in the media folder, `banner-light.png`, `banner-dark.png`, `hero.gif`,
+  `hero-dark.gif` and `social-preview.png`. `ONLY="og-light"` takes those stills alone (`og-dark` only when named), `GIF=0`
+  skips the GIF, `GIF=only` takes it alone and `GIFS="dark"` takes one theme of it, `Q="&seed=12"` tries numbers,
+  `SHEET=<png>` writes a sheet of every fifth GIF frame to choose `POSTER` by. To choose a new moment, open `/card?f=<frame>&seed=<n>&t=<ms>` over a run of values, judge each at 600
+  and 300 px wide (`cards.py small`), and write the seed and `t` beside the frame with the reason. Bump `OG_VERSION` in
+  `lib/metadata.ts` when `og.png` changed. Commit `og.png` and the
+  README's four pictures; upload `social-preview.png` by hand in the repository's settings (General, Social preview).
 
 ## Adding a demo
 

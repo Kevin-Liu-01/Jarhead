@@ -136,7 +136,7 @@ export function HeroCharacter(): ReactElement {
     ch.current?.nudge();
   }, [hero]);
 
-  return <Character ref={ch} phase={phase} className="hero-char" ignoreScale inline onPress={stepHero} pressMode="pointer" />;
+  return <Character ref={ch} phase={phase} className="hero-char" ignoreScale lead inline onPress={stepHero} pressMode="pointer" />;
 }
 
 /** The blob's keyboard twin: a button beside the h1, unseen until focused, when the blob itself wears the ring. */

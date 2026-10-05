@@ -6,11 +6,12 @@ import { useTheme } from "@/lib/theme";
 import { useCalm } from "@/lib/motion";
 
 /**
- * The resting stills (app/stills/*): the awake blob (`O O`), the happy one (`^ ^`), the quiet titanium one asleep (`- -`).
+ * The resting stills (app/stills/*): the awake blob (`O O`, its star and dot catchlights), the happy one (`^ ^` with its
+ * sparkle), the quiet titanium one asleep (`- -`).
  * The query names the face's drawing: when the eyes change, it changes, so a returning visitor never sees a still cached
  * under the old face (the stills keep an hour's max-age).
  */
-const FACE_V = "eyes-2";
+const FACE_V = "eyes-3";
 const STILL: Record<"awake" | "happy" | "quiet", string> = {
   awake: `/stills/awake.png?v=${FACE_V}`,
   happy: `/stills/happy.png?v=${FACE_V}`,
@@ -49,6 +50,8 @@ interface CharacterProps {
   readonly style?: CSSProperties;
   /** Mount at 1.5 px cells regardless of a transform on the host (the hero mounts while it is a dot). */
   readonly ignoreScale?: boolean;
+  /** The page's lead character (the hero's): its eyes glint on the quicker clock (lib/eyes.ts TWINKLE). */
+  readonly lead?: boolean;
   /** A span host where only phrasing content may stand (inside the h1). */
   readonly inline?: boolean;
 }
@@ -59,7 +62,7 @@ interface CharacterProps {
  * draws over the still, pauses off screen, on a hidden tab and after a quiet spell asleep, and is released after a while
  * away. Its eyes follow the pointer anywhere on the page. Under calm it draws one pose per change.
  */
-export const Character = forwardRef<CharacterHandle, CharacterProps>(function Character({ phase, face = null, size, label, onPress, pressMode = "button", className, style, ignoreScale, inline }, ref): ReactElement {
+export const Character = forwardRef<CharacterHandle, CharacterProps>(function Character({ phase, face = null, size, label, onPress, pressMode = "button", className, style, ignoreScale, lead, inline }, ref): ReactElement {
   const host = useRef<HTMLElement>(null);
   const handle = useRef<BlobHandle | null>(null);
   const theme = useTheme();
@@ -100,6 +103,7 @@ export const Character = forwardRef<CharacterHandle, CharacterProps>(function Ch
         still: calm,
         pointerRoot: document.body,
         ignoreScale,
+        lead,
       });
       if (latest.current.face) h.setFace(latest.current.face);
       if (attending.current) h.attend(attending.current);
@@ -140,7 +144,7 @@ export const Character = forwardRef<CharacterHandle, CharacterProps>(function Ch
       window.clearTimeout(away);
       unmount();
     };
-  }, [calm, size, ignoreScale]);
+  }, [calm, size, ignoreScale, lead]);
 
   useEffect(() => {
     handle.current?.setPhase(phase);

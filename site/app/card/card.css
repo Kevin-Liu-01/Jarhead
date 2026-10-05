@@ -1,0 +1,40 @@
+/*
+ * The share pictures (app/card, development only): a frame of the page's paper at half its picture's size, the h1 on one
+ * line in Newsreader with the blob as its full stop, the glass Install under it, the host at the foot, the accent dithered
+ * up from the foot. Tokens only. The page's own classes (.char, .glass*) keep their rules; the card places them and sizes
+ * the glass Install to the frame. Frames carry their numbers as custom properties (app/card/CardScene.tsx).
+ */
+.card { position: relative; flex: none; overflow: hidden; isolation: isolate; background: var(--jh-ground); color: var(--jh-fg); }
+.card-field { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.card-field canvas { position: absolute; left: 0; top: 0; image-rendering: pixelated; }
+/* the line and the key, centred, then dropped: the blob rises over the line, so the line sits below the middle */
+.card-in { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; padding-top: calc(var(--drop) * 2); }
+.card-group { display: flex; flex-direction: column; align-items: flex-start; }
+.card-group[data-center] { align-items: center; }
+/* the hero's h1 (styles/site.css .hero-h1) at the frame's size and weight */
+.card-h { margin: 0; font-family: var(--font-serif); font-size: var(--fs); font-weight: var(--weight); font-variation-settings: "opsz" 72; line-height: 1;
+  letter-spacing: -0.024em; white-space: nowrap; padding-right: 0.04em; }
+.card-stop { color: transparent; }
+/* the mark holds the blob's place on the baseline: the disc's width after the stop's breath; the host is 1.4 discs, so the
+   halo and the stars round its head have room, its disc standing on the line */
+.card-mark { display: inline-block; position: relative; width: var(--disc); height: 0; margin-left: var(--gap); vertical-align: baseline; }
+/* without the line (a frame's `line: false`) the blob stands alone over the key: a disc's box holds its place */
+.card-solo { position: relative; flex: none; width: var(--disc); height: var(--disc); }
+.card .card-char { position: absolute; width: calc(var(--disc) * 1.4); height: calc(var(--disc) * 1.4); left: calc(var(--disc) * -0.2); bottom: calc(var(--disc) * -0.2); }
+.card-key { margin-top: var(--card-key-gap); margin-left: var(--card-key-dx); }
+.card-group[data-center] .card-key { margin-left: 0; }
+/* the host, small and centred at the foot, clear of a feed's own chip in the corner */
+.card-url { position: absolute; left: 0; right: 0; bottom: 22px; z-index: 1; margin: 0; text-align: center; font: 400 11px/1 var(--font-mono); letter-spacing: 0.01em; color: var(--jh-fg-2); }
+
+/* the glass Install at the frame's size: every length the page's (styles/site.css) in proportion to the label */
+.card .glass { --key-depth: var(--card-key-depth); --key-h: var(--card-key-h); --key-r: calc(var(--card-key-h) * 0.24); min-width: 0; width: var(--card-key-w); }
+.card .glass-cap { gap: calc(var(--card-key-size) * 0.8); padding: 0 calc(var(--card-key-size) * 1.5) 0 calc(var(--card-key-size) * 1.2); }
+.card .glass-mark { width: calc(var(--card-key-size) * 1.4); height: calc(var(--card-key-size) * 1.4); }
+.card .glass-lines { gap: calc(var(--card-key-size) * 0.25); }
+.card .glass-l1 { font-size: var(--card-key-size); }
+.card .glass-l2 { font-size: calc(var(--card-key-size) * 0.65); }
+/* the cap without the Apple mark (a frame's `mark: false`) */
+.card[data-nomark] .glass-mark { display: none; }
+/* the keycap: the mark and the one word, centred on the cap */
+.card .card-key--cap .glass-cap { justify-content: center; padding: 0 calc(var(--card-key-size) * 0.9); }
+.card .card-key--cap .glass-l2 { display: none; }

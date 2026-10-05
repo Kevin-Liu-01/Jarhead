@@ -30,13 +30,15 @@
 
 /* the anchor: the face at (57, 40), the word, Go · Stop · Mute */
 .desk-eyes { left: 57px; top: 40px; width: 0; height: 0; transition: transform var(--jh-quick) var(--jh-ease-out); }
-/* the face: the blob's own eyes as SVG (Island.tsx islandFace), ink pupils and lines rimmed in the phase-tinted paper */
+/* the face: the blob's own eyes as SVG (Island.tsx islandFace), ink pupils and lines rimmed in the phase-tinted paper, the
+   paper sparkle on an ink halo */
 .desk-face { position: absolute; left: -40px; top: -28px; overflow: visible; color: var(--desk-eye-ink); transition: color var(--jh-drift) var(--jh-ease-in-out); }
 .desk-face path { stroke-linecap: round; stroke-linejoin: round; }
 .desk-face .rim { fill: currentColor; stroke: currentColor; }
 .desk-face .ink { fill: var(--jh-desk-notch); }
 .desk-face .ink.line { stroke: var(--jh-desk-notch); }
 .desk-face .glint { fill: var(--jh-paper); }
+.desk-face .halo { fill: none; stroke: var(--jh-desk-notch); }
 .desk-face .line { fill: none; }
 .desk-word { left: 6px; top: 60px; width: 102px; height: 16px; font-size: max(12px, var(--isl-min)); font-weight: 500; line-height: 16px; text-align: center; color: var(--desk-white-92); white-space: nowrap; }
 .desk-word-x { position: relative; display: block; }

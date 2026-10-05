@@ -12,10 +12,13 @@ Inter 4.1 (cut to the page), JetBrains Mono.
   `docs/DESIGN.md`.
 - The island at the top wears what the demo in view claims (`lib/live.ts`); the blob's engines mount near the viewport and
   its resting stills are rendered at build from `lib/orb.ts` (`app/stills/*.png/route.ts`).
-- Server-side colours (the theme-color, the manifest, the OG image, the stills) are read from the token sheet
-  (`lib/tokens.ts`); no raw colour lives outside `app/globals.css` and `styles/kit.css`.
-- Icons and the OG field are rendered by hand from the repo root, `pnpm exec tsx site/scripts/make-icons.mts` and
-  `site/scripts/make-og.mts`; their PNGs under `app/` and `public/` are committed.
+- Server-side colours (the theme-color, the manifest, the stills) are read from the token sheet (`lib/tokens.ts`); no raw
+  colour lives outside `app/globals.css` and `styles/kit.css`.
+- Icons are rendered by hand from the repo root, `pnpm exec tsx site/scripts/make-icons.mts`; their PNGs under `app/` and
+  `public/` are committed.
+- The share pictures (`public/og.png`, the repository's social preview and the README's banners and GIF in `docs/media`)
+  are captured from the dev-only `/card` route by `site/scripts/make-cards.sh`, headless; the recipe is in
+  `docs/DESIGN.md` ("The share pictures"). In production `/card` is a 404.
 - `sh site/scripts/check-install.sh` (from the repo root) checks the installer without running it: syntax, a dry run of the
   four commands, and that the deck never claims a download.
 - Generated, never edited: `public/install.sh`, `.next/`.

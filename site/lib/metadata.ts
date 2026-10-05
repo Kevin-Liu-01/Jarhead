@@ -4,11 +4,13 @@ import { first, parts } from "@/lib/cut";
 
 /**
  * The page's metadata, in one place; `app/layout.tsx` re-exports both. The words are read
- * from content/deck.ts (FOOTER, HERO, ALT), never typed here; the OG picture is `/og.png`
- * (`app/og.png/route.tsx`), the favicons are `scripts/make-icons.mts`'s output, the
- * manifest is `app/manifest.ts`. `app/icon.png` and `app/apple-icon.png` are Next's file
- * conventions, but Next links them only when `icons` is unset, so they are named in `icons`
- * below beside the 16 px PNG (listed so a browser can pick its size).
+ * from content/deck.ts (FOOTER, HERO, ALT), never typed here; the OG picture is the static
+ * `public/og.png` (1200 × 630, captured from the dev-only `/card` by `scripts/make-cards.sh`,
+ * docs/DESIGN.md "The share pictures"), linked with a version query (OG_VERSION below); the
+ * favicons are `scripts/make-icons.mts`'s output, the manifest is `app/manifest.ts`.
+ * `app/icon.png` and `app/apple-icon.png` are Next's file conventions, but Next links them
+ * only when `icons` is unset, so they are named in `icons` below beside the 16 px PNG (listed
+ * so a browser can pick its size).
  */
 
 const SITE_URL = "https://jarhead.kevinliu.studio";
@@ -17,7 +19,12 @@ export const SITE_NAME = FOOTER.brand;
 /** The footer line, the lead's first sentence, then three parts of the figures line. 125 characters today. */
 export const DESCRIPTION = `${FOOTER.line1} ${first(HERO.lead, 1)} ${parts(HERO.figures).slice(1, 4).join(" · ")}`;
 
-const OG_IMAGE = { url: "/og.png", width: 1200, height: 630, alt: ALT.banner, type: "image/png" } as const;
+/**
+ * X, LinkedIn, Slack, Facebook and iMessage cache a card's picture by its URL, and `/og.png` already served the launch
+ * card. Bump this whenever `public/og.png` changes, so feeds fetch the new picture instead of the one they hold.
+ */
+const OG_VERSION = 2;
+const OG_IMAGE = { url: `/og.png?v=${OG_VERSION}`, width: 1200, height: 630, alt: ALT.og, type: "image/png" } as const;
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

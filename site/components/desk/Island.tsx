@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactElement, type RefObject } from "
 import { Icon } from "@/components/icons/Icon";
 import { ISLAND } from "@/content/island";
 import { after, upTo } from "@/lib/cut";
-import { faceMarks, type FacePose } from "@/lib/eyes";
+import { faceMarks, flareSize, type FacePose } from "@/lib/eyes";
 import type { Show, Tile } from "@/lib/live";
 import type { DeskKind } from "@/lib/phase";
 
@@ -28,27 +28,45 @@ const FACE_H = 56;
 const FACE_R = 52;
 /** The light rim round every shape of the face, in island px: wide enough to hold docked, where it is under 1.3 px on screen. */
 const FACE_RIM = 1.9;
+/**
+ * The ink halo round every light mark, in island px: at rest just enough to part a star's tip from the pupil's light rim,
+ * and grown with a flare so the star crossing that rim keeps its points.
+ */
+const GLINT_HALO = 1.5;
+const GLINT_REST = 0.6;
+/** The halos show only over the rims (an alpha mask of the rims themselves): off the face a flare's tip is paper alone. */
+const RIM_MASK = "desk-face-rim";
+/** The island's smallest scale on screen (docked on a phone), so the sparkle's 0.7 px floor is judged in screen px. */
+const FACE_UNIT = 0.6;
 const REST: FacePose = { open: 1, sparkle: 0, turn: 0 };
 
 /**
  * The island's face: the blob's own eyes (lib/eyes.ts) as SVG paths, so they stay crisp at every island scale. The same ink
- * pupils with their paper catchlight and the same ink lines, each rimmed in the phase-tinted paper (the SVG's colour,
- * styles/desk.css) so the face reads on the island's dark. `pair` is the app's, one glyph per eye with a space between.
+ * pupils with their paper star and dot, the same ink lines and the happy arcs' own sparkle. The ink is rimmed in the
+ * phase-tinted paper (the SVG's colour, styles/desk.css) so the face reads on the island's dark; every light mark sits on
+ * a thin ink halo (`.halo`, all drawn before any light fill, shown only over the rims), the rim turned inside out, so a
+ * flaring star that crosses a pupil's rim keeps its points. `pair` is the app's, one glyph per eye with a space between.
  */
 export function islandFace(pair: string, pose: FacePose = REST): string {
-  const marks = faceMarks(pair.replace(/\s+/g, ""), FACE_W / 2, FACE_H / 2, FACE_R, pose, { ink: "ink", light: "glint" });
+  const marks = faceMarks(pair.replace(/\s+/g, ""), FACE_W / 2, FACE_H / 2, FACE_R, pose, { ink: "ink", light: "glint" }, FACE_UNIT);
   let rims = "";
   let face = "";
+  let halos = "";
+  let glints = "";
+  const f = Math.max(flareSize(pose.flare?.[0] ?? 0), flareSize(pose.flare?.[1] ?? 0));
+  const halo = (2 * (GLINT_REST + (GLINT_HALO - GLINT_REST) * Math.min(1, f * 2.5))).toFixed(2);
   for (const m of marks) {
     if (m.paint === "glint") {
-      face += `<path class="glint" d="${m.d}"/>`;
+      halos += `<path class="halo" d="${m.d}" stroke-width="${halo}"/>`;
+      glints += `<path class="glint" d="${m.d}"/>`;
       continue;
     }
     const line = m.fill ? "" : " line";
     rims += `<path class="rim${line}" d="${m.d}" stroke-width="${(m.width + 2 * FACE_RIM).toFixed(2)}"/>`;
     face += m.fill ? `<path class="ink" d="${m.d}"/>` : `<path class="ink line" d="${m.d}" stroke-width="${m.width.toFixed(2)}"/>`;
   }
-  return rims + face;
+  const parted = halos ? `<mask id="${RIM_MASK}" mask-type="alpha">${rims}</mask><g mask="url(#${RIM_MASK})">${halos}</g>` : "";
+  return rims + face + parted + glints;
 }
 
 /** The phase word crossfades over --jh-drift: the old word fades out under the new one. */
