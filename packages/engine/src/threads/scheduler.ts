@@ -1200,7 +1200,7 @@ export class ThreadScheduler {
     const armed = this.opts.desk.root.arm(this.grantRecord());
     // Past the root's TTL a yes arms nothing (`arm` answers undefined, or `expired` once the desk keeps
     // an expired question on the floor): the question is asked again, and his next yes lands it.
-    if (!armed || (armed as ArmedConfirmation & { readonly expired?: true }).expired === true) {
+    if (!armed || armed.expired === true) {
       const again = this.askAgain(job, this.now(), "expired");
       return { ok: false, reason: again ? "the question had expired; it is asked again" : "the question had expired" };
     }
@@ -1521,15 +1521,9 @@ export class ThreadScheduler {
     return since.length < count ? "" : undefined;
   }
 
-  /**
-   * Can Kevin still answer this lane's question where it is? The desk's own `holds` when it has
-   * one (W1-4: a question past its TTL holds nothing); before that, its floor and queue (the
-   * root's TTL is kept by the re-ask before it lapses).
-   */
+  /** Can Kevin still answer this lane's question where it is? A question past its TTL holds nothing. */
   private holds(laneId: string): boolean {
-    const desk = this.opts.desk as ConfirmationDesk & { readonly holds?: (laneId: string) => boolean };
-    if (typeof desk.holds === "function") return desk.holds(laneId);
-    return desk.floor?.laneId === laneId || desk.queued.some((q) => q.laneId === laneId);
+    return this.opts.desk.holds(laneId);
   }
 
   /** The question a lane has on the desk right now, as asked: the root's pending when it holds the floor, its queued entry otherwise. */
