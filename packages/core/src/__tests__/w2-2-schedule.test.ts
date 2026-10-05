@@ -159,19 +159,113 @@ test("SL-16: a part of the day never moves a 24-hour time or an am/pm; one outsi
   assert.equal(words("every morning at 06:30"), "daily 06:30");
 });
 
+/** The refusal for a phrase said at `now`. */
+function refused(p: string, now = MON_0600): string {
+  const w = parseWhen(p, now);
+  assert.ok("error" in w, `"${p}" is refused, not ${"error" in w ? "" : describe(w)}`);
+  return w.error;
+}
+
+test("SL-16 (review): tonight keeps main's evening reading: 'tonight at 5' and 'at five tonight' are 17:00 today, 'tonight at four' 16:00", () => {
+  assert.equal(words("tonight at 5"), "17:00 · Mon 5 Oct");
+  assert.equal(words("at 5 tonight"), "17:00 · Mon 5 Oct");
+  assert.equal(words("at five tonight"), "17:00 · Mon 5 Oct");
+  assert.equal(words("tonight at four"), "16:00 · Mon 5 Oct");
+  assert.equal(words("tonight at 4:30"), "16:30 · Mon 5 Oct");
+  assert.equal(words("tonight at six"), "18:00 · Mon 5 Oct");
+  assert.match(refused("tonight at 5", local(2026, 10, 5, 18, 0)), /17:00 has passed today/, "never moved to 05:00 the next morning");
+  // The night's own hours: twelve is midnight, one to three the small hours after it.
+  assert.equal(words("tonight at three"), "03:00 · Tue 6 Oct");
+  assert.equal(words("tonight at 3:30"), "03:30 · Tue 6 Oct");
+  assert.equal(words("tonight at two"), "02:00 · Tue 6 Oct");
+  assert.equal(words("tonight at 12:30"), "00:30 · Tue 6 Oct");
+  assert.equal(words("tonight at 5am"), "05:00 · Tue 6 Oct", "an am said is what it says");
+});
+
+test("SL-16 (review): four or five at night could be either side of dawn, so it is refused with both readings", () => {
+  assert.match(refused("every night at five"), /^5 at night could be 05:00 or 17:00; say which$/);
+  assert.match(refused("every night at four"), /^4 at night could be 04:00 or 16:00; say which$/);
+  assert.match(refused("nightly at 4:30"), /^4:30 at night could be 04:30 or 16:30; say which$/);
+  assert.match(refused("tomorrow night at 5"), /5 at night could be 05:00 or 17:00/);
+  assert.match(refused("at five at night"), /5 at night could be 05:00 or 17:00/);
+  assert.equal(words("every night at 5am"), "daily 05:00");
+  assert.equal(words("nightly 04:30"), "daily 04:30");
+  assert.equal(words("every night at three"), "daily 03:00");
+  assert.equal(words("every night at six"), "daily 18:00");
+  assert.equal(words("every evening at 5"), "daily 17:00", "the evening keeps its p.m.");
+});
+
+test("SL-16 (review): a named day's night runs into the next day: saturday night at midnight is sun 00:00", () => {
+  assert.equal(words("every saturday night at midnight"), "sun 00:00");
+  assert.equal(words("saturday night at 12"), "sun 00:00");
+  assert.equal(words("saturday evening at 12"), "sun 00:00");
+  assert.equal(words("friday night at 2"), "sat 02:00");
+  assert.equal(words("every friday night at 1"), "sat 01:00");
+  assert.equal(words("every friday night at 1am"), "sat 01:00");
+  assert.equal(words("weekends nights at 1"), "mon,sun 01:00");
+  assert.equal(words("weekend nights at 1"), "mon,sun 01:00");
+  assert.equal(words("weekday nights at 1"), "tue,wed,thu,fri,sat 01:00");
+  assert.equal(words("sunday night at 1"), "mon 01:00");
+  assert.equal(words("every night at 2"), "daily 02:00", "every night is every night");
+  // Before midnight the day is the one named; with no part, the day's own small hours.
+  assert.equal(words("sunday night at 11"), "sun 23:00");
+  assert.equal(words("friday night at 11:30"), "fri 23:30");
+  assert.equal(words("every saturday at midnight"), "sat 00:00");
+  assert.equal(words("saturday at 1am"), "sat 01:00");
+});
+
+test("SL-16 (review): a range is refused, never read as a clock: '9 to 5' is not 04:51", () => {
+  assert.match(refused("weekdays 7 to 9"), /^"7 to 9" is a range, not a time; say one time$/);
+  assert.match(refused("every day 9 to 5"), /"9 to 5" is a range/);
+  assert.match(refused("at 7 to 9"), /"7 to 9" is a range/);
+  assert.match(refused("9 before 5"), /"9 before 5" is a range/);
+  assert.match(refused("15 to 8"), /"15 to 8" is a range/);
+  assert.match(refused("at 7 to 9pm"), /"7 to 9pm" is a range/);
+  // A clock's own minutes before the hour still read.
+  assert.equal(words("five to nine"), "08:55 · Mon 5 Oct");
+  assert.equal(words("ten to eight"), "07:50 · Mon 5 Oct");
+  assert.equal(words("twenty to nine"), "08:40 · Mon 5 Oct");
+  assert.equal(words("twenty five to nine"), "08:35 · Mon 5 Oct");
+  assert.equal(words("quarter to eight"), "07:45 · Mon 5 Oct");
+  assert.equal(words("13 minutes to 8"), "07:47 · Mon 5 Oct");
+  assert.equal(words("ten minutes past seven"), "07:10 · Mon 5 Oct");
+  assert.equal(words("9 past 5"), "17:09 · Mon 5 Oct", "past and after take any minute");
+});
+
+test("SL-16 (review): a count is refused, never read as the clock: 'every 2 nights' is not 02:00 daily", () => {
+  assert.match(refused("every 2 nights"), /^"every 2 nights" is a count, not a time; say one, like "daily 23:00" or "every 2 h"$/);
+  assert.match(refused("every 3 mornings"), /"every 3 mornings" is a count/);
+  assert.match(refused("every two nights"), /"every 2 nights" is a count/);
+  assert.match(refused("every 2 days"), /"every 2 days" is a count/);
+  assert.match(refused("every 2 weeks"), /"every 2 weeks" is a count/);
+  assert.match(refused("every 2 mondays"), /"every 2 mondays" is a count/);
+  assert.match(refused("2 nights"), /"2 nights" is a count/);
+  assert.match(refused("every 9"), /"every 9" is a count/);
+  // An hour said after every, with its am/pm, its minutes or the words around it, is every day's.
+  assert.equal(words("every 7am"), "daily 07:00");
+  assert.equal(words("every 7 am"), "daily 07:00");
+  assert.equal(words("every 7:10"), "daily 07:10");
+  assert.equal(words("every 9 on weekdays"), "weekdays 09:00");
+  assert.equal(words("every 9 at night"), "daily 21:00");
+  assert.equal(words("every 2 hours"), "every 2 h");
+});
+
 test("SL-18: the cost line says how the brain is paid for", () => {
   assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire on your plan, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");
-  assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false, true), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire billed as API tokens on your key, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");
-  assert.match(costLine({ steps: 8, seconds: 61 }, 5, true, true), /per fire a model warm-up on this Mac/, "a local model is never billed");
-  const ctx = (apiBrain: boolean) => ({
+  assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false, "plan"), costLine({ steps: 8, seconds: 120 }, 5, false));
+  assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false, "key"), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire billed as API tokens on your key, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");
+  assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false, "server"), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire on the server you set, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");
+  assert.match(costLine({ steps: 8, seconds: 61 }, 5, true, "key"), /per fire a model warm-up on this Mac/, "a local model is never billed");
+  const ctx = (paid: "key" | "server" | undefined) => ({
     when: { kind: "at", at: MON_0600 + 3_600_000 } as AutomationWhen,
     then: [{ kind: "wake-brain", prompt: "summarise", budget: { steps: 8, seconds: 120 } }] as never,
     clauses: { quiet: "respect" } as const,
     settings: { ...DEFAULT_AUTOMATIONS, unattended: [...DEFAULT_AUTOMATIONS.unattended, "wake-brain" as const], wakeBudgetMinutesPerDay: 5 },
     confirmed: false,
     folderWatchers: 0,
-    apiBrain,
+    paid,
   });
-  assert.equal(classifyAutomation(ctx(true)).reason, costLine({ steps: 8, seconds: 120 }, 5, false, true));
-  assert.equal(classifyAutomation(ctx(false)).reason, costLine({ steps: 8, seconds: 120 }, 5, false));
+  assert.equal(classifyAutomation(ctx("key")).reason, costLine({ steps: 8, seconds: 120 }, 5, false, "key"));
+  assert.equal(classifyAutomation(ctx("server")).reason, costLine({ steps: 8, seconds: 120 }, 5, false, "server"));
+  assert.equal(classifyAutomation(ctx(undefined)).reason, costLine({ steps: 8, seconds: 120 }, 5, false));
 });

@@ -504,6 +504,68 @@ test("SL-18: the wake-brain question says how the brain is paid for: the plan, A
   }
 });
 
+test("SL-18: an openai-compatible brain is judged by its server: loopback with no key is a warm-up on this Mac, a root sent Kevin's key bills it, any other root is 'the server you set'", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-w22-cost-compat-"));
+  let keys = { brainApiKey: false, openai: false };
+  let current: Settings = { ...DEFAULT_SETTINGS, brain: "openai-compatible", brainBaseUrl: "http://127.0.0.1:11434/v1", automations: { ...DEFAULT_AUTOMATIONS, unattended: [...DEFAULT_AUTOMATIONS.unattended, "wake-brain"], wakeBudgetMinutesPerDay: 5 } };
+  const t = new Date(2026, 9, 5, 9, 0, 0).getTime();
+  const autos = new Automations({
+    stateDir: dir,
+    now: () => t,
+    ledger: new Ledger(dir),
+    settings: () => current,
+    updateSettings: (patch) => (current = { ...current, ...patch } as Settings),
+    hands: {} as never,
+    reader: {} as never,
+    redact: (s) => s,
+    emit: () => undefined,
+    problem: () => undefined,
+    live: () => undefined,
+    brain: { warmUp: async () => undefined, lane: async () => undefined, after: async () => undefined },
+    present: async () => false,
+    localBrain: () => current.brain === "local",
+    brainKeys: () => keys,
+    onChange: () => undefined,
+    exec: fakeExec().exec,
+    home: home(),
+  });
+  const draft = (name: string): AutomationSetInput => ({ name, when: { kind: "at", at: t + H }, then: [{ kind: "wake-brain", prompt: "summarise my agents", budget: { steps: 5, seconds: 60 }, speak: true }], echo: "Wake the brain." });
+  const ask = (root: string | undefined): string => {
+    current = { ...current, ...(root === undefined ? { brainBaseUrl: undefined } : { brainBaseUrl: root }) } as Settings;
+    const r = autos.arm(draft("rundown"), "brain", false);
+    assert.equal(r.kind, "confirm", JSON.stringify(r));
+    return (r as { question: string }).question;
+  };
+  const consoleHeard = async (name: string): Promise<string | undefined> => {
+    const toasts: string[] = [];
+    await autos.command({ type: "automation.set", automation: draft(name) } as never, (text) => void toasts.push(text));
+    assert.match(toasts[0] ?? "", /^armed: /, toasts.join(" | "));
+    return autos.table.named(name)?.confirmed?.heard;
+  };
+  try {
+    // Ollama or LM Studio on this Mac, no key: nothing is billed.
+    assert.match(ask("http://127.0.0.1:11434/v1"), /per fire a model warm-up on this Mac/);
+    assert.match(ask("http://localhost:1234/v1"), /per fire a model warm-up on this Mac/);
+    assert.match(ask("localhost:8080"), /per fire a model warm-up on this Mac/, "a root written without its scheme");
+    assert.match(ask("http://[::1]:11434"), /per fire a model warm-up on this Mac/);
+    assert.equal(await consoleHeard("local server"), ask("http://127.0.0.1:11434/v1"), "the Console records the line Kevin read");
+    // OPENAI_API_KEY alone is never sent to a server that is not OpenAI's.
+    keys = { brainApiKey: false, openai: true };
+    assert.match(ask("http://10.0.0.5:11434/v1"), /per fire on the server you set/);
+    assert.match(ask("https://openrouter.ai/api/v1"), /per fire on the server you set/);
+    assert.match(ask("https://api.openai.com/v1"), /per fire billed as API tokens on your key/, "OpenAI's own host is sent OPENAI_API_KEY");
+    assert.match(ask(undefined), /per fire on the server you set/, "no root in Settings: the engine's own (JARHEAD_BRAIN_BASE_URL) is one the form cannot see");
+    // JARHEAD_BRAIN_API_KEY goes to the root Kevin set.
+    keys = { brainApiKey: true, openai: false };
+    assert.match(ask("https://openrouter.ai/api/v1"), /per fire billed as API tokens on your key/);
+    assert.equal(await consoleHeard("openrouter"), ask("https://openrouter.ai/api/v1"));
+    assert.match(ask("http://127.0.0.1:4000"), /per fire on the server you set/, "a key sent to a loopback proxy: Jarhead cannot say who bills it");
+    assert.doesNotMatch(ask("http://127.0.0.1:11434/v1"), /API tokens on your key/);
+  } finally {
+    autos.dispose();
+  }
+});
+
 test("SL-18: under 'auto', the question and the heard the Console records name the brain auto resolved to: API tokens on the key, or a warm-up on this Mac", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-w22-cost-auto-"));
   let resolved: string | undefined = "anthropic-api";
@@ -553,17 +615,17 @@ test("SL-18: under 'auto', the question and the heard the Console records name t
   }
 });
 
-test("SL-18: the engine names the brain 'auto' resolved to in the wake-brain question and in the heard it records (runs once engine.ts passes brainKind)", async (t) => {
+test("SL-18: the engine names the brain 'auto' resolved to in the wake-brain question and in the heard it records (a TODO until engine.ts passes brainKind)", async (t) => {
   const apiBrain = { kind: "anthropic-api", start: async () => ({ ready: true, detail: "api" }), handle: async () => ({ status: "done", text: "" }), cancel: async () => undefined, stop: async () => undefined };
   const w = world({ brain: apiBrain as never, automations: { exec: fakeExec().exec, home: home() } });
   const { engine, clock } = w;
   try {
     await engine.start();
-    // The W2-1 / W2-2 contract: engine.ts hands Automations `brainKind`; until that merge the engine judges by Settings' brain,
-    // and the Console's form reads Settings' brain too, so the two agree.
+    // TRIAGE's W2-1 / W2-2 contract: at the wave merge engine.ts hands Automations `brainKind` and AutomationForm.billedBrain reads
+    // setup.brainResolved, in one change. Until then the shipped default `auto` is judged as "on your plan" whatever it resolved
+    // to, and this test runs as a TODO: every run lists it, with the failure below. Once brainKind is wired it is a plain test.
     if ((engine.automations as unknown as { opts: { brainKind?: unknown } }).opts.brainKind === undefined) {
-      t.skip("engine.ts passes no brainKind yet (the W2-1 merge wires it, and AutomationForm.billedBrain reads setup.brainResolved with it)");
-      return;
+      t.todo("W2-1 / W2-2 contract: engine.ts passes no brainKind yet, so under 'auto' an API brain's cost line says 'on your plan'");
     }
     assert.equal(engine.snapshot().settings.brain, "auto");
     // The brain proves itself after start(): until it is ready, auto has resolved to nothing.

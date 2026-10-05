@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { atClock, classifyAction, classifyAutomation, clockOf, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, logger, newId, nextFire, parseWhen, quietEnds, snoozeDefault, Ledger, type ActionContext, type Decision } from "@jarhead/core";
+import { atClock, classifyAction, classifyAutomation, clockOf, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, isLoopbackHost, logger, newId, nextFire, parseWhen, quietEnds, secretsPresent, snoozeDefault, Ledger, type ActionContext, type AutomationContext, type Decision } from "@jarhead/core";
 import { runShell, type AutomationChangeResult, type AutomationSetContext, type AutomationSetResult, type AutomationSource, type AutomationVerb, type RecipeRow } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import {
@@ -74,8 +74,44 @@ export const FILE_QUEUE_MAX = 100;
 const FILE_KINDS: ReadonlySet<string> = new Set(["file", "run-recipe"]);
 /** A row in one of these states keeps its name only until another row wants it. */
 const RETIRABLE: ReadonlySet<AutomationState> = new Set<AutomationState>(["done", "failed"]);
-/** The brains billed per token on an API key: the cost line says so. */
-const API_BRAINS: ReadonlySet<string> = new Set(["anthropic-api", "openai-responses", "openai-compatible"]);
+/** The brains always billed per token on an API key: the cost line says so. openai-compatible depends on its server (brainPaid). */
+const API_BRAINS: ReadonlySet<string> = new Set(["anthropic-api", "openai-responses"]);
+
+/** Which brain keys are set, by presence only (core's secretsPresent). */
+export interface BrainKeys {
+  /** JARHEAD_BRAIN_API_KEY: the one key an openai-compatible server other than OpenAI's is sent. */
+  readonly brainApiKey: boolean;
+  /** OPENAI_API_KEY: sent to an openai-compatible root only when it is OpenAI's own host. */
+  readonly openai: boolean;
+}
+
+/** The host of a server root, lowercased; a root written without a scheme ("localhost:11434") is read as http. */
+function hostOfRoot(root: string): string {
+  const r = root.trim();
+  try {
+    return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(r) ? r : `http://${r}`).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * How a wake-brain fire on `brain` is paid for, as the cost line says it: `mac` for a model on this Mac, else core's BrainPaid.
+ * An openai-compatible brain is judged by Settings' server root and the keys that are set, the same three inputs the Console's
+ * form reads (AutomationForm.billing): a loopback root with no brain key is a model on this Mac (Ollama, LM Studio); a root
+ * that is sent Kevin's key bills tokens on it (OpenAI's host takes OPENAI_API_KEY too); any other root, or none in Settings,
+ * is "the server you set". Every other brain: local is `mac`, the API brains `key`, the logins (and an unresolved auto) `plan`.
+ */
+export function brainPaid(brain: string | undefined, brainBaseUrl: string | undefined, keys: BrainKeys): "mac" | NonNullable<AutomationContext["paid"]> {
+  if (brain === "local") return "mac";
+  if (brain !== undefined && API_BRAINS.has(brain)) return "key";
+  if (brain !== "openai-compatible") return "plan";
+  const host = hostOfRoot(brainBaseUrl ?? "");
+  if (!host) return "server";
+  if (isLoopbackHost(host)) return keys.brainApiKey ? "server" : "mac";
+  const openaiHost = host === "api.openai.com" || host.endsWith(".openai.com");
+  return keys.brainApiKey || (openaiHost && keys.openai) ? "key" : "server";
+}
 /** What a `firing` row left by a dead daemon says. */
 export const RESTART_DETAIL = "the daemon restarted";
 /** A recipe the brain hands in with a row is saved with this cap. */
@@ -141,9 +177,12 @@ export interface AutomationsOptions {
    * The brain a wake-brain fire would run on, resolved (what `auto` became); absent, Settings' brain. An API brain's cost line
    * says tokens on the key; wired, it also decides the local warm-up line in place of `localBrain`. The engine wires
    * `() => (this.brainReady && this.brain ? this.brain.kind : this.settings.brain)`, and the Console's AutomationForm.billedBrain
-   * reads `setup.brainResolved ?? settings.brain` in the same change, so the form shows what the engine records.
+   * reads `setup.brainResolved ?? settings.brain` in the same change, so the form shows what the engine records. That is
+   * TRIAGE's W2-1 / W2-2 contract, at the wave merge; until it lands, the default `auto` is judged as "on your plan".
    */
   readonly brainKind?: (() => string | undefined) | undefined;
+  /** Which brain keys are set (the openai-compatible cost line); absent, core's secretsPresent(). */
+  readonly brainKeys?: (() => BrainKeys) | undefined;
   /** The snapshot goes out (the LIST or a row changed). */
   readonly onChange: () => void;
   /** The user's name as the lines say it (the engine's effective name; "Kevin" when none is wired). */
@@ -874,6 +913,10 @@ export class Automations implements AutomationSource {
     // The brain a wake-brain fire would run on: what `auto` resolved to when the engine says (brainKind), else Settings' brain.
     // The Console's form names the same one, so the cost line it shows is the one recorded as heard.
     const billed = this.opts.brainKind?.() ?? this.opts.settings().brain;
+    const paid = brainPaid(billed, this.opts.settings().brainBaseUrl, (this.opts.brainKeys ?? secretsPresent)());
+    // The runner's word on a local brain wins; then the server root (an openai-compatible loopback root is this Mac); then, with
+    // no brainKind wired, the engine's own localBrain seam.
+    const localBrain = ctx.localBrain ?? (paid === "mac" || (this.opts.brainKind === undefined && this.opts.localBrain()));
     const judged = classifyAutomation({
       when,
       then,
@@ -883,8 +926,9 @@ export class Automations implements AutomationSource {
       confirmed: false,
       folderWatchers: this.table.folderWatchers(),
       fromThread: ctx.fromThread,
-      localBrain: ctx.localBrain ?? (this.opts.brainKind ? billed === "local" : this.opts.localBrain()),
-      apiBrain: API_BRAINS.has(billed),
+      localBrain,
+      // A loopback root the runner says is not local is still nobody's bill: "the server you set".
+      paid: paid === "mac" ? "server" : paid,
       request: ctx.request,
       home: this.home,
       repoRoot: this.opts.repoRoot,
