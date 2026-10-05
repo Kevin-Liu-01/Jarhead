@@ -269,7 +269,7 @@ import SwiftUI
 //                          snapshot.marks (kind:WxH@-age s[@App]; ids mark_<kind>): `used` → consumed, `capturing` → no
 //                          screenshotPath yet (the skeleton), `window` → source "window" with a window element; pixel marks
 //                          get a dithered 2× PNG written under the shot dir (state.stateDir points there)
-//   ORB_NOTCH_MARK_LANDS_AT=t   a pending circle lands at t (as after a ⌥⇧C stroke): the lip chip, glow and the
+//   ORB_NOTCH_MARK_LANDS_AT=t   a pending circle lands at t (as after a ⌃⌥C stroke): the lip chip, glow and the
 //                          "◎ 1 circled · Go to ask" pill are read 0.25 s and 6.4 s after
 //   ORB_NOTCH_QUESTION="Slack:Send it to #general?"   with ORB_FLEET: that thread waits on Kevin with the question
 //   ORB_NOTCH_PROBLEM=permission.screenRecording[:text]   one typed Problem with the engine's remedy for the kind
@@ -299,7 +299,7 @@ import SwiftUI
 //   ORB_NOTCH_RETURN_AT=t  a bare Return to the panel with a question waiting
 //   ORB_NOTCH_CIRCLE_AT=t  the ◎ box at t, then Kevin's stroke through the overlay at t + 0.4 (ORB_NOTCH_STROKE_AT=t
 //                          is the stroke alone — after an Ask with nothing circled)
-//   ORB_NOTCH_HOTKEY_CIRCLE_AT=t   ⌥⇧C's dispatch (state.beginMarkMode) with the island open
+//   ORB_NOTCH_HOTKEY_CIRCLE_AT=t   ⌃⌥C's dispatch (state.beginMarkMode) with the island open
 //   ORB_NOTCH_TRACE_AT="t[:reason];…"   an orb.trace while tucked (reason mark by default; "reflex circle" for the other rule)
 //   ORB_NOTCH_PIN_AT=t     a .face press (pins the island)
 //   ORB_NOTCH_KIND=plain|question|marks   the display's kind forced (NotchPanel.swift reads it): the zones and the hit
@@ -2882,7 +2882,7 @@ extension OrbPreviewDelegate {
         state.snapshot.marks = fakeMarks
     }
 
-    /// A pending circle lands in the fake snapshot, as after a ⌥⇧C stroke (ORB_NOTCH_MARK_LANDS_AT and the `mark.add` reply).
+    /// A pending circle lands in the fake snapshot, as after a ⌃⌥C stroke (ORB_NOTCH_MARK_LANDS_AT and the `mark.add` reply).
     @discardableResult
     func landFakeMark(rect: Rect, source: String? = nil, element: ScreenMark.MarkElement? = nil, withCropAfter delay: Double?) -> String {
         fakeMarkCount += 1
@@ -3083,12 +3083,12 @@ extension OrbPreviewDelegate {
                 guard let self else { return }
                 self.ensureIslandOpen()
                 let before = self.notchSends.total
-                print(self.stamp, "hotkey ⌥⇧C (state.beginMarkMode) with the island \(self.orb.previewNotchMode)")
+                print(self.stamp, "hotkey ⌃⌥C (state.beginMarkMode) with the island \(self.orb.previewNotchMode)")
                 self.state.beginMarkMode()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                     guard let self else { return }
                     let ok = self.orb.previewNotchMarking && !self.orb.previewNotchPinned && self.orb.previewNotchMode == "peek" && self.orb.previewNotchIgnoresMouse && self.notchSends.total == before
-                    self.check(ok, "⌥⇧C while island open → same fold (marking sink), 0 notch sends",
+                    self.check(ok, "⌃⌥C while island open → same fold (marking sink), 0 notch sends",
                                "marking \(self.orb.previewNotchMarking ? 1 : 0) pinned \(self.orb.previewNotchPinned ? 1 : 0) mode \(self.orb.previewNotchMode) ignoresMouse \(self.orb.previewNotchIgnoresMouse ? 1 : 0) sends +\(self.notchSends.total - before)")
                 }
             }
@@ -3898,8 +3898,8 @@ extension OrbPreviewDelegate {
                   "mode \(e.mode) pinned \(e.pinned ? 1 : 0) tucked \(e.tucked ? 1 : 0)")
         }
         if let f = ringPillFolded {
-            let want = RingWords.body(of: ring) + " · Snooze ⌥⇧S"
-            check(f.kind == "ring" && f.text == want && f.mode == "tucked", "ring folded asleep → the pill under the lip 🔔 \"Wake up, Kevin · Snooze ⌥⇧S\" (kind ring), the blob tucked",
+            let want = RingWords.body(of: ring) + " · Snooze ⌃⌥S"
+            check(f.kind == "ring" && f.text == want && f.mode == "tucked", "ring folded asleep → the pill under the lip 🔔 \"Wake up, Kevin · Snooze ⌃⌥S\" (kind ring), the blob tucked",
                   "pill '\(f.text)' (\(f.kind)) mode \(f.mode)")
         }
         if let t = timerPillEarly {
@@ -4186,7 +4186,7 @@ extension OrbPreviewDelegate {
     }
 
     /// `.console` may sit in the list three times (`+n` film, `◎ N`, the box): the tooltip is the rect under the pointer's,
-    /// so the foot box says `Console (⌥⇧J)` however many others exist. Read whenever a duplicate is live.
+    /// so the foot box says `Console (⌃⌥J)` however many others exist. Read whenever a duplicate is live.
     private func consoleTooltipCheck(hits: [(name: String, rect: NSRect)]) {
         let consoles = hits.filter { $0.name == "console" }
         // The foot box is appended after the film and the head rect: the last of its name.

@@ -67,8 +67,9 @@ final class StatusItem: NSObject {
             .removeDuplicates()
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
+        // While the sweep runs the menu carries its Cancel, and its Next at a step that waits (APP-7).
         state.$permissionSweep
-            .map { (p: PermissionSweepProgress?) -> Bool in p?.running ?? false }
+            .map { (p: PermissionSweepProgress?) -> [Bool] in [p?.running ?? false, StatusItem.sweepWaits(p)] }
             .removeDuplicates()
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
@@ -211,12 +212,12 @@ final class StatusItem: NSObject {
 
         // Go / Pause: the transport's one button (⌥⇧Space).
         let look = AppState.transportLabel(for: phase)
-        let transport = NSMenuItem(title: StatusItem.transportTitle(for: phase), action: #selector(doTransportToggle), keyEquivalent: " ")
-        transport.keyEquivalentModifierMask = [.option, .shift]
+        let transport = NSMenuItem(title: StatusItem.transportTitle(for: phase), action: #selector(doTransportToggle), keyEquivalent: Hotkeys.Action.transportToggle.keyEquivalent.0)
+        transport.keyEquivalentModifierMask = Hotkeys.Action.transportToggle.keyEquivalent.1
         transport.target = self
         transport.isEnabled = connected
         transport.image = StatusItem.symbol(look.symbol)
-        transport.toolTip = look.help + " (⌥⇧Space)"
+        transport.toolTip = look.help + " (\(Hotkeys.Action.transportToggle.glyph))"
         menu.addItem(transport)
 
         // The wake word gate, while the engine is dormant or paused: what it is doing and, if off, why.
@@ -228,15 +229,15 @@ final class StatusItem: NSObject {
             menu.addItem(gate)
         }
 
-        // The automations (design11): while one rings, the crash-row pattern — two hot rows, Snooze N (⌥⇧S) and Done;
+        // The automations (design11): while one rings, the crash-row pattern — two hot rows, Snooze N (⌃⌥S) and Done;
         // otherwise the next fire as one informational row. Both read AppState, which the daemon feeds.
         if let ring = state.ringing {
             let minutes = StatusItem.snoozeMinutes(for: ring, settings: state.snapshot.settings.automationSettings)
-            let snooze = NSMenuItem(title: "\(ring.line) · Snooze \(minutes)", action: #selector(doSnoozeRing), keyEquivalent: "s")
-            snooze.keyEquivalentModifierMask = [.option, .shift]
+            let snooze = NSMenuItem(title: "\(ring.line) · Snooze \(minutes)", action: #selector(doSnoozeRing), keyEquivalent: Hotkeys.Action.snooze.keyEquivalent.0)
+            snooze.keyEquivalentModifierMask = Hotkeys.Action.snooze.keyEquivalent.1
             snooze.target = self
             snooze.image = StatusItem.symbol("bell.fill")
-            snooze.toolTip = "Snooze — rings again in \(minutes) min (⌥⇧S)"
+            snooze.toolTip = "Snooze — rings again in \(minutes) min (\(Hotkeys.Action.snooze.glyph))"
             menu.addItem(snooze)
             let done = NSMenuItem(title: "Done", action: #selector(doDoneRing), keyEquivalent: "")
             done.target = self
@@ -250,8 +251,8 @@ final class StatusItem: NSObject {
             menu.addItem(row)
         }
 
-        let mute = NSMenuItem(title: phase == .muted ? "Unmute" : "Mute", action: #selector(doToggleMute), keyEquivalent: "m")
-        mute.keyEquivalentModifierMask = [.option, .shift]
+        let mute = NSMenuItem(title: phase == .muted ? "Unmute" : "Mute", action: #selector(doToggleMute), keyEquivalent: Hotkeys.Action.toggleMute.keyEquivalent.0)
+        mute.keyEquivalentModifierMask = Hotkeys.Action.toggleMute.keyEquivalent.1
         mute.target = self
         mute.isEnabled = connected && inSession
         mute.image = StatusItem.symbol(phase == .muted ? ConsoleGlyph.mic : ConsoleGlyph.muted)
@@ -287,8 +288,8 @@ final class StatusItem: NSObject {
         // while a pick waits. Native NSMenu is right here (the kit's rule is the Console's and Setup's).
         menu.addItem(voiceRow())
 
-        let console = NSMenuItem(title: "Open Console", action: #selector(doOpenConsole), keyEquivalent: "j")
-        console.keyEquivalentModifierMask = [.option, .shift]
+        let console = NSMenuItem(title: "Open Console", action: #selector(doOpenConsole), keyEquivalent: Hotkeys.Action.openConsole.keyEquivalent.0)
+        console.keyEquivalentModifierMask = Hotkeys.Action.openConsole.keyEquivalent.1
         console.target = self
         console.image = StatusItem.symbol("rectangle.3.group.fill")
         menu.addItem(console)
@@ -313,11 +314,11 @@ final class StatusItem: NSObject {
 
         let quit = NSMenuItem(title: "Quit Jarhead", action: #selector(doQuit), keyEquivalent: "q")
         quit.target = self
-        let circle = NSMenuItem(title: "Circle Something…", action: #selector(doMark), keyEquivalent: "c")
-        circle.keyEquivalentModifierMask = [.option, .shift]
+        let circle = NSMenuItem(title: "Circle Something…", action: #selector(doMark), keyEquivalent: Hotkeys.Action.markScreen.keyEquivalent.0)
+        circle.keyEquivalentModifierMask = Hotkeys.Action.markScreen.keyEquivalent.1
         circle.target = self
         circle.image = StatusItem.symbol("pencil.and.outline")
-        circle.toolTip = "Draw around anything on screen and Jarhead sees it (⌥⇧C)"
+        circle.toolTip = "Draw around anything on screen and Jarhead sees it (\(Hotkeys.Action.markScreen.glyph))"
         menu.addItem(circle)
 
         let setup = NSMenuItem(title: "Set Up…", action: #selector(doSetup), keyEquivalent: "")
@@ -332,6 +333,23 @@ final class StatusItem: NSObject {
         perms.image = StatusItem.symbol(StatusItem.permissionsSymbol(state.permissionList))
         perms.toolTip = "Open Setup on the Permissions step"
         menu.addItem(perms)
+
+        // APP-7: the sweep's own Next and Cancel, while it runs. A step left waiting after Setup
+        // closed is moved on or ended here, without opening Setup again.
+        if state.permissionSweep?.running ?? false {
+            if StatusItem.sweepWaits(state.permissionSweep) {
+                let next = NSMenuItem(title: "Next", action: #selector(doSweepNext), keyEquivalent: "")
+                next.target = self
+                next.indentationLevel = 1
+                next.toolTip = "Skip this permission for now"
+                menu.addItem(next)
+            }
+            let cancel = NSMenuItem(title: "Cancel", action: #selector(doSweepCancel), keyEquivalent: "")
+            cancel.target = self
+            cancel.indentationLevel = 1
+            cancel.toolTip = "Stop asking. What is granted stays granted."
+            menu.addItem(cancel)
+        }
 
         let askAll = NSMenuItem(title: "Ask for everything…", action: #selector(doAskAll), keyEquivalent: "")
         askAll.target = self
@@ -359,6 +377,8 @@ final class StatusItem: NSObject {
     @objc private func doMark() { state.beginMarkMode() }
     @objc private func doPermissions() { state.openPermissionsSetup() }
     @objc private func doAskAll() { state.requestAll() }
+    @objc private func doSweepNext() { state.permissionSweepNext() }
+    @objc private func doSweepCancel() { state.permissionSweepCancel() }
     @objc private func doRevealCrash() { state.revealCrash() }
     @objc private func doSnoozeRing() {
         guard let ring = state.ringing else { return }
@@ -479,6 +499,12 @@ final class StatusItem: NSObject {
         if missing.isEmpty { return "Permissions: all \(list.count) granted" }
         let required = missing.filter(\.required).count
         return "Permissions: \(missing.count) missing" + (required > 0 ? " (\(required) required)" : "")
+    }
+
+    /// The sweep is at a step that waits on Kevin (a dialog that returned at once, a System Settings pane): Next applies.
+    static func sweepWaits(_ p: PermissionSweepProgress?) -> Bool {
+        guard let p, p.running else { return false }
+        return p.stage == .waiting || p.stage == .settings
     }
 
     static func permissionsSymbol(_ list: [PermissionInfo]) -> String {

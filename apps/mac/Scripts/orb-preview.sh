@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build and run the Orb/Overlay preview harness without the rest of the app.
 # Compiles Model + UI/Orb + UI/Overlay with -D JARHEAD_ORB_PREVIEW (which enables
-# UI/Orb/OrbPreviewApp.swift's @main) into $OUT and runs it.
+# UI/Orb/OrbPreviewApp.swift's @main) into $OUT and runs it. App/Hotkeys.swift comes too:
+# the orb's context menu reads Go's key from it. It needs only AppKit and Carbon.
 #
 #   Scripts/orb-preview.sh                 # cycle all phases at 200,200 for 30 s
 #   ORB_EXPAND=1 ORB_OVERLAY=1 Scripts/orb-preview.sh
@@ -137,7 +138,7 @@
 #                ORB_NOTCH_SHOT_TAG=alarm                                                             # design11: the ring asleep — kind ring, word Alarm, Snooze 10 · Done in the consent rects, the
 #                                                                                                     # minis on hover, the asleep foot notice; press snooze:10 → automation.snooze 1 → notch-island-alarm.png
 #     ring-folded ORB_NOTCH_RING=… ORB_NOTCH_NEXT=… ORB_NOTCH_RING_FOLD_AT=1.9 ORB_NOTCH_WAKE_AT=2.2 ORB_FLEET=… ORB_NOTCH_QUESTION=… ORB_NOTCH_MARKS=…
-#                                                                                                     # the timer's lip pill, the ring's pill "Wake up, Kevin · Snooze ⌥⇧S" once folded (→ notch-island-alarm-folded.png),
+#                                                                                                     # the timer's lip pill, the ring's pill "Wake up, Kevin · Snooze ⌃⌥S" once folded (→ notch-island-alarm-folded.png),
 #                                                                                                     # then awake: the chip order ring > question > marks > timer > problem
 #     ring-dead-time ORB_NOTCH_RING=… ORB_FLEET=… ORB_NOTCH_QUESTION=… ORB_NOTCH_QUESTION_AT=ring-end ORB_NOTCH_PRESS="done@3.0;deny@3.25;deny@3.9"
 #     click-*    design13 (Builder C): a real down / up through NotchPanel.sendEvent with no pointer approach —
@@ -172,6 +173,7 @@ swiftc -parse-as-library -O -D JARHEAD_ORB_PREVIEW \
   Sources/Jarhead/UI/*.swift \
   Sources/Jarhead/UI/Orb/*.swift \
   Sources/Jarhead/UI/Overlay/*.swift \
+  Sources/Jarhead/App/Hotkeys.swift \
   -o "$BIN"
 
 echo "built $BIN"

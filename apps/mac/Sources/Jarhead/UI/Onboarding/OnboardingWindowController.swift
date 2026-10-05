@@ -39,9 +39,12 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         session.go(step)
     }
 
+    /// Hides the window. A running sweep parks: the System Settings poll stops (APP-7), and a
+    /// step that waits is moved on or ended from the status menu.
     public func close() {
         session.visible = false
         window?.orderOut(nil)
+        state.permissionSweepPark()
     }
 
     /// Window number for scripted screenshots (`screencapture -l`). nil until shown.

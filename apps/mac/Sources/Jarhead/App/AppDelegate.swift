@@ -166,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.audio.flush()
                 self.client.send(cmd)
             case .automationSnooze(let id, let minutes):
-                // A ring's press, from the island, the banner, the menu or ⌥⇧S: what a crash report should know.
+                // A ring's press, from the island, the banner, the menu or ⌃⌥S: what a crash report should know.
                 CrashGuard.remember("automation → snooze \(id) \(minutes) min")
                 self.client.send(cmd)
             case .automationDone(let id):
@@ -526,7 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return a
     }
 
-    /// ⌥⇧S, the menu row, the banner: the ring's own snooze press, else Settings' minutes (timers five).
+    /// ⌃⌥S, the menu row, the banner: the ring's own snooze press, else Settings' minutes (timers five).
     private func snoozeRinging() {
         guard let ring = state.ringing else { return }
         let minutes = StatusItem.snoozeMinutes(for: ring, settings: state.snapshot.settings.automationSettings)
@@ -571,17 +571,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // ⌥⇧Space: go when asleep or paused, pause in session.
             state.transportToggle()
         case .snooze:
-            // ⌥⇧S: snooze the ring; nothing rings, nothing happens — never a Go.
+            // ⌃⌥S: snooze the ring; nothing rings, nothing happens — never a Go.
             snoozeRinging()
         case .toggleRecording:
-            // ⌥⇧R: Settings › Audio › Recording flipped — the whole audio block through `set-settings`, nothing else.
+            // ⌃⌥R: Settings › Audio › Recording flipped — the whole audio block through `set-settings`, nothing else.
             toggleRecording()
         }
     }
 
     // MARK: - audio state (design12)
 
-    /// Recording flipped from the menu, the Dock menu or ⌥⇧R: `set-settings` only (AppState.setRecording; the bench pins it).
+    /// Recording flipped from the menu, the Dock menu or ⌃⌥R: `set-settings` only (AppState.setRecording; the bench pins it).
     private func toggleRecording() {
         state.setRecording(!state.snapshot.settings.audioSettings.recording)
     }

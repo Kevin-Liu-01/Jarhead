@@ -12,8 +12,10 @@ import Speech
 ///
 /// Recognition tasks are capped at about a minute, so the listener rolls to a fresh
 /// request every 50 s and whenever a task ends; each roll starts a new "segment",
-/// signalled through the `segment` counter passed with every transcript. The gate can
-/// also ask for a roll (`rollSegment`) so a passphrase answer starts in a clean segment.
+/// signalled through the `segment` counter passed with every transcript. The gate also
+/// asks for a roll (`rollSegment`) each time it hears the word, so the recogniser's later
+/// revisions of that utterance stay in a spent segment, and again when a passphrase answer
+/// starts, so the answer begins clean. The gate drives this through `WakeListening`.
 /// The request/task/roll machinery is `SegmentedRecognizer` (Ear/), shared with the
 /// reflex ear that listens while awake; what is here is the microphone and the status.
 final class WakeWordListener {

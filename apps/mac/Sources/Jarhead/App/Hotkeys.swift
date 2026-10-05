@@ -4,14 +4,28 @@ import Carbon
 /// Global hotkeys through Carbon's RegisterEventHotKey: they work without an
 /// Accessibility grant, unlike CGEventTap.
 ///
-///   ⌥⇧J      open console
-///   ⌥⇧M      mute / unmute
+///   ⌃⌥J      open console
+///   ⌃⌥M      mute / unmute
 ///   ⌥⎋       stop (AppState.transportStop: close the session, sleep)
 ///   ⌥⇧Space  go / pause (AppState.transportToggle: wake or resume · pause)
-///   ⌥⇧C      circle something on screen for Jarhead (mark mode)
+///   ⌃⌥C      circle something on screen for Jarhead (mark mode)
 ///   ⌥⇧⏎      type to Jarhead (the notch's field while the blob is parked there, else the Console)
-///   ⌥⇧S      snooze the ringing automation (nothing while none rings)
-///   ⌥⇧R      Recording on / off (design12: Settings › Audio's one switch, through `set-settings` only)
+///   ⌃⌥S      snooze the ringing automation (nothing while none rings)
+///   ⌃⌥R      Recording on / off (design12: Settings › Audio's one switch, through `set-settings` only)
+///
+/// The letters are ⌃⌥ (APP-12, decision D3). A registered combo is taken from every app, so
+/// it must be one that types nothing: ⌥⇧ + a letter types a character on most layouts
+/// (⌥⇧J is Ô on the US layout, ⌥⇧C is Ç), and those characters stopped reaching the
+/// field. ⌃⌥ + a letter types no character. `Scripts/hotkey-check.sh` asks UCKeyTranslate.
+///
+/// `defaults write com.kevinliu.jarhead hotkeys.off -bool YES` turns every global hotkey off
+/// but ⌥⎋ (for a layout or an app that needs the combos); read at launch. ⌥⎋ stays. It is
+/// the one key that stops the hands while they hold the pointer and the keyboard, and it
+/// types nothing. ⌥⇧Space does go off: it types a no-break space, which a layout may need.
+/// The menus keep working, and so does the spoken "stop".
+///
+/// This file needs only AppKit and Carbon. The orb harnesses (Scripts/orb-preview.sh,
+/// Scripts/orb-home-probe.sh) and Scripts/hotkey-check.sh compile it without the rest of App/.
 @MainActor
 final class Hotkeys {
     enum Action: UInt32, CaseIterable {
@@ -41,7 +55,8 @@ final class Hotkeys {
 
         var modifiers: UInt32 {
             switch self {
-            case .openConsole, .toggleMute, .transportToggle, .markScreen, .sayLine, .snooze, .toggleRecording: return UInt32(optionKey | shiftKey)
+            case .openConsole, .toggleMute, .markScreen, .snooze, .toggleRecording: return UInt32(controlKey | optionKey)
+            case .transportToggle, .sayLine: return UInt32(optionKey | shiftKey)
             case .stop: return UInt32(optionKey)
             }
         }
@@ -49,16 +64,41 @@ final class Hotkeys {
         /// For menu items that mirror the hotkey.
         var keyEquivalent: (String, NSEvent.ModifierFlags) {
             switch self {
-            case .openConsole: return ("j", [.option, .shift])
-            case .toggleMute: return ("m", [.option, .shift])
+            case .openConsole: return ("j", [.control, .option])
+            case .toggleMute: return ("m", [.control, .option])
             case .stop: return ("\u{1b}", [.option])
             case .transportToggle: return (" ", [.option, .shift])
-            case .markScreen: return ("c", [.option, .shift])
+            case .markScreen: return ("c", [.control, .option])
             case .sayLine: return ("\r", [.option, .shift])
-            case .snooze: return ("s", [.option, .shift])
-            case .toggleRecording: return ("r", [.option, .shift])
+            case .snooze: return ("s", [.control, .option])
+            case .toggleRecording: return ("r", [.control, .option])
             }
         }
+
+        /// How a tooltip names the hotkey: "⌃⌥C", "⌥⇧Space", "⌥⎋".
+        var glyph: String {
+            switch self {
+            case .openConsole: return "⌃⌥J"
+            case .toggleMute: return "⌃⌥M"
+            case .stop: return "⌥⎋"
+            case .transportToggle: return "⌥⇧Space"
+            case .markScreen: return "⌃⌥C"
+            case .sayLine: return "⌥⇧Return"
+            case .snooze: return "⌃⌥S"
+            case .toggleRecording: return "⌃⌥R"
+            }
+        }
+    }
+
+    /// The UserDefaults switch that turns every global hotkey off but Stop.
+    static let offKey = "hotkeys.off"
+
+    /// The hotkeys `hotkeys.off` never turns off: ⌥⎋, Stop.
+    static let alwaysOn: [Action] = [.stop]
+
+    /// What `register()` registers: every action, or only `alwaysOn` while `hotkeys.off` is set.
+    static func actionsToRegister(_ defaults: UserDefaults = .standard) -> [Action] {
+        defaults.bool(forKey: offKey) ? alwaysOn : Action.allCases
     }
 
     private static let signature: OSType = 0x4A48_4B59 // "JHKY"
@@ -72,6 +112,10 @@ final class Hotkeys {
 
     func register() {
         guard handlerRef == nil else { return }
+        let actions = Hotkeys.actionsToRegister()
+        if actions.count < Action.allCases.count {
+            NSLog("Hotkeys: \(Hotkeys.offKey) is set; only \(actions.map(\.glyph).joined(separator: " ")) registered")
+        }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         let status = InstallEventHandler(GetApplicationEventTarget(), hotkeyEventHandler, 1, &spec, selfPtr, &handlerRef)
@@ -79,7 +123,7 @@ final class Hotkeys {
             NSLog("Hotkeys: InstallEventHandler failed (\(status))")
             return
         }
-        for action in Action.allCases {
+        for action in actions {
             var ref: EventHotKeyRef?
             let id = EventHotKeyID(signature: Hotkeys.signature, id: action.rawValue)
             let err = RegisterEventHotKey(action.keyCode, action.modifiers, id, GetApplicationEventTarget(), 0, &ref)

@@ -9,6 +9,7 @@
 # Scripts/OrbHomeProbeMain.swift for the list. Compiles the Model, UI, UI/Orb and UI/Overlay
 # sources (the rule lives beside the controller; UI/Orb/OrbPreviewApp.swift and
 # UI/Overlay/OverlayPreviewDemo.swift are behind JARHEAD_ORB_PREVIEW and compile to nothing here)
+# + App/Hotkeys.swift (the orb's context menu reads Go's key from it; AppKit and Carbon only)
 # + Scripts/OrbHomeProbeMain.swift into its own output directory (never the shared .build
 # products), and only when a source is newer than the binary. No window, no TCC, no daemon,
 # no Live session. One `check:` line per check, "ok" or "FAIL" first; exit 1 on a FAIL.
@@ -17,7 +18,8 @@ cd "$(dirname "$0")/.."
 BUILD=".build/orb-home-probe"
 BIN="$BUILD/orb-home-probe"
 mkdir -p "$BUILD"
-SOURCES=(Sources/Jarhead/Model/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Orb/*.swift Sources/Jarhead/UI/Overlay/*.swift Scripts/OrbHomeProbeMain.swift)
+SOURCES=(Sources/Jarhead/Model/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Orb/*.swift Sources/Jarhead/UI/Overlay/*.swift
+  Sources/Jarhead/App/Hotkeys.swift Scripts/OrbHomeProbeMain.swift)
 needs_build=0
 if [[ ! -x "$BIN" ]]; then
   needs_build=1

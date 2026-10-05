@@ -4244,7 +4244,7 @@ extension PreviewDelegate {
         expect("audio: recording words", [SettingsWords.recording, SettingsWords.recordingHint, SettingsWords.recordingLabel, SettingsWords.recordingOn].joined(separator: " / "),
                "settings.recording / shares the mic / Recording a demo: hand the mic back, guard the echo / No Apple unit. Jarhead holds the wire while he speaks; a word over him opens it.")
         expect("audio: RecordingWords", [RecordingWords.heldTip, RecordingWords.chipTip, RecordingWords.menuRow, RecordingWords.menuTipSpoken, RecordingWords.badge].joined(separator: " / "),
-               "Mic held while he speaks — a word over him opens it / Recording — mic shared, echo guarded / Recording / Hand back the mic, guard the echo — apps keep their sound (⌥⇧R) / recording")
+               "Mic held while he speaks — a word over him opens it / Recording — mic shared, echo guarded / Recording / Hand back the mic, guard the echo — apps keep their sound (⌃⌥R) / recording")
         expect("audio: the mute tip says the mic stays open", HelpCopy.mute.hint, "Stop sending — the session and the mic stay open")
         let aec = MicRouteInfo(Self.micRouteFixture("aec-airpods"))
         let rec = MicRouteInfo(Self.micRouteFixture("recording-macbook"))

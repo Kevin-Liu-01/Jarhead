@@ -61,6 +61,8 @@ public final class AppState: ObservableObject {
     /// The settings walk's Next: the following pane.
     public func permissionSweepNext() { permissionActions.sweepNext() }
     public func permissionSweepCancel() { permissionActions.sweepCancel() }
+    /// Setup closed: stop watching System Settings now. A waiting step stays open for Next and Cancel.
+    public func permissionSweepPark() { permissionActions.park() }
     public func openPermissionsSetup() { openPermissionsSetupHandler() }
 
     public var permissionsMissingRequired: [PermissionInfo] { permissionList.filter { $0.required && $0.grant != .granted } }
@@ -427,7 +429,7 @@ public final class AppState: ObservableObject {
 
     // MARK: - Recording and the echo fuse (design12)
 
-    /// Settings › Audio › Recording, the status menu row, ⌥⇧R: the whole audio block through `set-settings` —
+    /// Settings › Audio › Recording, the status menu row, ⌃⌥R: the whole audio block through `set-settings` —
     /// the only writer of settings, and the only command a flip may enqueue (appstate-bench pins it).
     public func setRecording(_ on: Bool) {
         var a = snapshot.settings.audioSettings
@@ -1163,6 +1165,7 @@ public struct PermissionActions {
     public var refresh: () -> Void = {}
     public var sweepNext: () -> Void = {}
     public var sweepCancel: () -> Void = {}
+    public var park: () -> Void = {}
     public init() {}
 }
 
