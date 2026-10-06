@@ -31,12 +31,13 @@ function stepAt(p: number): Step {
 }
 
 /**
- * Hands: say "Click Save" and watch the hands work in the h2's own order, which lights as it goes (the section's
+ * Hands: say "Click Save" and watch the hands work through the h2's three sentences, each lit as it plays (the section's
  * `data-step`, styles/play.css). Label first: a ring draws round the control that carries the label Save and its tag is
- * read. Click second: the blob flies on its own spring to where the hands act and presses Save. Screenshot last: the
- * window flashes, its corners close in, and a check says the screenshot checks the work. Then the blob flies home. On a desk
- * the section also pins its plate while the scroll steps the same three sentences; elsewhere it plays once when it first
- * comes into view. The still (no JS, calm) is the whole sequence at once.
+ * read. Click second: the blob flies on its own spring to where the hands act and presses Save. Then the screenshot (the
+ * h2's "Screenshots when they help.", which gives it no fixed place: a delegation usually starts with one, engine.ts
+ * lookAtScreen): the window flashes, its corners close in, and a check says the screenshot checks the work. Then the blob
+ * flies home. On a desk the section also pins its plate while the scroll steps the same three sentences; elsewhere it
+ * plays once when it first comes into view. The still (no JS, calm) is the whole sequence at once.
  */
 export function Hands(): ReactElement {
   const [step, setStep] = useState<Step>("done");

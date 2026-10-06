@@ -100,12 +100,12 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 04 · Hands  `id="hands"`
 
 - eyebrow: `Acting` · `The hands are using the Mac.` · `> >`
-- h2, line 1: `Label first. Click second.` (README:60)
-- h2, line 2 *grey*: `Screenshot last.` (README:60)
-- lead: `The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.` (README:28, README:60). The 71 tools are the brain's; 31 of them reach the helper. Not "only verifies": each delegation starts with a screenshot for a brain that takes images (engine.ts lookAtScreen).
-- line 1: `Circle anything with ⌃⌥C. Every brain is told where it is.` (README:66). A brain that takes images also gets the image; a text-only one gets the coordinates alone (brain compatible.ts userContent, local.ts acceptsImages).
-- line 2: `The blob moves to where the hands act.` (README:67)
-- line 3: `The Console lists every coding-agent session.` (README:65)
+- h2, line 1: `Label first. Click second.` (README:70)
+- h2, line 2 *grey*: `Screenshots when they help.` (README:70, engine.ts lookAtScreen, engine brain-select.test.ts:565). It was `Screenshot last.` until 2026-10-06 (C2). That was false: each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen). A click by coordinates also aims at the latest screenshot (brain tools.ts `screenshot`). Line 1 stands: the hands find a control by its label, then click it. The page still lights the three sentences as label, click and shot; `scripts/__tests__/c2-hands-copy.test.ts` checks the words, the cuts and README:70.
+- lead: `The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.` (README:28, README:70). The 71 tools are the brain's; 31 of them reach the helper. Not "only verifies": each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen).
+- line 1: `Circle anything with ⌃⌥C. Every brain is told where it is.` (README:76). A brain that takes images also gets the image; a text-only one gets the coordinates alone (brain compatible.ts userContent, local.ts acceptsImages).
+- line 2: `The blob moves to where the hands act.` (README:77)
+- line 3: `The Console lists every coding-agent session.` (README:75)
 
 ---
 
