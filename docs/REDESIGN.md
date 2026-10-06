@@ -19,7 +19,7 @@ backend. Verified on 2026-09-10 against this key:
 
 | observation | measured |
 |---|---|
-| `session.start` → `session.started` | ~1.5 s cold, 0.26 s warm (2026-10-06, socket to `session.started` across the live checks: 0.46–0.81 s, median 0.59 s, n = 25; the first session of each of three batches 2.0–2.8 s) |
+| `session.start` → `session.started` | ~1.5 s cold, 0.26 s warm. On 2026-10-06, across the live checks, the same leg took 0.32–0.58 s, median 0.41 s (n = 25), and 1.32–2.11 s for the first session of each of the day's three batches of checks (n = 3). From the moment the engine asked for the session (before the socket connects): 0.46–0.81 s, median 0.59 s (n = 25), and 2.0–2.8 s for those first sessions (n = 3) |
 | user transcript deltas while Kevin is still talking | ~1 s behind the audio |
 | `session.delegation.created` after "look at my screen and tell me what app is open" | 1.1 s after the last word |
 | the model said "on it." on its own, then spoke the appended commentary verbatim-ish | 2.3 s after the append |
@@ -149,12 +149,12 @@ shows where the hands are about to click and draws arrows when Kevin asks
 
 | moment | measured |
 |---|---|
-| `session.start` → `session.started` | 533 ms warm, ~1.5 s cold (0.46–0.81 s, median 0.59 s, n = 25, on 2026-10-06; §2) |
+| `session.start` → `session.started` | 533 ms warm, ~1.5 s cold (on 2026-10-06: 0.32–0.58 s, median 0.41 s, n = 25; the first session of each of three batches of checks 1.32–2.11 s, n = 3; §2) |
 | "hey jarhead" → Jarhead says "hey." | ~1.0 s after the words end |
 | end of question → `session.delegation.created` | ~1.1 s |
 | delegation → backend's first tool call (`frontmost_app`, native helper) | 1.31 s (the tool itself: 18–19 ms) |
 | delegation → spoken result appended | 2.39 s |
-| full-display screenshot through the Swift helper | 48–75 ms warm, ~145 ms cold (not reproduced since: 102 ms median, 311 ms p95 in the production ledger, PERF-11, 2026-10-05; the quick shot 117 ms median, 305 ms p95 in the bench, n = 5, screen locked, 2026-10-06) |
+| full-display screenshot through the Swift helper | 48–75 ms warm, ~145 ms cold (not reproduced since: 102 ms median, 311 ms p95 in the production ledger, PERF-11, launch audit, 2026-10-05, n not recorded; the bench's full screenshot, 2000 px long edge through the runner and the helper, 152 ms, n = 1, at 4727241 with the screen locked, 2026-10-06) |
 | Claude Code brain auth probe when auth is broken | 30 s, then remembered for 30 min so the next launch falls back instantly |
 | native app: launch → daemon spawned → client connected | ~1.5 s |
 | native app: speech played through the speakers → transcript in the Console | ~2 s, with system echo cancellation active |
@@ -176,7 +176,9 @@ the Orb dims, the mic stays local-only. Go / Pause / Stop are one transport
 the meter stops the moment they land; a pause holds the conversation
 (`snapshot.pause`) and decays to asleep at `pause.sleepsAt`; Go — or the wake
 word — resumes it in a new session that carries the transcript as continuity.
-Waking takes 0.46–0.81 s to `session.started` (median 0.59 s, n = 25, 2026-10-06).
+On 2026-10-06 waking took 0.46–0.81 s from the engine asking for a session to
+`session.started` (median 0.59 s, n = 25), and 2.0–2.8 s for the first session of each
+of the day's three batches of checks (n = 3).
 Muting (`session.input_audio.mute`) is instant but keeps the meter running; it is for Kevin's side of the room, not
 for cost. The meter (`snapshot.usageToday` at $0.05 a minute) shows in the
 capsule, the Console's right rail and the Jarhead section of the rail.
@@ -1903,7 +1905,8 @@ From delegation: first model thought **5.7 s** median; first model tool
 p95 19.8), zero delegations with an action inside 5 s; verified completion
 **22.1 s** median (p90 40.7); the spoken reply 0.7 s after done. Live
 acknowledges 0.2 s after delegation; speech end → delegation 0.4–1.6 s (n=4).
-Tool round trips 55 ms median (p95 211); app-server delegations spend 0.4–2.2 %
+Tool round trips 55 ms median (p95 211; the 2026-09-11 ledger, n = 120, not
+reproduced since, LATENCY §3c); app-server delegations spend 0.4–2.2 %
 of their wall time inside tools. Every model generation costs 3.4–4.1 s median
 (p90 5.9); a warm no-tool turn 1.8–3.1 s to first token, a cold one 4.3 s;
 effort low/medium/high made no difference on trivial turns. The multipliers
@@ -2451,7 +2454,7 @@ the integrator corrects them from their notes. The K6 rows are the build record.
 | Grok Bot's approval card (Allow once / Always allow / Deny, Require-Approval beats Always-Allow), Claude in Chrome's per-site "Always allow" and its bugs (#74715: it did not stick), Operator's confirmations (−90 % nuisance errors, 92 % recall) | a remembered yes, scoped, with a hard list it can never cover | `grant {chainId, app, actionClass, until}`: a yes remembered **for this conversation, this app, this action class, until**; **never for a destructive verb** (send, pay, delete, post, purchase — those stay spoken-yes-once, `ConfirmationState`); the never-list unchanged (K5, per the contract) |
 | Hermes' three-most-recent screenshots, Claude in Chrome's `read_page` refs, OpenClaw's `frameId` / `executionId` | do not keep every pixel; act on the frame you saw | the screenshot archive is capped and the oldest shots **move** into `<stateDir>/trash/shots` by rename, never unlinked (`runner.ts` `evictShots`; `Settings.shotsRetentionDays`, 14). A frame id or stale-frame guard was **not** built in this pass: the hands act through AX with the screenshot as the fallback and the verification, and nothing on the Codex thread references a frame (K5, per the contract; the eviction checked in the worktree) |
 | Cowork's "Working on your computer · 0:42", Claude's red border, Perplexity's step list, Grok Bot's status line | a working state you can see, with elapsed time | **"Working · 0:12"** — a mono elapsed counter next to the phase word on the notch island (peek and open), alone on a black strip of the notch while the blob is out at its target, and under the phase word on the capsule; `Motion.base` in and out; gone at done or cancelled (K6, `NotchPanel.swift`, `OrbExpandedView.swift`) |
-| Hermes' "emoji-mapped tool usage" praised, its per-click narration complained about; GPT-Live-1's over-eager backchannels (eesel 2026-09-11) | narrate the intent, not the keystrokes | the voice's `# Narration` rule — one short clause per state change ("found the invoice", "typing the amount"), never per click, never a tool's name, silence while a single step runs — and the same gate in the Delegator's relay (`Delegator.narrationVerdict`: per-click lines and lines naming a tool stay on the Console's timeline; the first action is voiced as it lands without the tool's name; the summary and a reflex's landing are never gated), plus one clause before idle sleep (`Delegator.announceSleep`: once per idle stretch, true when it spoke; the engine's tick arms one sleep deadline off that return and must not re-read its idle clock, since the clause is Jarhead's own speech and moves `lastAddressedAt` — that hook in `engine.ts` is the integrator's) (K6, `instructions.ts`, `delegator.ts`) |
+| Hermes' "emoji-mapped tool usage" praised, its per-click narration complained about; GPT-Live-1's over-eager backchannels (eesel 2026-09-11) | narrate the intent, not the keystrokes | the voice's `# Narration` rule (one short clause per state change, such as "found the invoice" or "typing the amount"; never per click, never a tool's name, silence while a single step runs) and the same gate in the Delegator's relay (`Delegator.narrationVerdict`: per-click lines and lines naming a tool stay on the Console's timeline; the first action is voiced as it lands without the tool's name; the summary and a reflex's landing are never gated), plus one clause before idle sleep (`Delegator.announceSleep`: once per idle stretch, true when it spoke; the engine's tick arms one sleep deadline off that return and must not re-read its idle clock, since the clause, Jarhead's own speech, moved `lastAddressedAt` (since 2026-10-06 the clause's own turn counts for nothing, §22); that hook in `engine.ts` is the integrator's) (K6, `instructions.ts`, `delegator.ts`) |
 | Hermes' context compression (Phase 1: tool results > 200 chars → placeholders, no model call; protected head and tail), OpenClaw's soft-trim (keep first/last 1 500 chars), Claude Code's compaction that "stops with a thrashing error instead of looping" | compress what a fresh context is told, and never thrash | the carried block after a Codex rollover is compacted (`renderCarry`): Kevin's words verbatim, every tool result over 200 chars or bytes (images included) one line naming its size ("[tool result, 3.1 KB]"), the block capped near 2 KB with the oldest exchanges dropped first; and one turn's measure rolls the thread over once (`TokenUsage.turnId`, `rolloverDue()`) so an oversized tool output cannot open a third thread (K6, `codex.ts`, `codex-app-server.ts`) |
 | Wispr publishes a p99; nobody publishes a per-action clock | the headline is the tail, not the median | LATENCY.md §7: the field side by side with p95 as the headline column and "measured or claimed" on every row (K6) |
 
@@ -2468,7 +2471,9 @@ the integrator corrects them from their notes. The K6 rows are the build record.
   clipboard stays Kevin's.
 - **A cloud VM or a remote desktop.** Operator, ChatGPT agent, Mariner, Grok Bot
   and Perplexity's heavy tasks run elsewhere and pay 2–5 s per action for it.
-  Jarhead's tools answer in 55 ms median on the real screen (LATENCY §3c).
+  Jarhead's tools act on the real screen: 55 ms median in the 2026-09-11 ledger
+  (n = 120), not reproduced since (82 ms median after the latency pass, PERF-11,
+  launch audit, 2026-10-05, n not recorded; LATENCY §3c).
 - **Background driving through private SPIs.** Hermes' cua-driver injects
   pid-scoped events so "your cursor doesn't move"; Apple can change those SPIs
   and did change `CGDisplayCreateImage`. Kevin's cursor is the cursor; the blob
@@ -2587,7 +2592,11 @@ activate | open location | reopen | set frontmost` ∪ `run_shell` whose head is
 its; use applescript (Apple events), browser_*, files, shell or web, or report that
 the screen is needed" — from the runner, so `policy.ts` is untouched. Spotify plays
 by Apple event without the pointer moving; Slack, which needs typing, is the main
-brain's or a screen thread's.
+brain's or a screen thread's. Since 2026-10-05 (W1-5, THc-27) `FOCUS_TOOLS` holds
+`browser_navigate` too, since it sets the front tab's URL, and the refusal names what the
+lane may use: Apple events, `browser_read`, `browser_find` or `browser_tabs` to read the
+browser, `web_fetch` or `web_search` to load a page, the file tools or `run_shell`
+(`LANE_REFUSAL` in `threads/runner.ts`; AGENTS.md).
 
 **Two helper processes, one binary.** `HandsPool { focus, background }`
 (`packages/hands/src/pool.ts`), same daemon parent so the same TCC identity, both
@@ -2602,8 +2611,9 @@ was locked: one capture's callback never came, the acting helper's serial worker
 good, and every later op timed out. Now `CAPTURE_OPS` (`screenshot`, `zoom`) asked of either
 client are taken by the `focus` process (`HandsPool` points the reading client's captures at
 it), and the wake shot asks `focus` too. The cost: a background thread's eyes and the wake shot
-wait behind the acting queue, and a forwarded capture that times out answers `capture_failed`,
-which the toolset's `screencapture` fallback serves. `runBlocking` answers `capture_failed` after
+wait behind the acting queue, and a forwarded capture that times out answers `capture_failed`.
+A screenshot that fails that way is served by the toolset's `screencapture` fallback; a zoom
+has none and fails `capture_failed`. `runBlocking` answers `capture_failed` after
 5 s, under the client's 6 s, so the worker moves on; a `-3801` with the Screen Recording grant
 present is tried once more inside that bound, never reported as a missing grant
 (`pool.test.ts`, `one-capture.test.ts`, `run-blocking-native.test.ts`).
@@ -2621,8 +2631,9 @@ remembered app means Kevin switched — the thread is never refocused behind him
 Jarhead's own hands acquire with priority and never wait on a thread's idle or on
 Kevin's typing beyond the helper's own busy retry.
 
-**Kevin's hands win, in the helper, atomically.** Both checks live in `Input.swift`
-before the first `CGEvent.post`: `busy` — the helper tracks `lastOwnPostAt` for
+**Kevin's hands win, in the helper, atomically.** Both checks run in the helper
+before the first `CGEvent.post` (as first built, in `Input.swift`; since 2026-10-05 the
+`busy` decision lives in `HandsWin.swift`, see the next paragraph). `busy`: the helper tracks `lastOwnPostAt` for
 every event it posts and reads `CGEventSource.secondsSinceLastEventType` for
 keyDown / mouseDown / rightMouseDown / scrollWheel (not mouseMoved); a most-recent
 event that is not its own and within 1500 ms → `{ok:false, error:{code:"busy",
@@ -3027,9 +3038,11 @@ its own screenshots, confirmations spoken with its name, follow-ups by name ("sp
 this song"), one budgeted `speak_progress`. It never spawns and never runs `self_*`.
 
 Spawned threads never schedule a snapshot: one `thread.event` (coalesced 50 ms per thread)
-per change, broadcast. `step`, `at`, `said` and `status` fit 200 B; `turn`, `question` and
-`ended` carry up to 120–160 characters and run to about 250 B, and `started` carries the whole
-Thread record (629 B measured, TH-8; `protocol.test.ts` pins the sizes); the conversation
+per change, broadcast. `step`, `at`, `said` and `status` fit 200 B (the table cuts their
+text); `turn`, `question` and `ended` carry up to 120, 160 and 120 characters and can pass
+200 B; `started` carries the whole Thread record (629 B measured by the audit, TH-8,
+2026-10-05). `protocol.test.ts` pins the bounds: `started` under 1 KB, `status`, `turn` and
+`question` at the record's bounds under 320 B. The conversation
 travels as a seq-paged `thread.transcript` (`ThreadEntry` utterance | delegation | step |
 status | system) to VIEWERS only, opened with
 `thread.open {threadId, viewer}` and paged with `thread.history {before: seq}` — the

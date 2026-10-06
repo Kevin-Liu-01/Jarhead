@@ -32,8 +32,10 @@ Awake, say it once:
 Out of the box, Settings › Automations › While asleep has five chips on: chime, say, notify,
 open and file. Run-recipe, press and wake-brain are off, so the last four rows are refused
 until their chip is on; the voice says the kind is not allowed while Jarhead is asleep and
-offers a notify or a chime (§4). The when-words of every row parse with core's `parseWhen`
-(26 such phrasings are pinned in core's `w2-2-schedule.test.ts`).
+offers a notify or a chime (§4). The when-words of the clock rows parse with core's `parseWhen`
+(the 26 phrasings in `w2-2-schedule.test.ts`, "SL-16: the audit's 26 phrases all parse"). The
+watcher rows ("when Slack quits", "when a PDF lands in Downloads", "watch the tests") are
+signals, not clock phrases.
 
 The line it reads back is the row's `echo`; it is what the Console shows and what `jarhead
 automations` prints. Then say night. "What alarms do I have", "snooze that", "skip tomorrow's
@@ -50,7 +52,7 @@ alarm", "pause the standup routine", "bin the backup" are the same verbs by voic
 | routine · recipe | the recipe on the background lane, scrubbed env, capped, output redacted into the row's detail; a red exit is a `failed` row, a quiet banner, and the `automation.failed` problem (below) |
 | routine · press | only if the named app is in front and no password field has focus: the key; else `failed: <app> is not in front`, never a question. Kevin's hands win as for open: it waits up to 8 s for his quiet window, re-reads the front app, then presses or fails (`so ⌘S was not pressed`) |
 | routine · briefing (`wake-brain`) | one headless brain turn `{steps 25, seconds 120}` on the background lane; its one line (≤ 160 chars, redacted) spoken and shown; the meter stays at zero |
-| watcher · folder / download | `file` moves it: never overwrites (`name (2).pdf`), never unlinks, stays inside `~`; chime + `Filed · invoice.pdf → Papers` with Open · Done. A burst is every file: a folder row whose actions take the file (`file`, `run-recipe`) fires once per file, and a file that lands during a fire waits in the row's queue. A name already in the folder at arm is never a landing, whatever its contents do |
+| watcher · folder / download | `file` moves it: never overwrites (`name (2).pdf`), never unlinks, stays inside `~`; chime + `Filed · invoice.pdf → Papers` with Open · Done. In a burst, a folder row whose actions take the file (`file`, `run-recipe`) fires once per file: a file that lands during a fire waits in the row's queue, up to 100 waiting (`FILE_QUEUE_MAX`); past that a landing is counted on the row (`+N not handled`) and not handled. A name already in the folder at arm is never a landing, whatever its contents do |
 | watcher · app / Mac / display / agent | the app forwards `app.quit`, `mac.wake`, `screen.unlock`, `display.connected` as `system.signal` frames; `agent.status` comes from the registry the engine already polls |
 
 **The whole action vocabulary:** `chime · say · notify · open · file · run-recipe · press ·
@@ -61,13 +63,14 @@ wake-brain`. A row carries 1–3 actions in order, at most one acting kind (`ope
 An unattended fire that failed raises `automation.failed` ("backup failed 23:00 · recipe backup
 exit 1 · disk full"), one per row, on the island and in the Console, so a red night is there in
 the morning. Its remedy is Run now, or Open Console when a retry would fail the same way (the
-action's chip is off, the recipe is in the Trash, the shell gate wants a yes). The row's next ok
-fire, a Run now or Move to Trash clears it; a Run now that fails raises nothing, since its toast
-already said so.
+action's chip is off, the recipe is in the Trash, the shell gate wants a yes). The row's next
+green fire, its own or a Run now, clears it, and so does Move to Trash. A Run now that fails
+renews a problem the row already has, with the retry's words. On a row with none it raises
+nothing, because its toast says how it went.
 
 A folder is listed every 5 s, once however many rows watch it. A folder of 2,000 entries or more
-is listed off the event loop; a smaller one is listed inline (about 1 ms at 1,000 entries), and a
-daemon start stats each name once to leave out what landed after the last heartbeat. Those two
+is listed off the event loop; a smaller one is listed inline, and a daemon start stats each name
+once to leave out what landed after the last heartbeat. Those two
 reads are the only ones that hold the event loop.
 
 ## 3. The island, the banner, the chime
@@ -81,8 +84,9 @@ earcon through the app's `LocalSpeaker` — the wake gate's own instance, so the
 never hears "It's seven ten" as the word. A ring stays up ten minutes; an alarm then self-snoozes
 once and the second linger ends it (`unanswered`); anything else counts as Done. `⌃⌥S` snoozes
 from anywhere while something rings; the status menu shows `Next · 07:10 Wake up, Kevin` and,
-while ringing, the two hot rows. A fire that only acted (an open, a filed file, a recipe) puts
-no ring up: its `fired` event says `ring: false`, and nothing flashes Snooze · Done.
+while ringing, the two hot rows. A fire that only acted (an open, a recipe, a press) puts no
+ring up: its `fired` event says `ring: false`, and nothing flashes Snooze · Done. A filed file
+rings, with Open · Done (§2).
 
 ## 4. What asks once, and what is refused
 

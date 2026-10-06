@@ -16,12 +16,15 @@ happens, a Swift helper owns the Mac.
    `pnpm test` on a busy Mac is re-run alone before it is called a regression.
 4. `pnpm test` (and each package's `test` script) loads `scripts/test-preload.mjs`
    into every test process. The fences: a temp `JARHEAD_STATE_DIR` and a temp `HOME`
-   (a `.gitconfig` only); every other `JARHEAD_*` variable and every secret key unset;
-   `fetch` off loopback answers a synthetic 401 (throws under `JARHEAD_TEST_NET=strict`,
-   as CI runs it) and a WebSocket off loopback is refused; `osascript`, `open`, `say`,
-   `afplay`, `shortcuts`, `automator` and `screencapture` run a refusing stub, and so do
-   `codex`, `claude` and any program inside an app under `/Applications`. Its header
-   says what the fences miss: a `node --import tsx` child does not load the preload.
+   (a `.gitconfig` only); every other `JARHEAD_*` variable (but the suite's own
+   `JARHEAD_TEST_*` knobs) and every secret key unset, and `JARHEAD_AUTO_WAKE=0` and
+   `JARHEAD_NO_AUDIO=1` set; `fetch` off loopback answers a synthetic 401 (throws under
+   `JARHEAD_TEST_NET=strict`, as CI runs it) and a WebSocket off loopback is refused;
+   `osascript`, `open`, `say`, `afplay`, `shortcuts`, `automator` and `screencapture` run
+   a refusing stub, and so do `codex` and `claude` outside the temp dir (a test's own
+   fake under `os.tmpdir()` still runs) and any program inside an app under
+   `/Applications` or `~/Applications`. Its header says what the fences miss: a
+   `node --import tsx` child does not load the preload.
 
 ## Rules
 
@@ -145,14 +148,17 @@ happens, a Swift helper owns the Mac.
   (`shell.ts`) strikes every known secret value (env keys, everything in the state
   dir's env file, `~/.jarhead/env` by default, their base64) and every key-shaped
   string from every text result before a model reads it. A brain's own built-in
-  tools are switched off so none of this is bypassed: the Claude Code brain denies
-  its built-ins (`Read`, `Glob`, `Grep`, `LS`, `WebFetch`, `WebSearch`, `Edit`,
+  tools are switched off. The Claude Code brain runs with `tools: []`, denies its
+  built-ins by name (`Read`, `Glob`, `Grep`, `LS`, `WebFetch`, `WebSearch`, `Edit`,
   `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, `Task`, `Agent`, `Skill`,
-  `ToolSearch`) and loads no settings sources; Codex runs with `features.shell_tool`,
-  `view_image` and `apps` off and its hosted `web_search` set to `"disabled"`. Each
-  brain is told only the tools it can call. Whether Codex 0.159.2 offered hosted
-  search by default is unverified (only a Codex turn, `JARHEAD_CODEX_TOOLS_CHECK`,
-  shows it), so the word is "switched off".
+  `ToolSearch`) and loads no settings sources. Codex runs with `features.shell_tool`,
+  `view_image` and `apps` off and its hosted `web_search` set to `"disabled"`. Codex
+  0.159.2 reads those three features back false (`codex features list`, no turn). Its
+  tool list is rendered only by the opt-in `JARHEAD_CODEX_TOOLS_CHECK` turn, which has
+  not been run, so it is unproven that Codex offers none of them (RAIL-4 waits on that
+  run). A Codex that runs its own command anyway has its turn stopped and its thread
+  retired once the command has started (`codex.ts`, `ownShell`). Each brain is told
+  only the tools it can call.
 
 ## Commands
 
@@ -286,10 +292,10 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   largest 440 tokens, no error event, and the reply named the word the paste
   ended on.
   Closing the session right after an append yields `context_injection_incomplete`.
-- `session.usage.updated` arrives every 15.0 s (LC-1: median 14,998 ms, max
-  15,001 ms). Unmuted, its `seconds` stays within about 1.5 s of the time since
-  `session.started` (every live-check run, 2026-10-06); muted, it counted 3.3 s of a
-  20 s mute once (LC-2, n = 1), the server's meter and not the invoice. The engine
+- `session.usage.updated` arrives every 15.0 s (LC-1, 2026-10-06: 14,998 and
+  15,001 ms apart, n = 2). Unmuted, its `seconds` stayed within 1.34 s of the time
+  since `session.started` (43 beats over 15 runs, 2026-10-06); muted, it counted 3.3 s
+  of a 20 s mute once (LC-2, n = 1), the server's meter and not the invoice. The engine
   writes a `session.usage` row at most every 60 s (`USAGE_ROW_MS`) and at detach, so
   a daemon that dies with a session open leaves its billed seconds; the next daemon
   to take the state dir's lock writes the lost close (`SESSION_LOST_REASON`) at start.
@@ -598,8 +604,9 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   old path; the doctor reads "Codex 0.159.2 via ChatGPT.app, signed in with ChatGPT".
 - `speechEndAt` is the wall clock at which the utterance's last input delta arrived
   (PERF-6, W3-1). On Live's session timeline it drifted: 24 of 88 stamps landed
-  after their own delegation. LC-10 measured speech end → delegation at 0.95 to
-  1.77 s, median 1.5 s (n = 10, two runs, 2026-10-06).
+  after their own delegation. LC-10 measured the end of the fed clip → Live's
+  delegation at 0.95 to 1.77 s, median 1.5 s (n = 10, two runs, c7d4e63 and
+  98c7cfe, 2026-10-06); the harness times the clip, not `speechEndAt`.
 - GPT-Live-1 streams output audio continuously while the mic is open, silence
   included: `earHeld()` judged "the voice is speaking" on frame ARRIVAL and held the ear for the whole
   session (0 reflex fires in 39 production delegations). Judge speaking on the
@@ -607,8 +614,9 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
 - Every model generation on gpt-6-astra costs ~3.4 s (p90 5.9) regardless of
   effort on non-reasoning turns; latency ≈ 0.7 s + generations × 3.4 s. Cut
   generations (act first, verify from results, no closing screenshot), not tool
-  time (55 ms median on the 2026-09-11 ledger; 15 ms for `frontmost_app` with the
-  real helper in the 2026-10-06 bench, n = 5).
+  time (55 ms median on the 2026-09-11 ledger, n = 120, not reproduced since; 16 ms
+  for `frontmost_app` with the real helper in the bench at 4727241, n = 3,
+  2026-10-06).
 - AVFoundation raises ObjC exceptions Swift cannot catch — `installTap` "Failed to
   create tap due to format mismatch" after an input-device change (the format read
   from the node is stale until the engine is reset and prepared) aborted the app 5×
@@ -707,8 +715,9 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   combo types nothing; ⌥⇧Space (Go / Pause) is the one allowance, since it types a
   no-break space (D8, open). ⌥⎋ Stop and ⌥⇧Return stay. `defaults write com.kevinliu.jarhead hotkeys.off -bool YES`
   turns every hotkey off but ⌥⎋ Stop. ⌃⌥ is VoiceOver's modifier and Rectangle's
-  defaults hold ⌃⌥C and ⌃⌥J: a combo another app holds fails to register, and the
-  failure is only logged.
+  defaults hold ⌃⌥C and ⌃⌥J. If `RegisterEventHotKey` refuses a combo, the failure
+  is only logged (`Hotkeys.swift`); whether another app's registration makes it
+  refuse is untested.
 - **Version skew is a problem, not a silence** (APP-3, W3-3). Both hellos carry
   `PROTOCOL_VERSION`. An app and a daemon from different builds show `app.version`
   on every client ("The app and the daemon are from different builds. Restart the
@@ -720,10 +729,13 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   app's half headless.
 - **A red night waits on the island** (SL-15, W3-2). An unattended fire that
   failed raises `automation.failed`, one per row, with Run now, or Open Console
-  when a retry would fail the same way; the row's next ok fire, a Run now or Move
-  to Trash clears it, and a failed Run now raises nothing (its toast said so). A
-  `fired` event says `ring: true` only when the fire put a ring up, so a fire that
-  only acted never flashes Snooze · Done. A row a time-zone move put behind now is
+  when a retry would fail the same way. The row's next green fire, its own or a
+  Run now, clears it, and so does Move to Trash. A Run now that fails renews a
+  problem the row already has, with the retry's words (`raiseFailed` when
+  `failedProblems` holds the row). On a row with none it raises nothing, because
+  its toast says how it went. A `fired` event says `ring: true` only when the fire
+  put a ring up: an open, a recipe or a press never flashes Snooze · Done, and a
+  filed file rings with Open · Done. A row a time-zone move put behind now is
   missed with the why `zone-moved`.
 - **Carried history is a budget, not a transcript.** After a Codex rollover the
   fresh thread hears `renderCarry`: Kevin's words verbatim (never cut, even over
@@ -857,9 +869,11 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   generations, judged at both the Delegator and the ear BEFORE the supersede block;
   `statusLine(name?)` is deterministic English. A spawned thread's change is one
   `thread.event` (coalesced 50 ms), never a snapshot: `step`, `at`, `said` and
-  `status` fit 200 B, `turn`, `question` and `ended` run to about 250 B, and
-  `started` carries the whole Thread (629 B, TH-8; `protocol.test.ts` pins the
-  sizes). Its conversation is a seq-paged `thread.transcript` to viewers only. A bare "stop" cuts everything as before
+  `status` fit 200 B (the table cuts their text); `turn`, `question` and `ended`
+  carry up to 120, 160 and 120 characters and can pass 200 B; `started` carries the
+  whole Thread (629 B measured by the audit, TH-8, 2026-10-05). `protocol.test.ts`
+  pins the bounds: `started` under 1 KB, `status`, `turn` and `question` at the
+  record's bounds under 320 B. Its conversation is a seq-paged `thread.transcript` to viewers only. A bare "stop" cuts everything as before
   with ≤ 1 live thread; with ≥ 2 the speech gate fires at once and the work cut waits
   350 ms for a name. Overflow defaults to `supersede` (today); `Settings.threadOverflow:
   "spawn"` is opt-in. Live stays open while a thread runs; the idle guard is
@@ -956,9 +970,10 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   and so does the wake shot. Two capturing processes from one executable path wedge
   each other while the screen is locked: one capture's callback never came and the
   acting helper's queue stayed blocked (2026-10-06, F5). `runBlocking` answers
-  `capture_failed` after 5 s, under the client's 6 s; a reading-side capture that
-  times out behind the acting queue is `capture_failed` too, and the toolset's
-  `screencapture` fallback serves it.
+  `capture_failed` after 5 s, under the client's 6 s, and a forwarded capture that
+  times out behind the acting queue is `capture_failed` too. A screenshot that fails
+  that way is served by the toolset's `screencapture` fallback; a zoom has none and
+  fails `capture_failed`.
 - **`fallAsleep(cause)` is the only closer.** `sleep()` (cause command), the idle
   tick (idle), pause decay (pause-decayed), a brain swap (brain-changed), the blob
   dropped into the notch (dock), `Engine.stop()` (shutdown) and `pressStop` (its
@@ -993,7 +1008,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
 
 ## Learnings (2026-09-12, threads / sleep / dither pass)
 
-- The helper's `busy` check lives in `packages/hands/native/Input.swift` because only the posting process knows the timestamp of every event it posted: own posts are subtracted per kind with 30 ms slack, `mouseMoved` is not counted, `ownDriver` (dictation) skips it, `mouse_up` skips busy but not `expectFront`. `user_idle.foreignMs` is therefore per helper process — the lease reads it from the acting helper.
+- The helper's `busy` decisions live in `packages/hands/native/HandsWin.swift`, by time (the newest event of a kind is someone else's when it is not within 30 ms of the helper's own last post of that kind) and by count (whatever the session counted beyond the helper's own posts); `Input.swift` feeds them the session's readings and notes every post, because only the posting process knows every event it posted. `mouseMoved` is not counted, `ownDriver` (dictation) holds nothing, `mouse_up` skips busy but not `expectFront`. `user_idle.foreignMs` is therefore per helper process; the lease reads it from the acting helper.
 - `type` with a pre-post `expectFront` mismatch is an error `focus_moved` like a click's; a mid-text switch is a cancelled result with reason `focus_moved` and the characters landed.
 - In the lease nothing decided before an `await` stands after it (the thread gate and the re-front are helper round trips; the lease re-judges after each). In the desk a root question that vanished takes its queue with it — only `consume` and `drop(laneId)` promote.
 - Dither is the classic 8×8 Bayer matrix in point-sized cells (`Dither.cellPoints` 1.5 pt on the island, the meters and the blob's halo, 2 pt in `DitheredGradient` and the Dock icon), five bands (four on the Console ground); the pattern has to be big enough to see, so never a device-pixel cell. The icon samples geometry per pixel and the threshold per cell so the silhouette stays crisp. Regenerate with `pnpm build:media` (= `build:icon` + `build:banner`) after any change to `scripts/dither.ts`, `icon-render.ts`, `make-icon.ts` or `make-banner.ts` (docs/media/icon-sizes.png, docs/media/banner.png and apps/mac/Resources/preview-icon-sizes.png are tracked; the icon must stay byte-identical across a pure refactor — `git status --porcelain docs/media apps/mac/Resources` after `pnpm build:icon`). The face (`FACE` in dither.ts, Kevin's `^ ^`) is a cell mask: one pattern from 64 to 1024, hand bitmaps at 32 and 16, pinned exactly by `scripts/__tests__/icon.test.ts`; `pnpm build:mac` rebuilds the icns whenever those scripts are newer than build/Jarhead.icns.

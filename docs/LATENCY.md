@@ -16,8 +16,8 @@ in §5 come from the AFTER run on a quiet machine (load ≈ 4).
 | what Kevin experiences | target | before (measured) |
 |---|---|---|
 | speech end → first visible action (a click, a scroll, a typed text, an app coming to front, a search result, a circle drawn on the screen) | **2–5 s** | 12.5 s median from the delegation on the 11 simple app-server commands (§3a; 12.2 s over all 39, §3b); speech end → delegation adds 0.4–1.6 s (n=4) → ≈ 13–14 s; the 2026-10-06 live checks measured 0.95–1.77 s, median 1.5 s (LC-10, n=10, §3d) |
-| one tool use (the brain deciding on a tool → the tool's effect) | **< 2 s** | a model generation is 3.4 s median / 5.9 s p90; the tool's own round trip is 55 ms median |
-| the tool path Jarhead controls (runner → toolset → helper → back) | already met: 55 ms median, 211 ms p95 | 0.4–2.2 % of a delegation's wall time |
+| one tool use (the brain deciding on a tool → the tool's effect) | **< 2 s** | a model generation is 3.4 s median / 5.9 s p90; the tool's own round trip was 55 ms median (the 2026-09-11 ledger, n = 120; not reproduced since, §3c) |
+| the tool path Jarhead controls (runner → toolset → helper → back) | met on the 2026-09-11 ledger: 55 ms median, 211 ms p95 (n = 120); not reproduced since, §3c | 0.4–2.2 % of a delegation's wall time |
 
 The reflex path (REDESIGN §12) already meets the target for the one-step
 commands the grammar catches ("scroll down", "open safari", "press enter":
@@ -170,8 +170,8 @@ delegations in the first 39 ran their first turn on a fresh thread.
 
 The 55 ms / 211 ms round trip was the 2026-09-11 ledger (n = 120). The launch audit could not
 reproduce it from later ledgers: 75 ms median / 692 ms p95 over all rows, 82 ms / 518 ms after
-this pass (PERF-11, 2026-10-05). The bench on 2026-10-06 measured 15 ms median for
-`frontmost_app` with the real helper (n = 5, §10).
+this pass (PERF-11, 2026-10-05, n not recorded). The bench at 4727241 on 2026-10-06 measured
+16 ms median for `frontmost_app` with the real helper (n = 3, §10).
 
 Reasoned from the above: **latency ≈ 0.7 s + (model generations) × 3.4 s.** A
 visible action inside 5 s needs the first generation to BE the action and a
@@ -261,7 +261,7 @@ how many it left out.
 | Truncated dumps / result caps forcing a re-read | **no** | 0 observed |
 | Serial round trips the model could batch | **no** (1 avoidable) | the model already batches its look-only calls; the runner has no lock |
 | Narration blocking the tool path | **no** | commentary is fire-and-forget (600 ms coalesce) |
-| Tool transport / screenshot capture cost | **no** | 55 ms median round trip; the helper's shot 80–120 ms; 0.4–2.2 % of wall time |
+| Tool transport / screenshot capture cost | **no** | 55 ms median round trip (the 2026-09-11 ledger, n = 120; not reproduced since, §3c); the helper's shot 80–120 ms; 0.4–2.2 % of wall time |
 | Jarhead's own prompt size | **no** | ~1.7k tokens of the 21.6k |
 
 ## 5. The fixes (this change set)
@@ -365,8 +365,8 @@ LC-5 at 98c7cfe). The app's playout cushion adds 120 ms before the first chunk o
 rows are slower, and none of the three is Jarhead's share.
 
 The model-path row is the harness with canned hands. Production after this pass, read from
-Kevin's ledger by the launch audit (PERF-3, 2026-10-05): 7.0 s median and 27.6 s p95 from the
-delegation to the first action, 12.6 s and 50.0 s to done.
+Kevin's ledger by the launch audit (PERF-3, 2026-10-05, n not recorded): 7.0 s median and
+27.6 s p95 from the delegation to the first action, 12.6 s and 50.0 s to done.
 
 **What is measured versus claimed.** Both Jarhead rows are measured by this repo's
 own harness on this Mac and read from the ledger (§2, §5): nearest-rank p95 over
@@ -422,7 +422,8 @@ through a bootstrap that does not exist.
 
 **Tool uses under 2 s — met for the tool, not for the model's decision between
 tools.** Every tool round trip is under 2 s (55 ms median, 211 ms p95 in the 2026-09-11
-ledger; 82 ms and 518 ms after this pass, PERF-11; applescript queries that took 3.9 s are
+ledger, n = 120; 82 ms and 518 ms after this pass, PERF-11, 2026-10-05, n not recorded;
+applescript queries that took 3.9 s are
 steered to the millisecond tools),
 but the model spends 3.9 s median between one tool result and the next call, and
 effort low does not change that (4.4 s). No prompt or transport change shortens a
@@ -485,26 +486,27 @@ the first tool to drop it if the model starts double-acting.
 
 ### Where the levers stand (2026-10-06)
 
-The bench below is `pnpm jarhead bench --no-duck` with the real Swift helper and the stand-in
-brain, at 48aa9a9 on Kevin's Mac with the screen locked, load average about 120 to 180, n = 5. It
-spends nothing.
+The bench below is `pnpm jarhead bench --no-duck`, 3 runs, with the real Swift helper and the
+stand-in brain, at 4727241 (the F5 commit) on Kevin's Mac with the screen locked, load average
+about 105, n = 3, 2026-10-06. It spends nothing. A later run at 48aa9a9 (n = 5) was not saved,
+so its figures are not quoted here.
 
 | lever | target | where it stands |
 |---|---|---|
-| SplitHands, a read during a type | < 20 ms | **met in the bench**: 4 ms median (row "read during a type") |
-| SplitHands, read-only round trip | p95 ≤ 80 ms | **not shown**. The bench's `frontmost_app` round trip is 15 ms median. The ledger's read-only class also counts screenshots, zooms, file reads and web fetches; the launch audit read it at 184 ms median and 699 ms p95 from the production ledger (PF-23, 2026-10-05), so that row cannot show SplitHands alone |
-| observation line, `now:` on acting results | ≥ 95 % | **met in the bench**: 5 of 5 acting results carried a `now:` line; an acting call with its observation took 169 ms median, 191 ms p95. **Production unread**: before W3-1 the line lived only in the brain's result and `ledger --speed` counted 0 % by construction (PERF-5); since W3-1 the lane runner records it as a `now:` note after the step, so the next day of use reads it |
+| SplitHands, a read during a type | < 20 ms | **met in the bench**: 2 ms median, 11 ms max (row "read during a type", n = 3) |
+| SplitHands, read-only round trip | p95 ≤ 80 ms | **not shown**. The bench's `frontmost_app` round trip is 16 ms median and 201 ms max (n = 3). The ledger's read-only class also counts screenshots, zooms, file reads and web fetches; the launch audit read it at 184 ms median and 699 ms p95 from the production ledger (PF-23, 2026-10-05, n not recorded), so that row cannot show SplitHands alone |
+| observation line, `now:` on acting results | ≥ 95 % | **met in the bench**: 3 of 3 acting results carried a `now:` line; an acting call with its observation took 174 ms median, 175 ms max (n = 3). **Production unread**: before W3-1 the line lived only in the brain's result and `ledger --speed` counted 0 % by construction (PERF-5); since W3-1 the lane runner records it as a `now:` note after the step, so the next day of use reads it |
 | observation line, acting step then a screenshot | ≤ 15 % | **unread since the fix**. The launch audit counted 8 of 10 acting steps followed by a screenshot (PF-24, 2026-10-05), before the `now:` line reached the ledger |
-| warm brain pool | first two thread starts < 5 ms | 2 ms and 5 ms in the launch audit (PF-22, 2026-10-05) |
-| thread verbs from the table | 0 generations, ≤ 5 ms | 2 ms in the launch audit (PF-21, 2026-10-05); the F5 commit's bench (4727241, n = 3) stopped one of two live threads in 2 ms |
+| warm brain pool | first two thread starts < 5 ms | 2 ms and 5 ms for the first two starts in the launch audit (PF-22, 2026-10-05, n = 2) |
+| thread verbs from the table | 0 generations, ≤ 5 ms | 2 ms in the launch audit (PF-21, 2026-10-05, n not recorded); the bench at 4727241 stopped one of two live threads in 2 ms (n = 1) and answered the status line with 0 generations in 2 ms (n = 1) |
 
 One cost moved with W3-1: an observed acting step is recorded after its `now:` line, so its
 `firstActionAt` includes the observation, the 150 ms settle (400 ms after `browser_click` and
 `browser_navigate`) and a read raced against 300 ms. A first-action figure from a day with
 `Settings.observe` on is up to about 0.7 s later than the same action without it.
 
-Before F5 (2026-10-06, 4727241) the same bench timed out on a locked screen (6002 ms and
-8002 ms): two helper processes started from one executable path both captured through
-ScreenCaptureKit, one capture's
-callback never came, and the acting helper's queue stayed blocked. Now only the acting helper
+Before F5 (2026-10-06, 4727241) the same bench timed out on a locked screen: over 2 runs, 12
+screenshots stopped at their 6 s limit and 3 pointer moves at their 8 s limit. Two helper
+processes started from one executable path both captured through ScreenCaptureKit, one
+capture's callback never came, and the acting helper's queue stayed blocked. Now only the acting helper
 captures, and a capture answers `capture_failed` after 5 s so the queue moves on (AGENTS.md).
