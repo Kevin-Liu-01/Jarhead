@@ -272,15 +272,20 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
 - **The sounds** (`Audio/Earcons.swift`, `App/EarconCues.swift`; docs/AUDIO.md §10): twelve CAFs in
   `apps/mac/Resources/Sounds` (staged by build-mac before signing), one `AVAudioPlayer` each on the
   default output, never the voice's engine, never `NSSound`. The one gate is `Earcons.play`: nothing while
-  `AppState.voiceAudioRuns` (connecting included; `onLocalSay` checks that, not `inSession`), a wait for the
-  voice's playout to drain (`VoiceOutputClock`, dropped past 2 s), one at a time by priority, the same sound
-  once per 1.5 s. `awake` is the one session-edge sound: it plays before `updateAudioActivity()` starts the
-  graph and `handleMic` zero-fills the wire until `EarconWire.holdUntil` (status: `awake held`). WakeGate
-  still names `Pop`/`Glass`; `LocalSpeaker.earcon` maps them (`Earcon.gate`), and `local.say` names map by
-  `Earcon.ring` (the engine's default for a timer is `Ping`). `settings.audio.sounds` (absent = macOS's
-  interface-sounds switch) and `soundVolume` (0.7) go through `audioSettingsOf`, which keeps only typed
-  fields; rings sound with Sounds off. New moments go in `EarconCues` with a check line, never inside a
-  session.
+  `AppState.voiceAudioRuns` (connecting included), a wait for the voice's playout to drain
+  (`VoiceOutputClock`, dropped past 2 s), one at a time by priority (a higher sound fades a lower one
+  started under 250 ms before it), the same sound once per 1.5 s. `awake` is the one session-edge sound: it
+  plays before `updateAudioActivity()` starts the graph and `handleMic` zero-fills the wire until
+  `EarconWire.holdUntil` (status: `awake held`). Every edge into a mic phase calls `Earcons.enterVoice()`
+  first: the rest fades over 50 ms and the wire is held through it; `EarconWire.cut` never shortens a
+  hold. `onLocalSay` holds a frame that lands while connecting (`EarconCues.LocalSayHold`), and the
+  engine holds a fire's lines for the opening session (`opening` / `holdForSession`, `releaseHeldFires`).
+  WakeGate still names `Pop`/`Glass`; `LocalSpeaker.earcon` maps them (`Earcon.gate`). On `local.say`,
+  `ring` (the row's kind, `ringOf`) makes a ring and `sound` only picks the file (`Earcon.named`;
+  `Ring.of` reads the name when an older daemon sends no `ring`). The alarm ignores Volume (floor 0.67,
+  Hero's −19.5 LUFS, after its ramp). `settings.audio.sounds` (absent = macOS's interface-sounds switch)
+  and `soundVolume` (0.7) go through `audioSettingsOf`, which keeps only typed fields; rings sound with
+  Sounds off. New moments go in `EarconCues` with a check line, never inside a session.
 - **Rails**: `Wake/WakeGate.swift` is never touched; the wake listener gets exactly one property set
   on its own input AU (`kAudioOutputUnitProperty_CurrentDevice` → the ranked mic, `hears <name>
   (ranked)`); the barge-in duck stays detached on the plain path (it would duck Jarhead against

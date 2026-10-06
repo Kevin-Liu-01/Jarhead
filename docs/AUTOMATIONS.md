@@ -82,7 +82,10 @@ is a `UNNotificationCategory("jarhead.automation")` with Snooze · Done (Open ·
 press carries a target); its buttons land the same row as the island's presses. The chime is one
 of the app's own sounds (docs/AUDIO.md §10: `Hero` the alarm, `Ping` the timer, `Glass` the chime,
 `Pop` an open; a line with no sound gets the cue), never played while a session's microphone runs.
-The line is read by the app's `LocalSpeaker`, the wake gate's own instance, on the sound's tail, and
+The row's kind, sent as `local.say`'s `ring`, makes it a ring, whatever sound it names: it sounds
+with Settings › Audio › Sounds off, and an alarm keeps its own level. A chime or a say that fires
+while a session is opening is said by that session once it opens, or rung and read here if none
+does; an alarm does not re-ring into an opening session. The line is read by the app's `LocalSpeaker`, the wake gate's own instance, on the sound's tail, and
 the wake listener ignores words until 0.35 s after both, so it never hears "It's seven ten" as the
 word. Snooze and Done fade a sounding ring. A ring stays up ten minutes; an alarm then self-snoozes
 once and the second linger ends it (`unanswered`); anything else counts as Done. `⌃⌥S` snoozes
