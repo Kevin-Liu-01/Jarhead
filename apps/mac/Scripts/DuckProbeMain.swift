@@ -660,11 +660,22 @@ final class DuckProbe: @unchecked Sendable {
         return (100 * Double(under) / Double(max(1, audible)), counter.ducks)
     }
 
+    /// The p-th percentile by nearest rank: the ⌈p/100 · n⌉-th smallest sample, so p50 of an even n is the lower
+    /// middle value. The lines that say median use `median`.
     private func percentile(_ values: [Double], _ p: Double) -> Double {
         guard !values.isEmpty else { return .nan }
         let sorted = values.sorted()
         let idx = min(sorted.count - 1, max(0, Int((p / 100 * Double(sorted.count)).rounded(.up)) - 1))
         return sorted[idx]
+    }
+
+    /// The median: the middle sample of an odd n, the mean of the two middle samples of an even n (what
+    /// `pnpm jarhead bench` prints from this probe's JSON). NaN for no samples.
+    private func median(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return .nan }
+        let sorted = values.sorted()
+        let mid = sorted.count / 2
+        return sorted.count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
     }
 
     private func finish() {
@@ -676,13 +687,13 @@ final class DuckProbe: @unchecked Sendable {
         let echoStale = echoStaleLowestDb
         lock.unlock()
         let onsets = runs * Scenario.allCases.count
-        say(String(format: "done: %d ducks of %d onsets; onset → duck (−6 dB) median %.0f ms, p95 %.0f ms, max %.0f ms; lowest gain %.2f", s.count, onsets, percentile(s, 50), percentile(s, 95), s.max() ?? .nan, min))
-        if !deep.isEmpty { say(String(format: "  confirmation → −20 dB: median %.1f ms, max %.1f ms", percentile(deep, 50), deep.max() ?? .nan)) }
-        if !u.isEmpty { say(String(format: "  cough / echo words, unconfirmed → unity: median %.0f ms after the duck (700 ms + the 300 ms ramp); %d echo partials refused", percentile(u, 50), refused)) }
-        if !l.isEmpty { say(String(format: "  Live's transcript confirmed %.0f ms after the duck (modelled at +%d ms from onset)", percentile(l, 50), liveMs)) }
-        if !w.isEmpty { say(String(format: "  the ear's words confirmed %.0f ms after the duck", percentile(w, 50))) }
-        if !c.isEmpty { say(String(format: "  confirmed → unity: median %.0f ms after the duck; %.0f ms after Kevin's last word", percentile(c, 50), percentile(e, 50))) }
-        if !h.isEmpty { say(String(format: "  no confirmation, mic still hot → unity: median %.0f ms after the duck (held to 1.5 s, then the ramp)", percentile(h, 50))) }
+        say(String(format: "done: %d ducks of %d onsets; onset → duck (−6 dB) median %.0f ms, p95 %.0f ms, max %.0f ms; lowest gain %.2f", s.count, onsets, median(s), percentile(s, 95), s.max() ?? .nan, min))
+        if !deep.isEmpty { say(String(format: "  confirmation → −20 dB: median %.1f ms, max %.1f ms", median(deep), deep.max() ?? .nan)) }
+        if !u.isEmpty { say(String(format: "  cough / echo words, unconfirmed → unity: median %.0f ms after the duck (700 ms + the 300 ms ramp); %d echo partials refused", median(u), refused)) }
+        if !l.isEmpty { say(String(format: "  Live's transcript confirmed %.0f ms after the duck (modelled at +%d ms from onset)", median(l), liveMs)) }
+        if !w.isEmpty { say(String(format: "  the ear's words confirmed %.0f ms after the duck", median(w))) }
+        if !c.isEmpty { say(String(format: "  confirmed → unity: median %.0f ms after the duck; %.0f ms after Kevin's last word", median(c), median(e))) }
+        if !h.isEmpty { say(String(format: "  no confirmation, mic still hot → unity: median %.0f ms after the duck (held to 1.5 s, then the ramp)", median(h))) }
         for f in fails { say("FAIL \(f)") }
         func r(_ v: [Double]) -> [Double] { v.map { ($0 * 10).rounded() / 10 } }
         var report: [String: Any] = [

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { benchReport, median, percentile, type Sample } from "../bench.ts";
-import { stat, summarize, type BrainBenchReport } from "../bench-brain.ts";
+import { compareReports, renderReport, stat, summarize, type BrainBenchReport } from "../bench-brain.ts";
 
 /**
  * C4-medians: `pnpm jarhead bench`, `bench --brain` and `ledger --speed` print the true median. For an even n that is
@@ -72,4 +72,31 @@ test("C4-medians: the saved 2026-09-12 brain run re-summarized gives 4.50 s to t
   assert.deepEqual([firstAction.n, firstAction.median, firstAction.p95], [6, 4499.5, 5099], "the summary saved then reads 4365 ms: the lower middle");
   assert.deepEqual([done.n, done.median, done.p95], [10, 9020, 25631], "saved: 8937 ms");
   assert.deepEqual([s.generationGapMs.n, s.generationGapMs.median, s.generationGapMs.p95], [24, 3907.5, 5979], "saved: 3777 ms");
+});
+
+const savedReport = (name: string): BrainBenchReport => JSON.parse(readFileSync(new URL(`../../../../docs/latency/${name}`, import.meta.url), "utf8")) as BrainBenchReport;
+
+test("C4-medians: bench --brain --compare reads the baseline's medians from its records, so a saved run against itself moves nothing", () => {
+  for (const name of ["after.json", "after-effort-low.json", "before-worktree.json"]) {
+    const saved = savedReport(name);
+    const now: BrainBenchReport = { meta: saved.meta, records: saved.records, summary: summarize(saved.records) };
+    const cmp = compareReports(now, saved, `docs/latency/${name}`);
+    assert.ok(cmp.rows.length > 1, `${name}: a row per command and the overall one`);
+    for (const r of cmp.rows) {
+      for (const [k, v] of Object.entries({ firstActionMs: r.firstActionMs, doneMs: r.doneMs, generations: r.generations })) {
+        if (v !== undefined) assert.equal(v, 0, `${name} ${r.cmd} ${k}`);
+      }
+    }
+    assert.equal(cmp.generationsP95.before, cmp.generationsP95.after, `${name}: generations p95`);
+    // These records predate the verification counters: the share stays unknown, never a counted 0 %.
+    assert.equal(cmp.verificationShare.before, undefined, `${name}: verifying-shot share`);
+  }
+  // Read off its saved summary instead, after.json's nearest-rank medians made the same samples print 134.5 ms slower to the first action.
+  const saved = savedReport("after.json");
+  const now: BrainBenchReport = { meta: saved.meta, records: saved.records, summary: summarize(saved.records) };
+  assert.equal(now.summary.brainPath.overall.metrics.firstAction.median - saved.summary.brainPath.overall.metrics.firstAction.median, 134.5);
+  const lines = renderReport({ ...now, compare: compareReports(now, saved, "docs/latency/after.json") });
+  const deltas = lines.slice(lines.findIndex((l) => /against docs\/latency\/after\.json/.test(l)));
+  assert.match(deltas.find((l) => /^\s+all\s/.test(l)) ?? "", /^\s+all\s+0\.0 s\s+0\.0 s\s+0$/, lines.join("\n"));
+  assert.match(deltas.find((l) => /^\s+click-search-type\s/.test(l)) ?? "", /^\s+click-search-type\s+0\.0 s\s+0\.0 s\s+0$/, "the even-n command the saved summary skewed most (done +7.2 s, steps +1.5)");
 });

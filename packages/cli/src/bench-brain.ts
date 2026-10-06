@@ -869,25 +869,34 @@ export interface CompareReport {
   readonly verificationShare: { readonly before: number | undefined; readonly after: number };
 }
 
-/** This report against an older one: per-command median deltas of the first action, done and the model steps, plus the two headline shares. Pure. */
+/**
+ * This report against an older one: per-command median deltas of the first action, done and the model steps, plus the
+ * two headline shares. Pure. The baseline is summarized again from its own records, the way this run was: a report
+ * saved before C4-medians holds nearest-rank medians (the lower middle of an even n), so its saved summary reads faster
+ * than its own samples do and every delta would lean slower. A report without records is read as saved.
+ */
 export function compareReports(current: BrainBenchReport, baseline: BrainBenchReport, baselinePath: string): CompareReport {
-  const before = new Map(baseline.summary.brainPath.perCommand.map((c) => [c.cmd, c]));
+  // Older reports predate some summary fields; read what is there.
+  const saved = baseline.summary as Partial<BenchSummary>;
+  const again = baseline.records?.length ? summarize(baseline.records) : undefined;
+  const base = again?.brainPath ?? baseline.summary.brainPath;
+  const before = new Map(base.perCommand.map((c) => [c.cmd, c]));
   const delta = (a: number | undefined, b: number | undefined): number | undefined => (a === undefined || b === undefined || !Number.isFinite(a) || !Number.isFinite(b) ? undefined : a - b);
   const rows: CompareRow[] = [...current.summary.brainPath.perCommand, current.summary.brainPath.overall].map((c) => {
-    const b = c.cmd === "all" ? baseline.summary.brainPath.overall : before.get(c.cmd);
+    const b = c.cmd === "all" ? base.overall : before.get(c.cmd);
     const firstActionMs = delta(c.metrics.firstAction.median, b?.metrics.firstAction.median);
     const doneMs = delta(c.metrics.done.median, b?.metrics.done.median);
     const generations = delta(c.generations.median, b?.generations.median);
     return { cmd: c.cmd, ...(firstActionMs !== undefined ? { firstActionMs } : {}), ...(doneMs !== undefined ? { doneMs } : {}), ...(generations !== undefined ? { generations } : {}) };
   });
-  // Older reports predate these fields; read what is there.
-  const bs = baseline.summary as Partial<BenchSummary>;
+  // Records older than the verification counters sum to NaN acting calls: no share was counted then, so read the saved one (none).
+  const shotsCounted = again !== undefined && Number.isFinite(again.verificationShots.acting);
   return {
     baseline: baselinePath,
     ...(typeof baseline.meta["startedAt"] === "string" ? { baselineStartedAt: baseline.meta["startedAt"] } : {}),
     rows,
-    generationsP95: { before: bs.generationsPerCommand?.p95 ?? baseline.summary.brainPath.overall.generations.p95, after: current.summary.generationsPerCommand.p95 },
-    verificationShare: { before: bs.verificationShots?.share, after: current.summary.verificationShots.share },
+    generationsP95: { before: again?.generationsPerCommand.p95 ?? saved.generationsPerCommand?.p95 ?? base.overall.generations.p95, after: current.summary.generationsPerCommand.p95 },
+    verificationShare: { before: shotsCounted ? again.verificationShots.share : saved.verificationShots?.share, after: current.summary.verificationShots.share },
   };
 }
 
