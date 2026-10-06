@@ -188,10 +188,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let text = msg.text, !text.isEmpty { self.state.localSpeaker.speak(String(text.prefix(160))) }
         }
         client.onNotify = { [weak self] msg in self?.notifications.post(msg) }
-        state.ledgerDaysHandler = { [weak self] in await self?.client.ledgerDays() ?? [] }
+        // The Ledger tab's list with every day's totals (LM-6); nil when nothing answered, and the Console asks again.
+        state.ledgerDaysHandler = { [weak self] in await self?.client.ledgerDaysAnswer() }
         state.ledgerReadHandler = { [weak self] day in await self?.client.ledgerRows(day: day) ?? [] }
-        // The rail's search: full text over the live ledger through the daemon (titles only without it).
-        state.ledgerSearchHandler = { [weak self] query, limit in await self?.client.ledgerSearch(query: query, limit: limit) }
+        // The rail's search: full text over the live ledger through the daemon, one page per call (titles only without it).
+        state.ledgerSearchHandler = { [weak self] query, limit, before in await self?.client.ledgerSearchPage(query: query, limit: limit, before: before) }
         state.installJarheadSessions(list: { [weak self] in await self?.client.jarheadSessions() ?? [] },
                                      rows: { [weak self] id in await self?.client.jarheadSessionRows(id) ?? [] },
                                      chain: { [weak self] rootId in await self?.client.jarheadChainRows(rootId) })

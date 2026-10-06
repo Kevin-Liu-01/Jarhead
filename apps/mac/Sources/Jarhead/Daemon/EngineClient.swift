@@ -199,10 +199,6 @@ final class EngineClient: @unchecked Sendable {
     // MARK: - lifecycle
 
     func start() {
-        // The Ledger tab's two reads whose answers AppState's handlers do not carry: the totals beside the day list
-        // (LM-6) and a search page's `older` (search older). The Console asks these, the handlers when they are nil.
-        LedgerDays.fetch = { [weak self] in await self?.ledgerDaysAnswer() }
-        LedgerSearchPage.fetch = { [weak self] query, limit, before in await self?.ledgerSearchPage(query: query, limit: limit, before: before) }
         net.async {
             guard !self.running else { return }
             self.running = true
@@ -683,10 +679,6 @@ final class EngineClient: @unchecked Sendable {
 
     // MARK: - ledger
 
-    func ledgerDays() async -> [String] {
-        await ledgerDaysAnswer()?.days ?? []
-    }
-
     /// The day list, newest first, with each day's totals beside it (LM-6; none from a daemon before them). nil when
     /// nothing answered. A total that does not decode is left out, never the list.
     func ledgerDaysAnswer() async -> LedgerDays? {
@@ -775,15 +767,10 @@ final class EngineClient: @unchecked Sendable {
 
     // MARK: - search
 
-    /// Full-text hits over the live ledger for the Console's search box (`ledger.search`,
-    /// answered with `ledger.hits`). nil when nothing answers — a disconnect, or the request
-    /// timeout — so the rail can say so instead of "no hits".
-    func ledgerSearch(query: String, limit: Int = 50) async -> [LedgerHit]? {
-        await ledgerSearchPage(query: query, limit: limit, before: nil)?.hits
-    }
-
-    /// One page of the search (`ledger.search {before}` → `ledger.hits {older}`): the daemon reads a bounded slice of
-    /// day files per request, and `older` is where the next page starts. nil when nothing answered.
+    /// Full-text hits over the live ledger for the Console's search box, one page (`ledger.search {before}` →
+    /// `ledger.hits {older}`): the daemon reads a bounded slice of day files per request, and `older` is where the next
+    /// page starts. nil when nothing answers (a disconnect, or the request timeout), so the rail can say so instead of
+    /// "no hits".
     func ledgerSearchPage(query: String, limit: Int, before: String?) async -> LedgerSearchPage? {
         var message: [String: Any] = ["type": "ledger.search", "query": query, "limit": limit]
         if let before { message["before"] = before }

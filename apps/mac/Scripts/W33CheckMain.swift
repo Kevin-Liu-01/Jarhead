@@ -280,8 +280,8 @@ struct W33CheckMain {
                 let client = EngineClient(socketPath: daemon.path, state: state)
                 client.audio = AudioEngine()
                 state.sendHandler = { client.send($0) }
-                state.ledgerDaysHandler = { await client.ledgerDays() }
-                state.ledgerSearchHandler = { q, limit in await client.ledgerSearch(query: q, limit: limit) }
+                state.ledgerDaysHandler = { await client.ledgerDaysAnswer() }
+                state.ledgerSearchHandler = { q, limit, before in await client.ledgerSearchPage(query: q, limit: limit, before: before) }
                 client.start()
                 daemon.waitForClient()
                 return (state, client, daemon)
@@ -446,29 +446,28 @@ struct W33CheckMain {
             do {
                 // No answer in time (a cold read on a loaded Mac, before the daemon's budget): the list keeps loading, then lands.
                 let asked = Counter()
-                LedgerDays.fetch = {
+                let state = AppState()
+                state.ledgerDaysHandler = {
                     asked.next() == 1 ? nil : LedgerDays(days: FakeDaemon.days, totals: ["2026-09-11": LedgerDayTotals(day: "2026-09-11", sessions: 2, billedSeconds: 181)])
                 }
                 let session = ConsoleSession()
                 let loaded = Flag()
                 Task { @MainActor in
-                    await session.loadDays(from: AppState())
+                    await session.loadDays(from: state)
                     loaded.on = true
                 }
                 _ = wait(2) { loaded.on }
                 check(session.ledgerDays == nil, "no answer: the tab still says Loading, never an empty ledger")
                 let landed = wait(Double(ConsoleSession.daysRetryAfterMs) / 1000 + 3) { session.ledgerDays == FakeDaemon.days }
                 check(landed && session.ledgerTotals["2026-09-11"]?.billedSeconds == 181, "asked again, the list and its totals land (\(session.ledgerDays ?? []))")
-                LedgerDays.fetch = nil
             }
             do {
                 // An older page that does not answer: the newest page's hits stand, and the gap line says what went unread.
                 let pages = Counter()
-                LedgerSearchPage.fetch = { _, _, _ in
+                let state = AppState()
+                state.ledgerSearchHandler = { _, _, _ in
                     pages.next() == 1 ? LedgerSearchPage(hits: [LedgerHit(json: ["sessionId": "s_1", "chainId": "s_1", "state": "active", "at": 1.0, "kind": "heard", "text": "the needle"])!], older: "2026-09-12") : nil
                 }
-                let state = AppState()
-                state.ledgerSearchHandler = { _, _ in [] }
                 let session = ConsoleSession()
                 session.searchOpen = true
                 session.search("needle", from: state)
@@ -476,7 +475,6 @@ struct W33CheckMain {
                 check(done && session.searchHits?.map(\.text) == ["the needle"] && session.searchGap == .older,
                       "an older page with no answer: the hits stand, and “\(session.searchGap?.line ?? "-")”")
                 check(ConsoleSession.SearchGap.older.line.range(of: "—") == nil, "no em dash in the gap line")
-                LedgerSearchPage.fetch = nil
             }
 
             print("composer:")

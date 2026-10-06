@@ -401,7 +401,9 @@ public final class AppState: ObservableObject {
 
     /// Installed by the daemon client. UI code only ever calls `send`.
     public var sendHandler: (EngineCommand) -> Void = { _ in }
-    public var ledgerDaysHandler: () async -> [String] = { [] }
+    /// The Ledger tab's `ledger.days`: the day list with each day's totals (LM-6) and `partial`. nil is no answer, and the
+    /// Console asks again (ConsoleSession.askDays). Nothing installed answers an empty list, as a harness with no ledger.
+    public var ledgerDaysHandler: () async -> LedgerDays? = { LedgerDays(days: []) }
     public var ledgerReadHandler: (String) async -> [LedgerRow] = { _ in [] }
     /// Console → app window management (open console, quit) also goes through here.
     public var openConsoleHandler: () -> Void = {}
@@ -413,7 +415,7 @@ public final class AppState: ObservableObject {
     public func send(_ command: EngineCommand) { sendHandler(command) }
     /// A signal the app observed on Kevin's behalf (an app quit, the Mac woke): data for the daemon's watchers, never a command.
     public func systemSignal(_ signal: SystemSignal) { signalHandler(signal) }
-    public func ledgerDays() async -> [String] { await ledgerDaysHandler() }
+    public func ledgerDays() async -> LedgerDays? { await ledgerDaysHandler() }
     public func ledgerRows(day: String) async -> [LedgerRow] { await ledgerReadHandler(day) }
     public func openConsole() { openConsoleHandler() }
     public func openOnboarding() { openOnboardingHandler() }
@@ -629,10 +631,11 @@ public final class AppState: ObservableObject {
     /// The engine hides the items at its end too; this hides them at once and keeps the
     /// feed's "Cleared · Undo" state until new items arrive or the session changes.
     @Published public var nowClearedAt: Double?
-    /// Full-text search over the ledger (`ledger.search`). Installed by the app (AppDelegate,
-    /// next to the Jarhead-sessions handlers); nil is no answer (a daemon from before the
-    /// message), [] is no hits.
-    public var ledgerSearchHandler: (String, Int) async -> [LedgerHit]? = { _, _ in nil } {
+    /// Full-text search over the ledger, one page per call (`ledger.search {before}` → `ledger.hits {older}`): the
+    /// query, the most hits, and the day to read on from (nil: the newest page). Installed by the app (AppDelegate,
+    /// next to the Jarhead-sessions handlers); nil is no answer (a disconnect, the request timeout), no hits is an
+    /// empty page.
+    public var ledgerSearchHandler: (_ query: String, _ limit: Int, _ before: String?) async -> LedgerSearchPage? = { _, _, _ in nil } {
         didSet { ledgerSearchInstalled = true }
     }
     /// Whether anything installed the handler. False is the app's gap, not the daemon's: the
@@ -650,7 +653,7 @@ public final class AppState: ObservableObject {
     /// An override the ledger never confirmed (the row never came back over the socket) is dropped after this.
     public static let chainOverrideTTL: TimeInterval = 15
 
-    public func ledgerSearch(_ query: String, limit: Int = 50) async -> [LedgerHit]? { await ledgerSearchHandler(query, limit) }
+    public func ledgerSearchPage(_ query: String, limit: Int, before: String?) async -> LedgerSearchPage? { await ledgerSearchHandler(query, limit, before) }
 
     /// Runs one cleanup action: its commands go out, the overlay shows the result at once,
     /// the inverse is remembered (the stack and the window's undo manager) and the toast

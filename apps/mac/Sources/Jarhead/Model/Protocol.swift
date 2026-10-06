@@ -878,11 +878,6 @@ public struct LedgerDays: Equatable {
     public init(days: [String], totals: [String: LedgerDayTotals] = [:], partial: Bool = false) {
         self.days = days; self.totals = totals; self.partial = partial
     }
-
-    /// The daemon's answer, installed by the daemon client when it starts (EngineClient.start). AppState's
-    /// `ledgerDaysHandler` returns the list alone; the Console asks this first and falls back to it when nil (a
-    /// harness without a daemon client). nil from the call: nothing answered.
-    nonisolated(unsafe) public static var fetch: (() async -> LedgerDays?)?
 }
 
 /// One page of `ledger.search` (`ledger.hits`): the hits, newest first, and `older`, the day to send as the next
@@ -894,12 +889,6 @@ public struct LedgerSearchPage: Equatable {
     public init(hits: [LedgerHit], older: String? = nil) {
         self.hits = hits; self.older = older
     }
-
-    /// One page from the daemon: the query, the most hits, and the `before` to read on from. Installed by the daemon
-    /// client when it starts (EngineClient.start); AppState's `ledgerSearchHandler` carries no `before` and no
-    /// `older`, so the Console asks this first and falls back to the first page when nil. nil from the call: nothing
-    /// answered.
-    nonisolated(unsafe) public static var fetch: ((_ query: String, _ limit: Int, _ before: String?) async -> LedgerSearchPage?)?
 }
 
 /// GPT-Live-1 list price, for the meter. Billed per second.

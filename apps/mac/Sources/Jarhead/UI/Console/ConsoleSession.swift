@@ -306,21 +306,14 @@ final class ConsoleSession: ObservableObject {
             try? await Task.sleep(nanoseconds: ConsoleSession.searchDebounceMs * 1_000_000)
             guard !Task.isCancelled else { return }
             let current = { !Task.isCancelled && owner.searchOpen && ConsoleSession.searchKey(owner.searchQuery) == q }
-            guard let fetch = LedgerSearchPage.fetch else {
-                // No daemon client in this build (a harness): the handler's one page.
-                let answer = await state.ledgerSearch(q, limit: ConsoleSession.searchLimit)
-                guard current() else { return }
-                owner.land(q, answer.map { LedgerSearchPage(hits: $0) }, complete: true)
-                return
-            }
             // Page by page (search older): the daemon reads a bounded slice of day files per request, so a year of
             // history never holds it for one long read, and the hits land as each page answers. The box keeps
-            // reading older pages until it has its hits or nothing older is left.
-            var page = await fetch(q, ConsoleSession.searchLimit, nil)
+            // reading older pages until it has its hits or nothing older is left (a harness answers one page).
+            var page = await state.ledgerSearchPage(q, limit: ConsoleSession.searchLimit, before: nil)
             guard current() else { return }
             owner.land(q, page, complete: page?.older == nil)
             while let before = page?.older, let shown = owner.searchHits, shown.count < ConsoleSession.searchLimit {
-                page = await fetch(q, ConsoleSession.searchLimit - shown.count, before)
+                page = await state.ledgerSearchPage(q, limit: ConsoleSession.searchLimit - shown.count, before: before)
                 guard current() else { return }
                 owner.landOlder(q, page)
             }
@@ -436,30 +429,25 @@ final class ConsoleSession: ObservableObject {
         if ledgerDays != nil && !force { return }
         ledgerLoading = true
         ledgerError = nil
-        if LedgerDays.fetch != nil {
-            // The list with every day's totals beside it (LM-6), asked again while it does not come or comes partial.
-            await askDays(retriesLeft: ConsoleSession.daysRetries)
-        } else {
-            ledgerDays = await state.ledgerDays()
-        }
+        // The list with every day's totals beside it (LM-6), asked again while it does not come or comes partial.
+        await askDays(from: state, retriesLeft: ConsoleSession.daysRetries)
         ledgerLoading = false
     }
 
     /// The totals again (a pick: the day being written moves, and a close or a carried decision can land on an
     /// older one). The list comes with them; nothing changes when nothing answers, and it is asked again (`askDays`).
-    func refreshTotals() async {
-        await askDays(retriesLeft: ConsoleSession.daysRetries)
+    func refreshTotals(from state: AppState) async {
+        await askDays(from: state, retriesLeft: ConsoleSession.daysRetries)
     }
 
     /// One `ledger.days` ask (LM-6). An answer sets the list and the totals; a `partial` one keeps what a day showed
     /// until its total comes. No answer keeps the list on screen (still "Loading…" before the first). Either way it is
     /// asked again `daysRetryAfterMs` later, `retriesLeft` more times; after the last, a list never answered is empty, as
     /// before. A newer ask cancels the waiting one.
-    func askDays(retriesLeft: Int) async {
-        guard let fetch = LedgerDays.fetch else { return }
+    func askDays(from state: AppState, retriesLeft: Int) async {
         daysRetryTask?.cancel()
         daysRetryTask = nil
-        let answer = await fetch()
+        let answer = await state.ledgerDays()
         if let answer {
             if ledgerDays != answer.days { ledgerDays = answer.days }
             let totals = answer.partial ? ledgerTotals.merging(answer.totals) { _, new in new } : answer.totals
@@ -469,11 +457,11 @@ final class ConsoleSession: ObservableObject {
             if ledgerDays == nil { ledgerDays = [] }
         }
         guard retriesLeft > 0 else { return }
-        daysRetryTask = Task { @MainActor [weak self] in
+        daysRetryTask = Task { @MainActor [weak self, weak state] in
             try? await Task.sleep(nanoseconds: ConsoleSession.daysRetryAfterMs * 1_000_000)
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled, let self, let state else { return }
             self.daysRetryTask = nil
-            await self.askDays(retriesLeft: retriesLeft - 1)
+            await self.askDays(from: state, retriesLeft: retriesLeft - 1)
         }
     }
 
@@ -499,7 +487,7 @@ final class ConsoleSession: ObservableObject {
         ledgerStats = stats
         ledgerDayStats[day] = stats
         ledgerLoading = false
-        await refreshTotals()
+        await refreshTotals(from: state)
     }
 
     /// A day's billed seconds as the rail shows them: the daemon's total (LM-6), else the figures of a read day, else

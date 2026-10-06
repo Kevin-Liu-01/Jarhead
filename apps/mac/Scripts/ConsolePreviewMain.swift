@@ -386,12 +386,12 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // the same AppState handlers the app installs from EngineClient).
         state.memoryListHandler = { st, limit in fake.memoryList(state: st, limit: limit) }
         state.memorySearchHandler = { query, limit in fake.memorySearch(query, limit: limit) }
-        state.ledgerDaysHandler = { ["2026-09-10", "2026-09-09", "2026-09-08", "2026-09-07"] }
+        state.ledgerDaysHandler = { LedgerDays(days: ["2026-09-10", "2026-09-09", "2026-09-08", "2026-09-07"]) }
         state.ledgerReadHandler = { day in day == "2026-09-10" ? fake.ledgerRows() : [] }
         // `ledger-months` (Builder D): forty days from `Scripts/fixtures/ledger-days.json` (September 1–10,
         // August 2–31), every one readable — the month heads sum the days the harness picks before the shot.
         if scenario == "ledger-months", let days = Self.fixtureDays(state.stateDir) {
-            state.ledgerDaysHandler = { days }
+            state.ledgerDaysHandler = { LedgerDays(days: days) }
             state.ledgerReadHandler = { day in days.contains(day) ? fake.ledgerRows() : [] }
         }
         // Jarhead's own sessions, as `ledger.sessions` / `ledger.session` would answer:
@@ -400,7 +400,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         state.jarheadSessionsHandler = { fake.jarheadSessions() }
         state.jarheadSessionRowsHandler = { id in fake.jarheadRows(for: id) }
         // The rail's search, as `ledger.search` would answer: a scan of the fake rows.
-        state.ledgerSearchHandler = { query, limit in Array(fake.searchHits(query).prefix(limit)) }
+        state.ledgerSearchHandler = { query, limit, _ in LedgerSearchPage(hits: Array(fake.searchHits(query).prefix(limit))) }
 
         // The kit's floats: the tip delay pinned to 0 in every shot but `tip-warm`; floats held while
         // the window is inactive (a shot behind the lock screen).
