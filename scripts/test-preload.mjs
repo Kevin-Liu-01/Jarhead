@@ -8,9 +8,11 @@
 //   the shell, or loaded from ~/.jarhead/env into the daemon that runs a self-edit's tests, never
 //   reaches a test. JARHEAD_AUTO_WAKE=0 and JARHEAD_NO_AUDIO=1.
 // - HOME is a fresh temp dir too, holding only a .gitconfig with a test identity (Jarhead Test,
-//   test@jarhead.invalid), so a test that commits in a temp repo still can. CODEX_HOME and
-//   CLAUDE_CONFIG_DIR are unset. No test reads the user's ~/.codex login, ~/.claude, dotfiles or
-//   login-shell profile (F1).
+//   test@jarhead.invalid), so a test that commits in a temp repo still can. CODEX_HOME,
+//   CLAUDE_CONFIG_DIR, ZDOTDIR, the XDG folders and GIT_CONFIG_GLOBAL are unset, so none of them
+//   steers a read back to the user's home. No test reads the user's ~/.codex login, ~/.claude,
+//   dotfiles, git config or login-shell profile (F1). Claude Code keeps its macOS login in the
+//   Keychain, outside HOME. Only the agent fence below keeps a test off that login.
 // - fetch to anything but loopback never leaves the Mac. It answers a synthetic 401, as a server
 //   would for a key it does not know. Under JARHEAD_TEST_NET=strict (CI) it throws instead, so a
 //   test that reaches for the network fails by name.
@@ -19,20 +21,39 @@
 // - The desktop is fenced: osascript, open, say, afplay, shortcuts, automator and screencapture never
 //   run. A stub of each name comes first on PATH (so a shell line or a bare spawn finds it), and an
 //   absolute /usr/bin or /usr/sbin path to one, spawned or inside a shell string, is pointed at the
-//   stub. So is a bare name where a shell line starts a command, since a login shell's path_helper
-//   puts /usr/bin ahead of the fence. The stub prints why on stderr and exits 1, as a script would
-//   that the Mac refused. Without this, a test that sends `tell application "Spotify" to play`
-//   through the real runner plays music, and one that sends keystrokes types them into whatever app
-//   is in front. osascript's stub answers the one script with no effect at all, a lone `return` of a
-//   string literal or of whole numbers added and taken away (`return 2 + 2` prints 4), so the
-//   runner's plumbing stays testable; it refuses anything else.
+//   stub. A login shell's path_helper puts /usr/bin and the folders in /etc/paths.d ahead of the
+//   fence. So a shell spawned with -l or --login (zsh -lc, as run_shell runs every line) starts its
+//   line by putting the PATH it was spawned with back in front. As a second layer, a bare name where
+//   a shell line starts a command (see below) is pinned to its stub. The stub prints why on stderr
+//   and exits 1, as a script would that the Mac refused. Without this, a test that sends
+//   `tell application "Spotify" to play` through the real runner plays music, and one that sends
+//   keystrokes types them into whatever app is in front. osascript's stub answers the one script
+//   with no effect at all, a lone `return` of a string literal or of whole numbers added and taken
+//   away (`return 2 + 2` prints 4), so the runner's plumbing stays testable; it refuses anything else.
 // - The agent CLIs and the apps are fenced the same way (F1). A program named codex or claude
 //   outside os.tmpdir(), or any program inside an app under /Applications or ~/Applications, runs a
-//   refusing stub instead: spawned by path or by bare name (found on the PATH it is spawned with),
-//   by an absolute path inside a shell line, or by a bare name where a shell line starts a command.
+//   refusing stub instead: spawned by path or by bare name (found on the PATH it is spawned with), or
+//   by an absolute path inside a shell line. In a shell line, a bare codex or claude where a command
+//   starts is the stub too, unless the PATH the shell is given finds a copy under os.tmpdir(). A
+//   command starts first, after ; & | ( { ` or a newline, and after if, then, else, elif, do, while,
+//   until or !. It starts past exec, command, env, nice, nohup and time and NAME=value words, and its
+//   name may be quoted. The same holds inside the quoted line of a shell the line starts (sh -c '…').
 //   A test's own fake codex or claude lives in a mkdtemp dir and still runs; so does the node that
 //   runs the suite. Without this, the `auto` walk finds Codex in ChatGPT.app, links the user's
 //   ~/.codex/auth.json into a private CODEX_HOME and spends a model request on the thread's primer.
+//
+// What the fences miss:
+// - An agent name a shell line reaches another way still runs: through a variable ($cmd), eval,
+//   xargs, find -exec, a script file, or a wrapper not named above. No agent stub stands on PATH,
+//   since the tests that look for Codex on PATH would find it. The desktop names have stubs on PATH,
+//   so those forms reach a desktop stub, but not in a login shell that runs a script file or that a
+//   line starts itself: path_helper puts /usr/bin first there.
+// - A node child a test starts as `node --import tsx …` does not load this preload. Jarhead's own
+//   entry points run that way: the daemon's main in single-instance.test.ts, and the CLI's main in
+//   v2-status, w2-1-ledger-cli, memory-cli and w3-3-ledger-search-cli. These children inherit the
+//   temp HOME and the unset keys, but run outside the agent, app and fetch fences. None of them
+//   reaches a brain walk today. To fence one, spawn process.execPath with ...process.execArgv, which
+//   carry tsx and this preload.
 //
 // JARHEAD_TEST_NET_LOG=<file> appends one line per off-Mac attempt: pid, verdict, method and URL.
 // Never a header or a body.
@@ -110,8 +131,9 @@ const ACCOUNT_HOME = (() => {
 const home = fs.mkdtempSync(join(tmpdir(), "jh-test-home-"));
 fs.writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Jarhead Test\n\temail = test@jarhead.invalid\n");
 process.env["HOME"] = home;
-delete process.env["CODEX_HOME"];
-delete process.env["CLAUDE_CONFIG_DIR"];
+/** What steers a read back out of HOME: the agents' own homes, zsh's dotfile folder, the XDG folders, git's global config. */
+const AWAY_FROM_HOME = ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "ZDOTDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "GIT_CONFIG_GLOBAL"];
+for (const key of AWAY_FROM_HOME) delete process.env[key];
 
 // ---- the desktop, the agent CLIs and the apps --------------------------------------------------
 
@@ -205,32 +227,69 @@ const line = (command) =>
         const what = why(path);
         return what && mayRun(path) ? shellWord(stubFor(path, what)) : whole;
       });
-/** A command's name where a shell line starts one: first, or after ; & | ( { ` $( or a newline, past exec, command, env, nohup, time and NAME=value words. */
-const COMMAND = /(^|[;&|({`\n])([ \t]*(?:(?:exec|command|env|nohup|time)[ \t]+|[A-Za-z_]\w*=[^\s;&|]*[ \t]+)*)([\w.-]+)(?=$|[\s;&|)}`])/g;
 /**
- * What a fenced bare name in a command line runs, found on the PATH the shell is given and pinned
- * there, since a login shell's path_helper puts the system's folders first: a test's own fake in a
- * temp dir (the desktop's stubs are one), else the stub.
+ * A command's name where a shell line starts one: first, or after ; & | ( { ` $( or a newline; past
+ * the words that run the next one (if, then, else, elif, do, while, until, !, exec, command, env,
+ * nice, nohup, time, with their flags) and NAME=value words; bare, quoted or after a backslash.
+ */
+const COMMAND =
+  /(^|[;&|({`\n])([ \t]*(?:(?:if|then|else|elif|do|while|until|!)[ \t]+|command(?:[ \t]+-p)?[ \t]+|(?:exec|env|nice|nohup|time)(?:[ \t]+-[\w-]+(?:[ \t]+\d+)?)*[ \t]+|[A-Za-z_]\w*=[^\s;&|]*[ \t]+)*)\\?(["']?)([\w.-]+)\3(?=$|[\s;&|<>)}`])/g;
+/**
+ * What a fenced bare name in a command line runs, pinned there, since a login shell's path_helper
+ * puts the system's folders first and the line may change PATH itself. A test's own fake in a temp
+ * dir, found on the PATH the shell is given (the desktop's stubs are one), runs; anything else is
+ * the stub, a name the shell might find later included.
  */
 const bare = (name, path) => {
   const desktop = FENCED.includes(name);
   if (!desktop && !AGENTS.includes(name.toLowerCase())) return undefined;
   const at = onPath(name, path);
-  if (at === undefined) return undefined;
-  if (underTmp(at)) return at;
-  return desktop ? join(fence, name) : stubFor(at, "the agent CLIs");
+  if (at !== undefined && underTmp(at)) return at;
+  return desktop ? join(fence, name) : stubFor(name, "the agent CLIs");
 };
-/** A command line: absolute paths as in `line`, and every fenced bare name where a command starts. */
+const SHELL_NAMES = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "tcsh", "csh"];
+const SHELLS = new RegExp(`(^|/)(${SHELL_NAMES.join("|")})$`);
+/** A shell a line starts with a line of its own, quoted after its -c (or `-c --`): `sh -c '…'`, `bash -lc "…"`. */
+const NESTED = new RegExp(
+  String.raw`(?<![\w./-])((?:/[\w.-]+)*/)?(${SHELL_NAMES.join("|")})((?:[ \t]+(?:-o[ \t]+\w+|[-+][\w-]+))*?[ \t]+-[a-zA-Z]*c[a-zA-Z]*(?:[ \t]+--)?[ \t]+)('[^']*'|"(?:\\[\s\S]|[^"\\])*")`,
+  "g",
+);
+const singleQuoted = (text) => `'${text.replace(/'/g, "'\\''")}'`;
+/** A command line: absolute paths as in `line`, every fenced bare name where a command starts, and the same inside a nested shell's line. */
 const commands = (command, path) =>
   typeof command !== "string"
     ? command
-    : line(command).replace(COMMAND, (whole, start, words, name) => {
-        const stub = bare(name, path);
-        return stub ? start + words + shellWord(stub) : whole;
-      });
-const SHELLS = /(^|\/)(sh|bash|zsh|dash)$/;
+    : line(command)
+        .replace(COMMAND, (whole, start, words, _quote, name) => {
+          const stub = bare(name, path);
+          return stub ? start + words + shellWord(stub) : whole;
+        })
+        .replace(NESTED, (whole, dir, shell, flags, quoted) => {
+          const inner = commands(quoted.slice(1, -1), path);
+          if (inner === quoted.slice(1, -1)) return whole;
+          return (dir ?? "") + shell + flags + (quoted[0] === "'" ? singleQuoted(inner) : `"${inner}"`);
+        });
 /** The flag a shell takes its command line after: -c, -lc, -ec. */
 const COMMAND_FLAG = /^-[a-zA-Z]*c[a-zA-Z]*$/;
+/** A login shell's flag: -l, --login, or one that holds an l (-lc, -il). */
+const LOGIN_FLAG = /^(?:-[a-zA-Z]*l[a-zA-Z]*|--login)$/;
+/** Where a shell spawned by name takes its line: the arg after its -c, or after `-c --`. */
+const lineAt = (args) => {
+  const c = args.findIndex((a) => COMMAND_FLAG.test(String(a)));
+  return c < 0 ? -1 : args[c + 1] === "--" ? c + 2 : c + 1;
+};
+/**
+ * A login shell's path_helper (zsh's /etc/zprofile, sh's /etc/profile, fish's own) puts /usr/bin and
+ * the folders in /etc/paths.d ahead of the fence. So its line starts by putting the PATH it was given
+ * back in front: the fence ahead of the system's folders, a test's own fakes ahead of the fence. csh
+ * and tcsh never take -l with a line.
+ */
+const pathFirst = (shell, path) =>
+  shell === "fish"
+    ? `set -gx PATH ${path.split(":").filter(Boolean).map(singleQuoted).join(" ")} $PATH; `
+    : shell === "csh" || shell === "tcsh"
+      ? ""
+      : `PATH=${singleQuoted(path)}:"$PATH"; `;
 /**
  * A caller's own env keeps the fence on its PATH ahead of the system's folders, so a bare name finds
  * the stub before /usr/bin, while a test's own stub folder put in front of them still wins.
@@ -256,11 +315,16 @@ const fileCall = (file, rest) => {
   const options = rest[i] !== null && typeof rest[i] === "object" ? fenceEnv(rest[i]) : rest[i];
   const path = pathOf(options);
   // Through a shell (`shell: true`) the file and its args are one line, the file first; a shell spawned
-  // by name (`sh -c '…'`, zsh -lc, as run_shell does) takes its line as the arg after its -c.
+  // by name (`sh -c '…'`, zsh -lc, as run_shell does) takes its line as the arg after its -c, and a
+  // login shell's line puts the PATH it was given first again.
   const shellOption = options !== null && typeof options === "object" && Boolean(options.shell);
-  const byName = !shellOption && SHELLS.test(String(file));
+  const shell = !shellOption ? SHELLS.exec(String(file))?.[2] : undefined;
   const out = [shellOption ? commands(file, path) : program(file, options)];
-  if (hasArgs) out.push(shellOption || byName ? args.map((a, k) => (byName && k > 0 && COMMAND_FLAG.test(String(args[k - 1])) ? commands(a, path) : line(a))) : args);
+  if (hasArgs && (shellOption || shell)) {
+    const at = shell ? lineAt(args) : -1;
+    const login = at > 0 && Boolean(path) && args.slice(0, at).some((a) => LOGIN_FLAG.test(String(a)));
+    out.push(args.map((a, k) => (k !== at ? line(a) : typeof a === "string" && login ? pathFirst(shell, path) + commands(a, path) : commands(a, path))));
+  } else if (hasArgs) out.push(args);
   if (i < rest.length) out.push(options, ...rest.slice(i + 1));
   return out;
 };
