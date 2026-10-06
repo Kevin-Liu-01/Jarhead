@@ -1,0 +1,401 @@
+
+  bench: 5 run(s); hands: Swift helper at ~/jarvis/build/jarhead-hands; brain: stand-in; load average 161.8 200.0 173.8
+10:45:51.127 info  engine: sweep: ledger kept forever, shots before 2026-09-22; would move 0, keep 0
+10:45:51.128 info  engine: sweep (startup): 0 moved, 0 kept, 0 failed
+10:45:51.170 info  memory: store at $TMPDIR/jh-bench-VG5Fm2/state/memory · keyword matching · 0 live
+  engine ready in 64 ms; brain: bench-fake — bench stand-in
+10:45:51.187 info  engine: wake requested (bench)
+10:45:51.190 info  engine: audio format: session.started echoed none (session bench)
+10:45:51.190 info  engine: session bench started (client delegation)
+10:45:51.246 info  engine.threads.pool: spare thread brain ready (t_muwjz5xzfpe22c): bench thread
+10:45:51.246 info  engine.threads.pool: spare thread brain ready (t_muwjz5xzvslsfz): bench thread
+10:45:51.717 warn  engine: Full Disk Access not granted: files under Desktop/Documents/Downloads/Mail/Safari will fail with EPERM until Jarhead.app is added in System Settings › Privacy & Security › Full Disk Access (if it already shows Jarhead on, that row is from an earlier build — remove it and add the app again)
+10:45:52.023 info  engine: first screenshot at wake: image in 831 ms
+10:45:52.118 info  engine: memory: rss 160 MB · heap 41 / 104 MB · external 6 MB · arrayBuffers 2 MB
+  quick screenshot: 1978x556 px, 1486 KB PNG
+10:45:53.093 info  delegator: delegation dlg_muwjz7a970ic3y (client): "jarhead what is in front and where is my pointer" [screen] [look]
+10:45:53.295 info  delegator: delegation dlg_muwjz7a970ic3y done in 366ms (speech@-23 thinking@- tool@174 action@195 commentary@365 tools 10/1/19ms)
+  run 0: done in 366 ms — eyes 160 ms, first tool @174, first action @195, said @365 — "loginwindow is in front."
+10:45:53.501 info  delegator: delegation dlg_muwjz7ncfofbl5 (client): "jarhead what is in front and where is my pointer" [screen] [look]
+10:45:53.675 info  delegator: delegation dlg_muwjz7ncfofbl5 done in 275ms (speech@-1 thinking@- tool@104 action@106 commentary@275 tools 3/1/0ms)
+  run 1: done in 275 ms — eyes 100 ms, first tool @104, first action @106, said @275 — "loginwindow is in front."
+10:45:53.893 info  delegator: delegation dlg_muwjz7y0e88emw (client): "jarhead what is in front and where is my pointer" [screen] [look]
+10:45:54.077 info  delegator: delegation dlg_muwjz7y0e88emw done in 292ms (speech@0 thinking@- tool@112 action@114 commentary@292 tools 3/0/1ms)
+  run 2: done in 292 ms — eyes 109 ms, first tool @112, first action @114, said @292 — "loginwindow is in front."
+10:45:54.418 info  delegator: delegation dlg_muwjz890wkjtsc (client): "jarhead what is in front and where is my pointer" [screen] [look]
+10:45:54.678 info  delegator: delegation dlg_muwjz890wkjtsc done in 498ms (speech@-1 thinking@- tool@241 action@244 commentary@497 tools 3/1/2ms)
+  run 3: done in 498 ms — eyes 238 ms, first tool @241, first action @244, said @497 — "loginwindow is in front."
+10:45:54.882 info  delegator: delegation dlg_muwjz8pon4n6j7 (client): "jarhead what is in front and where is my pointer" [screen] [look]
+10:45:55.055 info  delegator: delegation dlg_muwjz8pon4n6j7 done in 275ms (speech@0 thinking@- tool@106 action@109 commentary@274 tools 4/0/1ms)
+  run 4: done in 275 ms — eyes 101 ms, first tool @106, first action @109, said @274 — "loginwindow is in front."
+10:45:55.521 info  delegator: reflex "screenshot" fired 182ms after the utterance settled, ahead of the delegation
+10:45:55.521 info  engine: reflex screenshot in 177ms (ahead of the delegation)
+10:45:55.522 info  delegator: delegation dlg_muwjz957tp3t5k done in 0ms (speech@-181 thinking@- tool@181 action@- commentary@182 reflex tools 177ms)
+10:45:55.880 info  delegator: reflex "screenshot" fired 95ms after the utterance settled, ahead of the delegation
+10:45:55.880 info  engine: reflex screenshot in 91ms (ahead of the delegation)
+10:45:55.881 info  delegator: delegation dlg_muwjz9hltij90p done in 1ms (speech@-182 thinking@- tool@94 action@- commentary@96 reflex tools 91ms)
+10:45:56.275 info  delegator: reflex "screenshot" fired 126ms after the utterance settled, ahead of the delegation
+10:45:56.275 info  engine: reflex screenshot in 121ms (ahead of the delegation)
+10:45:56.276 info  delegator: delegation dlg_muwjz9rp7691yo done in 1ms (speech@-179 thinking@- tool@125 action@- commentary@126 reflex tools 121ms)
+10:45:56.712 info  delegator: reflex "screenshot" fired 162ms after the utterance settled, ahead of the delegation
+10:45:56.712 info  engine: reflex screenshot in 158ms (ahead of the delegation)
+10:45:56.713 info  delegator: delegation dlg_muwjza2ukxfpvz done in 1ms (speech@-180 thinking@- tool@161 action@- commentary@162 reflex tools 158ms)
+10:45:57.068 info  delegator: reflex "screenshot" fired 95ms after the utterance settled, ahead of the delegation
+10:45:57.068 info  engine: reflex screenshot in 92ms (ahead of the delegation)
+10:45:57.069 info  delegator: delegation dlg_muwjzael66m5q2 done in 0ms (speech@-180 thinking@- tool@95 action@- commentary@96 reflex tools 92ms)
+10:45:57.154 info  engine.ear: ear: segment #100 open (partial "scroll down", 1 ms after the app heard it)
+10:45:57.277 info  engine.ear: ear: "scroll down" → scroll down (stable, 124 ms after the app heard it)
+10:45:57.482 info  engine.ear: ear: segment #101 open (final "scroll down", 0 ms after the app heard it)
+10:45:57.482 info  engine.ear: ear: "scroll down" → scroll down (final, 0 ms after the app heard it)
+  ear: "scroll down": partial→dispatch includes the 120 ms stability window; final→dispatch 5 ms, ack 5 ms
+10:45:57.672 info  engine.ear: ear: segment #102 open (partial "scroll up a bit", 0 ms after the app heard it)
+10:45:57.794 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (stable, 122 ms after the app heard it)
+10:45:57.992 info  engine.ear: ear: segment #103 open (final "scroll up a bit", 1 ms after the app heard it)
+10:45:57.992 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (final, 1 ms after the app heard it)
+  ear: "scroll up a bit": partial→dispatch includes the 120 ms stability window; final→dispatch 6 ms, ack 6 ms
+10:45:58.200 info  engine.ear: ear: segment #104 open (partial "scroll to the top", 0 ms after the app heard it)
+10:45:58.321 info  engine.ear: ear: "scroll to the top" → scroll to the top (stable, 121 ms after the app heard it)
+10:45:58.571 info  engine.ear: ear: segment #105 open (final "scroll to the top", 1 ms after the app heard it)
+10:45:58.571 info  engine.ear: ear: "scroll to the top" → scroll to the top (final, 1 ms after the app heard it)
+  ear: "scroll to the top": partial→dispatch includes the 120 ms stability window; final→dispatch 14 ms, ack 15 ms
+10:45:58.769 info  engine.ear: ear: segment #106 open (partial "page down", 0 ms after the app heard it)
+10:45:58.891 info  engine.ear: ear: "page down" → page down (stable, 122 ms after the app heard it)
+10:45:59.093 info  engine.ear: ear: segment #107 open (final "page down", 0 ms after the app heard it)
+10:45:59.093 info  engine.ear: ear: "page down" → page down (final, 0 ms after the app heard it)
+  ear: "page down": partial→dispatch includes the 120 ms stability window; final→dispatch 9 ms, ack 10 ms
+10:45:59.328 info  engine.ear: ear: segment #108 open (partial "press enter", 0 ms after the app heard it)
+10:45:59.779 info  engine.ear: ear: "press enter" → press enter (stable, 451 ms after the app heard it)
+10:45:59.973 info  engine.ear: ear: segment #109 open (final "press enter", 0 ms after the app heard it)
+10:45:59.973 info  engine.ear: ear: "press enter" → press enter (final, 0 ms after the app heard it)
+  ear: "press enter": partial→dispatch includes the 450 ms careful window; final→dispatch 7 ms, ack 8 ms
+10:46:00.215 info  engine.ear: ear: segment #110 open (partial "press escape", 0 ms after the app heard it)
+10:46:00.665 info  engine.ear: ear: "press escape" → press escape (stable, 450 ms after the app heard it)
+10:46:00.861 info  engine.ear: ear: segment #111 open (final "press escape", 0 ms after the app heard it)
+10:46:00.861 info  engine.ear: ear: "press escape" → press escape (final, 0 ms after the app heard it)
+  ear: "press escape": partial→dispatch includes the 450 ms careful window; final→dispatch 13 ms, ack 13 ms
+10:46:01.070 info  engine.ear: ear: segment #112 open (partial "select all", 0 ms after the app heard it)
+10:46:01.523 info  engine.ear: ear: "select all" → select all (stable, 453 ms after the app heard it)
+10:46:01.722 info  engine.ear: ear: segment #113 open (final "select all", 0 ms after the app heard it)
+10:46:01.723 info  engine.ear: ear: "select all" → select all (final, 1 ms after the app heard it)
+  ear: "select all": partial→dispatch includes the 450 ms careful window; final→dispatch 13 ms, ack 14 ms
+10:46:01.930 info  engine.ear: ear: segment #114 open (partial "copy", 0 ms after the app heard it)
+10:46:02.385 info  engine.ear: ear: "copy" → copy (stable, 455 ms after the app heard it)
+10:46:02.604 info  engine.ear: ear: segment #115 open (final "copy", 1 ms after the app heard it)
+10:46:02.604 info  engine.ear: ear: "copy" → copy (final, 1 ms after the app heard it)
+  ear: "copy": partial→dispatch includes the 450 ms careful window; final→dispatch 7 ms, ack 7 ms
+10:46:02.835 info  engine.ear: ear: segment #116 open (partial "undo", 0 ms after the app heard it)
+10:46:03.285 info  engine.ear: ear: "undo" → undo (stable, 450 ms after the app heard it)
+10:46:03.561 info  engine.ear: ear: segment #117 open (final "undo", 0 ms after the app heard it)
+10:46:03.561 info  engine.ear: ear: "undo" → undo (final, 0 ms after the app heard it)
+  ear: "undo": partial→dispatch includes the 450 ms careful window; final→dispatch 12 ms, ack 13 ms
+10:46:03.760 info  engine.ear: ear: segment #118 open (partial "zoom in", 0 ms after the app heard it)
+10:46:04.211 info  engine.ear: ear: "zoom in" → zoom in (stable, 451 ms after the app heard it)
+10:46:04.401 info  engine.ear: ear: segment #119 open (final "zoom in", 0 ms after the app heard it)
+10:46:04.401 info  engine.ear: ear: "zoom in" → zoom in (final, 0 ms after the app heard it)
+  ear: "zoom in": partial→dispatch includes the 450 ms careful window; final→dispatch 6 ms, ack 6 ms
+10:46:04.690 info  engine.ear: ear: segment #120 open (partial "search finder for readme", 1 ms after the app heard it)
+10:46:05.142 info  engine.ear: ear: "search finder for readme" → search finder for readme (stable, 453 ms after the app heard it)
+10:46:05.547 info  brain.reflex: reflex "search finder for readme" did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is); the brain takes it
+10:46:05.547 info  engine.ear: ear: search finder for readme did not apply in 405 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+  ear: "search finder for readme" (careful partial) dropped: ? (no dispatch; the model path would ask)
+10:46:05.547 info  engine.ear: ear: segment #121 open (final "search finder for readme", 0 ms after the app heard it)
+10:46:05.548 info  engine.ear: ear: "search finder for readme" → search finder for readme (final, 1 ms after the app heard it)
+10:46:05.548 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+  ear: "search finder for readme" (final) dropped: ? (no dispatch; the model path would ask)
+10:46:05.548 info  engine.ear: ear: segment #122 open (partial "look up readme in finder", 0 ms after the app heard it)
+10:46:05.999 info  engine.ear: ear: "look up readme in finder" → search finder for readme (stable, 451 ms after the app heard it)
+10:46:06.000 info  engine.ear: ear: search finder for readme did not apply in 1 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+  ear: "look up readme in finder" (careful partial) dropped: ? (no dispatch; the model path would ask)
+10:46:06.001 info  engine.ear: ear: segment #123 open (final "look up readme in finder", 0 ms after the app heard it)
+10:46:06.001 info  engine.ear: ear: "look up readme in finder" → search finder for readme (final, 0 ms after the app heard it)
+10:46:06.001 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+  ear: "look up readme in finder" (final) dropped: ? (no dispatch; the model path would ask)
+10:46:06.001 info  engine.ear: ear: segment #124 open (partial "scroll down", 0 ms after the app heard it)
+10:46:06.122 info  engine.ear: ear: "scroll down" → scroll down (stable, 121 ms after the app heard it)
+10:46:06.309 info  engine.ear: ear: segment #125 open (final "scroll down", 0 ms after the app heard it)
+10:46:06.310 info  engine.ear: ear: "scroll down" → scroll down (final, 1 ms after the app heard it)
+10:46:06.496 info  engine.ear: ear: segment #126 open (partial "scroll up a bit", 0 ms after the app heard it)
+10:46:06.618 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (stable, 122 ms after the app heard it)
+10:46:06.801 info  engine.ear: ear: segment #127 open (final "scroll up a bit", 0 ms after the app heard it)
+10:46:06.802 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (final, 1 ms after the app heard it)
+10:46:06.996 info  engine.ear: ear: segment #128 open (partial "scroll to the top", 0 ms after the app heard it)
+10:46:07.117 info  engine.ear: ear: "scroll to the top" → scroll to the top (stable, 121 ms after the app heard it)
+10:46:07.305 info  engine.ear: ear: segment #129 open (final "scroll to the top", 0 ms after the app heard it)
+10:46:07.305 info  engine.ear: ear: "scroll to the top" → scroll to the top (final, 0 ms after the app heard it)
+10:46:07.496 info  engine.ear: ear: segment #130 open (partial "page down", 0 ms after the app heard it)
+10:46:07.617 info  engine.ear: ear: "page down" → page down (stable, 121 ms after the app heard it)
+10:46:07.806 info  engine.ear: ear: segment #131 open (final "page down", 0 ms after the app heard it)
+10:46:07.807 info  engine.ear: ear: "page down" → page down (final, 1 ms after the app heard it)
+10:46:08.003 info  engine.ear: ear: segment #132 open (partial "press enter", 0 ms after the app heard it)
+10:46:08.453 info  engine.ear: ear: "press enter" → press enter (stable, 450 ms after the app heard it)
+10:46:08.691 info  engine.ear: ear: segment #133 open (final "press enter", 0 ms after the app heard it)
+10:46:08.691 info  engine.ear: ear: "press enter" → press enter (final, 0 ms after the app heard it)
+10:46:08.891 info  engine.ear: ear: segment #134 open (partial "press escape", 0 ms after the app heard it)
+10:46:09.343 info  engine.ear: ear: "press escape" → press escape (stable, 452 ms after the app heard it)
+10:46:09.562 info  engine.ear: ear: segment #135 open (final "press escape", 0 ms after the app heard it)
+10:46:09.562 info  engine.ear: ear: "press escape" → press escape (final, 0 ms after the app heard it)
+10:46:09.829 info  engine.ear: ear: segment #136 open (partial "select all", 0 ms after the app heard it)
+10:46:10.280 info  engine.ear: ear: "select all" → select all (stable, 451 ms after the app heard it)
+10:46:10.562 info  engine.ear: ear: segment #137 open (final "select all", 0 ms after the app heard it)
+10:46:10.562 info  engine.ear: ear: "select all" → select all (final, 0 ms after the app heard it)
+10:46:10.760 info  engine.ear: ear: segment #138 open (partial "copy", 0 ms after the app heard it)
+10:46:11.211 info  engine.ear: ear: "copy" → copy (stable, 451 ms after the app heard it)
+10:46:11.424 info  engine.ear: ear: segment #139 open (final "copy", 0 ms after the app heard it)
+10:46:11.424 info  engine.ear: ear: "copy" → copy (final, 0 ms after the app heard it)
+10:46:11.630 info  engine.ear: ear: segment #140 open (partial "undo", 0 ms after the app heard it)
+10:46:12.081 info  engine.ear: ear: "undo" → undo (stable, 451 ms after the app heard it)
+10:46:12.317 info  engine.ear: ear: segment #141 open (final "undo", 0 ms after the app heard it)
+10:46:12.317 info  engine.ear: ear: "undo" → undo (final, 0 ms after the app heard it)
+10:46:12.532 info  engine.ear: ear: segment #142 open (partial "zoom in", 0 ms after the app heard it)
+10:46:12.983 info  engine.ear: ear: "zoom in" → zoom in (stable, 451 ms after the app heard it)
+10:46:13.187 info  engine.ear: ear: segment #143 open (final "zoom in", 0 ms after the app heard it)
+10:46:13.188 info  engine.ear: ear: "zoom in" → zoom in (final, 1 ms after the app heard it)
+10:46:13.385 info  engine.ear: ear: segment #144 open (partial "search finder for readme", 0 ms after the app heard it)
+10:46:13.837 info  engine.ear: ear: "search finder for readme" → search finder for readme (stable, 452 ms after the app heard it)
+10:46:14.285 info  brain.reflex: reflex "search finder for readme" did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is); the brain takes it
+10:46:14.285 info  engine.ear: ear: search finder for readme did not apply in 448 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:14.286 info  engine.ear: ear: segment #145 open (final "search finder for readme", 0 ms after the app heard it)
+10:46:14.286 info  engine.ear: ear: "search finder for readme" → search finder for readme (final, 0 ms after the app heard it)
+10:46:14.286 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:14.286 info  engine.ear: ear: segment #146 open (partial "look up readme in finder", 0 ms after the app heard it)
+10:46:14.737 info  engine.ear: ear: "look up readme in finder" → search finder for readme (stable, 451 ms after the app heard it)
+10:46:14.737 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:14.738 info  engine.ear: ear: segment #147 open (final "look up readme in finder", 0 ms after the app heard it)
+10:46:14.738 info  engine.ear: ear: "look up readme in finder" → search finder for readme (final, 0 ms after the app heard it)
+10:46:14.738 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:14.738 info  engine.ear: ear: segment #148 open (partial "scroll down", 0 ms after the app heard it)
+10:46:14.863 info  engine.ear: ear: "scroll down" → scroll down (stable, 125 ms after the app heard it)
+10:46:15.091 info  engine.ear: ear: segment #149 open (final "scroll down", 0 ms after the app heard it)
+10:46:15.091 info  engine.ear: ear: "scroll down" → scroll down (final, 0 ms after the app heard it)
+10:46:15.333 info  engine.ear: ear: segment #150 open (partial "scroll up a bit", 0 ms after the app heard it)
+10:46:15.460 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (stable, 127 ms after the app heard it)
+10:46:15.647 info  engine.ear: ear: segment #151 open (final "scroll up a bit", 0 ms after the app heard it)
+10:46:15.647 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (final, 0 ms after the app heard it)
+10:46:15.845 info  engine.ear: ear: segment #152 open (partial "scroll to the top", 0 ms after the app heard it)
+10:46:15.966 info  engine.ear: ear: "scroll to the top" → scroll to the top (stable, 121 ms after the app heard it)
+10:46:16.165 info  engine.ear: ear: segment #153 open (final "scroll to the top", 0 ms after the app heard it)
+10:46:16.165 info  engine.ear: ear: "scroll to the top" → scroll to the top (final, 0 ms after the app heard it)
+10:46:16.444 info  engine.ear: ear: segment #154 open (partial "page down", 0 ms after the app heard it)
+10:46:16.567 info  engine.ear: ear: "page down" → page down (stable, 123 ms after the app heard it)
+10:46:16.766 info  engine.ear: ear: segment #155 open (final "page down", 0 ms after the app heard it)
+10:46:16.766 info  engine.ear: ear: "page down" → page down (final, 0 ms after the app heard it)
+10:46:16.960 info  engine.ear: ear: segment #156 open (partial "press enter", 0 ms after the app heard it)
+10:46:17.410 info  engine.ear: ear: "press enter" → press enter (stable, 450 ms after the app heard it)
+10:46:17.616 info  engine.ear: ear: segment #157 open (final "press enter", 0 ms after the app heard it)
+10:46:17.616 info  engine.ear: ear: "press enter" → press enter (final, 0 ms after the app heard it)
+10:46:17.804 info  engine.ear: ear: segment #158 open (partial "press escape", 0 ms after the app heard it)
+10:46:18.255 info  engine.ear: ear: "press escape" → press escape (stable, 451 ms after the app heard it)
+10:46:18.466 info  engine.ear: ear: segment #159 open (final "press escape", 0 ms after the app heard it)
+10:46:18.466 info  engine.ear: ear: "press escape" → press escape (final, 0 ms after the app heard it)
+10:46:18.674 info  engine.ear: ear: segment #160 open (partial "select all", 0 ms after the app heard it)
+10:46:19.125 info  engine.ear: ear: "select all" → select all (stable, 451 ms after the app heard it)
+10:46:19.329 info  engine.ear: ear: segment #161 open (final "select all", 0 ms after the app heard it)
+10:46:19.329 info  engine.ear: ear: "select all" → select all (final, 0 ms after the app heard it)
+10:46:19.522 info  engine.ear: ear: segment #162 open (partial "copy", 0 ms after the app heard it)
+10:46:19.974 info  engine.ear: ear: "copy" → copy (stable, 452 ms after the app heard it)
+10:46:20.165 info  engine.ear: ear: segment #163 open (final "copy", 0 ms after the app heard it)
+10:46:20.165 info  engine.ear: ear: "copy" → copy (final, 0 ms after the app heard it)
+10:46:20.364 info  engine.ear: ear: segment #164 open (partial "undo", 0 ms after the app heard it)
+10:46:20.813 info  engine.ear: ear: "undo" → undo (stable, 449 ms after the app heard it)
+10:46:21.055 info  engine.ear: ear: segment #165 open (final "undo", 0 ms after the app heard it)
+10:46:21.055 info  engine.ear: ear: "undo" → undo (final, 0 ms after the app heard it)
+10:46:21.308 info  engine.ear: ear: segment #166 open (partial "zoom in", 0 ms after the app heard it)
+10:46:21.760 info  engine.ear: ear: "zoom in" → zoom in (stable, 452 ms after the app heard it)
+10:46:22.006 info  engine.ear: ear: segment #167 open (final "zoom in", 0 ms after the app heard it)
+10:46:22.007 info  engine.ear: ear: "zoom in" → zoom in (final, 1 ms after the app heard it)
+10:46:22.296 info  engine.ear: ear: segment #168 open (partial "search finder for readme", 0 ms after the app heard it)
+10:46:22.747 info  engine.ear: ear: "search finder for readme" → search finder for readme (stable, 451 ms after the app heard it)
+10:46:23.184 info  brain.reflex: reflex "search finder for readme" did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is); the brain takes it
+10:46:23.185 info  engine.ear: ear: search finder for readme did not apply in 438 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:23.185 info  engine.ear: ear: segment #169 open (final "search finder for readme", 0 ms after the app heard it)
+10:46:23.185 info  engine.ear: ear: "search finder for readme" → search finder for readme (final, 0 ms after the app heard it)
+10:46:23.185 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:23.186 info  engine.ear: ear: segment #170 open (partial "look up readme in finder", 0 ms after the app heard it)
+10:46:23.637 info  engine.ear: ear: "look up readme in finder" → search finder for readme (stable, 451 ms after the app heard it)
+10:46:23.637 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:23.637 info  engine.ear: ear: segment #171 open (final "look up readme in finder", 0 ms after the app heard it)
+10:46:23.637 info  engine.ear: ear: "look up readme in finder" → search finder for readme (final, 0 ms after the app heard it)
+10:46:23.637 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:23.638 info  engine.ear: ear: segment #172 open (partial "scroll down", 0 ms after the app heard it)
+10:46:23.759 info  engine.ear: ear: "scroll down" → scroll down (stable, 121 ms after the app heard it)
+10:46:24.008 info  engine.ear: ear: segment #173 open (final "scroll down", 0 ms after the app heard it)
+10:46:24.009 info  engine.ear: ear: "scroll down" → scroll down (final, 1 ms after the app heard it)
+10:46:24.266 info  engine.ear: ear: segment #174 open (partial "scroll up a bit", 0 ms after the app heard it)
+10:46:24.386 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (stable, 120 ms after the app heard it)
+10:46:24.575 info  engine.ear: ear: segment #175 open (final "scroll up a bit", 0 ms after the app heard it)
+10:46:24.576 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (final, 1 ms after the app heard it)
+10:46:24.763 info  engine.ear: ear: segment #176 open (partial "scroll to the top", 0 ms after the app heard it)
+10:46:24.885 info  engine.ear: ear: "scroll to the top" → scroll to the top (stable, 122 ms after the app heard it)
+10:46:25.108 info  engine.ear: ear: segment #177 open (final "scroll to the top", 0 ms after the app heard it)
+10:46:25.109 info  engine.ear: ear: "scroll to the top" → scroll to the top (final, 1 ms after the app heard it)
+10:46:25.309 info  engine.ear: ear: segment #178 open (partial "page down", 0 ms after the app heard it)
+10:46:25.430 info  engine.ear: ear: "page down" → page down (stable, 121 ms after the app heard it)
+10:46:25.637 info  engine.ear: ear: segment #179 open (final "page down", 0 ms after the app heard it)
+10:46:25.647 info  engine.ear: ear: "page down" → page down (final, 10 ms after the app heard it)
+10:46:25.907 info  engine.ear: ear: segment #180 open (partial "press enter", 0 ms after the app heard it)
+10:46:26.357 info  engine.ear: ear: "press enter" → press enter (stable, 450 ms after the app heard it)
+10:46:26.561 info  engine.ear: ear: segment #181 open (final "press enter", 0 ms after the app heard it)
+10:46:26.561 info  engine.ear: ear: "press enter" → press enter (final, 0 ms after the app heard it)
+10:46:26.766 info  engine.ear: ear: segment #182 open (partial "press escape", 1 ms after the app heard it)
+10:46:27.218 info  engine.ear: ear: "press escape" → press escape (stable, 453 ms after the app heard it)
+10:46:27.516 info  engine.ear: ear: segment #183 open (final "press escape", 0 ms after the app heard it)
+10:46:27.516 info  engine.ear: ear: "press escape" → press escape (final, 0 ms after the app heard it)
+10:46:27.742 info  engine.ear: ear: segment #184 open (partial "select all", 0 ms after the app heard it)
+10:46:28.193 info  engine.ear: ear: "select all" → select all (stable, 451 ms after the app heard it)
+10:46:28.392 info  engine.ear: ear: segment #185 open (final "select all", 0 ms after the app heard it)
+10:46:28.392 info  engine.ear: ear: "select all" → select all (final, 0 ms after the app heard it)
+10:46:28.581 info  engine.ear: ear: segment #186 open (partial "copy", 0 ms after the app heard it)
+10:46:29.034 info  engine.ear: ear: "copy" → copy (stable, 453 ms after the app heard it)
+10:46:29.236 info  engine.ear: ear: segment #187 open (final "copy", 0 ms after the app heard it)
+10:46:29.237 info  engine.ear: ear: "copy" → copy (final, 1 ms after the app heard it)
+10:46:29.438 info  engine.ear: ear: segment #188 open (partial "undo", 0 ms after the app heard it)
+10:46:29.890 info  engine.ear: ear: "undo" → undo (stable, 452 ms after the app heard it)
+10:46:30.081 info  engine.ear: ear: segment #189 open (final "undo", 0 ms after the app heard it)
+10:46:30.081 info  engine.ear: ear: "undo" → undo (final, 0 ms after the app heard it)
+10:46:30.278 info  engine.ear: ear: segment #190 open (partial "zoom in", 0 ms after the app heard it)
+10:46:30.730 info  engine.ear: ear: "zoom in" → zoom in (stable, 452 ms after the app heard it)
+10:46:30.941 info  engine.ear: ear: segment #191 open (final "zoom in", 0 ms after the app heard it)
+10:46:30.941 info  engine.ear: ear: "zoom in" → zoom in (final, 0 ms after the app heard it)
+10:46:31.135 info  engine.ear: ear: segment #192 open (partial "search finder for readme", 0 ms after the app heard it)
+10:46:31.586 info  engine.ear: ear: "search finder for readme" → search finder for readme (stable, 450 ms after the app heard it)
+10:46:32.009 info  brain.reflex: reflex "search finder for readme" did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is); the brain takes it
+10:46:32.009 info  engine.ear: ear: search finder for readme did not apply in 424 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:32.009 info  engine.ear: ear: segment #193 open (final "search finder for readme", 0 ms after the app heard it)
+10:46:32.010 info  engine.ear: ear: "search finder for readme" → search finder for readme (final, 1 ms after the app heard it)
+10:46:32.010 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:32.010 info  engine.ear: ear: segment #194 open (partial "look up readme in finder", 0 ms after the app heard it)
+10:46:32.462 info  engine.ear: ear: "look up readme in finder" → search finder for readme (stable, 452 ms after the app heard it)
+10:46:32.462 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:32.462 info  engine.ear: ear: segment #195 open (final "look up readme in finder", 0 ms after the app heard it)
+10:46:32.462 info  engine.ear: ear: "look up readme in finder" → search finder for readme (final, 0 ms after the app heard it)
+10:46:32.462 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:32.463 info  engine.ear: ear: segment #196 open (partial "scroll down", 0 ms after the app heard it)
+10:46:32.583 info  engine.ear: ear: "scroll down" → scroll down (stable, 120 ms after the app heard it)
+10:46:32.786 info  engine.ear: ear: segment #197 open (final "scroll down", 0 ms after the app heard it)
+10:46:32.786 info  engine.ear: ear: "scroll down" → scroll down (final, 1 ms after the app heard it)
+10:46:32.981 info  engine.ear: ear: segment #198 open (partial "scroll up a bit", 0 ms after the app heard it)
+10:46:33.101 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (stable, 120 ms after the app heard it)
+10:46:33.295 info  engine.ear: ear: segment #199 open (final "scroll up a bit", 0 ms after the app heard it)
+10:46:33.295 info  engine.ear: ear: "scroll up a bit" → scroll up a bit (final, 0 ms after the app heard it)
+10:46:33.495 info  engine.ear: ear: segment #200 open (partial "scroll to the top", 0 ms after the app heard it)
+10:46:33.616 info  engine.ear: ear: "scroll to the top" → scroll to the top (stable, 121 ms after the app heard it)
+10:46:33.823 info  engine.ear: ear: segment #201 open (final "scroll to the top", 0 ms after the app heard it)
+10:46:33.826 info  engine.ear: ear: "scroll to the top" → scroll to the top (final, 2 ms after the app heard it)
+10:46:34.038 info  engine.ear: ear: segment #202 open (partial "page down", 0 ms after the app heard it)
+10:46:34.159 info  engine.ear: ear: "page down" → page down (stable, 121 ms after the app heard it)
+10:46:34.369 info  engine.ear: ear: segment #203 open (final "page down", 0 ms after the app heard it)
+10:46:34.370 info  engine.ear: ear: "page down" → page down (final, 1 ms after the app heard it)
+10:46:34.567 info  engine.ear: ear: segment #204 open (partial "press enter", 0 ms after the app heard it)
+10:46:35.019 info  engine.ear: ear: "press enter" → press enter (stable, 452 ms after the app heard it)
+10:46:35.222 info  engine.ear: ear: segment #205 open (final "press enter", 0 ms after the app heard it)
+10:46:35.222 info  engine.ear: ear: "press enter" → press enter (final, 0 ms after the app heard it)
+10:46:35.437 info  engine.ear: ear: segment #206 open (partial "press escape", 0 ms after the app heard it)
+10:46:35.889 info  engine.ear: ear: "press escape" → press escape (stable, 452 ms after the app heard it)
+10:46:36.102 info  engine.ear: ear: segment #207 open (final "press escape", 0 ms after the app heard it)
+10:46:36.102 info  engine.ear: ear: "press escape" → press escape (final, 0 ms after the app heard it)
+10:46:36.306 info  engine.ear: ear: segment #208 open (partial "select all", 0 ms after the app heard it)
+10:46:36.758 info  engine.ear: ear: "select all" → select all (stable, 452 ms after the app heard it)
+10:46:36.961 info  engine.ear: ear: segment #209 open (final "select all", 0 ms after the app heard it)
+10:46:36.961 info  engine.ear: ear: "select all" → select all (final, 0 ms after the app heard it)
+10:46:37.166 info  engine.ear: ear: segment #210 open (partial "copy", 1 ms after the app heard it)
+10:46:37.617 info  engine.ear: ear: "copy" → copy (stable, 452 ms after the app heard it)
+10:46:37.816 info  engine.ear: ear: segment #211 open (final "copy", 0 ms after the app heard it)
+10:46:37.816 info  engine.ear: ear: "copy" → copy (final, 0 ms after the app heard it)
+10:46:38.051 info  engine.ear: ear: segment #212 open (partial "undo", 0 ms after the app heard it)
+10:46:38.503 info  engine.ear: ear: "undo" → undo (stable, 452 ms after the app heard it)
+10:46:38.702 info  engine.ear: ear: segment #213 open (final "undo", 0 ms after the app heard it)
+10:46:38.703 info  engine.ear: ear: "undo" → undo (final, 1 ms after the app heard it)
+10:46:38.909 info  engine.ear: ear: segment #214 open (partial "zoom in", 0 ms after the app heard it)
+10:46:39.359 info  engine.ear: ear: "zoom in" → zoom in (stable, 450 ms after the app heard it)
+10:46:39.593 info  engine.ear: ear: segment #215 open (final "zoom in", 0 ms after the app heard it)
+10:46:39.593 info  engine.ear: ear: "zoom in" → zoom in (final, 0 ms after the app heard it)
+10:46:39.807 info  engine.ear: ear: segment #216 open (partial "search finder for readme", 0 ms after the app heard it)
+10:46:40.257 info  engine.ear: ear: "search finder for readme" → search finder for readme (stable, 450 ms after the app heard it)
+10:46:40.670 info  brain.reflex: reflex "search finder for readme" did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is); the brain takes it
+10:46:40.670 info  engine.ear: ear: search finder for readme did not apply in 413 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:40.671 info  engine.ear: ear: segment #217 open (final "search finder for readme", 0 ms after the app heard it)
+10:46:40.671 info  engine.ear: ear: "search finder for readme" → search finder for readme (final, 0 ms after the app heard it)
+10:46:40.671 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:40.672 info  engine.ear: ear: segment #218 open (partial "look up readme in finder", 0 ms after the app heard it)
+10:46:41.122 info  engine.ear: ear: "look up readme in finder" → search finder for readme (stable, 450 ms after the app heard it)
+10:46:41.122 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+10:46:41.122 info  engine.ear: ear: segment #219 open (final "look up readme in finder", 0 ms after the app heard it)
+10:46:41.122 info  engine.ear: ear: "look up readme in finder" → search finder for readme (final, 0 ms after the app heard it)
+10:46:41.122 info  engine.ear: ear: search finder for readme did not apply in 0 ms: did 3 steps (focused Finder; waited for it; waited for it once more); stopped at focus_app: Finder did not come to the front (loginwindow is)
+  ear: 105 acting op(s) were redirected to a cursor read on the real helper (nothing scrolled, typed or clicked)
+10:46:42.245 info  brain.browser: Google Chrome: JavaScript from Apple Events off (JavaScript from Apple Events is off in Google Chrome: turn on Google Chrome › View › Developer › Allow JavaScript from Apple Events)
+  browser: Google Chrome JavaScript from Apple Events off (JavaScript from Apple Events is off in Google Chrome: turn on Google Chrome › View › Developer › Allow JavaScript from Apple Events)
+  browser: Safari: not_found: Safari is not running
+10:46:42.470 info  delegator: delegation dlg_muwk09d6frphpo (client): "jarhead what is in front" [screen] [look]
+10:46:42.484 info  delegator: delegation dlg_muwk09d6frphpo cancelled in 201ms (speech@0 thinking@- tool@192 action@- commentary@- tools 3ms)
+10:46:42.484 info  engine: interrupt (interrupt command, pressed) in 1ms: cancelled dlg_muwk09d6frphpo; 1 hands request(s) dropped; 0 background job(s) stopped; voice gated for 2500 ms
+  stop: the delegation was running (the brain held it) when the stop arrived
+10:46:42.619 info  delegator: delegation dlg_muwk09jnrxqrvw (client): "jarhead what is in front ok jarhead what is in front" [screen] [look]
+10:46:42.627 info  delegator: delegation dlg_muwk09jnrxqrvw cancelled in 111ms (speech@0 thinking@- tool@110 action@- commentary@- tools 6ms)
+10:46:42.627 info  engine: interrupt (interrupt command, pressed) in 1ms: cancelled dlg_muwk09jnrxqrvw; 0 hands request(s) dropped; 0 background job(s) stopped; voice gated for 2500 ms
+10:46:42.777 info  delegator: delegation dlg_muwk09nmzjgawp (client): "jarhead what is in front ok jarhead what is in front" [screen] [look]
+10:46:42.783 info  delegator: delegation dlg_muwk09nmzjgawp cancelled in 125ms (speech@0 thinking@- tool@125 action@- commentary@- tools 5ms)
+10:46:42.784 info  engine: interrupt (interrupt command, pressed) in 1ms: cancelled dlg_muwk09nmzjgawp; 0 hands request(s) dropped; 0 background job(s) stopped; voice gated for 2500 ms
+10:46:42.981 info  delegator: delegation dlg_muwk09s2vrkip5 (client): "jarhead what is in front ok jarhead what is in front" [screen] [look]
+10:46:42.984 info  delegator: delegation dlg_muwk09s2vrkip5 cancelled in 166ms (speech@0 thinking@- tool@166 action@- commentary@- tools 3ms)
+10:46:42.984 info  engine: interrupt (interrupt command, pressed) in 0ms: cancelled dlg_muwk09s2vrkip5; 0 hands request(s) dropped; 0 background job(s) stopped; voice gated for 2500 ms
+10:46:43.106 info  delegator: delegation dlg_muwk09xkt1jq0o (client): "jarhead what is in front ok jarhead what is in front" [screen] [look]
+10:46:43.121 info  delegator: delegation dlg_muwk09xkt1jq0o cancelled in 104ms (speech@-1 thinking@- tool@104 action@- commentary@- tools 14ms)
+10:46:43.121 info  engine: interrupt (interrupt command, pressed) in 1ms: cancelled dlg_muwk09xkt1jq0o; 0 hands request(s) dropped; 0 background job(s) stopped; voice gated for 2500 ms
+  observation: 5/5 acting result(s) carried a now: line (Settings.observe on; target ≥ 95 %)
+10:46:51.737 info  delegator: delegation dlg_muwk0gimojpqvm (client): "jarhead what is in front ok jarhead tell ben on slack i'm late and put on focus " [screen] [look]
+10:46:51.740 info  engine.threads: thread Slack (t_muwjz5xzfpe22c) started on the background lane for dlg_muwk0gimojpqvm: "tell Ben I'm late" (budget 25 steps / 180 s, warm)
+10:46:51.742 info  engine.threads: thread Spotify (t_muwjz5xzvslsfz) started on the background lane for dlg_muwk0gimojpqvm: "play Focus" (budget 25 steps / 180 s, warm)
+10:46:51.743 info  engine.threads.pool: spare thread brain ready (t_muwk0gnwkrojj2): bench thread
+10:46:51.743 info  engine.threads.pool: spare thread brain ready (t_muwk0gnydctwkn): bench thread
+10:46:51.743 info  delegator: delegation dlg_muwk0gimojpqvm draining: the brain is done; 2 hands still working
+  threads: Slack thinking (t_muwjz5xzfpe22c), Spotify thinking (t_muwjz5xzvslsfz) live
+10:46:51.745 info  delegator: delegation dlg_muwk0go1p3ug8u: status of Spotify → "Spotify is thinking — 0 seconds in" (0 generations)
+  status reflex: 0 brain generation(s); "Spotify is thinking — 0 seconds in" after 2 ms; 2 thread(s) still live
+10:46:51.858 info  engine.threads: thread Slack (t_muwjz5xzfpe22c) stopped after 0 steps: Kevin Liu stopped it
+  targeted stop: Slack stopped in 2 ms; 1 other thread(s) still live (Spotify)
+10:46:51.859 info  engine.threads: thread Spotify (t_muwjz5xzvslsfz) stopped after 0 steps: Kevin Liu pressed stop
+10:46:51.859 info  delegator: delegation dlg_muwk0gimojpqvm cancelled in 309ms (speech@0 thinking@- tool@192 action@- commentary@193 tools 4/1ms)
+10:46:51.859 warn  hands: screenshot failed: cancelled: Kevin Liu pressed stop
+10:46:51.859 warn  hands: screenshot failed: cancelled: Kevin Liu pressed stop
+10:46:51.859 warn  brain.runner: screenshot: cancelled: Kevin Liu pressed stop
+10:46:51.859 warn  brain.runner: screenshot: cancelled: Kevin Liu pressed stop
+10:46:51.859 info  engine: interrupt (interrupt command, pressed) in 1ms: cancelled dlg_muwk0gimojpqvm; 2 hands request(s) dropped; 0 background job(s) stopped; voice gated for 2500 ms
+  barge-in: not measured (--no-duck)
+10:46:51.913 info  engine: asleep (shutdown)
+
+  metric                                           n  median     p90     p95     max  target  result
+  tool round trip (frontmost_app)                  5     15     188     188     188      80  ok
+  quick screenshot (2000 px / 1.1 MP)              5    117     305     305     305     120  ok
+  full screenshot (2000 px)                        1    128     128     128     128        -  
+  eyes: pre-warm shot                              5    109     238     238     238     120  ok
+  delegation → first tool                          5    112     241     241     241        -  
+  delegation → first action                        5    114     244     244     244     300  ok
+  delegation → first commentary                    5    292     497     497     497        -  
+  delegation → done                                5    292     498     498     498        -  
+  tool round trip (in delegation)                 15      1      10      19      19      80  ok
+  reflex: utterance end → tool issued (prefired)   5    183     186     186     186     300  ok
+  reflex: tool issued → done                       5    125     181     181     181        -  
+  reflex: utterance end → done (prefired)          5    311     364     364     364        -  
+  reflex: delegation → done (adopted; includes the 50 ms snapshot tick)   5     51      63      63      63        -  
+  ear: partial → dispatch                         20    128     141     145     148     250  ok (p95)
+  ear: partial → hands ack                        20    128     141     145     159        -  
+  ear: partial → done (ledger)                    20    299     332     348     349        -  
+  ear: final → dispatch                           50      8      19      29      76     250  ok (p95)
+  ear: final → hands ack                          50      9      23      31      76        -  
+  ear: final → done (ledger)                      50    183     236     255     268        -  
+  ear: careful partial → dispatch                 30    462     495     529     542     580  ok (p95)
+  ear: careful partial → hands ack                30    463     502     536     548        -  
+  ear: careful partial → done (ledger)            30    634     677     711     727        -  
+  browser: Google Chrome url round trip            5     58     296     296     296      80  ok
+  browser: Google Chrome tabs round trip           5     94     218     218     218      80  MISS
+  stop: command → everything stopped               5      1       1       1       1     150  ok
+  read during a type (acting helper held 1.5 s)    5      4      16      16      16      20  ok
+  acting call incl. observation (mouse_move in place)   5    169     191     191     191     350  ok (p95)
+  status reflex: delegation → spoken status line   1      2       2       2       2     500  ok
+  status reflex: brain generations (count, target 0)   1      0       0       0       0       0  ok (count, not ms)
+  targeted stop: command → that thread stopped     1      2       2       2       2     150  ok
+
+  hands: Swift helper; brain: stand-in; load average 161.8 200.0 173.8; state dir $TMPDIR/jh-bench-VG5Fm2
+  ear gate: p95 partial→dispatch and final→dispatch ≤ 250 ms, careful partial→dispatch ≤ 580 ms (its 450 ms window is by design) with the real helper: ok
+

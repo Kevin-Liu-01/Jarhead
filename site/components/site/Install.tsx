@@ -24,7 +24,7 @@ const NOTE = from(INSTALL.note, 3);
 const NOTE_HEAD = upTo(NOTE, INSTALL.url);
 if (!NOTE.endsWith(INSTALL.url)) throw new Error("the install note no longer ends with the script's URL");
 /** The build row drops its README comment: Node, pnpm and Xcode are already in the Requirements beside it. */
-const QUIET: (typeof INSTALL.commands)[number]["cmd"] = "pnpm install && pnpm build:hands";
+const QUIET: (typeof INSTALL.commands)[number]["cmd"] = "pnpm install --filter '!./site' && pnpm build:hands";
 
 /**
  * The rail's last turn, drawn as a stroke so it keeps the wire's 1.5 weight at any density (a CSS border floors to whole

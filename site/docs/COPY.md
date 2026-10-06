@@ -78,7 +78,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 - h2, line 1: `Codex, Claude Code, a key,` (README:27-28, README:59)
 - h2, line 2 *grey*: `or a model on this Mac.` (README:59, LOCAL:3-4)
 - lead: `Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.` (README:61, README:269-270, README:59)
-- open, for Kevin before the redeploy: the brain card's badge. Say.tsx sets `NUMBERS.figures[3].value` (`4.5 s`) beside the lead's second sentence while Codex is picked, with no label. That figure is the canned-hands harness (docs/latency/after.json, n = 6, 2026-09-12). Real use is 7.0 s median, 27.6 s p95 (n = 15, 2026-09-12 to 09-28). No deck string fixes it, since figure 4 also drives the Numbers race. Drop the badge in Say.tsx, or label it from a deck string such as `canned hands`.
+- the brain card's badge: `SAY_BADGE` (`7.0 s`, deck.ts), a brain's first visible action in real use with Codex (the author's ledger, 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28). It replaced `NUMBERS.figures[3].value` (`4.5 s`), the canned-hands harness figure (docs/latency/after.json, n = 6, 2026-09-12), which stays in Numbers with its label.
 - line 1: `"Click Save" runs. The voice is told after.` (README:61)
 - line 2: `Same policy for every brain. A local one gets fewer tools.` (README:59, LOCAL:78-79, brain local.ts LOCAL_TOOLS)
 - line 3: `A local brain keeps memory on the Mac.` (LOCAL:4-5, LOCAL:62-64)

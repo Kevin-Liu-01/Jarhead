@@ -137,6 +137,10 @@ interface Figure {
 }
 
 /** Numbers */
+/** Say's brain badge: a brain's first visible action as Kevin met it with Codex, not the canned-hands harness figure
+ * (Numbers carries both). The author's ledger, 2026-09-12 to 09-28: 7.0 s median, 27.6 s p95, n = 15 (Numbers' 4.5 s tip). */
+export const SAY_BADGE = "7.0 s";
+
 export const NUMBERS = {
   id: "numbers",
   name: "Numbers",
@@ -193,7 +197,7 @@ export const INSTALL = {
   /** README:47-50, one row each; the comment is the row's note. */
   commands: [
     { cmd: "git clone https://github.com/Kevin-Liu-01/Jarhead.git && cd Jarhead" },
-    { cmd: "pnpm install && pnpm build:hands", note: "Node ≥ 24, pnpm 10, Xcode 16" },
+    { cmd: "pnpm install --filter '!./site' && pnpm build:hands", note: "Node ≥ 24, pnpm 10, Xcode 16" },
     { cmd: "pnpm build:mac", note: "builds, signs, installs /Applications/Jarhead.app" },
     { cmd: "open -a Jarhead", note: "Setup opens: your OpenAI key, a brain, permissions" },
   ] as const,

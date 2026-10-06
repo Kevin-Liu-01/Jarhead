@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Keyboar
 import { Character, type CharacterHandle } from "@/components/desk/Character";
 import { Icon } from "@/components/icons/Icon";
 import { AgentMark } from "@/components/kit/AgentMark";
-import { HANDS, NUMBERS, PHASES, SAY, THREADS } from "@/content/deck";
+import { HANDS, NUMBERS, PHASES, SAY, SAY_BADGE, THREADS } from "@/content/deck";
 import { ISLAND } from "@/content/island";
 import { aroundQuote, nth, part, quoted } from "@/lib/cut";
 import { claim, type Show } from "@/lib/live";
@@ -34,11 +34,12 @@ const BRAINS: ReadonlyArray<{ readonly id: string; readonly text: string; readon
   { id: "key", text: part(SAY.h2[0], "a key"), mark: <Icon name="key" size={16} /> },
   { id: "local", text: part(SAY.h2[1], "a model on this Mac"), mark: <Icon name="laptop" size={16} /> },
 ];
-/** The two routes' measured times: the reflex's dispatch and a brain's first visible action (Numbers). The deck measured
- * the brain's with Codex through the app-server only, so its badge shows while Codex is picked and no other brain. It
- * hides rather than leaves, so the head keeps its wrap and the rows never move under a tap. */
+/** The two routes' measured times: the reflex's dispatch (Numbers) and a brain's first visible action in real use (the
+ * deck's SAY_BADGE, the author's ledger with Codex, not the canned-hands harness). It was measured with Codex only, so
+ * its badge shows while Codex is picked and no other brain. It hides rather than leaves, so the head keeps its wrap and
+ * the rows never move under a tap. */
 const REFLEX_MS = NUMBERS.display.value;
-const BRAIN_S = NUMBERS.figures[3]?.value ?? "";
+const BRAIN_S = SAY_BADGE;
 const MEASURED = "codex";
 /** An empty caption that keeps its line: the brain line's outcome is the two threads in the hands, and its "same policy"
  * line already stands beside the plate, so it is not said twice. */
