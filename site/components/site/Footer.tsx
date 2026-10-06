@@ -4,8 +4,8 @@ import { FOOTER, HERO } from "@/content/deck";
 import { aroundQuote, parts, row } from "@/lib/cut";
 
 /**
- * The version and the licence, the two figures said nowhere else (the hero, Costs and Hands carry the rest), held whole
- * between their dots so the line wraps only between parts.
+ * The figures line's first two parts, how it ships and the licence (the hero, Costs and Hands carry the rest; the first is
+ * `source only` until the v2.0.0 tag exists, D7), held whole between their dots so the line wraps only between parts.
  */
 const FIGURES = parts(HERO.figures).slice(0, 2);
 
@@ -19,7 +19,7 @@ const NOTES = [...FOOTER.disclosures.slice(3), FOOTER.credit];
 
 /**
  * The foot, centred and calm: the orb mark at 56 and the name, the line that says what it is and what it is built with, the
- * version and licence in mono, then the disclosures in one quiet row. GitHub and its stars live in the bar and the hero.
+ * first two figures in mono, then the disclosures in one quiet row. GitHub and its stars live in the bar and the hero.
  */
 export function Footer(): ReactElement {
   return (

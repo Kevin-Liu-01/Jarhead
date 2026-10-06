@@ -26,7 +26,7 @@ export const HERO = {
   lead: "Say jarhead, pass Touch ID, talk. It uses the computer for you. The brain is whatever you already have a login for.", // README:26, README:15, README:27
   install: "Install",
   source: "Read the source", // README:20
-  figures: "v2.0.0 · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto", // facts:15, README:23, README:377, README:349, README:356
+  figures: "source only · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto", // facts:40-41 (v2.0.0 takes this slot once the tag exists, D7), README:23, README:377, README:349, README:356
   blobLabel: "Jarhead's blob, {phase}",
 } as const;
 
@@ -59,7 +59,7 @@ export const WAKE: Story & { readonly faces: string } = {
   name: "Wake",
   phase: "listening",
   face: "O O",
-  h2: ["Wakes on a word.", "Touch ID opens it."], // README:57, README:365
+  h2: ["Asleep, it wakes on a word.", "Touch ID opens it."], // README:57, README:365; paused, the word alone resumes (README:58)
   lead: "Asleep it listens on-device for one word. Nothing billed. Then Touch ID, Apple Watch, the Mac password or a passphrase.", // README:57
   lines: ["Three misses lock the gate for a minute.", "Speaker verification is not attempted.", "Say stop. It stops mid-sentence."], // README:57, README:365, README:56
   faces: "gate · heard · granted · denied · locked", // README:178
@@ -73,8 +73,8 @@ export const SAY: Story = {
   phase: "thinking",
   face: "- -",
   h2: ["Codex, Claude Code, a key,", "or a model on this Mac."], // README:27-28, README:59, LOCAL:3-4
-  lead: "Unambiguous commands reach the hands in milliseconds. The rest goes to the brain. You pick the brain in Settings.", // README:61, README:269-270, README:59
-  lines: ['"Click Save" runs. The brain is told after.', "Same tools and policy for every brain.", "A local brain keeps memory on the Mac."], // README:61, README:59, LOCAL:4-5
+  lead: "Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.", // README:61, README:269-270, README:59
+  lines: ['"Click Save" runs. The voice is told after.', "Same policy for every brain. A local one gets fewer tools.", "A local brain keeps memory on the Mac."], // README:61, README:59, LOCAL:4-5
 };
 
 /** 03 · Threads */
@@ -85,7 +85,7 @@ export const THREADS: Story = {
   phase: "acting",
   face: "o o",
   h2: ["Several things at once.", "Each with its own brain."], // README:62
-  lead: "\"Tell Ben on Slack I'm late and put on Focus on Spotify\" splits into two threads. Each has its own brain, conversation, budget and blob. Up to three run beside the main one.", // README:62
+  lead: "\"Tell Ben on Slack I'm late and put on Focus on Spotify\" can split into two threads. Each has its own brain, conversation, budget and blob. Up to three run beside the main one.", // README:62
   lines: ["Slack asks before it sends.", "Spotify runs in the background by Apple events.", '"Stop the Slack one" needs no model call.'], // README:140-141, README:62
 };
 
@@ -97,8 +97,8 @@ export const HANDS: Story = {
   phase: "acting",
   face: "> >",
   h2: ["Label first. Click second.", "Screenshot last."], // README:60
-  lead: "The hands are a Swift helper with 71 tools in ten families. They find a control by label and click it. A screenshot only verifies.", // README:28, README:60
-  lines: ["Circle anything with ⌥⇧C. Every brain sees it.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:66, README:67, README:65
+  lead: "The hands are a Swift helper. They find a control by label and click it. A screenshot only verifies.", // README:28, README:60
+  lines: ["Circle anything with ⌃⌥C. Every brain sees it.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:66, README:67, README:65
 };
 
 /** 05 · Rails */
@@ -126,7 +126,7 @@ export const SLEEP: Story = {
   phase: "asleep",
   face: "- -",
   h2: ["Say good night.", "Alarms still ring."], // README:69, README:301-305
-  lead: 'It says "night." and closes the session. Ten idle minutes do the same. Alarms, timers, watchers and routines fire while it sleeps.', // README:69, README:301-304, AUTOMATIONS:3-4
+  lead: 'It says "night." and closes the session. Ten minutes without a word to it do the same. Alarms, timers, watchers and routines fire while it sleeps.', // README:69, README:301-304, AUTOMATIONS:3-4
   lines: ["No session, no brain turn, nothing billed.", "Set-up asks once. Fire time never asks.", "Nothing fires while Jarhead is quit."], // AUTOMATIONS:6-7, AUTOMATIONS:11-13, AUTOMATIONS:116-117
 };
 
@@ -142,36 +142,36 @@ export const NUMBERS = {
   name: "Numbers",
   h2: ["Measured on one Mac.", "Written down."] as const, // README:331
   lead: "Measured on the author's Mac and written down. The harnesses are in the repo. Every latency carries its n and date.", // README:331, facts:388
-  display: { value: "3 ms", label: "ear final to hands dispatch, median", tip: "6 ms p95 · real helper · n = 50 · 2026-09-11" } satisfies Figure, // README:337, facts:308
+  display: { value: "3 ms", label: "ear final to hands dispatch, median", tip: "6 ms p95 · real helper · n = 50 · 2026-09-11 · rerun under load 2026-10-06: 8 ms median, 58 ms p95, n = 30" } satisfies Figure, // README:337, facts:308; the rerun: pnpm jarhead bench on the real helper on the F5 branch (merged at 48aa9a9), load average 105
   figures: [
-    { value: "126 ms", label: "prefire partials, p95", tip: "122 ms median · scroll, page, screenshot, circle · includes the 120 ms window · 2026-09-11" }, // README:338
+    { value: "126 ms", label: "prefire partials, p95", tip: "122 ms median · scroll, page, screenshot, circle · includes the 120 ms window · n = 20 · 2026-09-11" }, // README:338, REDESIGN §12
     { value: "457 ms", label: "careful partials, p95", tip: "455 ms median · keys, edits, type, click · includes the 450 ms window · n = 30 · 2026-09-11" }, // README:339
-    { value: "1.11 s", label: "GPT-Live-1 reply, median", tip: "1.21 s p90 · Agora, third party · n = 30 per condition · 2026-07-09" }, // README:345
-    { value: "4.4 s", label: "delegation to first visible action, median", tip: "5.1 s p95 · Codex through the app-server · canned hands · n = 6 · 2026-09-12" }, // README:341
-    { value: "8.9 s", label: "delegation to verified completion, median", tip: "25.6 s p95 · n = 10 · 2026-09-12" }, // README:342
-    { value: "55 ms", label: "tool round trip, median", tip: "211 ms p95 · production ledger" }, // README:346
-    { value: "48 to 75 ms", label: "screenshot, warm full display", tip: "ScreenCaptureKit" }, // README:347
-    { value: "10.7k", label: "input tokens, cold Codex thread", tip: "from 22.3k · −52 % · a private CODEX_HOME" }, // README:348, README:84
+    { value: "1.11 s", label: "GPT-Live-1 spoken reply, median", tip: "1.21 s p90 · Agora, third party · n = 30 per condition · 2026-07-09 · typed, on the wire: 1.35 s median, 1.67 s p90, n = 10, 2026-10-06 · an earlier run that day: 1.89 s" }, // README:345; live-check LC-5, 2026-10-06
+    { value: "4.4 s", label: "delegation to first visible action, median", tip: "5.1 s p95 · Codex through the app-server · canned hands · n = 6 · 2026-09-12 · in real use: 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28" }, // README:341; the author's ledger, 2026-09-12 to 09-28
+    { value: "8.9 s", label: "delegation to verified completion, median", tip: "25.6 s p95 · canned hands · n = 10 · 2026-09-12 · in real use: 12.6 s median, 50.0 s p95, n = 28, 2026-09-12 to 09-28" }, // README:342; the author's ledger, 2026-09-12 to 09-28
+    { value: "82 ms", label: "tool round trip, median", tip: "518 ms p95 · real use · n = 162 · 2026-09-12 to 09-28" }, // the author's ledger, 2026-09-12 to 09-28 (the perf audit's ledger-numbers script)
+    { value: "96 ms", label: "screenshot round trip, median", tip: "311 ms p95 · real use · n = 72 · 2026-09-12 to 09-28" }, // the author's ledger, 2026-09-12 to 09-28 (the perf audit's ledger-numbers script)
+    { value: "10.7k", label: "input tokens, cold Codex thread", tip: "from 22.3k · −52 % · a private CODEX_HOME · measured on a cold thread, 2026-09-11 · about 11.4k now, an estimate" }, // README:348, README:84, REDESIGN:2015-2018; the estimate: w3-4-tool-parity
     { value: "71", label: "tools in ten families", tip: "16 permissions, 7 required · 6 brains + auto" }, // README:356
     { value: "3", label: "live threads beside the main one", tip: "25 steps / 180 s default · 40 / 300 cap · linger 30 s" }, // README:351
     { value: "1.5 s", label: "your key, click or scroll holds the hands", tip: "busy for 1500 ms" }, // README:353
-    { value: "2 s", label: "liveness ping", tip: "two unanswered · drop, reconnect, kick" }, // README:354
-    { value: "90 s", label: "daemon linger after a crash", tip: "relaunch at most 3 in 10 min · the Codex thread stays warm" }, // README:355, README:76
-    { value: "10 min", label: "idle sleep", tip: "without an addressed turn · a setting" }, // README:350
+    { value: "2 s", label: "liveness ping", tip: "two unanswered: drop and reconnect · 8 s silent: the daemon is killed and started again" }, // README:354, EngineClient.swift
+    { value: "90 s", label: "daemon linger after a crash", tip: "a clean quit stops it at once · relaunch at most 3 in 10 min · the Codex thread stays warm" }, // README:355, README:76
+    { value: "10 min", label: "idle sleep", tip: "no word to it for 10 min · a setting · 30 min at most by default, whatever the room says · live-check LC-7 at a 1 min setting: asleep 60.3 s after the last word to it, room talk going on, n = 1, 2026-10-06" }, // README:350; engine.ts IDLE_CEILING_MS
   ] satisfies readonly Figure[],
-  lines: ["Reflex rows ran on pnpm jarhead bench, 2026-09-11.", "Model rows ran real Codex, canned hands, 2026-09-12.", "The voice reply is Agora's measurement, 2026-07-09."] as const, // facts:308, facts:309, facts:311
+  lines: ["Reflex rows ran on pnpm jarhead bench, 2026-09-11.", "Model rows ran real Codex, canned hands, 2026-09-12.", "The spoken reply is Agora's measurement, 2026-07-09."] as const, // facts:308, facts:309, facts:311
 } as const;
 
 /** Costs */
 export const COSTS = {
   id: "costs",
   name: "Costs",
-  h2: ["Five cents a minute.", "Asleep costs nothing."] as const, // README:551
+  h2: ["Five cents a minute.", "The voice costs nothing asleep."] as const, // README:551; memory reads closed conversations asleep (README:553)
   lead: "The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.", // README:551
   figures: [
     { value: "$0.05", label: "per minute of open session", tip: "billed per second, muted or not" }, // README:551
     { value: "$3", label: "an hour of talking", tip: "the meter is on the island and in the Console" }, // README:551
-    { value: "$0", label: "asleep", tip: "the wake word runs on-device" }, // README:551
+    { value: "$0", label: "the voice, asleep", tip: "the wake word runs on-device · memory reads closed conversations on your key" }, // README:551, README:553
   ] satisfies readonly Figure[],
   lines: ["Codex runs on your ChatGPT plan.", "A local brain bills nothing. The voice does.", "The Ledger tab totals each day."] as const, // README:552, LOCAL:4, README:83
 } as const;
@@ -189,11 +189,11 @@ export const INSTALL = {
   copied: "Copied",
   /** The one-liner's held runs: it may wrap after `curl -fsSL`, before `install.sh` and before `| sh`, never inside the host (checked below). */
   runs: { cmd: "curl -fsSL", host: "https://jarhead.kevinliu.studio/", script: "install.sh", tail: "| sh" },
-  note: "It checks macOS 14+, Apple silicon, Xcode's tools, Node 24 and pnpm. It clones to ~/jarhead and runs the four commands. It opens the app. It never writes your keys. Read it first at https://jarhead.kevinliu.studio/install.sh", // README:37-38
-  /** README:47-50 verbatim, one row each; the comment is the row's note. */
+  note: "It checks macOS 14+, Apple silicon, Xcode 16's tools, Node 24 and pnpm 10. It clones to ~/jarhead and runs the four commands without the site's packages. It opens the app. It never writes your keys. Read it first at https://jarhead.kevinliu.studio/install.sh", // README:37-38, scripts/install.sh
+  /** README:47-50, one row each; the comment is the row's note. */
   commands: [
     { cmd: "git clone https://github.com/Kevin-Liu-01/Jarhead.git && cd Jarhead" },
-    { cmd: "pnpm install && pnpm build:hands", note: "Node ≥ 24, pnpm 10 (corepack enable), Xcode" },
+    { cmd: "pnpm install && pnpm build:hands", note: "Node ≥ 24, pnpm 10, Xcode 16" },
     { cmd: "pnpm build:mac", note: "builds, signs, installs /Applications/Jarhead.app" },
     { cmd: "open -a Jarhead", note: "Setup opens: your OpenAI key, a brain, permissions" },
   ] as const,
@@ -206,9 +206,9 @@ export const INSTALL = {
       "Node 24 or newer and pnpm 10", // README:378-379
       "An OpenAI API key for the voice", // README:379
       "A brain you are already signed in to", // README:379-380
-      "A Code Signing certificate in your keychain", // README:77, README:397-401
+      "A Code Signing certificate, optional", // README:77, README:397-401, scripts/install.sh
     ] as const,
-    certNote: "Self-signed is enough. Without one every rebuild resets the permission grants.", // README:77, README:397-401
+    certNote: "Self-signed is enough. Without one the build signs ad-hoc. Every rebuild then resets the permission grants.", // README:77, README:397-401, scripts/install.sh
   },
 } as const;
 if (`${INSTALL.runs.cmd} ${INSTALL.runs.host}${INSTALL.runs.script} ${INSTALL.runs.tail}` !== INSTALL.code || `${INSTALL.runs.host}${INSTALL.runs.script}` !== INSTALL.url) throw new Error("the one-liner's runs drifted from INSTALL.code");

@@ -40,8 +40,8 @@ const BRAINS: ReadonlyArray<{ readonly id: string; readonly text: string; readon
 const REFLEX_MS = NUMBERS.display.value;
 const BRAIN_S = NUMBERS.figures[3]?.value ?? "";
 const MEASURED = "codex";
-/** An empty caption that keeps its line: the brain line's outcome is the two threads in the hands, and its "same tools and
- * policy" line already stands beside the plate, so it is not said twice. */
+/** An empty caption that keeps its line: the brain line's outcome is the two threads in the hands, and its "same policy"
+ * line already stands beside the plate, so it is not said twice. */
 const QUIET = "\u00a0";
 /** The Click Save line's outcome, its spoken words in a <q> as the chip above sets them. */
 const SAVE_AT = aroundQuote(SAY.lines[0], CLICK_SAVE);
