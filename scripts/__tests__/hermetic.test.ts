@@ -37,9 +37,9 @@ function child(script: string, env: NodeJS.ProcessEnv, bare = false): Child {
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-/** The last stdout line as JSON (the child prints one). */
-function out<T>(r: Child): T {
-  assert.equal(r.status, 0, `the child exited ${r.status}: ${r.stderr.slice(-2000)}`);
+/** The last stdout line as JSON (the child prints one), once the child exited `status`. */
+function out<T>(r: Child, status = 0): T {
+  assert.equal(r.status, status, `the child exited ${r.status}: ${r.stderr.slice(-2000)}`);
   return JSON.parse(r.stdout.trim().split("\n").at(-1) ?? "") as T;
 }
 
@@ -331,13 +331,38 @@ test("the preload fences the desktop: osascript and open never run, by bare name
     runs["spawn"] = await new Promise((done) => { const c = spawn("osascript", ["-e", 'return "re" & "al"']); let out = "", err = ""; c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", (d) => (err += d)); c.on("close", (status) => done({ status, out, err })); });
     console.log(JSON.stringify(runs));
   `;
-  const runs = out<Record<string, { status: number; out: string; err: string }>>(child(script, { ...process.env }));
+  // Every run reached a stub, so the child fails at exit with a line for each (the next test is the guard's own).
+  const c = child(script, { ...process.env });
+  const runs = out<Record<string, { status: number; out: string; err: string }>>(c, 1);
   assert.equal(Object.keys(runs).length, 11 + Object.keys(login).length + 1);
   for (const [name, r] of Object.entries(runs)) {
     assert.notEqual(r.status, 0, `${name}: the fenced binary exited 0 (${r.out})`);
     assert.doesNotMatch(r.out, /real/, `${name}: the real osascript ran`);
     assert.match(r.err, /refused \(the test preload fences the desktop\)/, `${name}: the stub said why (${r.err})`);
   }
+  assert.equal(c.stderr.match(/^ {2}(?:osascript "return \\"re\\" & \\"al\\""|open -a Spotify)$/gm)?.length, Object.keys(runs).length, c.stderr);
+});
+
+test("a test that reaches the desktop fails: each call a stub refused is named on stderr when the process exits, and it exits 1 whatever the test asserted; a lone `return` the osascript stub answers fails nothing", () => {
+  // runAppleScript is the spawn the applescript tool makes (the script on stdin); run_shell's lines go through zsh -lc.
+  const harmless = `
+    import { runAppleScript } from "./packages/brain/src/shell.ts";
+    const r = await runAppleScript("return 2 + 2");
+    console.log(JSON.stringify({ code: r.code, stdout: r.stdout.trim() }));
+  `;
+  assert.deepEqual(out(child(harmless, { ...process.env })), { code: 0, stdout: "4" });
+  const reaching = `
+    import { spawnSync } from "node:child_process";
+    import { runAppleScript } from "./packages/brain/src/shell.ts";
+    const r = await runAppleScript('tell application "Spotify" to play');
+    spawnSync("/bin/zsh", ["-lc", "say hello"], { encoding: "utf8" });
+    console.log(JSON.stringify({ code: r.code, asserted: true }));
+  `;
+  const c = child(reaching, { ...process.env });
+  assert.deepEqual(out(c, 1), { code: 1, asserted: true }, "the test ran to its end; the exit is the preload's");
+  assert.match(c.stderr, /a test here reached the desktop, so this file fails/);
+  assert.match(c.stderr, /^ {2}osascript "tell application \\"Spotify\\" to play"$/m);
+  assert.match(c.stderr, /^ {2}say hello$/m);
 });
 
 test("the preload moves HOME: os.homedir() is a fresh temp dir with a test git identity, never the shell's home; CODEX_HOME, CLAUDE_CONFIG_DIR, ZDOTDIR, the XDG folders and GIT_CONFIG_GLOBAL are unset, so Codex's home is never the login in the shell's ~/.codex and nothing steers a read back to the shell's home (F1)", () => {
