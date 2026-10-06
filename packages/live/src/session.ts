@@ -52,6 +52,12 @@ export interface LiveSessionEvents {
   responseEvent: [delegationId: string | null, event: Record<string, unknown>];
   usage: [seconds: number, contextRatio: number | undefined];
   appended: [channel: "thinking" | "commentary" | "instructions", clientEventId: string | undefined, startMs: number];
+  /**
+   * The client asked the voice for words: a `commentary` or `instructions` append left (or was queued) just now. Emitted
+   * on send, not on the server's `appended` ack, so whoever gates the voice's turns (the engine's room-talk gate) knows
+   * the ask before the reply can start. A `thinking` append is silent progress and asks for nothing.
+   */
+  ask: [channel: "commentary" | "instructions", delegationId: string | null];
   closed: [reason: string, usageSeconds: number];
   error: [error: Error, clientEventId: string | undefined];
   state: [state: LiveState];
@@ -314,12 +320,14 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
 
   appendCommentary(delegationId: string | null, content: string): string {
     const id = this.nextEventId("say");
+    this.emit("ask", "commentary", delegationId);
     this.raw({ type: "session.commentary.append", event_id: id, delegation_id: delegationId, content });
     return id;
   }
 
   appendInstructions(delegationId: string | null, content: string): string {
     const id = this.nextEventId("steer");
+    this.emit("ask", "instructions", delegationId);
     this.raw({ type: "session.instructions.append", event_id: id, delegation_id: delegationId, content });
     return id;
   }

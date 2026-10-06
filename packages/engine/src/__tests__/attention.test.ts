@@ -202,6 +202,8 @@ test("control: a 'goodnight' mid-exchange (Jarhead spoke 3 s ago) still sleeps i
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
     clock.t += 30_000;
+    // Jarhead says a line the engine asked for (a timer's, a thread's): its own speech (the room-talk gate, LC-7).
+    live.appendInstructions(null, "Your pasta timer is done. Say so once.");
     live.emit("outputTranscript", " here you go.", live.nowMs, live.nowMs + 300);
     live.nowMs += 300;
     clock.t += 3000;
@@ -264,10 +266,12 @@ test("addressed turns hold it awake: a delegation, Jarhead's answer, a typed lin
     await until(() => brain.tasks.length === 1);
     brain.resolve?.({ status: "done", summary: "It is three." });
     await settle();
-    // Minute 16: Jarhead speaks (an answer, a thread's line).
+    // Minute 16: Jarhead speaks (a thread's line, a timer). It reaches the voice as the engine's append — the ask — and
+    // the voice says it: a voice turn nobody asked for would be the voice answering the room, and counts for nothing.
     runMinutes(w, 8, () => roomTalk(w, "the weather turns cold this weekend"));
     assert.equal(engine.transportState, "awake", "8 min after the delegation, with room talk: awake");
     const live = current(w);
+    live.appendInstructions(null, "Your pasta timer is done. Say so once.");
     live.emit("outputTranscript", " Your timer is done.", live.nowMs, live.nowMs + 600);
     live.nowMs += 600;
     // Minute 24: a typed line.
@@ -333,33 +337,45 @@ test("the pre-sleep clause is not an addressed turn: room talk after 'going to s
   }
 });
 
-test("Kevin answers the pre-sleep clause without the name and the voice answers him: it stays awake", async () => {
+/**
+ * The room-talk gate (LC-7; a decision for Kevin): the clause is an announcement, not a turn, so it opens no exchange.
+ * Words after it without the name are judged as the room's — a TV answering "going to sleep" would otherwise hold the
+ * session for ever (B2) — so the voice's reply to them is not asked for, is not played, and it sleeps. With the name,
+ * the reply is asked for, an addressed turn, and the sleep is off. Only the name, a typed line or Go keeps it awake.
+ */
+test("Kevin answers the pre-sleep clause without the name and the voice answers him: it still sleeps (the clause opens no exchange); by name, it stays awake", async () => {
   const w = world();
   const { engine, clock } = w;
+  const answer = (words: string): void => {
+    const live = current(w);
+    toTheClause(w);
+    live.emit("outputTranscript", " Going to sleep.", live.nowMs, live.nowMs + 600);
+    clock.t += 1000;
+    tick(engine);
+    live.emit("inputTranscript", ` ${words}`, live.nowMs, live.nowMs + 900);
+    clock.t += 1000;
+    tick(engine);
+    live.emit("outputTranscript", " Okay, I'll stay.", live.nowMs, live.nowMs + 700);
+    for (let s = 0; s < 10; s++) {
+      clock.t += 1000;
+      tick(engine);
+    }
+  };
   try {
     await engine.start();
     await engine.ready();
     engine.updateSettings({ idleSleepMinutes: 10 });
     await engine.wake("test");
-    const live = current(w);
-    toTheClause(w);
-    live.emit("outputTranscript", " Going to sleep.", live.nowMs, live.nowMs + 600);
-    live.nowMs += 600;
-    clock.t += 1000;
-    tick(engine);
-    live.emit("inputTranscript", " no wait, I'm still here", live.nowMs, live.nowMs + 900);
-    live.nowMs += 900;
-    clock.t += 1000;
-    tick(engine);
-    live.emit("outputTranscript", " Okay, I'll stay.", live.nowMs, live.nowMs + 700);
-    live.nowMs += 700;
-    for (let s = 0; s < 10; s++) {
-      clock.t += 1000;
-      tick(engine);
-    }
+    answer("no wait, I'm still here");
     await settle();
-    assert.equal(engine.transportState, "awake", "Live answered him: an addressed turn, and the sleep is off");
-    assert.equal(rows<SleepRow>(w, "sleep").length, 0);
+    assert.equal(engine.currentPhase, "asleep", "an unnamed answer to the clause is the room's: the voice's reply to it was not asked for");
+    assert.deepEqual(rows<SleepRow>(w, "sleep").map((r) => r.cause), ["idle"]);
+
+    await engine.wake("test");
+    answer("no wait jarhead, I'm still here");
+    await settle();
+    assert.equal(engine.transportState, "awake", "Kevin named Jarhead and the voice answered him: the sleep is off");
+    assert.equal(rows<SleepRow>(w, "sleep").length, 1);
   } finally {
     await engine.stop();
   }

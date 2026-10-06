@@ -1102,6 +1102,7 @@ test("an utterance still open 15 s of wall clock after a live error with no clos
     live.emit("inputTranscript", " hello there", 1000, 1500);
     assert.equal(engine.snapshot().transcript[0]?.final, false);
     // The server errors; the session clock (live.nowMs) stops moving and no `closed` ever comes.
+    live.freezeTimeline();
     live.emit("error", new Error("response_input_buffer_full: Backend response input history is limited"), "item_9");
     clock.t += 5000;
     tick(engine);

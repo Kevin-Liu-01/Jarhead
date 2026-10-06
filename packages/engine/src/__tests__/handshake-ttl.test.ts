@@ -50,7 +50,8 @@ test("TH-1 (TH-ORPHAN-TTL): a yes four minutes after Slack asked re-asks Slack's
     assert.equal(engine.desk.holds(named(w, "Slack")!.id), false, "but nothing answerable is held");
 
     nextUtterance(w);
-    delegate(w, "yes", "item_yes");
+    // Four minutes on, the exchange is long shut: Kevin's late yes names Jarhead (an unnamed one is the room's, LC-7).
+    delegate(w, "jarhead, yes", "item_yes");
     await until(() => results.length === 2);
     await settle(50);
     assert.equal(results[1]?.kind, "needs-confirmation", "Slack's tool asked again");

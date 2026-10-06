@@ -116,7 +116,7 @@ test("dictation \"new line\" when the front app cannot be told: Shift-Return, ne
   }
 });
 
-test("Live delegates \"Start dictating.\" (the ear left it to Live: nobody named Jarhead): dictation starts and the brain gets no task", async () => {
+test("Live delegates \"Jarhead, start dictating.\" (the ear never heard it): dictation starts and the brain gets no task", async () => {
   const w = world();
   const { engine, brain } = w;
   try {
@@ -125,7 +125,8 @@ test("Live delegates \"Start dictating.\" (the ear left it to Live: nobody named
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
     w.clock.t += 60_000;
-    delegate(w, "Start dictating.", "item_d");
+    // Said to Jarhead: a bare "start dictating" a minute after the last exchange is the room's (the room-talk gate, LC-7).
+    delegate(w, "Jarhead, start dictating.", "item_d");
     assert.ok(await until(() => engine.isDictating, 1500), `delegation: ${JSON.stringify(engine.snapshot().delegations.map((d) => [d.status, d.summary]))}`);
     await settle(50);
     assert.equal(brain.tasks.length, 0, "no generation for a dictation toggle");

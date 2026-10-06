@@ -292,7 +292,9 @@ test("negatives: 'turn off the lights' is a task; a spoken 'stop' mid-task is th
     await settle(120);
     assert.equal(rows<SleepRow>(w, "sleep").length, 0, "room talk never sleeps it");
     assert.equal(live.currentState, "started");
-    // "that is all" that grows into "that is all wrong" within the careful window: nothing.
+    // "that is all" that grows into "that is all wrong" within the careful window: nothing. Jarhead says a line the
+    // engine asked for (a timer's, a thread's): its own speech, which opens the exchange (the room-talk gate, LC-7).
+    live.appendInstructions(null, "Your pasta timer is done. Say so once.");
     live.emit("outputTranscript", " here you go.", live.nowMs, live.nowMs + 300);
     engine.ear("that is all", false, 3, clock.t);
     await settle(20);

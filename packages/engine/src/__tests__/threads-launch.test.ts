@@ -617,8 +617,13 @@ test("TH-1 (engine): Slack asks 'send?'; four minutes pass (past the root's TTL)
     // The engine's root ConfirmationState runs on Date.now, not the injected clock: move both.
     const realNow = Date.now;
     (engine.confirmations as unknown as { now: () => number }).now = () => realNow() + 4 * 60_000;
+    const l = w.lives[w.lives.length - 1]!;
+    const lines = l.commentary.length;
     tick();
     assert.equal(engine.threads.floorThread()?.name, "Slack", "asked again on the floor");
+    // The voice says the question again (the engine's own line, so it was asked for): the exchange is open for the yes.
+    assert.ok(await until(() => l.commentary.length > lines, 1000), "the question went to the voice again");
+    l.emit("outputTranscript", " slack asks: send it?", l.nowMs, l.nowMs + 900);
     nextUtterance(w);
     delegate(w, "yes", "item_yes");
     await until(() => named(w, "Slack")?.status === "done");

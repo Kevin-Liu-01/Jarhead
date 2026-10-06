@@ -49,6 +49,10 @@ import { ALL_TOOL_SPECS } from "./tools.ts";
 
 const log = logger("delegator");
 
+/** A delegation the room-talk gate refused: its ledger summary, and the silent note that closes it for the voice. */
+const NOT_ADDRESSED = "not addressed: room talk, heard and not run";
+const NOT_ADDRESSED_THINKING = "Not run: those words were not said to you. Say nothing about them.";
+
 /**
  * How long a task waits on the durable-memory lookup, at most. It rides the marks
  * and eyes race (the eyes' quick shot is ~50–250 ms), so a cached query embedding
@@ -118,6 +122,21 @@ export interface DelegatorOptions {
    * and finished as cancelled with that reason, so the ledger says what happened.
    */
   readonly refuse?: (() => string | undefined) | undefined;
+  /**
+   * The room-talk gate (LC-7): whether an utterance on the transcript was said TO Jarhead (typed, naming Jarhead, or
+   * begun inside the open exchange). GPT-Live-1 delegates what it hears on its own, the room's commands included (LC-7,
+   * 2026-10-06: two of five room lines, F4's orders notwithstanding), so room lines are kept out of an addressed
+   * request's words. Absent, every utterance counts as addressed (a voice that is not always on, the tests).
+   */
+  readonly addressed?: ((item: TranscriptItem) => boolean) | undefined;
+  /**
+   * The gate's verdict on Live's delegation `liveId`, judged on the utterance it was raised for (its request's last;
+   * undefined when no words are on the transcript yet) before anything else: an unaddressed one is recorded, refused
+   * and closed with a silent thinking append, and nothing reaches the brain, the eyes, the sleep cue, a thread's yes or
+   * a running task. A promise while words that look like room talk may still name Jarhead (Live's transcript of a
+   * breath's end lags the voice): the engine settles it within its bounded wait. Absent: `addressed` on that utterance.
+   */
+  readonly delegationAddressed?: ((liveId: string, item: TranscriptItem | undefined) => boolean | Promise<boolean>) | undefined;
   /** Consecutive commentary lines within this window go to Live as one append (default 600 ms; 0 sends each at once). */
   readonly commentaryCoalesceMs?: number | undefined;
   /** Quiet after an utterance the transcriber closed with a full stop before a prefire is considered (default 180 ms). */
@@ -964,7 +983,6 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
   private async onDelegation(liveId: string, target: "client" | "responses", offsetMs: number): Promise<void> {
     const { transcript, live, confirmations, brain } = this.opts;
-    this.sleepAnnouncedAt = undefined; // a task is starting: not idle
     // Live has spoken: a prefire still being considered for this utterance would only duplicate the work below.
     if (this.prefireTimer) clearTimeout(this.prefireTimer);
     this.prefireTimer = undefined;
@@ -975,8 +993,42 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     // words are not this request's; the transcript's last utterance is, as when the
     // supersede used to move the window first).
     const windowStart = this.running ? Math.max(this.lastDelegationEndMs, live.nowMs || this.running.delegation.offsetMs) : this.lastDelegationEndMs;
-    const kevinSince = transcript.since(windowStart, "kevin");
-    const requestItems = kevinSince.length > 0 ? kevinSince : [transcript.last("kevin")].filter((x): x is NonNullable<typeof x> => x !== undefined);
+    const heardSince = (): readonly TranscriptItem[] => {
+      const since = transcript.since(windowStart, "kevin");
+      return since.length > 0 ? since : [transcript.last("kevin")].filter((x): x is NonNullable<typeof x> => x !== undefined);
+    };
+    let heardItems = heardSince();
+
+    // The room-talk gate (LC-7): Live raised this for words nobody said to Jarhead. Recorded and refused before anything
+    // else — no brain, no eyes, no sleep cue, no thread's yes, nothing running superseded, the idle stretch left as it
+    // was — and the voice is closed out silently (a thinking append asks it for no words). Words that look like room
+    // talk wait (bounded) for a late name first; the request is read again after the wait.
+    const saidTo = this.opts.addressed;
+    const judge = this.opts.delegationAddressed;
+    if (saidTo || judge) {
+      const last = heardItems[heardItems.length - 1];
+      let ok = judge ? judge(liveId, last) : last === undefined || saidTo!(last);
+      if (typeof ok !== "boolean") {
+        ok = await ok;
+        // The session went while the name was awaited: nothing starts on a delegator no stop can reach.
+        if (this.disposed) return;
+        heardItems = heardSince();
+      }
+      if (!ok) {
+        const room = saidTo ? heardItems.filter((i) => !saidTo(i)) : heardItems;
+        const words = room.map((i) => i.text).join(" ").trim() || "(no words on the transcript)";
+        const aside = this.recordAside(liveId, offsetMs, words, this.speechEndAt(heardItems, offsetMs), heardItems);
+        this.addStep(aside.id, { kind: "note", text: `not addressed: "${words.slice(0, 120)}" — heard, kept on the record, not run` });
+        this.closeRecord(aside.id, "cancelled", NOT_ADDRESSED);
+        live.appendThinking(target === "responses" ? null : liveId, NOT_ADDRESSED_THINKING);
+        log.info(`delegation ${aside.id} (${liveId}): not addressed ("${words.slice(0, 80)}"); refused before the brain`);
+        return;
+      }
+    }
+    this.sleepAnnouncedAt = undefined; // a task is starting: not idle
+    // Room lines heard since the last request are not part of this one: only what was said to Jarhead goes on.
+    const addressedItems = saidTo ? heardItems.filter((i) => saidTo(i)) : heardItems;
+    const requestItems = addressedItems.length > 0 ? addressedItems : heardItems;
     const request = requestItems.map((i) => i.text).join(" ").trim() || `(no transcript yet — ask what ${this.userName} wants)`;
     const lastItem = requestItems[requestItems.length - 1];
     const lastText = lastItem?.text ?? request;

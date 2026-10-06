@@ -559,13 +559,31 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   once a `confirm` step is pending: the runner's question quotes the command
   (`run "python edit_file.py"`), so it names a tool, and Kevin has to hear it or
   the handshake sits pending until his next request drops it.
-- **Jarhead's own speech counts as "addressed".** `live.on("outputTranscript")`
-  moves `lastAddressedAt`, so a pre-sleep clause judged against the idle clock
+- **Jarhead's own speech counts as "addressed".** Its granted words move
+  `lastAddressedAt`, so a pre-sleep clause judged against the idle clock
   re-arms itself every idle period and the session never sleeps while it bills.
   `Delegator.announceSleep` speaks once per idle stretch (Kevin's next words or
   the next task start a new one) and returns whether it did; the engine arms one
   deadline off `true` and sleeps at it unless `sleepAnnounced` has cleared —
-  never by re-reading `lastAddressedAt`.
+  never by re-reading `lastAddressedAt`. The clause's own voice turn counts for
+  nothing and opens no exchange (the room-talk gate below).
+- **GPT-Live-1 answers the room; the ask is the engine's** (LC-7, 2026-10-06).
+  No turn-detection setting, no `create_response`, no cancel: whatever its
+  orders say, it answered 4 of 5 room lines and delegated 2. `voice-attention.ts`
+  judges each of Kevin's utterances as it arrives (typed / named, the orders'
+  mishearings and a name Live split around the voice's words included / begun
+  inside the exchange on the session timeline / room) and grants each voice turn
+  (words or sound, no 600 ms gap) by its first audible frame: an append's ask
+  (LiveSession emits `ask` on commentary and instructions appends), a reply to
+  an addressed utterance under 8 s old, addressed work with nothing from the room
+  since, or inside the exchange. An unasked turn is dropped whole, silence too,
+  and counts for nothing; a name within 600 ms of its first audible frame
+  releases it. A room delegation waits ≤ 1.2 s for a late name, then is refused
+  before the brain and closed with a silent `thinking` append. The exchange is
+  capped 120 s after its anchor (a name, a typed line, a circle, Go, or a line
+  the engine asked the voice to say). Engine tests drive it through FakeLive,
+  whose `nowMs` follows the test clock: a voice line with no cause, or bare room
+  words outside the window, are dropped and refused like the real thing.
 - **Carried history is a budget, not a transcript.** After a Codex rollover the
   fresh thread hears `renderCarry`: Kevin's words verbatim (never cut, even over
   budget), the spoken answers, and each tool result as one line — verbatim under

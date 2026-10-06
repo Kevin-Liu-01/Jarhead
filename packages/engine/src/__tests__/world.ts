@@ -36,7 +36,6 @@ export class FakeLive extends EventEmitter {
   session: { id: string; expires_at: number } | undefined;
   /** The config the engine opened this session with (instructions, voice, delegation). */
   config: SessionConfig | undefined;
-  nowMs = 1000;
   audioIn = 0;
   /** What the server has billed so far (a `usage` emit updates it; the closed event carries it). */
   usage = 0;
@@ -47,8 +46,33 @@ export class FakeLive extends EventEmitter {
   hangOnClose = false;
   /** The server refuses the socket: start() reports `closed("connection_lost")` and rejects, as the real session does when the socket closes before `session.started`. */
   failStart = false;
-  constructor(readonly id = "sess_1") {
+  /** The session timeline by hand: what a test moved it by (`nowMs +=`, `nowMs =`), from 1 s at the start. */
+  private handMs = 1000;
+  /** The test clock when the session started: from then on the timeline follows the clock as well. */
+  private startedClock: number | undefined;
+  /** `clock`: the world's test clock, so the session timeline moves with it, as Live's does with the wall clock. */
+  constructor(
+    readonly id = "sess_1",
+    private readonly clock?: () => number,
+  ) {
     super();
+  }
+  /**
+   * The session timeline (Live's `start_ms` / `end_ms`): 1 s at the start, plus the test clock since `start()`, plus what
+   * a test moves it by hand. The engine's room-talk gate judges the exchange on it, so a test that moves only the clock
+   * still moves the timeline, and one that moves only the timeline still works as before.
+   */
+  get nowMs(): number {
+    const ran = this.clock && this.startedClock !== undefined ? this.clock() - this.startedClock : 0;
+    return this.handMs + ran;
+  }
+  set nowMs(v: number) {
+    this.handMs += v - this.nowMs;
+  }
+  /** The session clock stops where it is (a server error with no `closed` behind it): from here only a test moves it. */
+  freezeTimeline(): void {
+    this.handMs = this.nowMs;
+    this.startedClock = undefined;
   }
   async start(): Promise<{ id: string; expires_at: number }> {
     if (this.failStart) {
@@ -56,6 +80,7 @@ export class FakeLive extends EventEmitter {
       this.finish("connection_lost");
       throw new Error("live socket closed before start (code 1000)");
     }
+    this.startedClock = this.clock?.();
     this.currentState = "started";
     this.session = { id: this.id, expires_at: Math.floor(Date.now() / 1000) + 3600 };
     return this.session;
@@ -68,15 +93,18 @@ export class FakeLive extends EventEmitter {
     this.usage = seconds;
     this.emit("usage", seconds, undefined);
   }
-  appendInstructions(_id: string | null, content: string): string {
+  appendInstructions(id: string | null, content: string): string {
     this.instructions.push(content);
+    // As LiveSession does: an append that asks the voice for words is an ask (the engine's room-talk gate reads it).
+    this.emit("ask", "instructions", id);
     return "i";
   }
   appendThinking(): string {
     return "t";
   }
-  appendCommentary(_id: string | null, content: string): string {
+  appendCommentary(id: string | null, content: string): string {
     this.commentary.push(content);
+    this.emit("ask", "commentary", id);
     return "c";
   }
   appendAudio(): void {
@@ -882,11 +910,12 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   // One FakeLive per session: the first exists before the wake (tests hold it as `live`);
   // every wake after that — a resume, a re-wake — gets a fresh one, as the engine does.
   const first = where.firstSessionId ?? "sess_1";
-  const live = new FakeLive(first);
+  const clock = { t: 1_757_500_000_000 };
+  const live = new FakeLive(first, () => clock.t);
   const lives: FakeLive[] = [live];
   let opened = 0;
   const makeLive = (config: SessionConfig): LiveSession => {
-    const l = lives[opened] ?? new FakeLive(where.firstSessionId ? `${first}_${opened + 1}` : `sess_${opened + 1}`);
+    const l = lives[opened] ?? new FakeLive(where.firstSessionId ? `${first}_${opened + 1}` : `sess_${opened + 1}`, () => clock.t);
     if (!lives.includes(l)) lives.push(l);
     opened++;
     l.config = config;
@@ -896,7 +925,6 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   const handsBg = where.oneHands ? hands : new RecordingHands();
   // One Mac, one screen: what the acting helper fronts is what the reading helper reads.
   if (handsBg !== hands) handsBg.shareScreenWith(hands);
-  const clock = { t: 1_757_500_000_000 };
   hands.now = () => clock.t;
   handsBg.now = () => clock.t;
   // The memory module never loads by name in a test (no store on disk, no network from an extractor or an

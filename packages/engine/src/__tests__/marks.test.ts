@@ -223,6 +223,8 @@ test("marks: circled regions are recorded at once, captured without Jarhead's wi
     w.clock.t += 10 * 60_000; // circled ten minutes ago, still pending
     (engine as unknown as { tick(): void }).tick();
     assert.equal(engine.snapshot().marks.length, 1);
+    // Ten minutes on, the circle no longer opens an exchange by itself (the room-talk gate, LC-7): Kevin asks.
+    live.emit("inputTranscript", " jarhead what's this", live.nowMs, live.nowMs + 900);
     live.emit("delegation", "item_3", "client", 3000);
     await settle();
     assert.equal(tasks.length, 3);

@@ -243,7 +243,8 @@ test("RF-5 hold: the ear's 'jarhead press enter' that Live never delegated is re
     // The ear hears the bare words outside the exchange window: gated (left to Live).
     engine.ear("press enter", true, 2, w.clock.t - 100);
     await settle(100);
-    delegate(w, "press enter", "item_new");
+    // Live heard the name the ear missed (the room-talk gate refuses Live's delegation of bare room words, LC-7).
+    delegate(w, "jarhead, press enter", "item_new");
     await until(() => ["done", "failed", "cancelled"].includes(engine.snapshot().delegations.find((d) => d.liveId === "item_new")?.status ?? ""), 3000);
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_new");
     const keys = hands.posted.filter((p) => p.op === "key").map((p) => String(p.params["combo"]));
@@ -269,7 +270,8 @@ test("addressing: an unaddressed partial left to Live does not fire when the rec
     await settle(600);
     assert.deepEqual(hands.posted.filter((p) => p.op === "key"), [], "room talk: the ear pressed nothing");
     w.clock.t += 700;
-    delegate(w, "press enter", "item_live");
+    // Live heard the name the ear's partial missed (the room-talk gate refuses Live's delegation of bare room words, LC-7).
+    delegate(w, "jarhead press enter", "item_live");
     await until(() => engine.snapshot().delegations.find((d) => d.liveId === "item_live")?.status === "done", 3000);
     await settle(50);
     w.clock.t += 300; // the recogniser re-emits the same partial within the 1.5 s gap
@@ -283,11 +285,11 @@ test("addressing: an unaddressed partial left to Live does not fire when the rec
 });
 
 /**
- * The ear gates a bare "start dictating" outside the exchange, and Live's delegation of it reaches the
- * Delegator's runReflex, which starts and stops dictation through startDictation and stopDictation, as
- * runEarReflex does (W1-1), so the brain never gets a task.
+ * The ear gates a bare "start dictating" outside the exchange, and so does the room-talk gate on Live's delegation of
+ * it (LC-7): dictation types into the focused field, and nobody said it to Jarhead. Refused before the Delegator's
+ * runReflex; the brain never gets a task either way. (Said with the name, w1-1-dictation pins that it starts.)
  */
-test("addressing: a bare 'start dictating' a minute after the last exchange, which Live delegates, starts dictation", async () => {
+test("addressing: a bare 'start dictating' a minute after the last exchange, which Live delegates, is refused: no dictation, no task", async () => {
   const w = world();
   const { engine, brain } = w;
   try {
@@ -304,7 +306,8 @@ test("addressing: a bare 'start dictating' a minute after the last exchange, whi
     await until(() => ["done", "failed", "cancelled"].includes(engine.snapshot().delegations.find((d) => d.liveId === "item_d")?.status ?? "") || brain.tasks.length > 0, 3000);
     await settle(100);
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_d");
-    assert.equal(engine.isDictating, true, `dictating? delegation ${d?.status} "${d?.summary}"; brain tasks ${brain.tasks.length}`);
+    assert.equal(engine.isDictating, false, `dictating? delegation ${d?.status} "${d?.summary}"; brain tasks ${brain.tasks.length}`);
+    assert.deepEqual([d?.status, d?.summary], ["cancelled", "not addressed: room talk, heard and not run"]);
     assert.equal(brain.tasks.length, 0, "no generation for a dictation toggle");
   } finally {
     await engine.stop();

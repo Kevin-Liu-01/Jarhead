@@ -458,6 +458,31 @@ test("the name split around the voice's reply (LC-6 trial 3, no ear): one uttera
   }
 });
 
+/** …and with the ear: it hears the name ~1 s ahead of Live's transcript, so the delegation needs no wait and the reply plays on arrival. */
+test("the name split around the voice's reply, heard by the ear first: named before Live's 'head' lands; the delegation runs and the reply plays on arrival", async () => {
+  const r = await rig(10);
+  const { w } = r;
+  try {
+    const T = 30_000;
+    await r.run({ voiced: [[T + 1948, T + 2248]], at: [
+      { t: T + 400, run: () => w.engine.ear("what's", false, 9, r.wall(T + 400)) },
+      { t: T + 1200, run: () => r.input(" What's on my screen,", T + 200, T + 1200) },
+      { t: T + 1327, run: () => r.input(" Jar", T + 1400, T + 1600) },
+      { t: T + 1499, run: () => r.delegation("item_late_ear", T + 1700) },
+      { t: T + 1499, run: () => r.output(" on it.", T + 1800, T + 2000) },
+      { t: T + 1750, run: () => w.engine.ear("what's on my screen Jarhead", false, 9, r.wall(T + 1750)) },
+      { t: T + 1909, run: () => r.input("head", T + 1800, T + 2000) },
+    ] }, T + 3500);
+    assert.ok(await until(() => w.brain.tasks.length === 1, 1500), "the delegation did not run");
+    const created = rows<CreatedRow>(w, "delegation.created").find((row) => row.delegation.liveId === "item_late_ear");
+    assert.ok(created && created.at <= r.wall(T + 1909), `the ear's name settled the delegation before Live's 'head': ${created ? created.at - r.wall(T) : "none"}`);
+    assert.deepEqual(r.played.filter((p) => p.audible && p.s >= T).map((p) => p.s), [T + 1948, T + 2048, T + 2148, T + 2248]);
+  } finally {
+    w.brain.resolve?.({ status: "done", summary: "a browser" });
+    await w.engine.stop();
+  }
+});
+
 /** …and when the name lands after the reply's first audible frame: the frames held since it go to the speaker at the name. */
 test("a name that lands after the reply began to sound (within 600 ms) releases the reply from its first audible frame", async () => {
   const r = await rig(10);
