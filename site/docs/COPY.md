@@ -101,7 +101,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 
 - eyebrow: `Acting` · `The hands are using the Mac.` · `> >`
 - h2, line 1: `Label first. Click second.` (README:60)
-- h2, line 2 *grey*: `Screenshot last.` (README:60)
+- h2, line 2 *grey*: `Screenshots when they help.` (README:60, engine.ts lookAtScreen). It was `Screenshot last.` until 2026-10-06 (C2). That was false: each delegation starts with a screenshot for a brain that takes images, and a brain that cannot take pixels gets none (engine brain-select.test.ts). Line 1 stands: the hands find a control by its label, then click it. The page still lights the three sentences as label, click and shot; `scripts/__tests__/c2-hands-copy.test.ts` checks the words and the cuts.
 - lead: `The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.` (README:28, README:60). The 71 tools are the brain's; 31 of them reach the helper. Not "only verifies": each delegation starts with a screenshot for a brain that takes images (engine.ts lookAtScreen).
 - line 1: `Circle anything with ⌃⌥C. Every brain is told where it is.` (README:66). A brain that takes images also gets the image; a text-only one gets the coordinates alone (brain compatible.ts userContent, local.ts acceptsImages).
 - line 2: `The blob moves to where the hands act.` (README:67)
