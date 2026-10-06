@@ -81,11 +81,16 @@ test("LC-6 with Live's late stop (its barge-in cuts the words at once and the so
   allPass(r);
 });
 
-test("LC-7: a voice that answers the room and delegates its commands (GPT-Live-1, 2026-10-06) fails 'no reply to the room' and 'no delegation'", async () => {
-  const r = await dryRun("LC-7", { dryFaults: { answersRoom: "reply-and-delegate" } });
-  assert.equal(assertion(r, /^no reply to the room$/).pass, false);
-  assert.equal(assertion(r, /^no delegation$/).pass, false);
-  assert.equal(r.pass, false);
+test("LC-7, a voice that answers the room and never delegates (GPT-Live-1's other shape): Live's own judgment is recorded failing, and nothing of it reaches the speaker; the session sleeps at the limit", async () => {
+  const r = await dryRun("LC-7", { dryFaults: { answersRoom: "reply-only" } });
+  // Live's own judgment, on the wire: soft, and failing — the fault is exercised.
+  assert.equal(assertion(r, /^Live said nothing to the room/).pass, false);
+  assert.ok(String(r.metrics["roomReplyOnTheWire"]).length > 0);
+  assert.deepEqual(r.metrics["liveDelegatedRoom"], [], "this shape delegates nothing");
+  // The engine's: hard, and holding.
+  assert.equal(assertion(r, /^no reply to the room reached the speaker$/).pass, true, JSON.stringify(assertion(r, /^no reply to the room reached the speaker$/).value));
+  assert.equal(assertion(r, /^sleep at the idle limit after the last addressed turn$/).pass, true);
+  allPass(r);
 });
 
 test("LC-9: Live writing the haiku itself (GPT-Live-1, 2026-10-06) passes: B4 is what reaches the hands, not who composes", async () => {

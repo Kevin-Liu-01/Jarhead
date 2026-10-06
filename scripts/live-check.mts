@@ -796,6 +796,17 @@ export interface DryFaults {
   readonly composesItself?: boolean;
 }
 
+/**
+ * What the stand-in plays by default in a dry run of a check, when the caller names no faults: GPT-Live-1 as the paid
+ * runs measured it, where the engine's answer to that behaviour is what the check is for. LC-7 (2026-10-06, 034251-542
+ * and 002009-399): GPT-Live-1 answered the room and delegated its commands, F4's orders notwithstanding, so a dry LC-7
+ * exercises the room-talk gate, not a voice that keeps quiet on its own. `dryFaults: {}` asks for the quiet stand-in.
+ */
+export const DRY_AS_MEASURED: Partial<Record<CheckId, DryFaults>> = { "LC-7": { answersRoom: "reply-and-delegate" } };
+
+/** GPT-Live-1's order: a reply's first words, then its sound (LC-7 5/5 replies 160-350 ms; LC-5 text 1586 ms, sound 1888 ms medians). */
+const DRY_WORDS_FIRST_MS = 200;
+
 /** GPT-Live-1's usage beat: every 15 s (LC-1, median 14,998 ms). A dry run compresses it, to no less than 250 ms. */
 const USAGE_BEAT_MS = 15_000;
 const DRY_MIN_USAGE_BEAT_MS = 250;
@@ -965,24 +976,31 @@ class DrySocket implements WebSocketLike {
     }, DRY_SILENCE_MS);
   }
 
-  private say(text: string, o: { readonly long?: boolean } = {}): void {
+  /** `wordsFirstMs`: the first word's transcript goes at once and the sound follows this much later, as GPT-Live-1 orders them. */
+  private say(text: string, o: { readonly long?: boolean; readonly wordsFirstMs?: number } = {}): void {
     this.speaking?.stop();
     const words = o.long ? Array.from({ length: 400 }, (_, i) => LONG_STORY[i % LONG_STORY.length]!) : text.split(/\s+/).filter(Boolean);
     let frame = 0;
     let word = 0;
     let transcribing = true;
-    const timer = setInterval(() => {
-      this.deliver({ type: "session.output_audio.delta", delta: DrySocket.SOUND });
-      if (transcribing && frame % DRY_FRAMES_PER_WORD === 0 && word < words.length) {
-        const s = this.vms();
-        this.deliver({ type: "session.output_transcript.delta", event_id: this.server.nextId("ev"), delta: ` ${words[word]}`, start_ms: s, end_ms: s + DRY_FRAME_MS * DRY_FRAMES_PER_WORD });
-        word++;
-      }
-      frame++;
-      if (word >= words.length && frame % DRY_FRAMES_PER_WORD === 0) stop();
-    }, DRY_FRAME_MS);
+    let ended = false;
+    let timer: NodeJS.Timeout | undefined;
+    const sayWord = (): void => {
+      const s = this.vms();
+      this.deliver({ type: "session.output_transcript.delta", event_id: this.server.nextId("ev"), delta: ` ${words[word]}`, start_ms: s, end_ms: s + DRY_FRAME_MS * DRY_FRAMES_PER_WORD });
+      word++;
+    };
+    const sound = (): void => {
+      timer = setInterval(() => {
+        this.deliver({ type: "session.output_audio.delta", delta: DrySocket.SOUND });
+        if (transcribing && frame % DRY_FRAMES_PER_WORD === 0 && word < words.length) sayWord();
+        frame++;
+        if (word >= words.length && frame % DRY_FRAMES_PER_WORD === 0) stop();
+      }, DRY_FRAME_MS);
+    };
     const stop = (): void => {
-      clearInterval(timer);
+      ended = true;
+      if (timer) clearInterval(timer);
       if (this.speaking === speaking) this.speaking = undefined;
       const hole = this.server.faults.audioHoleMs ?? 0;
       if (hole > 0 && !this.server.holeOpened) {
@@ -992,6 +1010,12 @@ class DrySocket implements WebSocketLike {
     };
     const speaking = { stop, cutTranscript: (): void => void (transcribing = false) };
     this.speaking = speaking;
+    if (o.wordsFirstMs !== undefined && words.length > 0) {
+      sayWord();
+      this.later(o.wordsFirstMs, () => {
+        if (!ended) sound();
+      });
+    } else sound();
   }
 
   /**
@@ -1106,12 +1130,12 @@ class DrySocket implements WebSocketLike {
     if (task && (addressed || how === "typed" || DISMISSAL.test(t))) return this.delegate(how === "heard" ? 60 : 20);
     if (how === "heard" && !addressed) {
       if (!faults.answersRoom) return;
-      // GPT-Live-1 in LC-7: an answer to every room line, and a delegation for each command among them.
+      // GPT-Live-1 in LC-7: an answer to every room line, its words before its sound, and a delegation for each command.
       if (faults.answersRoom === "reply-and-delegate" && [...ROOM_COMMANDS.values()].some((word) => word.test(t))) {
-        this.say("on it. done.");
+        this.say("on it. done.", { wordsFirstMs: DRY_WORDS_FIRST_MS });
         return this.delegate(60);
       }
-      return this.say("yeah, sounds right.");
+      return this.say("yeah, sounds right.", { wordsFirstMs: DRY_WORDS_FIRST_MS });
     }
     if (/long story/i.test(t)) return this.say("", { long: true });
     if (/count slowly to five/i.test(t)) return this.say("One. Two. Three. Four. Five.");
@@ -1517,12 +1541,21 @@ export function idleMsFor(id: CheckId, mode: Mode, scale: number): number {
 /** LC-7: the hands ops that read the Mac and never act on it (the Delegator's first look, the AX tree, the handshake). */
 const LC7_READ_OPS: ReadonlySet<string> = new Set(["hello", "screenshot", "ax_tree", "frontmost_app", "user_idle", "list_windows", "find_element", "focused_text", "read_focused_text"]);
 
-/** When the exchange window last opened before `at`: Go, or the latest words Jarhead said. */
+/**
+ * When the exchange window last opened before `at`: Go, or the latest words Jarhead said and Kevin heard — a frame on
+ * the speaker at the engine's own level, not GPT-Live-1's words going by on the wire. An answer to the room the engine
+ * dropped (the room-talk gate) opens no exchange, in the engine or here.
+ */
 function exchangeOpenedAt(rec: Recorder, goT: number, at: number): number {
   let last = goT;
-  for (const d of rec.outText) if (d.t <= at && d.t > last) last = d.t;
+  for (const f of rec.sink) if (f.t <= at && f.t > last && engineHears(f)) last = f.t;
   return last;
 }
+
+/** LC-7: how long after the pre-sleep clause's instruction its own words may sound (the clause is asked for; it is no reply to the room). */
+const LC7_CLAUSE_SOUND_MS = 4000;
+/** LC-7: how long after a refused room delegation the voice's words are kept as that close-out's record. */
+const LC7_CLOSE_OUT_WATCH_MS = 4000;
 
 /** LC-3's paste: 2,700 characters, the instruction that proves it was read to the end in its last sentence. */
 export function pasteText(): string {
@@ -2069,8 +2102,29 @@ export const JUDGES: Record<CheckId, (j: Judge) => void> = {
     const lastAddressed = exchangeOpenedAt(j.rec, goMark, firstRoom);
     j.metric("lastAddressedBeforeRoomT", lastAddressed);
     j.expect("input transcripts arrive (the premise)", j.rec.inText.length > 0, j.rec.inText.length);
+    // The room-talk gate: what Live raised is its own judgment, recorded; what reached the brain is the engine's. Each of
+    // Live's room delegations must be on the ledger as refused ("not addressed"), with no commentary after it.
     const roomDelegations = j.rec.delegations.filter((d) => d.t >= firstRoom);
-    j.expect("no delegation", roomDelegations.length === 0, roomDelegations.map((d) => d.id));
+    j.metric("liveDelegatedRoom", roomDelegations.map((d) => d.id));
+    const roomTasks = j.brain.tasks.filter((t) => t.t >= firstRoom);
+    j.expect("no room talk reached the brain", roomTasks.length === 0, roomTasks.map((t) => t.request));
+    j.expect("Live raised no delegation for room talk (its own judgment; the engine refuses what it raises)", roomDelegations.length === 0, roomDelegations.map((d) => d.id), undefined, { soft: true });
+    const createdByLive = new Map(rowsOf(j.ledger, "delegation.created").map((r) => [r.delegation.liveId, r.delegation.id]));
+    const finishedRows = new Map(rowsOf(j.ledger, "delegation.finished").map((r) => [r.delegationId, r]));
+    const notRefused = roomDelegations.filter((d) => {
+      const id = createdByLive.get(d.id);
+      const end = id ? finishedRows.get(id) : undefined;
+      return !(end?.status === "cancelled" && /^not addressed/.test(end.summary ?? ""));
+    });
+    const roomCommentary = j.rec.client.filter((f) => f.type === "session.commentary.append" && f.t >= firstRoom);
+    j.expect("Live's room delegations were refused before the brain, and no commentary answered them", notRefused.length === 0 && roomCommentary.length === 0, { notRefused: notRefused.map((d) => d.id), commentary: roomCommentary.map((f) => f.head) }, "every room delegation cancelled 'not addressed', no commentary");
+    // How each refusal was closed out for the voice, and what the voice said in the seconds after (heard by nobody): the
+    // paid run settles whether the silent thinking append leaves less drift than an instructions append would.
+    j.metric("refusedCloseOut", roomDelegations.map((d) => {
+      const close = j.rec.client.find((f) => f.t >= d.t && f.type === "session.thinking.append" && /not said to you/i.test(f.head ?? ""));
+      const from = close?.t ?? d.t;
+      return { id: d.id, closedBy: close ? "session.thinking.append" : null, closedAfterMs: close ? close.t - d.t : null, voiceAfter: j.rec.text("out", from, from + LC7_CLOSE_OUT_WATCH_MS * j.scale) };
+    }));
     // What ran: the engine's reflex events (the ear's, the delegator's prefire on Live's words) and the ear's rows.
     const reflexes = [...j.rec.reflexes.map((r) => ({ t: r.t, label: r.label })), ...j.rec.reflexRows.map((r) => ({ t: r.t, label: `${r.action} (${r.source} row${r.ok ? "" : ", failed"})` }))];
     // Each room line, and whether the exchange window was shut from its first word until the ear decided on it: more
@@ -2083,7 +2137,7 @@ export const JUDGES: Record<CheckId, (j: Judge) => void> = {
       const nextT = room[k + 1]?.t ?? Number.POSITIVE_INFINITY;
       const until = Math.min(nextT, endT + LINE_SETTLE_MS * 2);
       const earFinalT = j.rec.marks.find((x) => x.name === "ear.final" && x.data?.["text"] === line && x.t >= m.t && x.t < nextT)?.t ?? endT + EAR_FINAL_AFTER_MS;
-      const shut = m.t - exchangeOpenedAt(j.rec, goMark, m.t) > EXCHANGE_WINDOW_MS && !j.rec.outText.some((d) => d.t > m.t && d.t <= earFinalT);
+      const shut = m.t - exchangeOpenedAt(j.rec, goMark, m.t) > EXCHANGE_WINDOW_MS && !j.rec.sink.some((f) => f.t > m.t && f.t <= earFinalT && engineHears(f));
       const outside = m.data?.["asleep"] === true || shut;
       const heard = j.rec.text("in", m.t, until);
       const word = ROOM_COMMANDS.get(line);
@@ -2105,9 +2159,16 @@ export const JUDGES: Record<CheckId, (j: Judge) => void> = {
     const said = rowsOf(j.ledger, "sleep").filter((r) => r.cause === "said");
     j.expect("no 'said goodnight' sleep row", said.length === 0, said.map((r) => r.phrase));
     const clause = j.rec.client.find((f) => f.type === "session.instructions.append" && /going to sleep in about/.test(f.head ?? ""));
-    // From the first room line (the answer to the opening exchange is not a reply to the room) to the pre-sleep clause.
-    const reply = j.rec.text("out", Number.isFinite(firstRoom) ? firstRoom : lastAddressed, clause?.t ?? Number.POSITIVE_INFINITY);
-    j.expect("no reply to the room", reply === "", reply);
+    // From the first room line (the answer to the opening exchange is not a reply to the room): what reached the speaker,
+    // the clause's own words aside (it was asked for). Then what Live said on the wire, heard by nobody: its judgment.
+    const from = Number.isFinite(firstRoom) ? firstRoom : lastAddressed;
+    const clauseSound = (t: number): boolean => clause !== undefined && t >= clause.t && t < clause.t + LC7_CLAUSE_SOUND_MS * j.scale;
+    const heardReply = j.rec.sink.filter((f) => f.t >= from && engineHears(f) && !clauseSound(f.t));
+    j.expect("no reply to the room reached the speaker", heardReply.length === 0, heardReply.map((f) => f.t), "0 frames at the engine's audible level after the first room line, the clause's own aside");
+    const reply = j.rec.text("out", from, clause?.t ?? Number.POSITIVE_INFINITY);
+    j.metric("roomReplyOnTheWire", reply);
+    j.metric("liveSaidToTheRoom", j.rec.text("out", from));
+    j.expect("Live said nothing to the room (its own judgment; the engine keeps it off the speaker)", reply === "", reply, undefined, { soft: true });
     const sleep = rowsOf(j.ledger, "sleep").find((r) => r.cause === "idle");
     const sleepT = sleep ? sleep.at - j.wall0 : undefined;
     const tol = Math.max(3000, j.idleMs * 0.1) * j.slack;
@@ -2285,6 +2346,8 @@ export interface Report {
   readonly wire: { readonly server: readonly ServerFrame[]; readonly client: readonly ClientFrame[]; readonly inText: readonly TextDelta[]; readonly outText: readonly TextDelta[]; readonly delegations: Recorder["delegations"]; readonly errors: Recorder["errors"]; readonly usage: Recorder["usage"]; readonly sockets: Recorder["sockets"] };
   readonly sink: readonly SinkFrame[];
   readonly ledger: readonly LedgerRow[];
+  /** Dry runs: what the stand-in played (the caller's faults, or GPT-Live-1 as measured for the check: DRY_AS_MEASURED). */
+  readonly standIn?: DryFaults;
   /** The spend ledger this run was gated on and wrote to (live: the one ledger in the state dir; dry: beside the reports). */
   readonly files: { readonly report: string; readonly log: string; readonly spend: string };
 }
@@ -2337,6 +2400,8 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
   const print = opts.print ?? ((line: string): void => void process.stderr.write(`${line}\n`));
   const oversize = opts.oversize === true && plan.id === "LC-3";
   const scale = mode === "dry" ? (opts.scale ?? DRY_SCALE) : 1;
+  /** What the dry stand-in plays: the caller's faults, else GPT-Live-1 as measured for this check (DRY_AS_MEASURED). */
+  const standIn = mode === "dry" ? (opts.dryFaults ?? DRY_AS_MEASURED[plan.id] ?? {}) : undefined;
   const slack = mode === "dry" ? Math.max(1, opts.slack ?? 1) : 1;
   const idleMs = idleMsFor(plan.id, mode, scale);
   const checkCapSeconds = Math.min(planSeconds(plan, { oversize }), opts.capSecondsOverride ?? Number.POSITIVE_INFINITY);
@@ -2439,7 +2504,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
       handsBin: join(stateRoot, NO_HANDS),
       memoryModel: undefined,
     };
-    const dry = new DryServer(mode === "dry" ? opts.dryFaults : undefined, scale);
+    const dry = new DryServer(standIn, scale);
     const RealWebSocket = fences.RealWebSocket;
     const makeLive = (sessionConfig: SessionConfig): LiveSession => {
       if (abort.signal.aborted) throw new Error("live-check: the check is over; no session opens");
@@ -2777,6 +2842,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
     wire: { server: rec.server, client: rec.client, inText: rec.inText, outText: rec.outText, delegations: rec.delegations, errors: rec.errors, usage: rec.usage, sockets: rec.sockets },
     sink: rec.sink,
     ledger,
+    ...(standIn ? { standIn } : {}),
     files,
   };
   writeFileSync(files.report, `${JSON.stringify(report)}\n`);

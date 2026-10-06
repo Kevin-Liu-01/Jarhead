@@ -23,9 +23,21 @@ test("LC-6 spoken-stop: the story sounds, the gate is set at the stop fragment, 
   assert.equal(assertions(r, /after the gate lapses, at most an acknowledgement/).pass, true);
 });
 
-test("LC-7 room-talk: after one typed exchange, commands nobody addressed run no reflex; no reply, no delegation, no goodnight sleep; the clause, then sleep at the idle limit after the exchange", async () => {
+test("LC-7 room-talk, the stand-in as GPT-Live-1 measured (it answers the room and delegates its commands): nothing reaches the speaker, the brain or the hands; no goodnight sleep; the clause, then sleep at the idle limit after the exchange", async () => {
   const r = await dryRun("LC-7");
   allPass(r);
+  // The gate was exercised: the stand-in answered the room and delegated a command (Live's own judgment, soft and
+  // failing), and the engine refused every such delegation before the brain and kept every answer off the speaker.
+  assert.deepEqual(r.standIn, { answersRoom: "reply-and-delegate" });
+  assert.ok(String(r.metrics["roomReplyOnTheWire"]).length > 0, "the stand-in answered the room on the wire");
+  const delegated = r.metrics["liveDelegatedRoom"] as string[];
+  assert.ok(delegated.length > 0, "the stand-in delegated room talk");
+  assert.equal(assertions(r, /^Live said nothing to the room/).pass, false);
+  assert.equal(assertions(r, /^Live raised no delegation for room talk/).pass, false);
+  assert.equal(assertions(r, /^no room talk reached the brain$/).pass, true);
+  assert.equal(assertions(r, /^Live's room delegations were refused before the brain/).pass, true);
+  const closeOut = r.metrics["refusedCloseOut"] as { closedBy: string | null }[];
+  assert.ok(closeOut.length === delegated.length && closeOut.every((c) => c.closedBy === "session.thinking.append"), `each refusal closed with a silent thinking append: ${JSON.stringify(closeOut)}`);
   const firstRoom = r.marks.find((m) => m.name === "room");
   assert.equal(firstRoom?.data?.["line"], ROOM_TALK[0], "the room opens with a command");
   assert.ok(r.wire.outText.some((d) => d.t < (firstRoom?.t ?? 0)), "the opening exchange was answered before the room");
