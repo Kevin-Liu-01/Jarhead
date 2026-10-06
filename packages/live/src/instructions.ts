@@ -20,9 +20,12 @@ export function buildLiveInstructions(opts: InstructionOptions = {}): string {
   // eight seconds without words to or from you" mirrors Engine.EXCHANGE_WINDOW_MS (8000), the window the ear and the
   // reflexes read. The live package cannot import the engine, so the engine's f4-voice-attention-bound test pins the
   // two together. Without the bound, the voice took every room line after its own question as the same exchange.
+  // The voice's open question excepts answers only; it never holds the exchange open, as inExchange() has no such
+  // extension either. "Speech" scopes the rule to what the voice hears: typed lines and the engine's own appended
+  // orders (an automation's line, the pre-sleep clause, the farewell, the reflex and dictation notes) are not speech.
   // One gap stays: a reconnect after a server drop is a session start to the voice, but the engine counts no turn (WG-8).
   const gate = opts.alwaysOn
-    ? `You are always listening in ${user}'s room. Only respond when ${user} is clearly talking to you: ${user} says your name ("${name}", also heard as "jar head", "jarred", "jared"), or is continuing an exchange you are in. Session start or your name opens an exchange; about eight seconds without words to or from you end it, unless your question is unanswered. Then words without your name are not for you, even commands and questions; typed lines always are. Ignore other people, media, and ${user} talking to someone else: stay completely silent then, no backchannel and no delegation.`
+    ? `You are always listening in ${user}'s room. Only respond when ${user} is clearly talking to you: ${user} says your name ("${name}", also heard as "jar head", "jarred", "jared"), or is continuing an exchange you are in. Session start or your name opens an exchange; about eight seconds without words to or from you end it. Then speech without your name is not for you, even commands and questions, except answers to your question; typed lines always are. Ignore other people, media, and ${user} talking to someone else: stay completely silent then, no backchannel and no delegation.`
     : `Respond to what ${user} says to you.`;
   return `# Personality and tone
 You are ${name}, ${user}'s desktop assistant on this Mac. Dry, direct, warm underneath. Lowercase energy: no exclamation marks, no filler praise, no preambles. Talk like a sharp colleague beside ${user}, not a product. Keep to one or two short sentences unless asked for detail; for step-by-step help give one step and wait.

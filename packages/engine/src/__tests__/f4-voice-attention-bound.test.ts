@@ -15,7 +15,8 @@ const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "sev
 const boundFor = (windowMs: number): RegExp => {
   const word = NUMBER_WORDS[Math.round(windowMs / 1000)];
   assert.ok(word, `${windowMs} ms has no word here: extend NUMBER_WORDS`);
-  return new RegExp(`Session start or your name opens an exchange; about ${word} seconds without words to or from you end it`);
+  // "end it." with the full stop: Engine.inExchange() has no extension, so neither may the voice's bound.
+  return new RegExp(`Session start or your name opens an exchange; about ${word} seconds without words to or from you end it\\.`);
 };
 
 test("the voice's exchange bound says the engine's window: about <Engine.EXCHANGE_WINDOW_MS in seconds> seconds", () => {
@@ -34,7 +35,7 @@ test("the session the engine opens carries the bounded gate, with no delegation 
     await engine.wake("test");
     const text = lives[0]!.config?.instructions ?? "";
     assert.match(text, boundFor(Engine.EXCHANGE_WINDOW_MS));
-    assert.match(text, /Then words without your name are not for you, even commands and questions; typed lines always are\./);
+    assert.match(text, /Then speech without your name is not for you, even commands and questions, except answers to your question; typed lines always are\./);
     assert.match(text, /stay completely silent then, no backchannel and no delegation\./);
   } finally {
     await engine.stop();
