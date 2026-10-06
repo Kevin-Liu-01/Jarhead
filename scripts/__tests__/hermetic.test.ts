@@ -276,3 +276,36 @@ test("the brain runner's redactor reads the state dir's env file, never $HOME/.j
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the preload fences the desktop: osascript and open never run, by bare name, by /usr/bin path, through a shell line or under a caller's own env, so a test that sends `tell application \"Spotify\" to play` plays nothing", () => {
+  // The payload is harmless (`return "re" & "al"`): the stub refuses it (not a lone literal), and if the fence ever
+  // fails, the real osascript prints `real` and exits 0.
+  const script = `
+    import { spawnSync, execSync, execFileSync, execFile, spawn } from "node:child_process";
+    import { promisify } from "node:util";
+    const q = \`-e 'return "re" & "al"'\`;
+    const runs = {};
+    const sync = (name, fn) => { try { const r = fn(); runs[name] = { status: r.status ?? 0, out: String(r.stdout ?? r ?? ""), err: String(r.stderr ?? "") }; } catch (e) { runs[name] = { status: e.status ?? 1, out: String(e.stdout ?? ""), err: String(e.stderr ?? e.message) }; } };
+    sync("bare", () => spawnSync("osascript", ["-e", 'return "re" & "al"'], { encoding: "utf8" }));
+    sync("absolute", () => spawnSync("/usr/bin/osascript", ["-e", 'return "re" & "al"'], { encoding: "utf8" }));
+    sync("execSync", () => execSync("osascript " + q, { encoding: "utf8", stdio: "pipe" }));
+    sync("execSync absolute", () => execSync("/usr/bin/osascript " + q, { encoding: "utf8", stdio: "pipe" }));
+    sync("shell option", () => spawnSync("/usr/bin/osascript " + q, { shell: true, encoding: "utf8" }));
+    sync("sh -c, own env", () => spawnSync("/bin/sh", ["-c", "osascript " + q], { env: { HOME: "/tmp" }, encoding: "utf8" }));
+    sync("zsh -lc absolute", () => spawnSync("/bin/zsh", ["-lc", "/usr/bin/osascript " + q], { encoding: "utf8" }));
+    sync("execFileSync open", () => execFileSync("open", ["-a", "Spotify"], { encoding: "utf8", stdio: "pipe" }));
+    const pexec = promisify(execFile);
+    runs["promisify(execFile)"] = await pexec("osascript", ["-e", 'return "re" & "al"']).then((r) => ({ status: 0, out: r.stdout, err: r.stderr }), (e) => ({ status: e.code ?? 1, out: String(e.stdout ?? ""), err: String(e.stderr ?? "") }));
+    const passed = await pexec(process.execPath, ["-e", "console.log('through')"]);
+    if (passed.stdout !== "through\\n") throw new Error("promisify(execFile) lost its { stdout, stderr }: " + JSON.stringify(passed));
+    runs["spawn"] = await new Promise((done) => { const c = spawn("osascript", ["-e", 'return "re" & "al"']); let out = "", err = ""; c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", (d) => (err += d)); c.on("close", (status) => done({ status, out, err })); });
+    console.log(JSON.stringify(runs));
+  `;
+  const runs = out<Record<string, { status: number; out: string; err: string }>>(child(script, { ...process.env }));
+  assert.equal(Object.keys(runs).length, 10);
+  for (const [name, r] of Object.entries(runs)) {
+    assert.notEqual(r.status, 0, `${name}: the fenced binary exited 0 (${r.out})`);
+    assert.doesNotMatch(r.out, /real/, `${name}: the real osascript ran`);
+    assert.match(r.err, /refused \(the test preload fences the desktop\)/, `${name}: the stub said why (${r.err})`);
+  }
+});
