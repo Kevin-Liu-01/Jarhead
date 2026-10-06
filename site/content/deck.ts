@@ -96,9 +96,9 @@ export const HANDS: Story = {
   name: "Hands",
   phase: "acting",
   face: "> >",
-  h2: ["Label first. Click second.", "Screenshots when they help."], // README:60; not "Screenshot last.": each delegation starts with the eyes' screenshot for a brain that takes images, and none for one that cannot (engine.ts lookAtScreen, brain-select.test.ts). C2, scripts/__tests__/c2-hands-copy.test.ts
-  lead: "The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.", // README:28, README:60; not "only": each delegation starts with the eyes' pre-warm screenshot for a brain that takes images (engine.ts lookAtScreen)
-  lines: ["Circle anything with ⌃⌥C. Every brain is told where it is.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:66 (a text-only brain gets the coordinates and no image: compatible.ts userContent, local.ts acceptsImages), README:67, README:65
+  h2: ["Label first. Click second.", "Screenshots when they help."], // README:70; line 2 also engine.ts lookAtScreen and engine brain-select.test.ts:565. Not "Screenshot last.": each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen). C2, scripts/__tests__/c2-hands-copy.test.ts
+  lead: "The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.", // README:28, README:70; not "only": each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen)
+  lines: ["Circle anything with ⌃⌥C. Every brain is told where it is.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:76 (a text-only brain gets the coordinates and no image: compatible.ts userContent, local.ts acceptsImages), README:77, README:75
 };
 
 /** 05 · Rails */

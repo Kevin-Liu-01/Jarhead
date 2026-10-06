@@ -227,7 +227,8 @@ against these briefs. Install is the one left in its earlier form.
   left to right: the orb (`^ ^`, `Acting`) on one lit path through three frames of one window, each headed by its step and
   order from the h2 (`tag` Label first, `cursorClick` Click second, `camera` Screenshot last): Save found (its frame
   dashed in the accent, `find a control by label`), Save pressed (`click it`), the window captured with a check (`only
-  verifies`).
+  verifies`). Since 2026-10-06 (C2, `COPY.md` 04) the h2's second line is `Screenshots when they help.`: the screenshot
+  has no fixed place, and a delegation usually starts with one.
 - **Sleep** (`Sleep.tsx`, split, mark, 600 × 384). Subject: `Say good night. Alarms still ring.` Reading order top to
   bottom: the orb says `"night."` and goes quiet (`Asleep`, `closes the session`); the card lists
   the lead's four kinds with the island's own examples: Alarms lit (`07:10 · Wake up, Kevin`, tag `weekdays`), timers
