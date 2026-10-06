@@ -13,7 +13,8 @@ import { current, delegate, rows, settle, until, world, type World } from "./wor
  * - V10: the gate a spoken stop sets is lifted only by a new utterance that says something, or the lapse. Nothing
  *   inside the stop's own utterance lifts it, whatever follows the stop word ("Stop, Jarhead.", "Stop talking.",
  *   "Stop right there.", "Hold on a second."), and Live's late transcript of a stop the ear acted on is that utterance.
- * - V9: a "stop" heard only by Live while Jarhead is talking and nothing runs still cuts the voice locally.
+ * - V9: a "stop" heard only by Live while Jarhead is talking and nothing runs still cuts the voice locally. Talking is
+ *   its transcript or its sound (LC-6), and only voice no stop has cut: after a press, "hold on, …" is not a second stop.
  * - V12: Pause inside the reconnect window, or during a handshake, is a pause: no paid session opens behind it.
  */
 
@@ -414,6 +415,156 @@ test("V9 control: nobody speaking, nothing running — a 'stop' on Live's transc
     await settle(20);
     assert.equal(engine.outputGated, false);
     assert.equal(rows<StopRow>(w, "stop").length, 0);
+  } finally {
+    await engine.stop();
+  }
+});
+
+/** 100 ms of PCM16 at 24 kHz, as Live's deltas, at ±amp. */
+const delta100 = (amp: number): Buffer => {
+  const b = Buffer.alloc(4800);
+  for (let i = 0; i < 2400; i++) b.writeInt16LE(i % 2 ? amp : -amp, i * 2);
+  return b;
+};
+
+/**
+ * LC-6 (live, 2026-10-06 00:19) replayed on the engine's clock. A story's last output-transcript delta, its sound
+ * audible until `soundAgeMs` before the stop, the API's silence frames after it, then Live's " Stop" fragment
+ * `transcriptAgeMs` after that delta. Then what Live sends inside the gate: 2.2 s of frames, silence with a
+ * two-frame "Stopped." in it.
+ */
+async function lateStop(transcriptAgeMs: number, soundAgeMs: number): Promise<{ gated: boolean; stopRows: StopRow[]; playedInGate: number }> {
+  const w = world();
+  const { engine, clock, audio } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    const live = current(w);
+    const t0 = clock.t;
+    live.emit("outputTranscript", " where the tides kept their own calendar", live.nowMs, live.nowMs + 200);
+    // Live's barge-in cuts its transcript stream first; the sound of the words in flight plays on.
+    const soundUntil = transcriptAgeMs - soundAgeMs;
+    const frames = new Map<number, boolean>();
+    for (let at = 0; at < transcriptAgeMs; at += 100) frames.set(at, at <= soundUntil);
+    if (soundUntil >= 0) frames.set(soundUntil, true);
+    for (const at of [...frames.keys()].sort((a, b) => a - b)) {
+      clock.t = t0 + at;
+      live.emit("audio", delta100(frames.get(at) ? 6000 : 0));
+    }
+    clock.t = t0 + transcriptAgeMs;
+    live.nowMs += transcriptAgeMs;
+    live.emit("inputTranscript", " Stop", live.nowMs, live.nowMs + 200);
+    live.nowMs += 200;
+    await settle(20);
+    const gated = engine.outputGated;
+    const before = audio.length;
+    for (let i = 0; i < 22; i++) {
+      clock.t += 100;
+      live.emit("audio", delta100(i === 17 || i === 18 ? 6000 : 0));
+    }
+    return { gated, stopRows: rows<StopRow>(w, "stop"), playedInGate: audio.length - before };
+  } finally {
+    await engine.stop();
+  }
+}
+
+test("V9 (LC-6 trial 2): a stop said over the voice whose transcript Live's barge-in cut 1322 ms before the fragment, its sound audible until 490 ms before, gates; nothing plays inside the gate", async () => {
+  const r = await lateStop(1322, 490);
+  assert.equal(r.gated, true, "the gate is set at the fragment");
+  assert.deepEqual(r.stopRows.map((x) => x.how), ["said"], "exactly one stop row");
+  assert.equal(r.playedInGate, 0, "0 frames reach the speaker inside the gate: Live's silence and its 'Stopped.' alike");
+});
+
+test("V9 (LC-6 trials 1 and 3 shape): the transcript 915 ms old and the sound 110 ms old at the fragment gates", async () => {
+  const r = await lateStop(915, 110);
+  assert.equal(r.gated, true);
+  assert.equal(r.stopRows.length, 1);
+  assert.equal(r.playedInGate, 0);
+});
+
+test("V9 control (LC-6): no sound and no transcript for 1.5 s before a 'stop' gates nothing and writes nothing", async () => {
+  const r = await lateStop(1500, 1500);
+  assert.equal(r.gated, false);
+  assert.equal(r.stopRows.length, 0);
+});
+
+/**
+ * A pressed stop, then Kevin's next words `afterMs` later. The voice's transcript is 1 s old at the press and its sound
+ * plays up to the press. The press cut that voice, so nothing is audible when he speaks: a stop phrase at the head of
+ * his words ("hold on, what time is it") lifts the press's gate and is not a second stop, on Live's path or the ear's.
+ */
+async function pressedThenHoldOn(afterMs: number, path: "live" | "ear"): Promise<{ gated: boolean; stopRows: StopRow[]; stopped: number }> {
+  const w = world();
+  const { engine, clock, events } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    const live = current(w);
+    live.emit("outputTranscript", " and the tide came in again", live.nowMs, live.nowMs + 200);
+    const t0 = clock.t;
+    for (let at = 0; at <= 1000; at += 100) {
+      clock.t = t0 + at;
+      live.emit("audio", loud());
+    }
+    events.length = 0;
+    await engine.command({ type: "interrupt" });
+    assert.equal(engine.outputGated, true, "the press gates the voice");
+    clock.t += afterMs;
+    live.nowMs += 1000 + afterMs;
+    if (path === "live") {
+      live.emit("inputTranscript", " hold on, what time is it", live.nowMs, live.nowMs + 300);
+    } else {
+      // Live's transcript of his first word lifts the press's gate; the ear's "hold on" lands after it.
+      live.emit("inputTranscript", " So", live.nowMs, live.nowMs + 100);
+      engine.ear("hold on", false, 7, clock.t);
+    }
+    await settle(20);
+    return { gated: engine.outputGated, stopRows: rows<StopRow>(w, "stop"), stopped: toasts(events).filter((t) => t === "stopped").length };
+  } finally {
+    await engine.stop();
+  }
+}
+
+test("V9 after a press: 'hold on, …' said 300 ms or 1.1 s after a pressed stop is not a second stop; the press already cut the voice, so its sound before the press is not speech said over", async () => {
+  for (const afterMs of [300, 1100]) {
+    for (const path of ["live", "ear"] as const) {
+      const r = await pressedThenHoldOn(afterMs, path);
+      assert.equal(r.gated, false, `${path} +${afterMs} ms: his words lift the press's gate and nothing re-gates the answer`);
+      assert.deepEqual(r.stopRows.map((x) => x.how), ["pressed"], `${path} +${afterMs} ms: one stop row`);
+      assert.equal(r.stopped, 1, `${path} +${afterMs} ms: one 'stopped' toast`);
+    }
+  }
+});
+
+test("V9 after a press, control: once the voice speaks again, a 'hold on' said over that new speech is a stop", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    const live = current(w);
+    live.emit("outputTranscript", " and the tide came in again", live.nowMs, live.nowMs + 200);
+    live.emit("audio", loud());
+    await engine.command({ type: "interrupt" });
+    clock.t += 300;
+    live.nowMs += 2000;
+    live.emit("inputTranscript", " what was that", live.nowMs, live.nowMs + 300);
+    assert.equal(engine.outputGated, false, "his words lift the press's gate");
+    // The voice answers him: new sound, after the gate.
+    clock.t += 400;
+    live.emit("audio", loud());
+    clock.t += 300;
+    live.nowMs += 3000;
+    live.emit("inputTranscript", " hold on", live.nowMs, live.nowMs + 200);
+    await settle(20);
+    assert.equal(engine.outputGated, true, "said over the new answer: gated");
+    assert.deepEqual(rows<StopRow>(w, "stop").map((x) => x.how), ["pressed", "said"]);
   } finally {
     await engine.stop();
   }

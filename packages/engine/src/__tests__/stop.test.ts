@@ -97,8 +97,11 @@ test("interrupt: output audio is dropped for the gate window, the running delega
     assert.equal(engine.outputGated, true);
     live.emit("audio", frame());
     assert.equal(audio.length, 1, "gated");
+    // "never mind" begins with a stop phrase, but the press already cut the voice: nothing is audible to say it over,
+    // so it lifts the gate and is not a second stop.
     live.emit("inputTranscript", " never mind", 3000, 3400);
     assert.equal(engine.outputGated, false, "Kevin spoke: the gate is lifted");
+    assert.deepEqual(rows<StopRow>(w, "stop").map((r) => r.how), ["pressed", "pressed"], "one row per press, none for his words");
     live.emit("audio", frame());
     assert.equal(audio.length, 2);
     assert.equal(engine.currentPhase, "listening");

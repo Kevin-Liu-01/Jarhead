@@ -1,20 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Brain } from "@jarhead/brain";
-import type { LedgerRow } from "@jarhead/protocol";
+import type { EngineEvent, LedgerRow } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
 import { delegate, frame, nextUtterance, rows, settle, until, world } from "./world.ts";
 
 /**
- * Sleep: one grammar, three entries, one closer. A dismissal through the ear
- * ("goodnight jarhead", "power down") or through Live's delegation ("that will be
- * all") reaches `Engine.fallAsleep("said")`: a typed `sleep` row before the close,
- * everything a stop cuts, ONE word from the voice (FAREWELL_LINE) waited for until
- * its first words plus 300 ms quiet or 1.8 s at most, then the session closes
- * (`sleep:said`), the phase is asleep and the blob tucks. Every other cause — the
+ * Sleep: one grammar, four entries, one closer. A dismissal through the ear
+ * ("goodnight jarhead", "power down"), through Live's delegation ("that will be
+ * all"), or typed in the composer ("that's all for now"; GPT-Live-1 answers a typed
+ * dismissal "night." but raises no delegation for it, LC-4) reaches
+ * `Engine.fallAsleep("said")`: a typed `sleep` row before the close, everything a
+ * stop cuts, ONE word from the voice (FAREWELL_LINE), then the session closes
+ * (`sleep:said`), the phase is asleep and the blob tucks. The word gets 3 s to begin
+ * (FAREWELL_START_MS), then 300 ms quiet after its sound (FAREWELL_QUIET_MS; 700 ms,
+ * FAREWELL_ONSET_MS, before the first audible frame), capped at 1.8 s from the first
+ * words (FAREWELL_CAP_MS); the session closing ends the wait at once, and a Go during
+ * it wins over the word (a fresh session). Typed while paused, the dismissal sleeps it
+ * with no farewell and opens no session; typed while asleep, it opens nothing. Paused
+ * or in the reconnect window, its `sleep` row ends that conversation for the next
+ * process too: nothing is held or resumed after a restart. Every other cause (the
  * idle timer, a pause that decayed, the dock, the sleep command, the transport's
- * Stop, shutdown — goes through the same function without the farewell, and the
- * phase flips before the first await. Room talk never sleeps it.
+ * Stop, shutdown) goes through the same function without the farewell, and the phase
+ * flips before the first await. Room talk never sleeps it.
  */
 
 /** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
@@ -75,7 +83,7 @@ test("ear: a final 'goodnight jarhead.' sleeps it — FAREWELL_LINE appended onc
   }
 });
 
-test("farewell cap: a voice that never answers is cut at FAREWELL_CAP_MS and the session closes anyway; a voice that already said night gets no second farewell and the session closes after the quiet window", async () => {
+test("farewell cap: a voice that never answers is cut at FAREWELL_START_MS and the session closes anyway; a voice that already said night gets no second farewell and the session closes after the quiet window", async () => {
   const w = world();
   const { engine, live, clock } = w;
   try {
@@ -88,11 +96,11 @@ test("farewell cap: a voice that never answers is cut at FAREWELL_CAP_MS and the
     engine.ear("go to sleep jarhead", true, 1, clock.t);
     await settle();
     assert.deepEqual(live.instructions, [Engine.FAREWELL_LINE]);
-    await settle(1200);
-    assert.equal(live.closes, 0, "still waiting inside the cap");
+    await settle(Engine.FAREWELL_START_MS - 600);
+    assert.equal(live.closes, 0, "still waiting for the word to begin");
     await until(() => live.closes === 1, 1500);
     const took = Date.now() - t0;
-    assert.ok(took >= Engine.FAREWELL_CAP_MS - 50 && took < Engine.FAREWELL_CAP_MS + 800 * RUNNER_SLACK, `closed at the cap (${took} ms, under ${Engine.FAREWELL_CAP_MS + 800 * RUNNER_SLACK})`);
+    assert.ok(took >= Engine.FAREWELL_START_MS - 50 && took < Engine.FAREWELL_START_MS + 800 * RUNNER_SLACK, `closed at the start window (${took} ms, under ${Engine.FAREWELL_START_MS + 800 * RUNNER_SLACK})`);
     assert.equal(engine.currentPhase, "asleep");
 
     // Again, but the voice said "night." 400 ms before the cue landed (Live's path spoke first).
@@ -458,5 +466,324 @@ test("sleep lets a local brain's weights go: fallAsleep calls brain.cool once (a
     assert.equal(calls.filter((c) => c === "cool").length, 2);
   } finally {
     await engine.stop();
+  }
+});
+
+const toasts = (events: EngineEvent[]): string[] => events.filter((e): e is Extract<EngineEvent, { type: "toast" }> => e.type === "toast").map((e) => e.text);
+/** One of the API's silence frames: below AUDIBLE_OUTPUT_LEVEL, so it is not the word's sound. */
+const silent = (): Buffer => Buffer.alloc(480);
+type HeardRow = Extract<LedgerRow, { type: "heard" }>;
+
+test("LC-4: a typed dismissal sleeps it although Live raises no delegation: Live gets only FAREWELL_LINE, one sleep row (cause said, the typed phrase, farewell), ' night.' and its sound close it, no brain task, the typed line on the record", async () => {
+  const w = world();
+  const { engine, live, brain } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    live.instructions.length = 0;
+    await engine.sayText("that's all for now");
+    await settle();
+    assert.deepEqual(live.instructions, [Engine.FAREWELL_LINE], "the typed line is not appended; the voice is asked for its word");
+    const sleep = rows<SleepRow>(w, "sleep");
+    assert.equal(sleep.length, 1, "exactly one sleep row");
+    assert.deepEqual([sleep[0]!.cause, sleep[0]!.farewell, sleep[0]!.phrase, sleep[0]!.sessionId], ["said", true, "that's all for now", "sess_1"]);
+    assert.equal(live.closes, 0, "the session waits for the word");
+    live.emit("outputTranscript", " night.", live.nowMs, live.nowMs + 400);
+    live.emit("audio", frame());
+    assert.ok(await until(() => live.closes === 1, 1000), "closed after the word");
+    assert.equal(engine.currentPhase, "asleep");
+    assert.equal(brain.tasks.length, 0, "no brain task");
+    assert.ok(engine.snapshot().transcript.some((i) => i.speaker === "kevin" && /that's all for now/i.test(i.text)), "the typed line is on the transcript");
+    assert.ok(rows<HeardRow>(w, "heard").some((r) => /that's all for now/i.test(r.item.text)), "and on the ledger");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a farewell word that begins after FAREWELL_CAP_MS (GPT-Live-1 answers an append in ~1.9 s) is still heard; the stop watchdog leaves the farewell alone", async () => {
+  const w = world();
+  const { engine, live, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    live.instructions.length = 0;
+    engine.ear("go to sleep jarhead", true, 1, clock.t);
+    await settle();
+    assert.deepEqual(live.instructions, [Engine.FAREWELL_LINE]);
+    // Past FAREWELL_CAP_MS with no word yet. The ticks move the engine's clock past WATCHDOG_OUTLIVED_MS: nobody wants
+    // the session awake, so without the farewell's exemption the watchdog terminates it as having outlived a stop.
+    for (let i = 0; i < 4; i++) {
+      await settle((Engine.FAREWELL_CAP_MS + 300) / 4);
+      clock.t += 1000;
+      tick(engine);
+    }
+    assert.equal(live.closes, 0, "still waiting: the word has not begun");
+    assert.equal(live.terminates, 0, "the watchdog left the farewell alone");
+    assert.equal(live.currentState, "started");
+    live.emit("outputTranscript", " night.", live.nowMs, live.nowMs + 400);
+    live.emit("audio", frame());
+    assert.ok(await until(() => live.closes === 1, 1000), "closed after the word");
+    assert.equal(live.terminates, 0);
+    assert.equal(engine.currentPhase, "asleep");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("the farewell's sound lags its transcript by up to 466 ms (LC-5): the close waits for the first audible frame, then the quiet after the last", async () => {
+  const w = world();
+  const { engine, live, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    engine.ear("goodnight jarhead.", true, 1, clock.t);
+    await settle();
+    assert.deepEqual(live.instructions.filter((i) => i === Engine.FAREWELL_LINE).length, 1);
+    // The word's transcript, then the API's silence frames, then its sound 466 ms after the transcript.
+    const t0 = Date.now();
+    live.emit("outputTranscript", " night.", live.nowMs, live.nowMs + 400);
+    while (Date.now() - t0 < 350) {
+      await settle(100);
+      live.emit("audio", silent());
+    }
+    await settle(Math.max(0, 466 - (Date.now() - t0)));
+    assert.equal(live.closes, 0, `closed before the word's sound (${Date.now() - t0} ms after its transcript)`);
+    live.emit("audio", frame());
+    await settle(100);
+    assert.equal(live.closes, 0, "the word is in the air");
+    live.emit("audio", frame());
+    const last = Date.now();
+    assert.ok(await until(() => live.closes === 1, 1000), "closed after the word");
+    const after = Date.now() - last;
+    assert.ok(after >= Engine.FAREWELL_QUIET_MS - 50, `the tail plays out: closed ${after} ms after the last audible frame`);
+    assert.ok(after <= Engine.FAREWELL_QUIET_MS + 200 * RUNNER_SLACK, `closed ${after} ms after the last audible frame, over ${Engine.FAREWELL_QUIET_MS + 200 * RUNNER_SLACK}`);
+    assert.equal(engine.currentPhase, "asleep");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a typed dismissal while paused sleeps it and opens no session: the sleep row says cause said with no farewell, the phase is asleep", async () => {
+  const w = world();
+  const { engine } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await engine.command({ type: "pause" });
+    assert.equal(engine.transportState, "paused");
+    await engine.sayText("that's all for now");
+    await settle();
+    assert.equal(w.lives.length, 1, "no new session");
+    assert.equal(rows(w, "session.started").length, 1);
+    const sleep = rows<SleepRow>(w, "sleep");
+    assert.equal(sleep.length, 1);
+    assert.deepEqual([sleep[0]!.cause, sleep[0]!.farewell, sleep[0]!.phrase, sleep[0]!.sessionId], ["said", undefined, "that's all for now", undefined]);
+    assert.equal(engine.isPaused, false, "the held conversation is let go");
+    assert.equal(engine.transportState, "asleep");
+    assert.equal(engine.currentPhase, "asleep");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a typed dismissal while asleep opens nothing, even with typedWakes on: a toast, no wake, no row", async () => {
+  const w = world();
+  const { engine, live, events } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0, typedWakes: true });
+    events.length = 0;
+    await engine.sayText("goodnight jarhead");
+    await settle();
+    assert.equal(live.config, undefined, "no session was opened");
+    assert.equal(live.currentState, "idle");
+    assert.equal(rows(w, "session.started").length, 0);
+    assert.equal(rows(w, "sleep").length, 0, "nothing to put to sleep, nothing to record");
+    assert.equal(engine.currentPhase, "asleep");
+    assert.ok(toasts(events).includes("asleep already"), `toasts: ${JSON.stringify(toasts(events))}`);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("the session closing mid-farewell ends the wait: fallAsleep resolves at once and the phase is asleep; a later wake and dismissal writes its own sleep row", async () => {
+  const w = world();
+  const { engine, live, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    live.instructions.length = 0;
+    engine.ear("go to sleep jarhead", true, 1, clock.t);
+    await settle();
+    assert.deepEqual(live.instructions, [Engine.FAREWELL_LINE]);
+    // The sleep in flight (a second call while sleeping returns it).
+    let resolvedAt = 0;
+    void engine.fallAsleep("said").then(() => (resolvedAt = Date.now()));
+    const t0 = Date.now();
+    live.serverClosed("connection_lost");
+    await until(() => resolvedAt > 0, 300 * RUNNER_SLACK);
+    assert.ok(resolvedAt > 0, `fallAsleep was still waiting for the word ${Date.now() - t0} ms after the session closed`);
+    assert.equal(engine.currentPhase, "asleep");
+    assert.equal(w.lives.length, 1, "no reconnect: nobody wants it awake");
+    // A later wake and dismissal is a sleep of its own, never joined to a stale one.
+    await engine.wake("test");
+    const next = w.lives[1]!;
+    assert.equal(next.currentState, "started");
+    next.instructions.length = 0;
+    clock.t += 1000;
+    engine.ear("go to sleep jarhead", true, 2, clock.t);
+    await settle();
+    assert.equal(rows<SleepRow>(w, "sleep").length, 2, "its own sleep row");
+    assert.equal(rows<SleepRow>(w, "sleep")[1]!.sessionId, "sess_2");
+    assert.deepEqual(next.instructions, [Engine.FAREWELL_LINE]);
+    next.emit("outputTranscript", " night.", next.nowMs, next.nowMs + 300);
+    next.emit("audio", frame());
+    assert.ok(await until(() => next.closes === 1, 1000), "the new session closes after its word");
+    assert.equal(engine.currentPhase, "asleep");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("negative (LC-6): the echo window is keyed on the voice's sound too: its own 'That's all for now.' heard back 1.6 s after the transcript but 0.5 s after the sound does not dismiss it", async () => {
+  const w = world();
+  const { engine, live, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    live.instructions.length = 0;
+    live.emit("outputTranscript", " That's all for now.", live.nowMs, live.nowMs + 600);
+    // The transcript stream is done; the sound of the line plays on for 1.1 s.
+    for (let i = 0; i < 11; i++) {
+      clock.t += 100;
+      live.emit("audio", frame());
+    }
+    clock.t += 500;
+    engine.ear("that's all for now", true, 1, clock.t);
+    await settle(150);
+    assert.equal(rows<SleepRow>(w, "sleep").length, 0, "its own words never dismiss it");
+    assert.equal(live.currentState, "started");
+    assert.deepEqual(live.instructions, []);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("Go during the farewell wins over the word: the farewell ends now, the sleep closes its session, and Go opens a fresh one (awake, not left asleep with Go swallowed)", async () => {
+  const w = world();
+  const { engine, live, lives, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    engine.ear("goodnight jarhead.", true, 1, clock.t);
+    await settle();
+    assert.deepEqual(live.instructions.filter((i) => i === Engine.FAREWELL_LINE).length, 1, "the farewell is asked for");
+    assert.equal(live.closes, 0, "the session waits for the word");
+    const t0 = Date.now();
+    await engine.command({ type: "go" });
+    const took = Date.now() - t0;
+    assert.ok(took < Engine.FAREWELL_START_MS, `Go did not wait out the farewell (${took} ms)`);
+    assert.equal(live.closes, 1, "the dismissed session closed");
+    assert.equal(lives.length, 2, "Go opened a fresh session");
+    assert.equal(lives[1]!.currentState, "started");
+    assert.equal(engine.transportState, "awake");
+    assert.equal(engine.currentPhase, "listening");
+    assert.deepEqual(sequence(w, "sleep", "session.closed", "session.started").slice(-3), ["sleep", "session.closed", "session.started"]);
+    assert.doesNotMatch(lives[1]!.config?.instructions ?? "", /# Continuity/, "the dismissal let the conversation go: a fresh one");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a dismissal in the reconnect window after connection_lost is the end of that conversation: its sleep row is written, and an engine started 20 s later does not resume it", async () => {
+  const a = world();
+  let b: ReturnType<typeof world> | undefined;
+  try {
+    await a.engine.start();
+    await a.engine.ready();
+    a.engine.updateSettings({ idleSleepMinutes: 0 });
+    await a.engine.wake("test");
+    delegate(a, "jarhead open the budget spreadsheet", "item_1");
+    await settle();
+    a.live.nowMs += 5000;
+    a.clock.t += 2000;
+    tick(a.engine);
+    a.live.serverClosed("connection_lost");
+    // Inside the 500 ms window, before the reconnect: the typed dismissal.
+    await a.engine.sayText("that's all for now");
+    await settle(600);
+    assert.equal(a.lives.length, 1, "no reconnect behind the dismissal");
+    assert.equal(a.engine.currentPhase, "asleep");
+    const sleep = rows<SleepRow>(a, "sleep");
+    assert.equal(sleep.length, 1, "the sleep row is written: the held conversation is what it ends");
+    assert.deepEqual([sleep[0]!.cause, sleep[0]!.phrase, sleep[0]!.farewell, sleep[0]!.sessionId], ["said", "that's all for now", undefined, undefined]);
+    // The process ends; a new one over the same state dir.
+    a.clock.t += 20_000;
+    b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+    b.clock.t = a.clock.t;
+    await b.engine.start();
+    await b.engine.ready();
+    assert.equal(b.engine.transportState, "asleep");
+    await b.engine.command({ type: "go" });
+    assert.equal(b.engine.transportState, "awake");
+    assert.doesNotMatch(b.live.config?.instructions ?? "", /# Continuity/, "dismissed: nothing to pick up");
+    assert.equal(rows<Extract<LedgerRow, { type: "session.started" }>>(b, "session.started").at(-1)?.resumedFrom, undefined);
+  } finally {
+    await b?.engine.stop();
+    await a.engine.stop();
+  }
+});
+
+test("a dismissal while paused is the end of the paused conversation across a restart: typed or the sleep command, the next engine is asleep, not paused, and its Go is a fresh session; a shutdown while paused is not a word about it, so the pause is held again", async () => {
+  for (const how of ["typed", "command", "shutdown"] as const) {
+    const a = world();
+    let b: ReturnType<typeof world> | undefined;
+    try {
+      await a.engine.start();
+      await a.engine.ready();
+      a.engine.updateSettings({ idleSleepMinutes: 0 });
+      await a.engine.wake("test");
+      delegate(a, "jarhead find the invoice", "item_1");
+      await settle();
+      await a.engine.command({ type: "pause" });
+      assert.equal(a.engine.transportState, "paused");
+      a.clock.t += 2000;
+      if (how === "typed") await a.engine.sayText("that's all for now");
+      else if (how === "command") await a.engine.command({ type: "sleep" });
+      else await a.engine.stop();
+      assert.equal(a.engine.transportState, "asleep", how);
+      assert.equal(rows<SleepRow>(a, "sleep").length, 1, `${how}: the sleep row`);
+      a.clock.t += 20_000;
+      b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+      b.clock.t = a.clock.t;
+      await b.engine.start();
+      await b.engine.ready();
+      if (how === "shutdown") {
+        assert.equal(b.engine.transportState, "paused", "a restart while paused holds the pause again");
+        continue;
+      }
+      assert.equal(b.engine.transportState, "asleep", `${how}: the restarted engine is asleep, not paused`);
+      assert.equal(b.engine.snapshot().pause, undefined, how);
+      await b.engine.command({ type: "go" });
+      assert.doesNotMatch(b.live.config?.instructions ?? "", /# Continuity/, `${how}: a fresh session`);
+    } finally {
+      await b?.engine.stop();
+      await a.engine.stop();
+    }
   }
 });
