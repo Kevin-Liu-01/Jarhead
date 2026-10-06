@@ -97,7 +97,9 @@ test("interrupt: output audio is dropped for the gate window, the running delega
     assert.equal(engine.outputGated, true);
     live.emit("audio", frame());
     assert.equal(audio.length, 1, "gated");
-    live.emit("inputTranscript", " never mind", 3000, 3400);
+    // Words that are not a stop: "never mind" right after an audible frame is now, correctly, a stop said over the
+    // voice (LC-6: judged on its sound too); STOP_HEAD includes it.
+    live.emit("inputTranscript", " what was that", 3000, 3400);
     assert.equal(engine.outputGated, false, "Kevin spoke: the gate is lifted");
     live.emit("audio", frame());
     assert.equal(audio.length, 2);

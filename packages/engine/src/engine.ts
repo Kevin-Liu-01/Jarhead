@@ -6,7 +6,7 @@ import { HANDS_OFF_APPS, PRESENCE_WINDOW_MS, REPO_ROOT, accountFullName, classif
 import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type UserIdle, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
-import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, addressesJarhead, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainResult, type BrainSink, type BrainTask, type CodexProbe, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
+import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, addressesJarhead, discoverLocalServer, foreignModel, normalizeUtterance, parseReflex, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainResult, type BrainSink, type BrainTask, type CodexProbe, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
 import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, describeHelperTiles, readDock, readRunning, repairDock, restartDock, type DockAudit, type Exec, type RunningApp } from "@jarhead/install";
 import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
@@ -1000,9 +1000,10 @@ export class Engine extends EventEmitter<EngineEvents> {
         return reflex;
       },
       run: (reflex, phrase, via) => this.runEarReflex(reflex, phrase, via ?? "ear"),
-      // A spoken "stop" interrupts: work and speech end, the session stays open and listening.
+      // A spoken "stop" interrupts: work and speech end, the session stays open and listening. Speech is the voice's
+      // transcript or its sound, as in stopOverVoice: Live's barge-in cuts the transcript first (LC-6).
       onStop: () => {
-        if (this.delegator?.active || this.threads.running() > 0 || (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated)) void this.interrupt("ear", "said");
+        if (this.delegator?.active || this.threads.running() > 0 || (this.now() - Math.max(this.lastOutputSpeechAt, this.lastAudibleOutputAt) < Engine.SPEAKING_WINDOW_MS && !this.outputGated)) void this.interrupt("ear", "said");
       },
       // With ≥ 2 spawned threads live the speech is gated on the stop word and the work cut waits STOP_NAME_WAIT_MS
       // for a name; "stop the slack one" then fires the thread_stop reflex → metaReflex → stopNamed (§6). With ≤ 1
@@ -3163,10 +3164,21 @@ export class Engine extends EventEmitter<EngineEvents> {
     });
   }
 
-  /** How long the voice gets for its one-word farewell before the session closes regardless. */
+  /** How long the voice gets for its one-word farewell, counted from its first words, before the session closes regardless. */
   static readonly FAREWELL_CAP_MS = 1800;
-  /** Quiet after the farewell's first words (no transcript delta, no audible frame) before the close. */
+  /**
+   * The time the word may take to begin after it is asked for. GPT-Live-1 answers an append in 1.89 s median and
+   * 2.25 s p90 to the first audible frame, and in 2.0 s or less to the first transcript (LC-5, n=10, 2026-10-06). A cap
+   * counted from the ask closed the session before "night." was heard.
+   */
+  static readonly FAREWELL_START_MS = 3000;
+  /** Quiet after the farewell's sound (no transcript delta, no audible frame) before the close. */
   static readonly FAREWELL_QUIET_MS = 300;
+  /**
+   * The quiet after the word's transcript until its first audible frame: the transcript leads the sound by 166-466 ms,
+   * median ~315 (LC-5, n=10), so FAREWELL_QUIET_MS counted from the transcript usually closed before the word was heard.
+   */
+  static readonly FAREWELL_ONSET_MS = 700;
   /** The farewell with the user's name (release F1); FAREWELL_LINE is the default name's, what the tests pin. */
   static farewellLine(userName: string): string {
     return `${userName} dismissed you. Say exactly one word — "night." — and nothing else.`;
@@ -3176,18 +3188,21 @@ export class Engine extends EventEmitter<EngineEvents> {
   private static readonly FAREWELL_SAID_MS = 2000;
 
   /**
-   * Sleep — the ONE closer for every cause: a spoken dismissal ("said"), the idle
-   * timer, a pause that decayed, a brain swap, the blob dropped into the dock, the
-   * app's sleep command, the transport's Stop (which writes its own `stop` row first)
-   * and shutdown. Idempotent: the ear, Live's delegation and the dock saying so at once
-   * are one sleep. Order: the `sleep` row (before the detach, so it lands in the
-   * closing session's log) → everything a stop cuts (both helpers, the lease, every
-   * thread, the questions, the delegation) → for a dismissal, one word from the voice
-   * (FAREWELL_LINE, unless it already said "night."), waited for until its first words
-   * plus FAREWELL_QUIET_MS, capped at FAREWELL_CAP_MS — the session bills meanwhile →
-   * detach and close (`sleep:<cause>`) → phase asleep → toast → the thread processes
-   * end. Without a farewell the phase flips before the first await, which `pressStop`
-   * needs (asleep synchronously). From paused, the held conversation is let go.
+   * Sleep — the ONE closer for every cause: a dismissal ("said": the ear, Live's
+   * delegation or the composer), the idle timer, a pause that decayed, a brain swap,
+   * the blob dropped into the dock, the app's sleep command, the transport's Stop
+   * (which writes its own `stop` row first) and shutdown. Idempotent: the ear, Live's
+   * delegation and the dock saying so at once are one sleep. Order: the `sleep` row
+   * (before the detach, so it lands in the closing session's log) → everything a stop
+   * cuts (both helpers, the lease, every thread, the questions, the delegation) → for
+   * a dismissal, one word from the voice (FAREWELL_LINE, unless it already said
+   * "night."), waited for: 3 s for the word to begin (FAREWELL_START_MS), then 300 ms
+   * quiet after its sound (FAREWELL_QUIET_MS; 700 ms, FAREWELL_ONSET_MS, before the
+   * first audible frame), capped at 1.8 s from the first words (FAREWELL_CAP_MS); the
+   * session closing ends the wait at once. The session bills meanwhile → detach and
+   * close (`sleep:<cause>`) → phase asleep → toast → the thread processes end. Without
+   * a farewell the phase flips before the first await, which `pressStop` needs
+   * (asleep synchronously). From paused, the held conversation is let go.
    */
   fallAsleep(cause: SleepCause, o: { readonly phrase?: string | undefined; readonly farewell?: boolean | undefined } = {}): Promise<void> {
     if (this.sleeping) {
@@ -3242,42 +3257,68 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   /**
-   * Wait for the farewell: the voice's first output-transcript delta after the
-   * append, then FAREWELL_QUIET_MS with no further delta and no audible frame; or
-   * FAREWELL_CAP_MS. `spoken`: the word is already out — only its tail is waited
-   * for. Real timers (they pace the voice, not the session clock); every one is
-   * cleared however the wait ends.
+   * Wait for the farewell. The word gets FAREWELL_START_MS to begin (its first
+   * output-transcript delta after the append), then FAREWELL_CAP_MS from that delta at
+   * most. Inside that, the close comes after FAREWELL_QUIET_MS with no further delta and
+   * no audible frame once the word's sound is heard, and after FAREWELL_ONSET_MS before
+   * it (the transcript leads the sound). The session closing, or leaving `started`, ends
+   * the wait at once: there is nothing left to hear, and a sleep still waiting would
+   * swallow the next dismissal. `spoken`: the word is already out, so only its tail is
+   * waited for, within FAREWELL_CAP_MS. Real timers (they pace the voice, not the
+   * session clock); every timer and listener is cleared however the wait ends.
    */
   private farewell(live: LiveSession, spoken = false): Promise<void> {
     return new Promise<void>((resolve) => {
       let quiet: NodeJS.Timeout | undefined;
       let done = false;
+      // The word has begun (its first transcript delta), and its sound has been heard (an audible frame).
+      let begun = spoken;
+      let heard = spoken;
       const finish = (): void => {
         if (done) return;
         done = true;
         clearTimeout(cap);
         if (quiet) clearTimeout(quiet);
         live.off("outputTranscript", onDelta);
+        live.off("state", onState);
+        live.off("closed", finish);
         this.off("audio", onAudio);
         this.farewellEnd = undefined;
         resolve();
       };
       const armQuiet = (): void => {
         if (quiet) clearTimeout(quiet);
-        quiet = setTimeout(finish, Engine.FAREWELL_QUIET_MS);
+        quiet = setTimeout(finish, heard ? Engine.FAREWELL_QUIET_MS : Engine.FAREWELL_ONSET_MS);
         quiet.unref?.();
       };
-      const onDelta = (): void => armQuiet();
+      const onDelta = (): void => {
+        if (!begun) {
+          // The word has begun: from here it gets FAREWELL_CAP_MS at most.
+          begun = true;
+          clearTimeout(cap);
+          cap = setTimeout(finish, Engine.FAREWELL_CAP_MS);
+          cap.unref?.();
+        }
+        armQuiet();
+      };
       // Audible frames stretch the quiet window once the word has begun; the API's silence frames do not.
       const onAudio = (): void => {
-        if (quiet && this.outputLevel >= Engine.AUDIBLE_OUTPUT_LEVEL) armQuiet();
+        if (!quiet || this.outputLevel < Engine.AUDIBLE_OUTPUT_LEVEL) return;
+        heard = true;
+        armQuiet();
       };
-      const cap = setTimeout(finish, Engine.FAREWELL_CAP_MS);
+      const onState = (state: string): void => {
+        if (state !== "started") finish();
+      };
+      let cap = setTimeout(finish, spoken ? Engine.FAREWELL_CAP_MS : Engine.FAREWELL_START_MS);
       cap.unref?.();
       live.on("outputTranscript", onDelta);
+      live.on("state", onState);
+      live.on("closed", finish);
       this.on("audio", onAudio);
       this.farewellEnd = finish;
-      if (spoken) armQuiet();
+      if (live.currentState !== "started") finish();
+      else if (spoken) armQuiet();
     });
   }
 
@@ -3362,6 +3403,12 @@ export class Engine extends EventEmitter<EngineEvents> {
    * start at most, never the old voice's session closed a moment after it opened. Paused, or asleep with
    * typedWakes off, the words are done with here (a toast says when it is heard); with typedWakes on the wake
    * opens on the new voice and the reflex is already handled.
+   *
+   * The composer is the fourth sleep entry (after the ear, Live's delegation and the sleep command): a typed
+   * dismissal ("that's all for now", the `sleep` grammar) goes to `fallAsleep("said")`, never to Live as words. Awake,
+   * Live is asked for its farewell and nothing else. Paused or with a reconnect held, it sleeps with no farewell and
+   * opens no session. Asleep, it is a toast and nothing opens, even with typedWakes on. During a handshake it waits
+   * for the session like any line, then sleeps it.
    */
   async sayText(text: string): Promise<void> {
     const t0 = performance.now();
@@ -3382,6 +3429,22 @@ export class Engine extends EventEmitter<EngineEvents> {
           return;
         }
         picked = { did: answer };
+      }
+    }
+    // A dismissal typed with no session open is never a reason to open one. Paused, or with a reconnect held, it lets
+    // the held conversation go: asleep, no farewell, nothing billed. Asleep, there is nothing to put to sleep, whatever
+    // Settings.typedWakes says. A handshake in flight keeps the path below: the line waits for its session, then sleeps it.
+    if (!this.live && !this.dictating && parseReflex(t)?.kind === "sleep") {
+      if (this.pauseInfo || this.heldReconnect) {
+        const held = this.pauseInfo ? "paused" : "a reconnect was held";
+        await this.fallAsleep("said", { phrase: t });
+        log.info(`say-text: ${t.length} chars while ${held} → a dismissal; asleep, no session opened (${Math.round(performance.now() - t0)} ms)`);
+        return;
+      }
+      if (!this.connecting) {
+        this.toast("already asleep", "info");
+        log.info(`say-text: ${t.length} chars while asleep → a dismissal; nothing to put to sleep, no session opened (${Math.round(performance.now() - t0)} ms)`);
+        return;
       }
     }
     // A handshake in flight (Go a moment ago, a resume, a reconnect): the line waits for its session (V6).
@@ -3415,6 +3478,15 @@ export class Engine extends EventEmitter<EngineEvents> {
     const live = this.live;
     this.kevinSpoke();
     const item = this.transcript.pushTyped(t, live.nowMs);
+    // A typed dismissal ("that's all for now") is typed to Jarhead, so addressed, and the engine is its entry, as the ear
+    // is for speech. GPT-Live-1 answers a typed dismissal "night." but raises no delegation for it (LC-4, 2026-10-06,
+    // 0 of 3), so left to Live's delegation the session stayed open and billing. Live gets only the farewell line.
+    if (!this.dictating && parseReflex(t)?.kind === "sleep") {
+      if (item) this.delegator?.typedHandled(item);
+      log.info(`say-text: ${t.length} chars → a dismissal; asleep after the farewell (${Math.round(performance.now() - t0)} ms)`);
+      void this.fallAsleep("said", { phrase: t, farewell: true });
+      return;
+    }
     const isYes = YES_PATTERN.test(t);
     if (isYes) {
       // A typed yes while a thread's question holds the floor is that thread's: relayed, the main turn untouched.
@@ -3614,7 +3686,8 @@ export class Engine extends EventEmitter<EngineEvents> {
    * V9: a stop said over Jarhead's voice while nothing runs. The Delegator judges stops only while work runs and the
    * ear may be down (Speech not granted, the dictation model missing, reflexes off), so Live's transcript is judged
    * here: the current utterance (the transcript's own merge rule) begins with a stop phrase or ends in "stop" /
-   * "cancel", Jarhead spoke within SPEAKING_WINDOW_MS and the words are not Jarhead's own line back through the microphone.
+   * "cancel", Jarhead spoke (its transcript or its sound) within SPEAKING_WINDOW_MS and the words are not Jarhead's
+   * own line back through the microphone.
    * The speech half of a stop (the voice gated, the speaker flushed) and its row; once per utterance. No instruction.
    * The rest of the utterance never lifts the gate: "can you stop by the store" cannot be told from "can you stop
    * talking" until it is over, so a false stop holds the voice until the lapse or his next utterance.
@@ -3622,7 +3695,9 @@ export class Engine extends EventEmitter<EngineEvents> {
   private stopOverVoice(item: TranscriptItem): void {
     if (item.id === this.lastStopItemId) return;
     if (this.delegator?.active !== undefined || this.threads.running() > 0) return;
-    if (this.now() - this.lastOutputSpeechAt >= Engine.SPEAKING_WINDOW_MS) return;
+    // Over the voice: its transcript or its sound. Live's barge-in cuts its transcript first while the sound of the
+    // interrupted words plays on: in LC-6 trial 2 the transcript was 1322 ms old and the sound 490 ms old at the fragment.
+    if (this.now() - Math.max(this.lastOutputSpeechAt, this.lastAudibleOutputAt) >= Engine.SPEAKING_WINDOW_MS) return;
     const words = normalizeUtterance(item.text);
     if (!STOP_HEAD.test(words) && !/\b(stop|cancel)\b[\s.!?,]*$/i.test(item.text)) return;
     if (this.echoOfJarhead(words)) return;
@@ -5000,7 +5075,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     return this.live !== undefined && !this.paused && !this.muted && this.settings.reflexes !== false;
   }
 
-  /** Output frames at or above this RMS (`rms()`'s 0–1 scale) are Jarhead audibly speaking; the silence the API streams between sentences is ~0. */
+  /**
+   * Output frames at or above this level are Jarhead audibly speaking; the silence the API streams between sentences
+   * is ~0. On `rms()`'s scale, which is ×3 and clamped to 1: 0.02 here is about 0.0067 of full scale.
+   */
   static readonly AUDIBLE_OUTPUT_LEVEL = 0.02;
 
   /**
@@ -5048,11 +5126,12 @@ export class Engine extends EventEmitter<EngineEvents> {
    * Jarhead's that happens to be a cue ("That's all for now.") would otherwise dismiss
    * it a moment later, because its own speech opens the exchange window. The tail of
    * its last utterance is compared (≥ RECONCILE_THRESHOLD similar, as reconciliation
-   * judges the ear against Live) while its last words are under ECHO_WINDOW_MS old. A
-   * cue that names Jarhead is never an echo (the ear does not ask here for one).
+   * judges the ear against Live) while its last words are under ECHO_WINDOW_MS old: their
+   * transcript or their sound, which plays on after Live's barge-in cut the transcript
+   * (LC-6). A cue that names Jarhead is never an echo (the ear does not ask here for one).
    */
   private echoOfJarhead(phrase: string): boolean {
-    if (this.now() - this.lastOutputSpeechAt > Engine.ECHO_WINDOW_MS) return false;
+    if (this.now() - Math.max(this.lastOutputSpeechAt, this.lastAudibleOutputAt) > Engine.ECHO_WINDOW_MS) return false;
     const said = this.transcript.last("jarhead");
     if (!said) return false;
     const own = normalizeUtterance(said.text);
@@ -5825,9 +5904,10 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   /**
-   * V3: a started session whose server has sent nothing for this long is a dead socket. GPT-Live-1 streams output
-   * audio continuously, silence included (REDESIGN §2), so a healthy session is never this quiet. LC-1 measures the
-   * real gaps; until then 5 s.
+   * V3: a started, unmuted session whose server has sent nothing for this long is a dead socket. GPT-Live-1 streams
+   * output audio continuously, silence included (REDESIGN §2), but only while the mic is open: about 3.4 s after
+   * `session.input_audio.mute` (3.37 s in LC-2, 2026-10-06) it stops and sends only the 15 s usage beat. So the watch
+   * is off while muted. LC-1 measures the real gaps; until then 5 s.
    */
   static readonly LIVE_SILENCE_MS = 5000;
 
@@ -5843,6 +5923,11 @@ export class Engine extends EventEmitter<EngineEvents> {
    * A tick that runs late (TICK_LATE_MS on the process's own clock since the last) follows a stalled event loop: a
    * long synchronous read, or the Mac asleep. Its timer runs before the socket messages queued meanwhile are read, so
    * an unmoved count then proves nothing: the watch starts over from this tick.
+   *
+   * Muted, the watch is off (LC-2, 2026-10-06). GPT-Live-1 streams output continuously only while the mic is open.
+   * About 3.4 s after `session.input_audio.mute` (3.37 s in LC-2) it stops and sends only the 15 s usage beat, so a
+   * muted session is quiet, not dead: watched, it was dropped about 12 s into a mute. The watch starts over at the
+   * first tick after the unmute.
    */
   private watchLiveFrames(now: number): void {
     const real = performance.now();
@@ -5851,7 +5936,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.framesWatchedAt = real;
     const live = this.live;
     const frames = live?.serverFrames;
-    if (!live || this.connecting || live.currentState !== "started" || typeof frames !== "number") {
+    if (!live || this.connecting || this.muted || live.currentState !== "started" || typeof frames !== "number") {
       this.framesSeen = undefined;
       return;
     }
@@ -5923,7 +6008,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.closeWithDeadline(live, "watchdog (paused)");
       return;
     }
-    if (live && !handshaking && !this.wantAwake && !this.connecting) {
+    // A farewell being waited for is the stop in progress, bounded by its own caps (FAREWELL_START_MS +
+    // FAREWELL_CAP_MS): cut at WATCHDOG_OUTLIVED_MS, the word went unheard and its sleep was left waiting (LC-4).
+    if (live && !handshaking && !this.wantAwake && !this.connecting && !this.farewellEnd) {
       if (!this.outlivedSince) this.outlivedSince = now;
       else if (now - this.outlivedSince > Engine.WATCHDOG_OUTLIVED_MS) {
         const id = live.session?.id ?? "?";

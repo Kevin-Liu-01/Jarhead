@@ -138,8 +138,11 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
 
   /**
    * How many messages the server has sent so far, counted on arrival. GPT-Live-1 streams output audio continuously,
-   * silence included, so on a healthy session this never stands still for long: the engine reads it once a second on
-   * its own clock and treats a count that stopped as a dead socket (V3). A count, not a timestamp, so it holds on any clock.
+   * silence included, but only while the mic is open: on a healthy unmuted session this never stands still for long.
+   * The engine reads it once a second on its own clock and treats a count that stopped as a dead socket (V3). About
+   * 3.4 s after `session.input_audio.mute` (3.37 s in LC-2, 2026-10-06) the stream stops and only the 15 s usage beat
+   * comes, so the watch is off while muted and starts over at the first tick after the unmute. A count, not a
+   * timestamp, so it holds on any clock.
    */
   get serverFrames(): number {
     return this.frames;
