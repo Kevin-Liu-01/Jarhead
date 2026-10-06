@@ -13,7 +13,7 @@ Nothing here opens, keeps or closes a session; nothing is paid.
 | when | before | now |
 |---|---|---|
 | **asleep** (wake word on) | the listener opened the *system default* mic — your AirPods — so the headset ran hands-free all day | the listener's own input unit is pointed at the **ranked** mic (the MacBook's when it is there); the AirPods stay on full-quality AAC while Jarhead waits for his name. One property on the listener's engine; the gate is untouched |
-| **awake** | the unit ran at Apple's defaults: other apps ducked at the default level for as long as the session was open, and the unit lingered after sleep | the moment echo cancellation is switched on the unit is told **duck other apps at the least macOS allows (`min`), and only while a voice is present (`advanced`)**; AGC on and bypass off are set explicitly and printed. The unit is **released at every stop** — nothing ducks or holds a microphone after he sleeps |
+| **awake** | the unit ran at Apple's defaults: other apps ducked at the default level for as long as the session was open, and the unit lingered after sleep | the moment echo cancellation is switched on the unit is told **duck other apps at the least macOS allows (`min`), and only while a voice is present (`advanced`)**; AGC on and bypass off are set explicitly and printed. The unit is **released at every stop**: nothing ducks after he sleeps. With the wake word on, the one microphone held asleep is the wake listener's, on the ranked mic (the row above) |
 | **awake, refused unit** (−10875 on every rung) | the plain graph ran unguarded — a latent self-talk loop | the plain graph runs with the **software echo guard** armed (§2); the state says `fallback` and the doctor warns |
 | **mute** | the graph stayed up, the orange dot too | plus this process's input is zeroed at the HAL (`setInputMuted`), so the dot is honest; the graph still stays up so unmute is instant |
 
@@ -22,11 +22,11 @@ no one can hear is noise. Jarhead's own voice is never ducked (it plays through 
 
 ## 2. The Recording switch
 
-Settings › Audio › **Recording**, the status menu row, or **⌥⇧R**. Default off; it survives a
+Settings › Audio › **Recording**, the status menu row, or **⌃⌥R**. Default off; it survives a
 relaunch and is said in four places while on (the Audio head's `[recording]` badge, a `record.circle`
 chip on the tucked island, a 2 × 2 dot on the mute box, the doctor's `!` on its `recording` row). The
-status menu row is always titled `Recording` — the checkmark is the state — and its tooltip says
-`Hand back the mic, guard the echo — apps keep their sound (⌥⇧R)` (`HelpCopy.spoken`: the key last, in brackets).
+status menu row is always titled `Recording`; the checkmark is the state. Its tooltip is
+`HelpCopy.recordingRow`'s hint with the key last, in brackets: `(⌃⌥R)` (`HelpCopy.spoken`).
 
 | Recording | the graph | other apps | a recorder (QuickTime, OBS, Screen Studio's mic track) | echo |
 |---|---|---|---|---|
@@ -44,7 +44,7 @@ Jarhead's own last sentence send `mute` and toast `heard himself · muted — Re
 1. Play Music on the AirPods. **Asleep**, it must stay full quality (before this pass it was narrowed).
 2. Say his name. It dips a little while he answers and comes back between sentences.
 3. `pnpm jarhead status`: the `speaks` line shows `48000 Hz` when the headset is fine and `16000 Hz` when it is narrowed (the Hears hint says why: the unit follows the default input — make the MacBook mic the default in System Settings › Sound, or turn Recording on).
-4. For a demo: Recording on (⌥⇧R), QuickTime › New Audio Recording, talk over him — QuickTime's meter must move as much as when he is quiet, and Music is untouched.
+4. For a demo: Recording on (⌃⌥R), QuickTime › New Audio Recording, talk over him. QuickTime's meter must move as much as when he is quiet, and Music is untouched.
 
 What cannot be verified without ears: whether `min` is loud *enough*, whether the guard's held
 edge loses too much of your first word, and how the recording actually sounds. Everything else
@@ -116,4 +116,67 @@ Asleep is fixed already: the listener no longer opens the headset mic.
 | `Shared with QuickTime Player.` | fine while Recording is on; under echo cancellation the recorder sits beside the unit — turn Recording on for the take |
 | `Hears · no echo cancellation` | the unit refused every rung on this device pair; Jarhead runs guarded; the doctor's `voice processing` row fails and says which pair |
 | `heard himself · muted — Recording off?` | the fuse fired: Live heard Jarhead's own sentence three turns running; unmute, and turn Recording off unless you are recording |
-| the `[recording]` badge, the dot, the chip | a forgotten switch; ⌥⇧R turns it off — it is never cleared for you |
+| the `[recording]` badge, the dot, the chip | a forgotten switch; ⌃⌥R turns it off. It is never cleared for you |
+
+## 9. Playback: the cushion, the duck, the numbers
+
+Jarhead's voice reaches the speaker through three pieces, and each one reports what it did.
+Nothing here opens a session or plays a sound on its own.
+
+**The cushion** (`PlayoutModel` in `Audio/Playout.swift`, played by `SpeakerScheduler`). Live
+paces its audio at real time, so a chunk that arrives late leaves the player dry: a hole in a
+word, with a click at each edge. After every reset (start, flush, a graph restart, the player
+dry for 0.5 s or more) the next chunk is preceded by 120 ms of silence. A shorter dry spell
+mid-reply is an underrun: it is counted, the chunk plays at once behind a 5 ms fade-in, and
+the target for later resets grows to the longest gap plus 40 ms, at most 200 ms. Beside it
+the model counts `wouldBeUnderruns`, what scheduling on arrival with no cushion would have
+run dry on the same timeline, so one session gives the before and the after. A flush fades
+the main mixer for 30 ms before it drops the backlog, so a barge-in does not click. The cost
+is 120 ms (at most 200 ms) more between Live's audio and the speaker.
+
+**The queue.** The HAL reads (devices, the default output, who else holds the mic) run on
+their own `jarhead.audio.state` queue (`AudioStateReader`), never on the queue that schedules
+the speaker. They run when a HAL listener marks them stale, or every 30 s; a change in the
+mic's other clients is read at most once per 2 s. On the daemon side, past
+`SNAPSHOT_BACKLOG_BYTES` (64 KB) of socket backlog the daemon keeps one pending snapshot per
+client (the newest) and writes it on drain; speaker frames and every other frame keep their
+order. In the app, `EngineClient` decodes snapshots on their own queue, one decode at a time
+with the newest payload waiting, so a speaker frame never waits behind a snapshot.
+
+**The duck** (`BargeInDuck`). Only the energy gate starts a duck: 60 ms of speech over the
+room floor while Jarhead is audible. The ear's words and Live's transcript of Kevin confirm a
+duck and never start one (`wordOnsetsSkipped` counts what words alone would have started).
+An unconfirmed duck goes to −6 dB (`unconfirmedGain` 0.5); a confirmation takes it to −20 dB
+(`duckGain` 0.1) in two 4 ms steps. An unconfirmed duck comes back at 700 ms once the mic is
+quiet (a cough), or at most 1.5 s after it began while the mic stays hot; a confirmed one comes
+back 250 ms after Kevin stops (4 s at most), over a 300 ms ramp.
+
+**Where the numbers land.**
+
+| where | what |
+|---|---|
+| the `audio-state` frame | `playout`, `duck` and `output`, optional objects beside the graph's state. `lateMaxMs` and `queuedMinMs` cover the window since the previous frame; `lateMaxGraphMs` covers the time since the graph started |
+| `snapshot.liveAudio` | the daemon's figures while a session is open: Live's delta size, arrival p99 and max, how far Live ran ahead of real time, frames the output gate dropped, the event loop's longest delay (less the monitor's 10 ms resolution), the rate `session.started` echoed |
+| `daemon.log` | one `audio:` line at most every 5 s while a session is open and the figures changed, and an `audio (session … closed):` summary at close. `late max` is the longest wait in any frame since the last line; `(N ms since start)` beside it is the figure since the graph started |
+| the ledger | one `audio.playout` row at session close: the app's last frame (up to 5 s old, counters since the graph started) and Live's figures for that session. No row carries a word anyone said |
+| `pnpm jarhead status` | four lines under the audio block: `playout`, `duck`, `output`, `live`. With no app connected and no session open, a `last session … (the ledger)` block from the newest `audio.playout` row of the last 7 days |
+| `pnpm jarhead doctor` | five `audio` rows, none required (below) |
+
+| doctor row | warns when | what the fix says |
+|---|---|---|
+| `playout` | more than one underrun per minute of audible speech, or one longer than 80 ms | the app's queue (`late max`) or Live's arrival (`arrival p99`), whichever is material (40 ms or more, or as long as the longest hole); with neither, "the cause is not known yet" |
+| `duck` | more than one unconfirmed duck per minute of audible speech | lower the output volume |
+| `residual echo` | the mic's p99 while Jarhead is audible and nothing is ducked is −44 dBFS or louder | lower the volume |
+| `output level` | heard RMS under −30 dBFS or the volume under 30%; a peak at −1 dBFS or over | raise the volume, check the duck row, or the limiter squeezes the voice |
+| `live arrival` | arrival p99 over 120 ms, the daemon's loop delay over 100 ms, or a rate other than 24 kHz | the network or the daemon; a wrong rate plays at the wrong speed |
+
+Two probes check this part without a session, a device or a window:
+`apps/mac/Scripts/playout-probe.sh` renders the shipped `PlayoutModel` and `SpeakerScheduler`
+offline against arrival traces (`--stall` runs the play queue beside the real
+`AudioStateReader` in real time; `--legacy` adds the old placement for contrast), and
+`apps/mac/Scripts/snapshot-probe.sh` drives the real `EngineClient` against a fake daemon
+with 283 KB snapshots, speaker frames and flushes.
+
+What only a real session shows: whether the cushion leaves 0 underruns on a given Mac, how
+often the duck fires unconfirmed, and the residual echo's p99. `status` and `doctor` print all
+three after a session; the probes prove the code paths, not those figures.

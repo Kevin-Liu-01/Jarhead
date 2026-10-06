@@ -24,10 +24,18 @@ Awake, say it once:
 | "when Slack quits, remind me to log my hours" | *When Slack quits, say "log your hours".* |
 | "open my standup notes at nine on weekdays" | *Weekdays at 09:00, open Notes.* |
 | "when a PDF lands in Downloads, file it under Papers and tell me" | *When a PDF lands in Downloads, file it under Papers and chime.* |
-| "watch the tests and tell me when they go red" | *Every 60 s run recipe "tests"; when it goes red, chime "tests red".* — asks once |
-| "run the backup script every night at eleven" | *Nightly at 23:00, run recipe "backup".* — asks once |
-| "at six save whatever's open in Cursor" | *Daily at 18:00, press ⌘S in Cursor.* — asks once |
-| "at six give me a rundown of what my agents did" | *Daily at 18:00, wake the brain … — about 2 brain min a fire.* — asks once, cost first |
+| "watch the tests and tell me when they go red" | *Every 60 s run recipe "tests"; when it goes red, chime "tests red".* Asks once, with the run-recipe chip on |
+| "run the backup script every night at eleven" | *Nightly at 23:00, run recipe "backup".* Asks once, with the run-recipe chip on |
+| "at six save whatever's open in Cursor" | *Daily at 18:00, press ⌘S in Cursor.* Asks once, with the press chip on |
+| "at six give me a rundown of what my agents did" | *Daily at 18:00, wake the brain …* About 2 brain minutes a fire. Asks once, cost first, with the wake-brain chip on |
+
+Out of the box, Settings › Automations › While asleep has five chips on: chime, say, notify,
+open and file. Run-recipe, press and wake-brain are off, so the last four rows are refused
+until their chip is on; the voice says the kind is not allowed while Jarhead is asleep and
+offers a notify or a chime (§4). The when-words of the clock rows parse with core's `parseWhen`
+(the 26 phrasings in `w2-2-schedule.test.ts`, "SL-16: the audit's 26 phrases all parse"). The
+watcher rows ("when Slack quits", "when a PDF lands in Downloads", "watch the tests") are
+signals, not clock phrases.
 
 The line it reads back is the row's `echo`; it is what the Console shows and what `jarhead
 automations` prints. Then say night. "What alarms do I have", "snooze that", "skip tomorrow's
@@ -38,13 +46,13 @@ alarm", "pause the standup routine", "bin the backup" are the same verbs by voic
 | kind | what happens, with the meter at zero |
 |---|---|
 | alarm | chime (`Hero`) + the island opens pinned with `07:10 · Wake up, Kevin` and **Snooze 10 · Done** in the consent rects; a banner with the same two buttons; re-chimes every 30 s; rings through quiet hours |
-| timer | chime (`Glass`) + `pasta · 12:00 is up`, Snooze 5 · Done; while running, `pasta 4:12` on the peek chip / foot / lip pill; `caffeinate -t` holds the Mac awake for it |
+| timer | chime (`Glass`) + `pasta · 12:00 is up`, Snooze 5 · Done; while running, `pasta 4:12` on the peek chip / foot / lip pill; `caffeinate -t` keeps the Mac from idle sleep for it, an hour at a time, taken again a minute before each hour runs out; a closed lid can still sleep the Mac (§7) |
 | reminder | the local speaker reads the fixed line once; banner; island line |
-| routine · open | `open_app` through the toolset (policy `run`), one soft `Pop`; deferred by quiet hours |
-| routine · recipe | the recipe on the background lane, scrubbed env, capped, output redacted into the row's detail; a red exit is a `failed` row and a quiet banner |
-| routine · press | only if the named app is in front and no password field has focus: the key; else `failed: <app> is not in front` — never a question |
+| routine · open | `open_app` through the toolset (policy `run`), one soft `Pop`; deferred by quiet hours. If Kevin's key, click or scroll came in the last 1.5 s, it waits for his quiet window, up to 8 s, then sends once more; still busy, the step fails: `Kevin was using the keyboard or mouse, so Zoom was not opened.` |
+| routine · recipe | the recipe on the background lane, scrubbed env, capped, output redacted into the row's detail; a red exit is a `failed` row, a quiet banner, and the `automation.failed` problem (below) |
+| routine · press | only if the named app is in front and no password field has focus: the key; else `failed: <app> is not in front`, never a question. Kevin's hands win as for open: it waits up to 8 s for his quiet window, re-reads the front app, then presses or fails (`so ⌘S was not pressed`) |
 | routine · briefing (`wake-brain`) | one headless brain turn `{steps 25, seconds 120}` on the background lane; its one line (≤ 160 chars, redacted) spoken and shown; the meter stays at zero |
-| watcher · folder / download | `file` moves it — never overwrites (`name (2).pdf`), never unlinks, stays inside `~`; chime + `Filed · invoice.pdf → Papers` with Open · Done |
+| watcher · folder / download | `file` moves it: never overwrites (`name (2).pdf`), never unlinks, stays inside `~`; chime + `Filed · invoice.pdf → Papers` with Open · Done. In a burst, a folder row whose actions take the file (`file`, `run-recipe`) fires once per file: a file that lands during a fire waits in the row's queue, up to 100 waiting (`FILE_QUEUE_MAX`); past that a landing is counted on the row (`+N not handled`) and not handled. A name already in the folder at arm is never a landing, whatever its contents do |
 | watcher · app / Mac / display / agent | the app forwards `app.quit`, `mac.wake`, `screen.unlock`, `display.connected` as `system.signal` frames; `agent.status` comes from the registry the engine already polls |
 
 **The whole action vocabulary:** `chime · say · notify · open · file · run-recipe · press ·
@@ -52,18 +60,33 @@ wake-brain`. A row carries 1–3 actions in order, at most one acting kind (`ope
 `run-recipe`, `press`, `wake-brain`). Clauses: `window`, `days`, `once`, `cooldown`, `until`,
 `quiet`.
 
+An unattended fire that failed raises `automation.failed` ("backup failed 23:00 · recipe backup
+exit 1 · disk full"), one per row, on the island and in the Console, so a red night is there in
+the morning. Its remedy is Run now, or Open Console when a retry would fail the same way (the
+action's chip is off, the recipe is in the Trash, the shell gate wants a yes). The row's next
+green fire, its own or a Run now, clears it, and so does Move to Trash. A Run now that fails
+renews a problem the row already has, with the retry's words. On a row with none it raises
+nothing, because its toast says how it went.
+
+A folder is listed every 5 s, once however many rows watch it. A folder of 2,000 entries or more
+is listed off the event loop; a smaller one is listed inline, and a daemon start stats each name
+once to leave out what landed after the last heartbeat. Those two
+reads are the only ones that hold the event loop.
+
 ## 3. The island, the banner, the chime
 
 A ring takes the island's Allow/Deny rects for **Snooze · Done** (a 500 ms dead-time after a
 kind change closes the mis-press); folded, a bell chip comes first and the lip pill reads `🔔 Wake
-up, Kevin · Snooze ⌥⇧S`; tucked, a running timer shows `pasta · 4:12` under the lip. The banner
+up, Kevin · Snooze ⌃⌥S`; tucked, a running timer shows `pasta · 4:12` under the lip. The banner
 is a `UNNotificationCategory("jarhead.automation")` with Snooze · Done (Open · Done when the
 press carries a target); its buttons land the same row as the island's presses. The chime is an
 earcon through the app's `LocalSpeaker` — the wake gate's own instance, so the wake listener
 never hears "It's seven ten" as the word. A ring stays up ten minutes; an alarm then self-snoozes
-once and the second linger ends it (`unanswered`); anything else counts as Done. `⌥⇧S` snoozes
+once and the second linger ends it (`unanswered`); anything else counts as Done. `⌃⌥S` snoozes
 from anywhere while something rings; the status menu shows `Next · 07:10 Wake up, Kevin` and,
-while ringing, the two hot rows.
+while ringing, the two hot rows. A fire that only acted (an open, a recipe, a press) puts no
+ring up: its `fired` event says `ring: false`, and nothing flashes Snooze · Done. A filed file
+rings, with Open · Done (§2).
 
 ## 4. What asks once, and what is refused
 
@@ -81,7 +104,8 @@ that would be confirm-tier at fire is refused now, not asked now.
 | wake-brain | — | Brain minutes > 0, a prompt ≤ 400 chars, from the main conversation: **the cost line** is the question | Brain minutes 0; empty prompt; a spawned thread arming it |
 
 A kind switched off in Settings › Automations › While asleep is refused, naming the chip and the
-nearest safe kind ("run-recipe is not allowed while Jarhead is asleep; a notify or a chime is").
+nearest safe kind ("run-recipe is not allowed while Jarhead is asleep (Settings › Automations ›
+While asleep); a notify or a chime is"). Run-recipe, press and wake-brain are off by default.
 A send, type, click, pay, delete, post, a LaunchAgent or crontab write, a keychain read, a
 Shortcut, a Live session: refused with the nearest safe version — "when Slack quits, send my
 hours" becomes a notify. The yes for a recipe, a press or a brain wake is spent on that one row:
@@ -93,13 +117,16 @@ Only `wake-brain` spends anything, and only after these words, said by the voice
 recorded on the row as `confirmed.heard`:
 
 > "this wakes the brain — not the voice — while Jarhead is asleep: about **N** brain minute(s) per
-> fire on your plan, up to **M** a day; its one-line answer is spoken by the local speaker /
+> fire **on your plan**, up to **M** a day; its one-line answer is spoken by the local speaker /
 > shown as a banner"
 
 `N = ceil(budget.seconds / 60)`, `M` = Settings › Automations › Brain minutes (default 5; 0 turns
-the kind off for every row). Under a local brain the line says "a model warm-up on this Mac"
-instead of "on your plan". The row wears the `billed` badge; its card reads `≈ 2 brain min per
-fire · 3 of 5 today`. Every other kind's card reads `cost · nothing billed`. The daily budget is
+the kind off for every row). The words in bold follow the brain the row would wake (under `auto`,
+the brain auto resolved to; the Console's form reads the same): "on your plan" for a login
+(Codex, Claude Code), "billed as API tokens on your key" for an API brain, "on the server you
+set" for an openai-compatible server that is not sent your key, and "a model warm-up on this
+Mac" for a model on this Mac (`local`, or a loopback server with no key). The row wears the
+`billed` badge; its card reads `≈ 2 brain min per fire · 3 of 5 today`. Every other kind's card reads `cost · nothing billed`. The daily budget is
 recomputed from the ledger at each midnight and at start, so a restart cannot forget spend; a
 row over budget is a `failed` row and the `automation.budget` problem, never a question.
 
@@ -113,8 +140,9 @@ occurrence is sooner, in which case that fire is skipped and counted. Alarms def
 
 ## 7. Missed fires, and `Open at login`
 
-The daemon is the app's child and dies about 90 s after the app quits: **nothing fires while
-Jarhead is quit.** Nothing here is a launchd agent, a login item the brain installed, or a
+The daemon is the app's child: a clean quit stops it at once, and after a crash it waits 90 s
+for the relaunched app. **Nothing fires while Jarhead is quit.** Nothing here is a launchd
+agent, a login item the brain installed, or a
 `pmset` the daemon ran. When Jarhead comes back — or the Mac wakes; a tick gap over 5 s is the
 signal — `resync` decides each due row:
 
@@ -122,7 +150,13 @@ signal — `resync` decides each due row:
 |---|---|---|
 | alarm (15 min) · timer (10) · reminder (60) | fires now, the head reads `· 12 min late` | `missed` row, the `automation.missed` problem with **Run now**, a repeater rolls on, a one-shot goes `failed: missed` |
 | routine | never late — a 01:00 backup at 09:14 is a surprise, not a routine | skipped and counted (`missed 1`), the next occurrence armed |
-| watcher | n/a | the folder listing is re-baselined; files that landed while down are not replayed (a folder is not a queue) |
+| watcher | n/a | the folder listing is re-baselined; files that landed while down are counted on the row (`N new files not handled`), never replayed |
+
+A routine deferred by quiet hours fires when they end; if Jarhead or the Mac was away then, it
+is skipped and counted, never run hours late. Times are local. A time-zone change moves every
+wall-clock row to the new zone's clock (Mon 07:10 in New York is Mon 07:10 in Los Angeles); a
+timer, a snooze and a watcher keep their instants. An occurrence the move put behind now is missed with the why `the time zone
+moved` (MissedWhy `zone-moved`), never rung twice.
 
 The one mitigation you press is **Open at login** (Settings › Automations): the app registers
 itself with `SMAppService` on your press, so Jarhead and its daemon come back when you log in.
@@ -139,7 +173,9 @@ pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|fai
 pnpm jarhead automations add "<words>"      the clock ladder, parsed by core's parseWhen without a brain:
     "at 7:10 weekdays chime 'Wake up'" · "in 12m chime pasta" · "weekdays 09:00 open Notes" · "tomorrow 15:00 say 'call mum'"
     free kinds only (chime · say · notify · open); run recipe, press and wake the brain are set up by voice or in the Console,
-    where the yes is heard — no flag stands in for it. The policy judges the draft; a refusal comes back as a toast
+    where the yes is heard; no flag stands in for it. The policy judges the draft; a refusal comes back as a toast.
+    parseWhen refuses, by name: a bare four or five at night (it could be either), a range ("9 to 5"),
+    a count ("every 2 nights"), and monthly phrases (not yet: say the date)
 pnpm jarhead automations snooze <id|name> [--minutes 10] · done · skip · pause · resume · rename <id|name> "<name>"
 pnpm jarhead automations run <id|name>      fires it now so you hear it — refused unless you are there
 pnpm jarhead automations trash <id|name> · restore <id>      Move to Trash / Restore. Nothing is deleted

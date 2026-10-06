@@ -19,11 +19,11 @@ backend. Verified on 2026-09-10 against this key:
 
 | observation | measured |
 |---|---|
-| `session.start` → `session.started` | ~1.5 s cold, 0.26 s warm |
+| `session.start` → `session.started` | ~1.5 s cold, 0.26 s warm. On 2026-10-06, across the live checks, the same leg took 0.32–0.58 s, median 0.41 s (n = 25), and 1.32–2.11 s for the first session of each of the day's three batches of checks (n = 3). From the moment the engine asked for the session (before the socket connects): 0.46–0.81 s, median 0.59 s (n = 25), and 2.0–2.8 s for those first sessions (n = 3) |
 | user transcript deltas while Kevin is still talking | ~1 s behind the audio |
 | `session.delegation.created` after "look at my screen and tell me what app is open" | 1.1 s after the last word |
 | the model said "on it." on its own, then spoke the appended commentary verbatim-ish | 2.3 s after the append |
-| output audio | continuous 24 kHz PCM, silence included (full duplex) |
+| output audio | continuous 24 kHz PCM, silence included, while the mic is open (LC-1, 2026-10-06: 494 audio frames in 50 s of silence, gaps p99 153 ms, max 289 ms, n = 1). About 3.4 s after `session.input_audio.mute` it stops, and only the 15 s usage beat arrives (3.37 s, LC-2, n = 1) |
 | price | $0.05 / min, billed per second |
 
 Client delegation is the whole architecture: Live owns the conversation, we own
@@ -35,8 +35,8 @@ The **Claude Agent SDK** runs Claude Code headless with in-process MCP tools,
 streaming input, and a permission callback, and Kevin's Claude Code login is what
 authenticates it — no API key needed. Current Claude models point at pixel
 coordinates off a screenshot well enough that Jarhead's own computer family (§10)
-is all the Claude brains get: every brain drives the same 71 tools, and no vendor's
-own computer-use toolset is mounted beside them.
+is all the Claude brains get: every cloud brain drives the same 71 tools (a local model a
+fitted subset, `docs/LOCAL.md`), and no vendor's own computer-use toolset is mounted beside them.
 
 ## 3. The shape of v2
 
@@ -76,8 +76,9 @@ pins; explicit only). `auto`, the default, walks the cloud kinds in
 what earns a `problem()` line and which explicit kinds fall back to Responses is
 §6c's rule. Each `session.delegation.created` becomes one
 turn for whichever brain runs: the transcript window since the last delegation,
-the current screen context, and the running task ledger. Every backend drives
-the same 71 tools through `ToolRunner` — the hands (below), the agent
+the current screen context, and the running task ledger. Every cloud backend drives
+the same 71 tools through `ToolRunner` (a local model a fitted subset, with no `self_*` or
+`agents_*`), and each brain is told only the tools it can call: the hands (below), the agent
 connectors, web search, shell — and streams progress back as `thinking.append`
 and results as `commentary.append`.
 
@@ -148,12 +149,12 @@ shows where the hands are about to click and draws arrows when Kevin asks
 
 | moment | measured |
 |---|---|
-| `session.start` → `session.started` | 533 ms warm, ~1.5 s cold |
+| `session.start` → `session.started` | 533 ms warm, ~1.5 s cold (on 2026-10-06: 0.32–0.58 s, median 0.41 s, n = 25; the first session of each of three batches of checks 1.32–2.11 s, n = 3; §2) |
 | "hey jarhead" → Jarhead says "hey." | ~1.0 s after the words end |
 | end of question → `session.delegation.created` | ~1.1 s |
 | delegation → backend's first tool call (`frontmost_app`, native helper) | 1.31 s (the tool itself: 18–19 ms) |
 | delegation → spoken result appended | 2.39 s |
-| full-display screenshot through the Swift helper | 48–75 ms warm, ~145 ms cold |
+| full-display screenshot through the Swift helper | 48–75 ms warm, ~145 ms cold (not reproduced since: 102 ms median, 311 ms p95 in the production ledger, PERF-11, launch audit, 2026-10-05, n not recorded; the bench's full screenshot, 2000 px long edge through the runner and the helper, 152 ms, n = 1, at 4727241 with the screen locked, 2026-10-06) |
 | Claude Code brain auth probe when auth is broken | 30 s, then remembered for 30 min so the next launch falls back instantly |
 | native app: launch → daemon spawned → client connected | ~1.5 s |
 | native app: speech played through the speakers → transcript in the Console | ~2 s, with system echo cancellation active |
@@ -164,15 +165,21 @@ Claude Code could not authenticate on this machine that day; see the doctor outp
 ## 6. Cost control
 
 A Live session bills every second it is open — muted or not. Jarhead sleeps
-after 10 minutes without an addressed turn (configurable): the session closes,
+after 10 minutes without an addressed turn (configurable) when nothing is running;
+whatever is running or the room says, 30 minutes with no addressed turn sleeps it
+(`IDLE_CEILING_MS`, D1). Room talk is not an addressed turn: with idle sleep at 1
+minute, LC-7 (98c7cfe, 2026-10-06, n = 1) slept 60.3 s after the last addressed turn
+while the room talk went on. Asleep, the session closes,
 the Orb dims, the mic stays local-only. Go / Pause / Stop are one transport
 (§13; AppState's `// MARK: - Transport` region: `transportToggle()`,
 `transportStop()`, `transportLabel`): Pause and Stop both close the session so
 the meter stops the moment they land; a pause holds the conversation
 (`snapshot.pause`) and decays to asleep at `pause.sleepsAt`; Go — or the wake
 word — resumes it in a new session that carries the transcript as continuity.
-Waking is ~1.5 s to `session.started`. Muting (`session.input_audio.mute`) is
-instant but keeps the meter running; it is for Kevin's side of the room, not
+On 2026-10-06 waking took 0.46–0.81 s from the engine asking for a session to
+`session.started` (median 0.59 s, n = 25), and 2.0–2.8 s for the first session of each
+of the day's three batches of checks (n = 3).
+Muting (`session.input_audio.mute`) is instant but keeps the meter running; it is for Kevin's side of the room, not
 for cost. The meter (`snapshot.usageToday` at $0.05 a minute) shows in the
 capsule, the Console's right rail and the Jarhead section of the rail.
 
@@ -261,9 +268,10 @@ first snapshot) and the menu-bar item *Set Up…* open a wizard
 
 Kevin: "why isnt it connecting to our codex? i have one locally. be vendor
 agnostic, dont just enforce claude code". The brain is a setting, not a vendor.
-`Settings.brain` is one of seven `BrainKind`s; every one drives the same 71 tools
-through `ToolRunner`, so policy, ledger, screenshots and the confirmation
-handshake are identical whichever model is thinking.
+`Settings.brain` is one of seven `BrainKind`s; every one drives its tools through
+`ToolRunner` (all 71 for the cloud brains, a fitted subset for a local model), so
+policy, ledger, screenshots and the confirmation handshake are identical whichever
+model is thinking.
 
 | kind | what runs | needs |
 |---|---|---|
@@ -399,7 +407,7 @@ Three loops share one surface — Kevin's screen — and one presence, the blob.
    to *that* agent; a resumed Claude Code session's permission questions appear
    as yes/no right there. It should feel like sitting in Codex Desktop or Claude
    Code, not like reading a log.
-2. **Kevin can point.** ⌥⇧C (or the orb menu) enters mark mode: the overlay
+2. **Kevin can point.** ⌃⌥C (or the orb menu) enters mark mode: the overlay
    stops being click-through for one stroke, Kevin circles anything, the stroke
    is echoed back on the layer, and the engine screenshots the circled region.
    The mark is *context*: Live hears that Kevin circled something, the next
@@ -448,7 +456,7 @@ Orb ◄── overlay commands (orb.fly / orb.home) ── spring flight, hover,
 - `ScreenMark {id, rect, path?, at, screenshotPath?, consumed}` in `Snapshot.marks`; commands `mark.add {rect, path?}` / `mark.clear`.
 - Overlay: `circle` / `arrow` / `rect` / `text` / `stroke` (with `tone: accent|ok|warn|mark`, `ttlMs`), `orb.fly {x,y,dwellMs?,reason?}`, `orb.home`.
 - Brain: `BrainTask.attachments?: [{path, mediaType, note}]`; tools `show_circle`, `show_arrow`, `show_rect`, `show_text`, `show_stroke`, `show_clear`.
-- App: hotkey ⌥⇧C → `AppState.beginMarkMode()` → `OverlayManager.beginMarkMode()`; `AppState.transcripts[agentId]` fed by the daemon client.
+- App: hotkey ⌃⌥C → `AppState.beginMarkMode()` → `OverlayManager.beginMarkMode()`; `AppState.transcripts[agentId]` fed by the daemon client.
 
 ### Brand marks
 
@@ -578,8 +586,8 @@ enter it. That alone was not enough: the shell is `zsh -lc`, a login shell, and
 And because a lexical gate cannot see every spelling, the runner passes every
 text result — shell output, a read file, an AppleScript result, a search hit, an
 error message, a confirmation question — through `SecretRedactor`: the values of
-`SECRET_KEYS` from the daemon's environment, every value in `~/.jarhead/env`
-(re-read when the file changes), their base64 and URL-encoded forms, and
+`SECRET_KEYS` from the daemon's environment, every value in the state dir's env file
+(`~/.jarhead/env` by default, re-read when the file changes), their base64 and URL-encoded forms, and
 anything key-shaped (`sk-…`, `ghp_…`, `AKIA…`, `xox…`, JWTs, PEM private-key
 blocks) become `[redacted secret]` before a model reads them.
 
@@ -1897,7 +1905,8 @@ From delegation: first model thought **5.7 s** median; first model tool
 p95 19.8), zero delegations with an action inside 5 s; verified completion
 **22.1 s** median (p90 40.7); the spoken reply 0.7 s after done. Live
 acknowledges 0.2 s after delegation; speech end → delegation 0.4–1.6 s (n=4).
-Tool round trips 55 ms median (p95 211); app-server delegations spend 0.4–2.2 %
+Tool round trips 55 ms median (p95 211; the 2026-09-11 ledger, n = 120, not
+reproduced since, LATENCY §3c); app-server delegations spend 0.4–2.2 %
 of their wall time inside tools. Every model generation costs 3.4–4.1 s median
 (p90 5.9); a warm no-tool turn 1.8–3.1 s to first token, a cold one 4.3 s;
 effort low/medium/high made no difference on trivial turns. The multipliers
@@ -2445,7 +2454,7 @@ the integrator corrects them from their notes. The K6 rows are the build record.
 | Grok Bot's approval card (Allow once / Always allow / Deny, Require-Approval beats Always-Allow), Claude in Chrome's per-site "Always allow" and its bugs (#74715: it did not stick), Operator's confirmations (−90 % nuisance errors, 92 % recall) | a remembered yes, scoped, with a hard list it can never cover | `grant {chainId, app, actionClass, until}`: a yes remembered **for this conversation, this app, this action class, until**; **never for a destructive verb** (send, pay, delete, post, purchase — those stay spoken-yes-once, `ConfirmationState`); the never-list unchanged (K5, per the contract) |
 | Hermes' three-most-recent screenshots, Claude in Chrome's `read_page` refs, OpenClaw's `frameId` / `executionId` | do not keep every pixel; act on the frame you saw | the screenshot archive is capped and the oldest shots **move** into `<stateDir>/trash/shots` by rename, never unlinked (`runner.ts` `evictShots`; `Settings.shotsRetentionDays`, 14). A frame id or stale-frame guard was **not** built in this pass: the hands act through AX with the screenshot as the fallback and the verification, and nothing on the Codex thread references a frame (K5, per the contract; the eviction checked in the worktree) |
 | Cowork's "Working on your computer · 0:42", Claude's red border, Perplexity's step list, Grok Bot's status line | a working state you can see, with elapsed time | **"Working · 0:12"** — a mono elapsed counter next to the phase word on the notch island (peek and open), alone on a black strip of the notch while the blob is out at its target, and under the phase word on the capsule; `Motion.base` in and out; gone at done or cancelled (K6, `NotchPanel.swift`, `OrbExpandedView.swift`) |
-| Hermes' "emoji-mapped tool usage" praised, its per-click narration complained about; GPT-Live-1's over-eager backchannels (eesel 2026-09-11) | narrate the intent, not the keystrokes | the voice's `# Narration` rule — one short clause per state change ("found the invoice", "typing the amount"), never per click, never a tool's name, silence while a single step runs — and the same gate in the Delegator's relay (`Delegator.narrationVerdict`: per-click lines and lines naming a tool stay on the Console's timeline; the first action is voiced as it lands without the tool's name; the summary and a reflex's landing are never gated), plus one clause before idle sleep (`Delegator.announceSleep`: once per idle stretch, true when it spoke; the engine's tick arms one sleep deadline off that return and must not re-read its idle clock, since the clause is Jarhead's own speech and moves `lastAddressedAt` — that hook in `engine.ts` is the integrator's) (K6, `instructions.ts`, `delegator.ts`) |
+| Hermes' "emoji-mapped tool usage" praised, its per-click narration complained about; GPT-Live-1's over-eager backchannels (eesel 2026-09-11) | narrate the intent, not the keystrokes | the voice's `# Narration` rule (one short clause per state change, such as "found the invoice" or "typing the amount"; never per click, never a tool's name, silence while a single step runs) and the same gate in the Delegator's relay (`Delegator.narrationVerdict`: per-click lines and lines naming a tool stay on the Console's timeline; the first action is voiced as it lands without the tool's name; the summary and a reflex's landing are never gated), plus one clause before idle sleep (`Delegator.announceSleep`: once per idle stretch, true when it spoke; the engine's tick arms one sleep deadline off that return and must not re-read its idle clock, since the clause, Jarhead's own speech, moved `lastAddressedAt` (since 2026-10-06 the clause's own turn counts for nothing, §22); that hook in `engine.ts` is the integrator's) (K6, `instructions.ts`, `delegator.ts`) |
 | Hermes' context compression (Phase 1: tool results > 200 chars → placeholders, no model call; protected head and tail), OpenClaw's soft-trim (keep first/last 1 500 chars), Claude Code's compaction that "stops with a thrashing error instead of looping" | compress what a fresh context is told, and never thrash | the carried block after a Codex rollover is compacted (`renderCarry`): Kevin's words verbatim, every tool result over 200 chars or bytes (images included) one line naming its size ("[tool result, 3.1 KB]"), the block capped near 2 KB with the oldest exchanges dropped first; and one turn's measure rolls the thread over once (`TokenUsage.turnId`, `rolloverDue()`) so an oversized tool output cannot open a third thread (K6, `codex.ts`, `codex-app-server.ts`) |
 | Wispr publishes a p99; nobody publishes a per-action clock | the headline is the tail, not the median | LATENCY.md §7: the field side by side with p95 as the headline column and "measured or claimed" on every row (K6) |
 
@@ -2462,7 +2471,9 @@ the integrator corrects them from their notes. The K6 rows are the build record.
   clipboard stays Kevin's.
 - **A cloud VM or a remote desktop.** Operator, ChatGPT agent, Mariner, Grok Bot
   and Perplexity's heavy tasks run elsewhere and pay 2–5 s per action for it.
-  Jarhead's tools answer in 55 ms median on the real screen (LATENCY §3c).
+  Jarhead's tools act on the real screen: 55 ms median in the 2026-09-11 ledger
+  (n = 120), not reproduced since (82 ms median after the latency pass, PERF-11,
+  launch audit, 2026-10-05, n not recorded; LATENCY §3c).
 - **Background driving through private SPIs.** Hermes' cua-driver injects
   pid-scoped events so "your cursor doesn't move"; Apple can change those SPIs
   and did change `CGDisplayCreateImage`. Kevin's cursor is the cursor; the blob
@@ -2581,15 +2592,31 @@ activate | open location | reopen | set frontmost` ∪ `run_shell` whose head is
 its; use applescript (Apple events), browser_*, files, shell or web, or report that
 the screen is needed" — from the runner, so `policy.ts` is untouched. Spotify plays
 by Apple event without the pointer moving; Slack, which needs typing, is the main
-brain's or a screen thread's.
+brain's or a screen thread's. Since 2026-10-05 (W1-5, THc-27) `FOCUS_TOOLS` holds
+`browser_navigate` too, since it sets the front tab's URL, and the refusal names what the
+lane may use: Apple events, `browser_read`, `browser_find` or `browser_tabs` to read the
+browser, `web_fetch` or `web_search` to load a page, the file tools or `run_shell`
+(`LANE_REFUSAL` in `threads/runner.ts`; AGENTS.md).
 
 **Two helper processes, one binary.** `HandsPool { focus, background }`
 (`packages/hands/src/pool.ts`), same daemon parent so the same TCC identity, both
 spawned with `SECRET_KEYS` stripped. Screen-lane actors (main brain, dictation,
 screen threads) use `focus`; background threads and the engine's own reads (the AX
-warm tick, ear hints, `circleUnderCursor`, the wake shot) use `background`, so a
-background hand's screenshot never queues behind a `type`. `cancelAll` cancels
+warm tick, ear hints, `circleUnderCursor`) use `background`. `cancelAll` cancels
 both (SIGURG only to the child with a pending type); grant restarts restart both.
+
+**Since 2026-10-06 (F5, 4727241): one process captures.** Two helpers started from one
+executable path, both capturing through ScreenCaptureKit, wedged each other while the screen
+was locked: one capture's callback never came, the acting helper's serial worker waited for
+good, and every later op timed out. Now `CAPTURE_OPS` (`screenshot`, `zoom`) asked of either
+client are taken by the `focus` process (`HandsPool` points the reading client's captures at
+it), and the wake shot asks `focus` too. The cost: a background thread's eyes and the wake shot
+wait behind the acting queue, and a forwarded capture that times out answers `capture_failed`.
+A screenshot that fails that way is served by the toolset's `screencapture` fallback; a zoom
+has none and fails `capture_failed`. `runBlocking` answers `capture_failed` after
+5 s, under the client's 6 s, so the worker moves on; a `-3801` with the Screen Recording grant
+present is tried once more inside that bound, never reported as a missing grant
+(`pool.test.ts`, `one-capture.test.ts`, `run-blocking-native.test.ts`).
 
 **The lease.** `FocusLease` (`packages/hands/src/lease.ts`) is the one holder of
 pointer, keyboard and frontmost. Hand-over only at the holder's turn end, a confirm
@@ -2604,8 +2631,9 @@ remembered app means Kevin switched — the thread is never refocused behind him
 Jarhead's own hands acquire with priority and never wait on a thread's idle or on
 Kevin's typing beyond the helper's own busy retry.
 
-**Kevin's hands win, in the helper, atomically.** Both checks live in `Input.swift`
-before the first `CGEvent.post`: `busy` — the helper tracks `lastOwnPostAt` for
+**Kevin's hands win, in the helper, atomically.** Both checks run in the helper
+before the first `CGEvent.post` (as first built, in `Input.swift`; since 2026-10-05 the
+`busy` decision lives in `HandsWin.swift`, see the next paragraph). `busy`: the helper tracks `lastOwnPostAt` for
 every event it posts and reads `CGEventSource.secondsSinceLastEventType` for
 keyDown / mouseDown / rightMouseDown / scrollWheel (not mouseMoved); a most-recent
 event that is not its own and within 1500 ms → `{ok:false, error:{code:"busy",
@@ -2618,6 +2646,20 @@ reason:"focus_moved", characters:N}`. The toolset passes `expectFront` from the
 gate's own `frontmost` probe in the dispatch cases only. New op `user_idle {}` →
 `{keyMs, clickMs, scrollMs, moveMs, foreignMs}`. Kevin clicking Mail during a
 screen thread's Slack step lands nothing in Mail — the thread waits and reports.
+
+**Since 2026-10-05 (W2-4, W3-1).** `busy` is judged by time and by count
+(`HandsWin.swift`): whatever the session counted beyond the helper's own posts is someone
+else's, so a later own post never masks Kevin's key. A `type` checks before every grapheme:
+his key, click or scroll stops it as `busy`, and it stops as `focus_moved` when the front app
+changes or the focused element moves to another window or out of text entry (re-read every
+50 ms); the result counts the characters that landed, as the text counts them. `move`,
+`focus_app` and an activating `open_app` are held like a click, and so are `browser_navigate`
+and a `browser_js` in the front browser unless `readOnly`. Outside the helper, `open_url` and
+a shell or AppleScript line that brings an app forward read `user_idle` first and answer
+"Nothing was opened." or "Nothing was run." while he types. The lease's re-front waits out his
+quiet window for every taker: a thread only what is left of its 8 s, Jarhead's own hands up to
+8 s more; if he types through it, the taker hears "waiting for the screen" and holds nothing
+(`hands-win.test.ts`, `hands-win-native.test.ts`, `runner-gates.test.ts`).
 
 **The desk.** The engine's root `ConfirmationState` stays; every toolset — the main
 lane too — gets `desk.lane(id, name)`, a `LaneConfirmationState` whose `ask` posts
@@ -2664,7 +2706,7 @@ chip per spawned thread under the timeline, a `[Name]` mono chip on a step from
 prints `threads N (M live)` with a row each; `pnpm jarhead cmd thread.stop
 <id|name>` stops one.
 
-### Sleep: one grammar, three entries, one closer
+### Sleep: one grammar, four entries, one closer
 
 `SleepCause = said | idle | pause-decayed | brain-changed | dock | command | stop |
 shutdown`; `EngineCommand { type: "sleep", cause?, phrase? }` (the app's
@@ -2690,22 +2732,34 @@ prefire:false, idempotent:true }` and `ReflexRunner.match` returns undefined for
 it — it never runs as a tool. `reflex-grammar.test.ts` pins the positive and
 negative tables.
 
-**Three entries.** The ear (`engine/ear.ts`) checks it after STOP_WORDS and before
+**Four entries.** The ear (`engine/ear.ts`) checks it after STOP_WORDS and before
 the hold, fires at once on a final/terminal utterance and otherwise after the
 450 ms careful window, and ONLY when `addressesJarhead(candidate)` or the engine is
-in an exchange (`lastAddressedAt` within 8 s) — a "goodnight" to someone in the
-room never sleeps it, and Jarhead's own "going to sleep" idle clause never fires
-it. The Delegator's `onSleep` covers Live's delegation path (the voice's attention
+in an exchange (since 2026-10-06, `inExchange()`: an addressed turn within 8 s, inside
+the exchange's 120 s cap, and never an echo of Jarhead's own words). A "goodnight" to
+someone in the room never sleeps it (LC-7, 98c7cfe, 2026-10-06: no `said` sleep row,
+n = 1), and Jarhead's own "going to sleep" idle clause never fires it. The Delegator's `onSleep` covers Live's delegation path (the voice's attention
 gate is the addressing test there), checked before supersede / refuse / reflex, so
-the cue works with reflexes off. The command `sleep {cause}` is the third.
+the cue works with reflexes off. The command `sleep {cause}` is the third. The Console's
+composer is the fourth (2026-10-06, F2): a typed dismissal goes to `fallAsleep("said")`, never
+to Live as words. Awake, Live is asked for its farewell; paused or with a reconnect held, it
+sleeps with no farewell and opens no session; asleep, it is a toast and nothing opens.
+GPT-Live-1 answered a typed "that's all for now" with "night." 3 of 3 times and raised no
+delegation (LC-4, c7d4e63, n = 3), so the engine has to be the entry. A typed "thats all for
+now" (no apostrophe) is not in the grammar.
 
 **One closer.** `Engine.fallAsleep(cause, {phrase?, farewell?})` is idempotent and
 the ONLY way the engine goes to sleep: `sleep` row (before detach) →
 `cutEverything` (both helpers, the lease, every thread with its brain's `cancel()`
 once, the confirmations) → if `farewell` and the session is started, not gated,
 and the voice has not said "night" within 2 s: `appendInstructions(null,
-FAREWELL_LINE)` — `'Kevin dismissed you. Say exactly one word — "night." — and
-nothing else.'` — and wait for the first output delta + 300 ms quiet, cap 1800 ms
+FAREWELL_LINE)` (the user's name, then one word, "night.", and nothing else), and a wait:
+3 s for the word to begin (`FAREWELL_START_MS`), then 300 ms of quiet after its sound
+(`FAREWELL_QUIET_MS`; 700 ms, `FAREWELL_ONSET_MS`, before its first audible frame), capped
+at 1.8 s from its first words (`FAREWELL_CAP_MS`). The session closing ends the wait, a Go
+during it wins over the word, and the stop watchdog leaves it alone (2026-10-06, F2: a cap
+counted from the ask closed the session before "night." was heard: GPT-Live-1's first
+audible frame came 1.89 s after an append at the median, LC-5 at c7d4e63, n = 10)
 → `detachLive` + `closeWithDeadline(live, "sleep:<cause>")` → phase asleep → toast
 → `threads.stopAll()`. For non-farewell causes the phase flips synchronously before
 the first await (pressStop needs that). Rewired callers: `sleep()` →
@@ -2729,7 +2783,9 @@ always-on gate).
 split line within ~4 s, Spotify plays by Apple event with the pointer still, Slack
 typed only with Slack in front, one spoken Send question, "yes" sends once, the
 summary does not repeat Spotify. "stop" mid-split ends everything within a frame
-with the meter still running. "goodnight" → "night." → the meter stops within 2 s
+with the meter still running. "goodnight" → "night." → the session closes 1.1–1.3 s after
+the word's first sound (typed, LC-4 at 48aa9a9, n = 3, 2026-10-06; the spoken path is not
+measured live)
 → the blob tucks. "Jarhead" wakes it as before.
 
 **Rails touched, by name:** the voice instructions (`instructions.ts`), the Codex
@@ -2981,9 +3037,14 @@ main: the full base prompt, the memory block, marks, the eyes' shot plus the com
 its own screenshots, confirmations spoken with its name, follow-ups by name ("spotify, skip
 this song"), one budgeted `speak_progress`. It never spawns and never runs `self_*`.
 
-Spawned threads never schedule a snapshot: one `thread.event` (≤ 200 B, coalesced 50 ms per
-thread) per change, broadcast; the conversation travels as a seq-paged `thread.transcript`
-(`ThreadEntry` utterance | delegation | step | status | system) to VIEWERS only, opened with
+Spawned threads never schedule a snapshot: one `thread.event` (coalesced 50 ms per thread)
+per change, broadcast. `step`, `at`, `said` and `status` fit 200 B (the table cuts their
+text); `turn`, `question` and `ended` carry up to 120, 160 and 120 characters and can pass
+200 B; `started` carries the whole Thread record (629 B measured by the audit, TH-8,
+2026-10-05). `protocol.test.ts` pins the bounds: `started` under 1 KB, `status`, `turn` and
+`question` at the record's bounds under 320 B. The conversation
+travels as a seq-paged `thread.transcript` (`ThreadEntry` utterance | delegation | step |
+status | system) to VIEWERS only, opened with
 `thread.open {threadId, viewer}` and paged with `thread.history {before: seq}` — the
 agents' viewer-token shape, so the daemon routes both kinds to the clients that opened them
 and the CLI's join/leave clients receive none. The snapshot itself stays whole — the
@@ -3191,8 +3252,9 @@ One line in `Engine.tick()`; no long `setTimeout`. A tick gap over 5 s means the
 `resync` decides each due row by kind: one-shots fire within their grace (alarm 15 min, timer 10,
 reminder 60) with `· 12 min late` in the head, later ones are `missed` with the `automation.missed`
 problem and **Run now**; routines never fire late (a 01:00 backup at 09:14 is a surprise);
-watchers re-baseline and do not replay. The daemon is the app's child and dies ~90 s after the
-app quits, so the standing line is **Nothing fires while Jarhead is quit.** The one mitigation is
+watchers re-baseline and do not replay. The daemon is the app's child: a clean quit stops it at
+once, and after a crash it lingers 90 s for the relaunched app. So the standing line is
+**Nothing fires while Jarhead is quit.** The one mitigation is
 `Open at login` — the app registering itself with `SMAppService` on Kevin's press, a different
 actor from the brain's hands (which policy treats as confirm for a login item). No launchd
 mirror, no cold path, no `pmset` from the daemon: the doctor prints the `pmset` line as text.
@@ -3206,7 +3268,7 @@ mirror, no cold path, no `pmset` from the daemon: the doctor prints the `pmset` 
 `automations-cli.test.ts` without a daemon; the `automations` line of `jarhead status`; the
 `doctor` group `automations` (eleven advisory rows over one input; `pmset -g sched` read, the
 wake line printed to copy); `docs/AUTOMATIONS.md`; this section; the README's `### Automations`,
-the Safety-rails bullet **Unattended means the run tier**, the `⌥⇧S` hotkey row and the Knobs
+the Safety-rails bullet **Unattended means the run tier**, the `⌃⌥S` hotkey row and the Knobs
 row; the app README's wire section (`local.say`, `notify`, `automation.event`, `system.signal`,
 the notification category). Where the design's prose and the contract on disk differed, the
 contract won: the Swift mirror keeps `Settings.automations` and `Snapshot.automations` optional
@@ -3219,3 +3281,45 @@ doctor, never run. Not touched: `policy.ts`, `core/index.ts`, `runner.ts`, `inst
 `brain.ts`, `Wake/**`, `selfedit.ts`, `shell.ts`, `files.ts`, the `toolset.ts` handshake hunk,
 the signing lines of `build-mac.ts`, `SECRET_KEYS`.
 
+## 22. The room-talk gate: the engine asks (2026-10-06)
+
+GPT-Live-1 takes its own turns. The protocol has no turn-detection setting, no `create_response`
+switch and no cancel, and whatever the voice's orders said, it answered room talk and delegated
+the room's commands in both LC-7 runs before the gate (c7d4e63 and 48aa9a9, 2026-10-06). Every
+answer re-armed the idle clock, so a TV kept the session billing. So the server's turn-taking runs
+untouched, and the engine decides, per voice turn and before its first audible frame, whether it
+asked for that turn. `packages/engine/src/voice-attention.ts` is the decision, pure apart from an
+injected clock.
+
+- **A verdict per utterance** of Kevin's side, as its words arrive: `typed`; `named` (the name or
+  the voice's mishearings of it, a name Live split around the voice's words, or the ear heard it in
+  the same speech); `window` (it began inside the exchange, or it is his first answer to Jarhead's
+  own question within 30 s, never a confirmation's yes); otherwise `room`. A `window` utterance
+  lapses to the room once its words run 8 s past the exchange.
+- **The exchange** runs 8 s past the last thing that moved it (the session start, Kevin's named
+  or typed words, a circle, Jarhead's granted speech; room talk and asides move nothing), and
+  never more than 120 s (`EXCHANGE_MAX_MS`) past its last anchor: a name, a typed line, a circle,
+  Go, a wake, a resume, or a line the engine asked the voice to say.
+- **A voice turn is granted** when it takes the engine's ask (an append that wants words), replies
+  to an addressed utterance under 8 s old, speaks for addressed work with nothing from the room
+  since, or begins inside the exchange. Any other turn is dropped whole, silence too, and counts
+  for nothing; a name within 600 ms of its first audible frame releases it.
+- **A room delegation** waits up to 1.2 s for a late name, then is refused before the brain and
+  closed with a silent `thinking` append. When it may have been Kevin's unnamed answer, he hears one
+  aside cue: "say jarhead with your answer".
+- **Dropped lines stay on the record** as `unheard` on the Transcript and the ledger's `said` row,
+  and are kept off the Console's stream, the continuity, the brain's dialogue and the echo checks.
+- **The clocks.** Only addressed turns move the 30-minute ceiling; a window turn moves the idle
+  clock only; the pre-sleep clause is an aside, heard and counted for nothing.
+
+Measured (LC-7 at 98c7cfe, n = 1, idle sleep at 1 minute): no room talk reached the brain, the
+speaker or the hands, and the session slept 60.3 s after the last addressed turn, with the
+pre-sleep clause at 55.3 s, while the room talk went on (66 s billed). On the wire GPT-Live-1 still
+said "on it." and "night." to the room and delegated one room line; the gate kept the words off the
+speaker and closed the delegation 1.2 s later. The tests are `voice-attention.test.ts`,
+`room-talk-gate.test.ts` and `room-talk-gate-review.test.ts`. AGENTS.md carries the details a
+builder needs.
+
+Still open: a confirmation's yes said after the exchange needs the name or the Console, while the
+voice's orders say answers to its question are for it; the 30 s answer window admits the first
+utterance after Jarhead's question from any speaker, once.
