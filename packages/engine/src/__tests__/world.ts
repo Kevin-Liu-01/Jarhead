@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { JarheadConfig } from "@jarhead/core";
 import type { LiveSession, SessionConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarhead/brain";
-import { FAKE_ACTING_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
+import { FAKE_ACTING_OPS, FAKE_HELD_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
 import type { AgentConnector, SendResult, TranscriptDelta, TranscriptOptions, TranscriptPage } from "@jarhead/agents";
 import type { AgentInfo, AgentMessage, ConnectorHealth, EngineEvent, LedgerRow, LocalModel, LocalServerStatus, MemoryItem, MemoryKind, MemoryOrigin, MemoryState, MemorySummary, OverlayCommand } from "@jarhead/protocol";
 import type { Exec } from "@jarhead/install";
@@ -123,8 +123,10 @@ export class FakeLive extends EventEmitter {
 /**
  * Hands with canned answers; `hold` names an op to keep in flight until `release()`.
  * Kevin's hands win here as in the helper: after `kevinActed()` every acting op within
- * KEVIN_QUIET_MS answers `busy` (nothing posted) unless the op says `ownDriver`;
- * `user_idle` reports the same clock. `focus_app` / `open_app` change `frontApp`.
+ * KEVIN_QUIET_MS answers `busy` (nothing posted) unless the op says `ownDriver`, and so
+ * do `move`, `focus_app` and an `open_app` that activates (FAKE_HELD_OPS, as the hands'
+ * own fake holds them); `user_idle` reports the same clock. `focus_app` / `open_app`
+ * change `frontApp`.
  */
 /** The one screen both helpers look at: the front app, the focused field, the front window's labels. */
 interface FakeScreen {
@@ -201,11 +203,11 @@ export class RecordingHands implements NativeHands {
     if (this.hold === op && this.release_ === undefined) await new Promise<void>((r) => (this.release_ = r));
     if (FAKE_ACTING_OPS.has(op)) {
       // As the helper does, before its first CGEvent.post: Kevin's hands on the machine → nothing is posted.
-      if (this.busyCheck && params["ownDriver"] !== true && this.kevinAt !== undefined) {
-        const ms = this.now() - this.kevinAt;
-        if (ms < KEVIN_QUIET_MS) throw new NativeRequestError({ code: "busy", message: `${HANDS_BUSY_PREFIX} ${Math.max(0, Math.round(ms))} ms ago; nothing was posted` });
-      }
+      this.guardBusy(params);
       this.posted.push({ op, params, at });
+    } else if (FAKE_HELD_OPS.has(op) && !(op === "open_app" && params["activate"] === false)) {
+      // The pointer jumping, or an app pulled over the one he types in, steps on him as a click does (a background open does not).
+      this.guardBusy(params);
     }
     switch (op) {
       case "hello":
@@ -252,6 +254,12 @@ export class RecordingHands implements NativeHands {
   }
   named(op: string): { op: string; params: Record<string, unknown>; at: number }[] {
     return this.ops.filter((o) => o.op === op);
+  }
+  /** The helper's busy check: Kevin's key, click or scroll within KEVIN_QUIET_MS → `busy`, unless the op says `ownDriver`. */
+  private guardBusy(params: Record<string, unknown>): void {
+    if (!this.busyCheck || params["ownDriver"] === true || this.kevinAt === undefined) return;
+    const ms = this.now() - this.kevinAt;
+    if (ms < KEVIN_QUIET_MS) throw new NativeRequestError({ code: "busy", message: `${HANDS_BUSY_PREFIX} ${Math.max(0, Math.round(ms))} ms ago; nothing was posted` });
   }
 }
 
@@ -900,7 +908,9 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   // `probe: false`, `fetch` and `discoverLocal`: no start-up key check against api.openai.com, a 401 for the key
   // check Retry runs and for memory's model pick (what a server says to a key it does not know), and no look at the
   // loopback ports (V14 / BL-12), so a world passes under JARHEAD_TEST_NET=strict. A test that wants any passes its own.
-  engine = new Engine({ config, connectors: [], ...(where.select ? {} : { brain }), fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, probe: false, fetch: refusingFetch, discoverLocal: async () => localNone(), ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
+  // `ownsStateDir`: a world is the daemon's engine (it holds the dir, so its start closes what a dead one left open);
+  // a test of `jarhead live` beside it passes `{ ownsStateDir: false }`.
+  engine = new Engine({ config, connectors: [], ownsStateDir: true, ...(where.select ? {} : { brain }), fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, probe: false, fetch: refusingFetch, discoverLocal: async () => localNone(), ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
   // The real service's audit rows reach the ledger through the bridge's onRow; the fake's do the same here.
   if (fakeMemory) fakeMemory.onRow = (row) => engine.ledger.append(row);
   const events: EngineEvent[] = [];
@@ -937,6 +947,17 @@ export function nextUtterance(w: World): void {
 /** Ledger rows of one type for the world's day, in order. */
 export function rows<T extends { type: string }>(w: World, type: string): T[] {
   return (w.engine.ledger.read(w.clock.t) as unknown as T[]).filter((r) => r.type === type);
+}
+
+/**
+ * A wall-clock bound that holds on a quiet Mac and flakes on a loaded one: the first timing is taken as it came, and
+ * only when it is over `bound` is the same path timed again (`again`, on fresh state), up to `tries` timings in all;
+ * the best is kept. A slow path is slow every time; a loaded Mac's one stall is not. The bound never moves.
+ */
+export async function bestOf(first: number, bound: number, again: () => number | Promise<number>, tries = 5): Promise<number> {
+  let best = first;
+  for (let i = 1; i < tries && !(best < bound); i++) best = Math.min(best, await again());
+  return best;
 }
 
 /** Wait until `cond` holds (polled every 10 ms) or `ms` pass; returns whether it held. */

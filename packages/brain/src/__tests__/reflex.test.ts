@@ -198,7 +198,7 @@ test("delegator: a reflex finishes the delegation without the brain, a failed re
   assert.deepEqual(d.all()[2]!.steps.map((s) => s.kind), ["tool", "tool", "commentary"]);
 });
 
-test("delegator: a cheap reflex said to Jarhead fires when the utterance has clearly ended, ahead of the delegation, which then adopts its record and only speaks; one not addressed waits for Live", async () => {
+test("delegator: a cheap reflex said to Jarhead fires when the utterance has clearly ended, ahead of the delegation, which then adopts its record and only speaks; one not addressed waits for Live", async (t) => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
   const seen: BrainTask[] = [];
@@ -222,11 +222,21 @@ test("delegator: a cheap reflex said to Jarhead fires when the utterance has cle
     live.emit("inputTranscript", delta, s, e);
     transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
   };
-  say("jarhead", 0, 300);
-  say(" scroll down", 300, 800);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(ran.length, 0, "no full stop: the short quiet window is not enough — a pause mid-sentence looks the same");
-  await new Promise((r) => setTimeout(r, 110));
+  // The quiet windows are wall-clock time (Date.now() and setTimeout). Mocked for the opening, so the look at 50 ms
+  // always comes before the long window (90 ms) has passed, however loaded the Mac: the short window is proven not
+  // enough every run, never skipped. The mock's clock starts a minute back, so the real clock after it runs later.
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() - 60_000 });
+  try {
+    say("jarhead", 0, 300);
+    say(" scroll down", 300, 800);
+    t.mock.timers.tick(50);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(ran.length, 0, "no full stop: the short quiet window is not enough — a pause mid-sentence looks the same");
+    t.mock.timers.tick(45);
+    await new Promise((r) => setImmediate(r));
+  } finally {
+    t.mock.timers.reset();
+  }
   assert.deepEqual(ran.map((r) => r.label), ["scroll down"], "fired once the long quiet window passed");
   assert.deepEqual(events, ["scroll down:true"]);
   // The reflex has a record of its own already: running, on the ledger, its tool step in it.

@@ -8,15 +8,15 @@ import { delegate, rows, until, world, type World } from "./world.ts";
 /**
  * The two latency stamps that make "speech end → first visible action" measurable
  * on every delegation (docs/LATENCY.md §5): `speechEndAt` — the end of Kevin's
- * triggering utterance, placed on the wall clock through the session's start —
- * and `firstActionAt` — the first acting tool that returned ok (a look-only tool
- * and a failed acting tool do not count). Both ride on the ledger's
- * `delegation.finished` row and in the delegator's done line.
+ * triggering utterance, on the wall clock: when its last input delta arrived (PERF-6;
+ * Live's session timeline drifts from the wall clock) — and `firstActionAt` — the first
+ * acting tool that returned ok (a look-only tool and a failed acting tool do not count).
+ * Both ride on the ledger's `delegation.finished` row and in the delegator's done line.
  */
 
 type Finished = Extract<LedgerRow, { type: "delegation.finished" }>;
 
-test("timings: speechEndAt is the triggering utterance's end on the session's start clock; firstActionAt is the first acting tool that returned ok; both land on the ledger and in the done line", async () => {
+test("timings: speechEndAt is the wall clock of the triggering utterance's last input delta; firstActionAt is the first acting tool that returned ok; both land on the ledger and in the done line", async () => {
   let w!: World;
   const brain: Brain = {
     kind: "fake",
@@ -53,13 +53,17 @@ test("timings: speechEndAt is the triggering utterance's end on the session's st
     await engine.ready();
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
-    const sessionStartedAt = clock.t;
-    // Kevin speaks; Live delegates 600 ms of wall clock after the utterance ended (its transcription and decision).
-    clock.t += 2500;
-    const wallAtDelegation = clock.t;
+    // Kevin speaks; Live delegates 600 ms of wall clock after the utterance's last delta arrived (its decision). The
+    // session timeline (1000 → 1900) says nothing about the wall clock: it lags it here by 600 ms.
+    clock.t += 1900;
     const live = w.live;
     const s = live.nowMs; // 1000 on the session timeline
-    delegate(w, "jarhead find the save button and press it", "item_1"); // one fragment [s, s+900], then the delegation at s+900
+    live.nowMs += 900;
+    live.emit("inputTranscript", " jarhead find the save button and press it", s, live.nowMs);
+    const speechEndAt = clock.t;
+    clock.t += 600;
+    const wallAtDelegation = clock.t;
+    live.emit("delegation", "item_1", "client", live.nowMs);
     // Until it closes, never a fixed sleep: a busy Mac takes longer than 60 ms to run four tools (BL-11).
     await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_1")?.status === "done");
 
@@ -68,14 +72,14 @@ test("timings: speechEndAt is the triggering utterance's end on the session's st
     assert.equal(d.status, "done", d.summary);
     const t = d.timings;
     assert.equal(t.delegatedAt, wallAtDelegation);
-    assert.equal(t.speechEndAt, sessionStartedAt + s + 900, "the utterance's endMs on the session timeline, placed on the wall clock at session.started");
+    assert.equal(t.speechEndAt, speechEndAt, "the wall clock its last input delta arrived at");
     assert.equal(t.firstActionAt, wallAtDelegation + 300, "the key press, not the focused-text read and not the open_app that failed");
     assert.equal(hands.named("key").length, 1, "the key went out through the gated hands");
     assert.equal((t as { firstToolAt?: number }).firstToolAt, wallAtDelegation + 100, "the first tool is still the first look (the eyes' shot excluded)");
 
     const finished = rows<Finished>(w, "delegation.finished").find((r) => r.delegationId === d.id);
     assert.ok(finished, "the finished row is on the ledger");
-    assert.equal(finished.timings.speechEndAt, sessionStartedAt + s + 900);
+    assert.equal(finished.timings.speechEndAt, speechEndAt);
     assert.equal(finished.timings.firstActionAt, wallAtDelegation + 300);
 
     const done = logLines.find((l) => /^delegation dlg_\S+ done in/.test(l));

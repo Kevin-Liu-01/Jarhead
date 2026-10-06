@@ -90,7 +90,8 @@ async function run(): Promise<void> {
   const taken = await socketInUse(socketPath);
   if (taken) refuseSocket(taken);
 
-  const engine = new Engine({ config });
+  // The lock is ours: this engine closes what a dead daemon left open (its session, its live threads).
+  const engine = new Engine({ config, ownsStateDir: true });
   const server = new DaemonServer(engine, socketPath);
   try {
     await server.listen();

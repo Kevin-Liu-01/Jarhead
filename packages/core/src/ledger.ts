@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { ConversationState, JarheadSessionSummary, LedgerRow, SleepCause } from "@jarhead/protocol";
+import { SESSION_LOST_REASON, type ConversationState, type JarheadSessionSummary, type LedgerRow, type SleepCause } from "@jarhead/protocol";
 
 /** How much of the first heard line becomes a session's title. */
 const TITLE_CHARS = 60;
@@ -116,7 +116,7 @@ const WALK_META_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /** The rows the walk reads whole; every other row is counted (heard, said, a delegation) or only takes its place. */
-const WHOLE_TYPES: ReadonlySet<string> = new Set(["session.started", "session.closed", "pause", "resume", "stop", "sleep", ...WALK_META_TYPES]);
+const WHOLE_TYPES: ReadonlySet<string> = new Set(["session.started", "session.closed", "session.usage", "pause", "resume", "stop", "sleep", ...WALK_META_TYPES]);
 const COUNTED_TYPES: ReadonlySet<string> = new Set(["heard", "said", "delegation.created"]);
 
 /** A row's type from the line itself (`{"at":…,"type":"…"` — how every row is written), so most lines are never parsed. */
@@ -200,7 +200,7 @@ interface BuiltSession {
   reason?: string;
   /** From the `session.closed` row, or a lost session's last usage-bearing row. */
   usageSeconds: number;
-  /** The last `pause` row's usage: what a session with no closed row was billed. */
+  /** The last usage-bearing row's seconds (`session.usage`, `pause`): what a session with no closed row was billed. */
   lastUsage: number;
   /** The last transport row inside the session: what a client-requested close meant (`sleep:<cause>` for a sleep). */
   lastTransport?: "pause" | "stop" | `sleep:${SleepCause}`;
@@ -377,11 +377,11 @@ export class Ledger {
    * the newest WALK_DAYS day files, and every session of a pinned conversation however
    * old. A session may cross midnight (its closed row is in the next file); one with no
    * closed row anywhere is open — unless a later session started, in which case it was
-   * lost at that moment, billed what its last `pause` row said (else nothing). A close the
-   * engine asked for (`close_requested`, or `client_closed` when it had to force it) is
-   * reported as what Kevin did — "paused" after a `pause` row, "stopped" after a pressed
-   * `stop` — since the server's word says nothing about why; any other reason (idle,
-   * connection_lost, …) is kept.
+   * lost at that moment, billed what its last `session.usage` or `pause` row said (else
+   * nothing). A close the engine asked for (`close_requested`, or `client_closed` when it
+   * had to force it) is reported as what Kevin did — "paused" after a `pause` row,
+   * "stopped" after a pressed `stop` — since the server's word says nothing about why; any
+   * other reason (idle, connection_lost, …) is kept.
    */
   sessions(): JarheadSessionSummary[] {
     const walk = this.walk();
@@ -1139,9 +1139,9 @@ export class Ledger {
           case "session.started": {
             const lost = open !== undefined && open.closedAt === undefined;
             if (open && lost) {
-              // Never closed: lost when the next one started, billed what its last pause said.
+              // Never closed: lost when the next one started, billed what its last usage row or pause said.
               open.closedAt = row.at;
-              open.reason = "lost";
+              open.reason = SESSION_LOST_REASON;
               open.usageSeconds = open.lastUsage;
               open.end = position;
               open.endInclusive = false;
@@ -1191,6 +1191,12 @@ export class Ledger {
             if (!target) break;
             if (typeof row.usageSeconds === "number") target.lastUsage = row.usageSeconds;
             target.lastTransport = "pause";
+            break;
+          }
+          case "session.usage": {
+            // V8 / LM-2: the open session's billed seconds so far (they only grow); a session that never closes is billed these.
+            const target = typeof row.sessionId === "string" ? byId.get(row.sessionId) : undefined;
+            if (target && typeof row.usageSeconds === "number") target.lastUsage = Math.max(target.lastUsage, row.usageSeconds);
             break;
           }
           case "stop":

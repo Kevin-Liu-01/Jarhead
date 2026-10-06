@@ -540,6 +540,7 @@ test("rebuild at start: an engine started over a state dir whose day file holds 
   // The daemon restarts: a second engine over the same state dir.
   const w2 = world({}, { dir: w.dir, firstSessionId: "sess_b" });
   try {
+    await w2.engine.start();
     const ended = rows<EndedRow>(w2, "thread.ended").filter((r) => r.threadId === "t_old");
     assert.equal(ended.length, 1);
     assert.equal(ended[0]!.status, "failed");
