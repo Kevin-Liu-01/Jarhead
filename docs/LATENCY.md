@@ -488,8 +488,9 @@ the first tool to drop it if the model starts double-acting.
 
 The bench below is `pnpm jarhead bench --no-duck`, 3 runs, with the real Swift helper and the
 stand-in brain, at 4727241 (the F5 commit) on Kevin's Mac with the screen locked, load average
-about 105, n = 3, 2026-10-06. It spends nothing. A later run at 48aa9a9 (n = 5) was not saved,
-so its figures are not quoted here.
+about 105, n = 3, 2026-10-06. It spends nothing. A later run at 48aa9a9 (5 runs, load average
+160 to 200, the same day) gave the README's harness rows. Its output is not in the repo, so this
+table keeps the run at 4727241.
 
 | lever | target | where it stands |
 |---|---|---|
