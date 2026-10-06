@@ -4,7 +4,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync,
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
-import { JARHEAD_BUNDLE_ID, compareTrees, defaultExec, performInstall, probeTarget, runHygiene, type InstallIO } from "@jarhead/install";
+import { JARHEAD_BUNDLE_ID, LSREGISTER, LSREGISTER_TIMEOUT_MS, compareTrees, defaultExec, performInstall, probeTarget, runHygiene, type InstallIO } from "@jarhead/install";
 import { ICON_SOURCES, staleAgainst } from "./icon-render.ts";
 import { chooseIdentity, identityLine, identityNames, type IdentityChoice } from "./sign-identity.ts";
 
@@ -19,9 +19,11 @@ import { chooseIdentity, identityLine, identityNames, type IdentityChoice } from
  * responsible process).
  *
  * JARHEAD_BUILD_ONLY=1 stops after the stage bundle is signed and `codesign --verify
- * --strict` passes: the summary names the stage and nothing under /Applications is read or
- * written (no snapshot, rsync, install verification, parity, inode check, hygiene or
- * relink). CI runs the icon, the release build and the signing this way; so can a dry run.
+ * --strict` passes: the stage is unregistered from LaunchServices (`lsregister -u` on that
+ * exact path, so it never launches as a second Jarhead), the summary names it and nothing
+ * under /Applications is read or written (no snapshot, rsync, install verification, parity,
+ * inode check, hygiene or relink). CI runs the icon, the release build and the signing this
+ * way; so can a dry run.
  * JARHEAD_SIGN_IDENTITY pins the signing identity (`-` = ad-hoc); without it the order is
  * scripts/sign-identity.ts's, and the pick is printed before the first codesign call. An
  * ad-hoc pick that was not pinned never installs over a copy an identity signed (every grant
@@ -153,10 +155,18 @@ const signedLine = identity ?? "ad-hoc (TCC grants reset on every rebuild; creat
 // sign → verify this way (check.yml, ad-hoc); a dry run on a Mac with an install uses it too.
 if (process.env["JARHEAD_BUILD_ONLY"] === "1") {
   const stagedSize = statSync(join(macos, "Jarhead")).size;
+  // The stage is a second com.kevinliu.jarhead bundle on disk, and LaunchServices has held a
+  // record for it before (packages/install's stale rule names build/stage): with one, `open -a
+  // Jarhead` can pick the stage and start a second instance beside /Applications'. Unregister
+  // this exact path after the verify — the database only, the stage stays; never
+  // /Applications/Jarhead.app. A path never registered fails -u harmlessly, as does a runner
+  // without LaunchServices.
+  const unregistered = defaultExec(LSREGISTER, ["-u", APP], { timeoutMs: LSREGISTER_TIMEOUT_MS });
   console.log(`
   built      ${APP} (JARHEAD_BUILD_ONLY=1: signed and verified, not installed)
   binary     ${(stagedSize / (1024 * 1024)).toFixed(1)} MiB
   signed     ${signedLine}
+  launch     ${unregistered.code === 0 ? "the stage unregistered from LaunchServices" : `the stage was not registered (lsregister -u exit ${unregistered.code})`}; only /Applications/Jarhead.app launches
 `);
   process.exit(0);
 }

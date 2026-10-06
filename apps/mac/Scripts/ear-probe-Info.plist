@@ -17,6 +17,10 @@
   <string>ear-probe</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <!-- Never a Dock tile: the probe has no UI, and a Foreground check-in leaves a tile in the
+       Dock's recents after every run (the audio probe's mould). The TCC prompts still show. -->
+  <key>LSUIElement</key>
+  <true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>The ear probe listens on the microphone for a few seconds to print on-device partial transcripts.</string>
   <key>NSSpeechRecognitionUsageDescription</key>

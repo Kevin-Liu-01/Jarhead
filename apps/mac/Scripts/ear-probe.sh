@@ -47,9 +47,6 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 # Ad-hoc signed: TCC keys its grants to this build's cdhash, so Speech Recognition and the
 # microphone are asked again after every rebuild (a real signing identity would fix that).
 codesign --force --sign - --identifier com.kevinliu.jarhead.ear-probe "$APP"
-# LaunchServices caches bundle facts; without this a rebuilt app can fail to `open` with
-# "the application cannot be opened because its executable is missing".
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
 echo "built $APP"
 if [[ "${1:-}" == "--build-only" ]]; then exit 0; fi
 
@@ -57,10 +54,19 @@ if [[ "${EAR_PROBE_DIRECT:-}" == "1" ]]; then
   exec "$APP/Contents/MacOS/ear-probe"
 fi
 
+# LaunchServices caches bundle facts; without this a rebuilt app can fail to `open` with
+# "the application cannot be opened because its executable is missing". Registered for the run
+# only and unregistered on exit (this exact path), so a probe bundle built outside /Applications
+# never lingers in LaunchServices; --build-only and EAR_PROBE_DIRECT never register it.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSREGISTER" -f "$PWD/$APP"
+trap '"$LSREGISTER" -u "$PWD/$APP" >/dev/null 2>&1 || true' EXIT
+
 LOG="$BUILD/run.log"
 : > "$LOG"
 # `open` hands the app to launchd, so it is its own responsible process for TCC. The
-# environment knobs travel through --env; stdout/stderr land in the log.
+# environment knobs travel through --env; stdout/stderr land in the log. EarProbe.app is
+# LSUIElement (Scripts/ear-probe-Info.plist): no Dock tile, and its own bundle id, never Jarhead's.
 ARGS=()
 for v in EAR_PROBE_SECONDS EAR_PROBE_SAY EAR_PROBE_FILE EAR_PROBE_PHRASE EAR_PROBE_PHASE EAR_PROBE_REFLEXES EAR_PROBE_NO_PROMPT JARHEAD_EAR_LOG; do
   if [[ -n "${!v:-}" ]]; then ARGS+=(--env "$v=${!v}"); fi

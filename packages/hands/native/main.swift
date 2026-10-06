@@ -5,14 +5,45 @@ _ = typeCancelHandlerInstalled
 import AppKit
 import IOKit.hid
 
-// A helper inside Jarhead.app inherits the app's Info.plist (LSUIElement false), so LaunchServices
-// would register it as a Foreground app: a second "Jarhead" Dock tile per helper process. Say what
-// we are before AppKit checks us in. `.prohibited`, not `.accessory`: no UI, no windows. CGEvent
-// posting, AX reads, NSPasteboard, NSRunningApplication.activate and NSWorkspace.openApplication
-// all keep working from a prohibited process. Never an embedded __info_plist with a bundle id:
-// it would change the nested code's ad-hoc signing identifier that the --deep verify expects.
+// A helper inside Jarhead.app has no Info.plist of its own: CFBundle resolves
+// Contents/MacOS/jarhead-hands to the enclosing Jarhead.app, and LaunchServices checks the process
+// in from that dictionary (LSUIElement false) as a Foreground app: a second "Jarhead" Dock tile per
+// helper process, parked in recent-apps when it exits. `.prohibited` set after `NSApplication.shared`
+// was too late. The check-in happens INSIDE `NSApplication.shared`: the unified log on 2026-10-05 has
+// `CHECKEDIN … foreground=1` then `PostHideProcess` for every helper, and the app's first three
+// `--permissions` refreshers were the Dock's three recent tiles (`lsappinfo` reads BackgroundOnly
+// only after the transform, so the smoke check passed). So the check-in is told first:
+// LSBackgroundOnly in the main bundle's in-memory Info dictionary, the copy the check-in reads (a
+// scratch bundle whose file says LSUIElement checked in BackgroundOnly with it set). The file on disk
+// and the signature are untouched. Never an embedded __info_plist with a bundle id: it would change
+// the nested code's ad-hoc signing identifier that the --deep verify expects.
+markBackgroundOnly()
+
+// `jarhead-hands --permissions`: print the grants and exit, before AppKit exists, so a refresher
+// (the app runs one every 1.5 s while anything asks) never checks in at all. A fresh process is the
+// only reliable way to read TCC after the user changes it — a running process may keep the answer
+// it got at launch (Screen Recording notoriously does). Prints all four: accessibility,
+// screenRecording, inputMonitoring, fullDiskAccess.
+if CommandLine.arguments.contains("--permissions") {
+    let data = (try? JSONSerialization.data(withJSONObject: permissionsJSON())) ?? Data("{}".utf8)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+    exit(0)
+}
+
+// `.prohibited`, not `.accessory`: no UI, no windows; it restates what the check-in was told. CGEvent
+// posting, AX reads, NSPasteboard, NSRunningApplication.activate and NSWorkspace.openApplication all
+// keep working from a background-only process.
 _ = NSApplication.shared
 NSApp.setActivationPolicy(.prohibited)
+
+/// LSBackgroundOnly = 1 in the main bundle's Info dictionary as CFBundle holds it in memory (a mutable
+/// dictionary: CFBundle adds its own keys to it). Before anything checks the process in. Unbundled
+/// (build/jarhead-hands) it is the empty dictionary CFBundle made for the tool, and the same holds.
+func markBackgroundOnly() {
+    guard let info = CFBundleGetInfoDictionary(CFBundleGetMainBundle()), let dict = (info as AnyObject) as? NSMutableDictionary else { return }
+    dict["LSBackgroundOnly"] = "1"
+}
 
 // jarhead-hands: resident macOS "hands" helper for Jarhead.
 // Newline-delimited JSON over stdin/stdout. One request per line, one response per request,
@@ -102,17 +133,6 @@ func fullDiskAccessGranted() -> Bool {
         }
     }
     return false
-}
-
-// `jarhead-hands --permissions`: print the grants and exit. A fresh process is the
-// only reliable way to read TCC after the user changes it — a running process may
-// keep the answer it got at launch (Screen Recording notoriously does). Prints all
-// four: accessibility, screenRecording, inputMonitoring, fullDiskAccess.
-if CommandLine.arguments.contains("--permissions") {
-    let data = (try? JSONSerialization.data(withJSONObject: permissionsJSON())) ?? Data("{}".utf8)
-    FileHandle.standardOutput.write(data)
-    FileHandle.standardOutput.write(Data("\n".utf8))
-    exit(0)
 }
 
 func opHello() -> JSONObject {

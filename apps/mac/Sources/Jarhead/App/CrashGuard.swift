@@ -609,6 +609,9 @@ enum CrashGuard {
     /// 60 s: the crash reporter holds an aborting process for seconds while it writes the
     /// .ips — then `open -a` the bundle, or exec's the dev binary when not running from
     /// one. A pid still alive after the wait (AppKit swallowed the exception) means no launch.
+    /// Never a second Jarhead: `open -a` (never `-n`) activates a running instance instead, and
+    /// whatever starts runs SingleInstance first — a Jarhead Kevin opened in the meantime holds the
+    /// state dir's claim, so the relaunch hands off to it and exits before NSApplication.
     private static func prepareRelaunch() {
         let bundle = Bundle.main.bundleURL
         let fromBundle = bundle.pathExtension == "app"

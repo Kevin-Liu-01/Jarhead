@@ -9,6 +9,11 @@ import AppKit
 nonisolated(unsafe) var signalSources: [DispatchSourceSignal] = []
 
 MainActor.assumeIsolated {
+    // One Jarhead per state dir, decided before anything exists: a second launch hands off to the
+    // first and exits here, before NSApplication (no check-in, no Dock tile), the crash guard, the
+    // daemon, audio or hotkeys (SingleInstance.swift).
+    SingleInstance.ensureOne(stateDir: AppDelegate.stateDir())
+
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate

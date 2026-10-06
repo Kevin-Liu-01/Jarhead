@@ -65,8 +65,6 @@ if [[ $needs_build == 1 ]]; then
   fi
   [[ -n "$IDENTITY" ]] || IDENTITY="-"
   codesign --force --sign "$IDENTITY" --identifier com.kevinliu.jarhead.audio-probe "$APP" 1>&2
-  # LaunchServices caches bundle facts; without this a rebuilt app can fail to `open`.
-  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" 1>&2
   echo "built $APP (signed: $IDENTITY)" >&2
 fi
 if [[ "${1:-}" == "--build-only" ]]; then exit 0; fi
@@ -75,10 +73,18 @@ if [[ "${AUDIO_PROBE_DIRECT:-}" == "1" ]]; then
   exec "$BIN" "$@"
 fi
 
+# LaunchServices caches bundle facts; without this a rebuilt app can fail to `open`. Registered for
+# the run only and unregistered on exit (this exact path), so a probe bundle built outside
+# /Applications never lingers in LaunchServices; --build-only and AUDIO_PROBE_DIRECT never register it.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSREGISTER" -f "$PWD/$APP" 1>&2
+trap '"$LSREGISTER" -u "$PWD/$APP" >/dev/null 2>&1 || true' EXIT
+
 LOG="$BUILD/run.log"
 : > "$LOG"
 # `open` hands the app to launchd, so it is its own responsible process for TCC. The environment
-# knobs travel through --env, the flags through --args; stdout/stderr land in the log.
+# knobs travel through --env, the flags through --args; stdout/stderr land in the log. AudioProbe.app
+# is LSUIElement (Scripts/audio-probe-Info.plist): no Dock tile, and its own bundle id, never Jarhead's.
 ARGS=()
 for v in AUDIO_PROBE_MODE AUDIO_PROBE_PLAY AUDIO_PROBE_SECONDS AUDIO_PROBE_NO_PROMPT AUDIO_PROBE_STATE_DIR; do
   if [[ -n "${!v:-}" ]]; then ARGS+=(--env "$v=${!v}"); fi

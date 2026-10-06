@@ -97,6 +97,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.openOnboardingHandler = { [weak self] in self?.onboarding.show() }
         state.openPermissionsSetupHandler = { [weak self] in self?.onboarding.show(at: .permissions) }
         state.beginMarkModeHandler = { [weak self] in self?.overlay.beginMarkMode() }
+        // A second launch for this state dir handed off to us and exited (SingleInstance): answer
+        // the way a click on the Dock tile does (applicationShouldHandleReopen).
+        SingleInstance.observeHandOffs(stateDir: AppDelegate.stateDir()) { [weak self] in
+            appLog("one Jarhead: a second launch handed off; coming forward")
+            self?.console.show()
+            NSApp.activate(ignoringOtherApps: true)
+        }
 
         let socketPath = AppDelegate.socketPath()
 
@@ -705,6 +712,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         appLog("quit: terminating in phase \(state.phase.rawValue)")
+        // The one-Jarhead claim goes first: a launch during this teardown waits for us to exit
+        // instead of handing off to an app that is going away.
+        SingleInstance.giveUpClaim()
         // Stop the engine first so the Live session (which bills by the second) closes:
         // the transport's stop interrupts whatever runs, closes the session and sleeps.
         if state.connected { client.send(.stop) }
