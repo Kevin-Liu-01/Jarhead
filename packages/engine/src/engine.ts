@@ -18,13 +18,13 @@ import { Automations, keepRecipeTrash, type AutomationExec, type ShellGate, type
 import {
   ACCENTS,
   BRAIN_KINDS,
-  DEFAULT_AUDIO,
   DEFAULT_SETTINGS,
   DEFAULT_WAKE,
   LOCAL_NONE,
   MAIN_THREAD_ID,
   SESSION_LOST_REASON,
   SETTINGS_KEYS,
+  audioSettingsOf,
   grantOf,
   THREAD_PAGE,
   THREAD_TERMINAL,
@@ -34,7 +34,6 @@ import {
   type AgentMessage,
   type AgentStatus,
   type AudioLevels,
-  type AudioSettings,
   type AudioState,
   type ConnectorHealth,
   type Delegation,
@@ -1236,12 +1235,13 @@ export class Engine extends EventEmitter<EngineEvents> {
     if ("workers" in saved && !("threads" in saved)) known["threads"] = saved["workers"]; // settings.json written before 2026-09-13 says `workers`
     const wake = known["wake"];
     // audio: absent before 2026-09-16 → DEFAULT_AUDIO. A missing known key is not "unknown", so the file is not rewritten; the block lands on the first set-settings after.
+    // audioSettingsOf keeps only well-typed fields (the app's decoder is strict).
     const audio = known["audio"];
     const settings: Settings = {
       ...base,
       ...(known as Partial<Settings>),
       wake: { ...DEFAULT_WAKE, ...(typeof wake === "object" && wake !== null ? (wake as Partial<WakeSettings>) : {}) },
-      audio: { ...DEFAULT_AUDIO, ...(typeof audio === "object" && audio !== null ? (audio as Partial<AudioSettings>) : {}) },
+      audio: audioSettingsOf(audio),
     };
     // A key Settings no longer has is written out once; a file holding only known keys is never rewritten here.
     if (Object.keys(saved).some((k) => !(SETTINGS_KEYS as readonly string[]).includes(k))) {
@@ -1284,8 +1284,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         if (key in DEFAULT_SETTINGS) continue;
         delete next[key];
       } else if (value !== undefined) {
-        // The nested blocks merge field-wise; the audio block has no engine behaviour here — the app's graph reads it from the snapshot.
-        next[key] = key === "wake" ? { ...DEFAULT_WAKE, ...(value as Partial<WakeSettings>) } : key === "audio" ? { ...DEFAULT_AUDIO, ...(value as Partial<AudioSettings>) } : value;
+        // The nested blocks merge field-wise; the audio block has no engine behaviour here — the app reads it from the snapshot.
+        next[key] = key === "wake" ? { ...DEFAULT_WAKE, ...(value as Partial<WakeSettings>) } : key === "audio" ? audioSettingsOf(value) : value;
       }
     }
     const before = this.settings;

@@ -344,7 +344,8 @@ export class AutomationExecutor {
     } else if (ctx.quiet) {
       detail = "quiet hours: shown, not said";
     } else {
-      this.opts.emit({ type: "local.say", sound: action.sound ?? (kind === "alarm" ? "Hero" : "Glass"), automationId: a.id });
+      // The default sound by kind: the app plays its palette's alarm for Hero, the timer for Ping, the chime for Glass.
+      this.opts.emit({ type: "local.say", sound: action.sound ?? (kind === "alarm" ? "Hero" : kind === "timer" ? "Ping" : "Glass"), automationId: a.id });
     }
     this.banner(a, line, said !== line ? said : this.calm(a, nextAt), undefined);
     return { ok: true, ring: true, detail };

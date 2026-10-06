@@ -824,6 +824,33 @@ test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `ca
 });
 
 // the wire's `by` (integration seam 2)
+test("palette defaults: a chime that names no sound rings Ping for a timer, Hero for an alarm and Glass for anything else — the app's timer, alarm and chime", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, events } = w;
+  try {
+    await engine.start();
+    const t0 = clock.t;
+    const timer = armed(w, engine.automations.arm({ name: "tea", when: { kind: "in", ms: 5 * M }, then: [{ kind: "chime", line: "tea is up" }], echo: "In 5 minutes, chime." }, "brain"));
+    const ring = armed(w, engine.automations.arm({ name: "Up", when: { kind: "at", at: t0 + 10 * M }, then: [{ kind: "chime", line: "up" }], clauses: { quiet: "override" }, echo: "At ten past, ring." }, "brain"));
+    const call = armed(w, engine.automations.arm({ name: "Call", when: { kind: "at", at: t0 + 15 * M }, then: [{ kind: "say", line: "call mum" }, { kind: "chime", line: "call" }], clauses: { quiet: "override" }, echo: "At quarter past, say it and chime." }, "brain"));
+    assert.deepEqual([timer, ring, call].map((a) => a.then.find((x) => x.kind === "chime")), [{ kind: "chime", line: "tea is up" }, { kind: "chime", line: "up" }, { kind: "chime", line: "call" }], "no sound named");
+    events.length = 0;
+    for (const [at, n] of [[5, 1], [10, 2], [15, 3]] as const) {
+      clock.t = t0 + at * M;
+      tick(engine);
+      await fired(w, n);
+    }
+    // The first sound per row (the alarm re-rings every 30 s while it lingers; those are Hero too).
+    const first = new Map<string, string>();
+    for (const e of events) if (e.type === "local.say" && e.sound !== undefined && !first.has(e.automationId)) first.set(e.automationId, e.sound);
+    assert.deepEqual([...first], [[timer.id, "Ping"], [ring.id, "Hero"], [call.id, "Glass"]]);
+    assert.ok(events.some((e) => e.type === "local.say" && e.automationId === call.id && e.text === "call mum" && e.sound === undefined), "the say line rides alone: the app plays its cue before it");
+  } finally {
+    await engine.stop();
+  }
+});
+
 test("automation.set from the wire stamps who sent it: by: \"cli\" → createdBy.by cli on the row and the ledger's automation.set; absent → console (an older Console); the brain's rows come through its tool and never this command; a rename wears its surface; the CLI's set is never a yes", async () => {
   const { exec } = fakeExec();
   const w = world({ automations: { exec } });
