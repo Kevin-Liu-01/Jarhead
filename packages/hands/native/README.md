@@ -225,7 +225,7 @@ end (JSON in → JSON out; n not recorded) and the first capture in a process ~1
 (ScreenCaptureKit warm-up). On 2026-10-06, through the runner with `pnpm jarhead bench` (screen
 locked, load average 160 to 200), the quick screenshot (2000 px, 1.1 MP) took 117 ms median and
 305 ms p95 (n = 5) and the full one 128 ms (n = 1). In Kevin's ledger from 2026-09-12 to 09-28 a
-screenshot took 96 ms median and 311 ms p95 (n = 72).
+screenshot took 98 ms median and 311 ms p95 (n = 72).
 
 Every capture waits on ScreenCaptureKit for at most 5 s in all (`runBlocking` in `Protocol.swift`),
 then answers `capture_failed` and the worker moves on; a callback that never comes would otherwise

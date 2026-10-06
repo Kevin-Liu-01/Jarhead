@@ -362,6 +362,10 @@ Three kinds, kept apart:
 - **live**: the paid live checks against GPT-Live-1 (`scripts/live-check.mts`, below under Develop), run on
   2026-10-06; the reports are JSON files in `build/live-check/2026-10-06/`.
 
+The median of an even n is the mean of the middle two. The model-path harness, `pnpm jarhead ledger --speed`
+and the live-check print the lower one (nearest rank), so their output reads 4.4 s, 8.9 s, 3.8 s, 12.6 s,
+82 ms, 96 ms and 1.35 s where this table says 4.5 s, 9.0 s, 3.9 s, 13.3 s, 83 ms, 98 ms and 1.38 s.
+
 Sources: [`docs/LATENCY.md`](docs/LATENCY.md), [`docs/latency/after.json`](docs/latency/after.json),
 [`docs/REDESIGN.md`](docs/REDESIGN.md) §12 · §13 · §16 · §20, [`packages/hands/native/README.md`](packages/hands/native/README.md).
 
@@ -370,16 +374,16 @@ Sources: [`docs/LATENCY.md`](docs/LATENCY.md), [`docs/latency/after.json`](docs/
 | ear final → hands dispatch (real helper) | **8 ms** median · 29 ms p95 (n = 50, 2026-10-06, load average 160 to 200); 3 ms · 6 ms p95 on 2026-09-11 (n = 50) | not logged |
 | ear partial → dispatch, prefire kinds (scroll, page, screenshot, circle; the 120 ms stability window included) | 128 ms median · **145 ms p95** (n = 20, 2026-10-06); 122 · 126 ms on 2026-09-11 (n = 20) | not logged |
 | ear partial → dispatch, careful kinds (keys, edits, type, click; the 450 ms window included) | 462 ms median · **529 ms p95** (n = 30, 2026-10-06); 455 · 457 ms on 2026-09-11 (n = 30) | not logged |
-| delegation → first visible action | **4.4 s** median · 5.1 s p95 (Codex through the app-server, canned hands, n = 6, 2026-09-12) | **7.0 s** median · 27.6 s p95 (n = 15); before the latency pass 12.5 s median · 17.5 s p90 (simple commands, n = 10, 2026-09-10 to 11) |
-| delegation → verified completion | 8.9 s median · 25.6 s p95 (n = 10, 2026-09-12) | 12.6 s median · 50.0 s p95 (n = 28); before the pass 22.1 s · 40.7 s p90 (simple commands, n = 11, 2026-09-10 to 11) |
-| one model generation (gpt-6-astra, the floor under the model path) | 3.8 s median · 6.0 s p95 (n = 24, 2026-09-12); 3.4 s · 5.9 s p90 over 35 controlled generations (2026-09-11) | |
+| delegation → first visible action | **4.5 s** median · 5.1 s p95 (Codex through the app-server, canned hands, n = 6, 2026-09-12) | **7.0 s** median · 27.6 s p95 (n = 15); before the latency pass 12.5 s median · 17.5 s p90 (simple commands, n = 10, 2026-09-10 to 11) |
+| delegation → verified completion | 9.0 s median · 25.6 s p95 (n = 10, 2026-09-12) | 13.3 s median · 50.0 s p95 (n = 28); before the pass 22.1 s · 40.7 s p90 (simple commands, n = 11, 2026-09-10 to 11) |
+| one model generation (gpt-6-astra, the floor under the model path) | 3.9 s median · 6.0 s p95 (n = 24, 2026-09-12); 3.4 s · 5.9 s p90 over 35 controlled generations (2026-09-11) | |
 | speech end → Live's delegation (Live's own transcription and decision) | | live: **1.5 s** median, 0.95 to 1.77 s (LC-10, n = 10 over two runs) |
 | spoken request that delegates → the first audible "looking." | | live: 2.2 s median, 1.7 to 3.3 s (LC-10, n = 10 over two runs) |
-| typed line → first audible frame of the reply | | live: **1.35 s** median · 1.67 s p90 (LC-5, n = 10, at 98c7cfe); 1.89 s · 2.25 s in a run nine hours earlier (n = 10). The engine's share: 1 ms median to put the line on the wire, 0 ms from the first audible frame to the speaker sink. The app's playout cushion adds 120 to 200 ms |
+| typed line → first audible frame of the reply | | live: **1.38 s** median · 1.67 s p90 (LC-5, n = 10, at 98c7cfe); 1.89 s · 2.25 s in a run nine hours earlier (n = 10). The engine's share: 1 ms median to put the line on the wire, 0 ms from the first audible frame to the speaker sink. The app's playout cushion adds 120 to 200 ms |
 | GPT-Live-1 reply to speech | | third party, not this Mac: 1.11 s median · 1.21 s p90 (Agora, the ChatGPT app on an iPhone 13, n = 30 per condition, 2026-07-09) |
 | Go → the session open (socket to `session.started`) | | live: 0.62 s median, 0.46 to 2.78 s (LC-1 to LC-10, n = 28 sessions) |
-| tool round trip | 15 ms median · 188 ms p95 (`frontmost_app` through the runner and the real helper, n = 5, 2026-10-06) | 82 ms median · 518 ms p95 (n = 162); 75 · 692 ms over every day since 2026-09-10 (n = 590) |
-| screenshot, end to end (ScreenCaptureKit) | quick (2000 px, 1.1 MP) 117 ms median · 305 ms p95 (n = 5); full 128 ms (n = 1); 2026-10-06, screen locked | 96 ms median · 311 ms p95 (n = 72) |
+| tool round trip | 15 ms median · 188 ms p95 (`frontmost_app` through the runner and the real helper, n = 5, 2026-10-06) | 83 ms median · 518 ms p95 (n = 162); 75 · 692 ms over every day since 2026-09-10 (n = 590) |
+| screenshot, end to end (ScreenCaptureKit) | quick (2000 px, 1.1 MP) 117 ms median · 305 ms p95 (n = 5); full 128 ms (n = 1); 2026-10-06, screen locked | 98 ms median · 311 ms p95 (n = 72) |
 | a read while the acting helper types | 4 ms median · 16 ms p95 (n = 5, 2026-10-06) | |
 | stop: command → everything stopped | 1 ms median (n = 5, 2026-10-06) | |
 | cold Codex thread, input tokens | 22.3k → **10.7k** (−52 %) with the private home and Jarhead's base prompt, counted once by the real model (n = 1, 2026-09-12); about 11.4k now by estimate (brain w3-4-tool-parity.test, "BR-16") | |
