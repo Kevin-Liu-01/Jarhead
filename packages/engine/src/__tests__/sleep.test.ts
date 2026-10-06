@@ -15,12 +15,14 @@ import { delegate, frame, nextUtterance, rows, settle, until, world } from "./wo
  * (`sleep:said`), the phase is asleep and the blob tucks. The word gets 3 s to begin
  * (FAREWELL_START_MS), then 300 ms quiet after its sound (FAREWELL_QUIET_MS; 700 ms,
  * FAREWELL_ONSET_MS, before the first audible frame), capped at 1.8 s from the first
- * words (FAREWELL_CAP_MS); the session closing ends the wait at once. Typed while
- * paused, the dismissal sleeps it with no farewell and opens no session; typed while
- * asleep, it opens nothing. Every other cause (the idle timer, a pause that decayed,
- * the dock, the sleep command, the transport's Stop, shutdown) goes through the same
- * function without the farewell, and the phase flips before the first await. Room
- * talk never sleeps it.
+ * words (FAREWELL_CAP_MS); the session closing ends the wait at once, and a Go during
+ * it wins over the word (a fresh session). Typed while paused, the dismissal sleeps it
+ * with no farewell and opens no session; typed while asleep, it opens nothing. Paused
+ * or in the reconnect window, its `sleep` row ends that conversation for the next
+ * process too: nothing is held or resumed after a restart. Every other cause (the
+ * idle timer, a pause that decayed, the dock, the sleep command, the transport's
+ * Stop, shutdown) goes through the same function without the farewell, and the phase
+ * flips before the first await. Room talk never sleeps it.
  */
 
 /** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
@@ -607,7 +609,7 @@ test("a typed dismissal while asleep opens nothing, even with typedWakes on: a t
     assert.equal(rows(w, "session.started").length, 0);
     assert.equal(rows(w, "sleep").length, 0, "nothing to put to sleep, nothing to record");
     assert.equal(engine.currentPhase, "asleep");
-    assert.ok(toasts(events).includes("already asleep"), `toasts: ${JSON.stringify(toasts(events))}`);
+    assert.ok(toasts(events).includes("asleep already"), `toasts: ${JSON.stringify(toasts(events))}`);
   } finally {
     await engine.stop();
   }
@@ -677,5 +679,111 @@ test("negative (LC-6): the echo window is keyed on the voice's sound too: its ow
     assert.deepEqual(live.instructions, []);
   } finally {
     await engine.stop();
+  }
+});
+
+test("Go during the farewell wins over the word: the farewell ends now, the sleep closes its session, and Go opens a fresh one (awake, not left asleep with Go swallowed)", async () => {
+  const w = world();
+  const { engine, live, lives, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    engine.ear("goodnight jarhead.", true, 1, clock.t);
+    await settle();
+    assert.deepEqual(live.instructions.filter((i) => i === Engine.FAREWELL_LINE).length, 1, "the farewell is asked for");
+    assert.equal(live.closes, 0, "the session waits for the word");
+    const t0 = Date.now();
+    await engine.command({ type: "go" });
+    const took = Date.now() - t0;
+    assert.ok(took < Engine.FAREWELL_START_MS, `Go did not wait out the farewell (${took} ms)`);
+    assert.equal(live.closes, 1, "the dismissed session closed");
+    assert.equal(lives.length, 2, "Go opened a fresh session");
+    assert.equal(lives[1]!.currentState, "started");
+    assert.equal(engine.transportState, "awake");
+    assert.equal(engine.currentPhase, "listening");
+    assert.deepEqual(sequence(w, "sleep", "session.closed", "session.started").slice(-3), ["sleep", "session.closed", "session.started"]);
+    assert.doesNotMatch(lives[1]!.config?.instructions ?? "", /# Continuity/, "the dismissal let the conversation go: a fresh one");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a dismissal in the reconnect window after connection_lost is the end of that conversation: its sleep row is written, and an engine started 20 s later does not resume it", async () => {
+  const a = world();
+  let b: ReturnType<typeof world> | undefined;
+  try {
+    await a.engine.start();
+    await a.engine.ready();
+    a.engine.updateSettings({ idleSleepMinutes: 0 });
+    await a.engine.wake("test");
+    delegate(a, "jarhead open the budget spreadsheet", "item_1");
+    await settle();
+    a.live.nowMs += 5000;
+    a.clock.t += 2000;
+    tick(a.engine);
+    a.live.serverClosed("connection_lost");
+    // Inside the 500 ms window, before the reconnect: the typed dismissal.
+    await a.engine.sayText("that's all for now");
+    await settle(600);
+    assert.equal(a.lives.length, 1, "no reconnect behind the dismissal");
+    assert.equal(a.engine.currentPhase, "asleep");
+    const sleep = rows<SleepRow>(a, "sleep");
+    assert.equal(sleep.length, 1, "the sleep row is written: the held conversation is what it ends");
+    assert.deepEqual([sleep[0]!.cause, sleep[0]!.phrase, sleep[0]!.farewell, sleep[0]!.sessionId], ["said", "that's all for now", undefined, undefined]);
+    // The process ends; a new one over the same state dir.
+    a.clock.t += 20_000;
+    b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+    b.clock.t = a.clock.t;
+    await b.engine.start();
+    await b.engine.ready();
+    assert.equal(b.engine.transportState, "asleep");
+    await b.engine.command({ type: "go" });
+    assert.equal(b.engine.transportState, "awake");
+    assert.doesNotMatch(b.live.config?.instructions ?? "", /# Continuity/, "dismissed: nothing to pick up");
+    assert.equal(rows<Extract<LedgerRow, { type: "session.started" }>>(b, "session.started").at(-1)?.resumedFrom, undefined);
+  } finally {
+    await b?.engine.stop();
+    await a.engine.stop();
+  }
+});
+
+test("a dismissal while paused is the end of the paused conversation across a restart: typed or the sleep command, the next engine is asleep, not paused, and its Go is a fresh session; a shutdown while paused is not a word about it, so the pause is held again", async () => {
+  for (const how of ["typed", "command", "shutdown"] as const) {
+    const a = world();
+    let b: ReturnType<typeof world> | undefined;
+    try {
+      await a.engine.start();
+      await a.engine.ready();
+      a.engine.updateSettings({ idleSleepMinutes: 0 });
+      await a.engine.wake("test");
+      delegate(a, "jarhead find the invoice", "item_1");
+      await settle();
+      await a.engine.command({ type: "pause" });
+      assert.equal(a.engine.transportState, "paused");
+      a.clock.t += 2000;
+      if (how === "typed") await a.engine.sayText("that's all for now");
+      else if (how === "command") await a.engine.command({ type: "sleep" });
+      else await a.engine.stop();
+      assert.equal(a.engine.transportState, "asleep", how);
+      assert.equal(rows<SleepRow>(a, "sleep").length, 1, `${how}: the sleep row`);
+      a.clock.t += 20_000;
+      b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+      b.clock.t = a.clock.t;
+      await b.engine.start();
+      await b.engine.ready();
+      if (how === "shutdown") {
+        assert.equal(b.engine.transportState, "paused", "a restart while paused holds the pause again");
+        continue;
+      }
+      assert.equal(b.engine.transportState, "asleep", `${how}: the restarted engine is asleep, not paused`);
+      assert.equal(b.engine.snapshot().pause, undefined, how);
+      await b.engine.command({ type: "go" });
+      assert.doesNotMatch(b.live.config?.instructions ?? "", /# Continuity/, `${how}: a fresh session`);
+    } finally {
+      await b?.engine.stop();
+      await a.engine.stop();
+    }
   }
 });

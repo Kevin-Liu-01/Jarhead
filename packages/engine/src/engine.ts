@@ -697,6 +697,8 @@ export class Engine extends EventEmitter<EngineEvents> {
    * says something new or OUTPUT_GATE_MS pass. Wall clock of `now()`.
    */
   private outputGateUntil = 0;
+  /** When the output gate was last set, by a stop pressed or said: the voice heard before it is the voice that stop cut. */
+  private lastGateAt = 0;
   private gatedFrames = 0;
   /**
    * The spoken stop the gate holds for (V10): when it was heard, and the utterance on Live's transcript that carries it
@@ -1000,10 +1002,10 @@ export class Engine extends EventEmitter<EngineEvents> {
         return reflex;
       },
       run: (reflex, phrase, via) => this.runEarReflex(reflex, phrase, via ?? "ear"),
-      // A spoken "stop" interrupts: work and speech end, the session stays open and listening. Speech is the voice's
-      // transcript or its sound, as in stopOverVoice: Live's barge-in cuts the transcript first (LC-6).
+      // A spoken "stop" interrupts: work and speech end, the session stays open and listening. Speech is the voice no
+      // stop has cut, its transcript or its sound, as in stopOverVoice (voiceUncutAt).
       onStop: () => {
-        if (this.delegator?.active || this.threads.running() > 0 || (this.now() - Math.max(this.lastOutputSpeechAt, this.lastAudibleOutputAt) < Engine.SPEAKING_WINDOW_MS && !this.outputGated)) void this.interrupt("ear", "said");
+        if (this.delegator?.active || this.threads.running() > 0 || (this.now() - this.voiceUncutAt() < Engine.SPEAKING_WINDOW_MS && !this.outputGated)) void this.interrupt("ear", "said");
       },
       // With ≥ 2 spawned threads live the speech is gated on the stop word and the work cut waits STOP_NAME_WAIT_MS
       // for a name; "stop the slack one" then fires the thread_stop reflex → metaReflex → stopNamed (§6). With ≤ 1
@@ -2575,6 +2577,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       return;
     }
     if (this.pauseInfo) return this.resume();
+    // A dismissal's farewell still holds the session: not a stop to re-arm. connect() ends the farewell and opens anew.
+    if (this.farewellEnd) return this.connect("go");
     if (this.live || this.connecting) {
       if (!this.wantAwake) {
         log.info(`go: re-armed the ${this.connecting ? "connect" : "session"} a stop had disarmed`);
@@ -2602,9 +2606,17 @@ export class Engine extends EventEmitter<EngineEvents> {
    * reconnect after the server dropped it (`how`; the toast says "back" for the last).
    * A stop or sleep that lands while the socket opens sets `wantAwake` false; the
    * session is then closed the moment it exists (it billed for the handshake, nothing
-   * more) and the transport stays asleep.
+   * more) and the transport stays asleep. A Go or a wake during a dismissal's farewell
+   * (up to FAREWELL_START_MS + FAREWELL_CAP_MS) wins over the word: the farewell ends
+   * now, the sleep closes its session, and a fresh one opens.
    */
   private async connect(reason: string, resume?: { readonly pause: PauseInfo; readonly continuity: string; readonly how?: ResumeHow }): Promise<void> {
+    if (this.farewellEnd) {
+      // Re-armed instead, the sleep would close the session anyway and leave Go swallowed: asleep, wantAwake true.
+      log.info(`${reason}: pressed during the farewell; it ends now and a fresh session opens after the sleep`);
+      this.farewellEnd();
+      await this.sleeping;
+    }
     log.info(`wake requested (${reason})`);
     this.wantAwake = true;
     if (this.live || this.connecting) return;
@@ -3202,7 +3214,8 @@ export class Engine extends EventEmitter<EngineEvents> {
    * session closing ends the wait at once. The session bills meanwhile → detach and
    * close (`sleep:<cause>`) → phase asleep → toast → the thread processes end. Without
    * a farewell the phase flips before the first await, which `pressStop` needs
-   * (asleep synchronously). From paused, the held conversation is let go.
+   * (asleep synchronously). From paused, or with a reconnect held, the held
+   * conversation is let go, and its `sleep` row tells the next process so.
    */
   fallAsleep(cause: SleepCause, o: { readonly phrase?: string | undefined; readonly farewell?: boolean | undefined } = {}): Promise<void> {
     if (this.sleeping) {
@@ -3215,15 +3228,18 @@ export class Engine extends EventEmitter<EngineEvents> {
       const live = this.live;
       const wasPaused = this.pauseInfo !== undefined;
       const wasConnecting = this.connecting;
+      // A conversation the server cut that a reconnect was to carry on (the 500 ms window, or a failed reconnect held for Go).
+      const wasHeld = this.heldReconnect !== undefined || this.reconnectTimer !== undefined;
       const sessionId = live?.session?.id;
       this.wantAwake = false;
       this.pauseInfo = undefined;
       this.pauseAtStart = false;
       // The held conversation is let go — a pause's, and the one a pending reconnect was to carry on.
       this.dropHeldReconnect();
-      // Only when there is something to put to sleep: asleep already, there is nothing to record.
+      // Only when there is something to put to sleep: asleep already, there is nothing to record. A held conversation
+      // is something: the row is what tells the next process not to resume it (restoreFromLedger).
       const farewell = o.farewell === true && live !== undefined && !wasConnecting && live.currentState === "started" && !this.outputGated;
-      if (live || wasPaused || wasConnecting) this.ledger.append({ at: t0, type: "sleep", cause, ...(o.phrase ? { phrase: o.phrase } : {}), ...(sessionId ? { sessionId } : {}), ...(farewell ? { farewell: true } : {}) });
+      if (live || wasPaused || wasConnecting || wasHeld) this.ledger.append({ at: t0, type: "sleep", cause, ...(o.phrase ? { phrase: o.phrase } : {}), ...(sessionId ? { sessionId } : {}), ...(farewell ? { farewell: true } : {}) });
       // Quiet: the closing session speaks for the whole stop; nothing else is appended to it.
       const { cancel } = this.cutEverything(`going to sleep (${cause})`, "sleep");
       if (farewell && live) {
@@ -3442,7 +3458,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         return;
       }
       if (!this.connecting) {
-        this.toast("already asleep", "info");
+        this.toast("asleep already", "info");
         log.info(`say-text: ${t.length} chars while asleep → a dismissal; nothing to put to sleep, no session opened (${Math.round(performance.now() - t0)} ms)`);
         return;
       }
@@ -3633,6 +3649,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       // A stop the gate already holds for (the speech half came first, ≥ 2 threads) stays the one it holds for.
       const held = this.outputGated ? this.stopHeard : undefined;
       this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
+      this.lastGateAt = t0;
       this.stopHeard = how === "said" ? (held ?? this.spokenStop()) : undefined;
     }
     await this.cutWork(source, how, reason, open, t0);
@@ -3686,8 +3703,8 @@ export class Engine extends EventEmitter<EngineEvents> {
    * V9: a stop said over Jarhead's voice while nothing runs. The Delegator judges stops only while work runs and the
    * ear may be down (Speech not granted, the dictation model missing, reflexes off), so Live's transcript is judged
    * here: the current utterance (the transcript's own merge rule) begins with a stop phrase or ends in "stop" /
-   * "cancel", Jarhead spoke (its transcript or its sound) within SPEAKING_WINDOW_MS and the words are not Jarhead's
-   * own line back through the microphone.
+   * "cancel", Jarhead spoke within SPEAKING_WINDOW_MS (voiceUncutAt: its transcript or its sound, and no stop has cut
+   * it since) and the words are not Jarhead's own line back through the microphone.
    * The speech half of a stop (the voice gated, the speaker flushed) and its row; once per utterance. No instruction.
    * The rest of the utterance never lifts the gate: "can you stop by the store" cannot be told from "can you stop
    * talking" until it is over, so a false stop holds the voice until the lapse or his next utterance.
@@ -3695,9 +3712,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   private stopOverVoice(item: TranscriptItem): void {
     if (item.id === this.lastStopItemId) return;
     if (this.delegator?.active !== undefined || this.threads.running() > 0) return;
-    // Over the voice: its transcript or its sound. Live's barge-in cuts its transcript first while the sound of the
-    // interrupted words plays on: in LC-6 trial 2 the transcript was 1322 ms old and the sound 490 ms old at the fragment.
-    if (this.now() - Math.max(this.lastOutputSpeechAt, this.lastAudibleOutputAt) >= Engine.SPEAKING_WINDOW_MS) return;
+    if (this.now() - this.voiceUncutAt() >= Engine.SPEAKING_WINDOW_MS) return;
     const words = normalizeUtterance(item.text);
     if (!STOP_HEAD.test(words) && !/\b(stop|cancel)\b[\s.!?,]*$/i.test(item.text)) return;
     if (this.echoOfJarhead(words)) return;
@@ -3709,6 +3724,18 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.stopHeard = { at: t0, itemId: item.id, endMs: item.endMs };
     this.ledger.append({ at: t0, type: "stop", how: "said" });
     this.toast("stopped", "info");
+  }
+
+  /**
+   * When the voice last spoke with no stop cutting it since: its transcript or its sound, whichever is later, and 0
+   * when a stop has cut both. Live's barge-in cuts its transcript first while the sound of the interrupted words plays
+   * on (LC-6 trial 2: the transcript 1322 ms old and the sound 490 ms old at the fragment). The voice heard before the
+   * last gate is not counted: that stop silenced it, so Kevin's next words are not said over it. A pressed stop and
+   * then "hold on, what time is it" is one stop, and his question's answer is not gated.
+   */
+  private voiceUncutAt(): number {
+    const at = Math.max(this.lastOutputSpeechAt, this.lastAudibleOutputAt);
+    return at > this.lastGateAt ? at : 0;
   }
 
   /** Only a session that has started is spoken to: one still opening has no id for the row and would hear "stop speaking" as its first instruction after session.started. */
@@ -3726,7 +3753,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (!open) return;
     // Always a spoken stop word (the ear's or Live's fragments): only new speech lifts it (V10).
     this.stopHeard = (this.outputGated ? this.stopHeard : undefined) ?? this.spokenStop();
-    this.outputGateUntil = this.now() + Engine.OUTPUT_GATE_MS;
+    this.lastGateAt = this.now();
+    this.outputGateUntil = this.lastGateAt + Engine.OUTPUT_GATE_MS;
     this.gatedFrames = 0;
     this.flushSpeaker();
     this.recomputePhase();
@@ -6604,10 +6632,12 @@ export class Engine extends EventEmitter<EngineEvents> {
    * session. A pressed `stop` inside it means Kevin ended it — nothing to pick up. A
    * `pause` row means he paused it: the pause is held again (`pauseInfo` from the row,
    * phase `paused`, the meter still stopped) unless its decay has passed, in which case
-   * it sleeps as it would have. No `session.closed` row (or one the engine would have
+   * it sleeps as it would have, or it was put to sleep since (`endedAfter`: a dismissal,
+   * the sleep command, Stop). No `session.closed` row (or one the engine would have
    * reconnected from: `expired`, `connection_lost`; or the lost close start() just wrote)
    * and a last row inside LOST_SESSION_MAX_AGE_MS means the process died mid-conversation: `lostSession` is set,
-   * and the first Go within AUTO_RESUME_WINDOW_MS resumes it (`resumeFromLedger`).
+   * and the first Go within AUTO_RESUME_WINDOW_MS resumes it (`resumeFromLedger`), unless
+   * it was ended after the close, inside the reconnect window (`endedAfter`).
    */
   private restoreFromLedger(): void {
     let latest;
@@ -6638,6 +6668,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     const pauseRow = [...inside].reverse().find((r): r is Extract<LedgerRow, { type: "pause" }> => r.type === "pause");
     if (pauseRow) {
       const sleepsAt = pauseRow.at + this.pauseHoldMs();
+      // Put to sleep while paused (typed "that's all for now", the sleep command, Stop): its rows come after the pause
+      // and name no session, since the pause closed it, so the day's own rows are asked.
+      if (this.endedAfter(pauseRow.at, now)) {
+        log.debug(`last session ${latest.id} was paused and then put to sleep; nothing to hold`);
+        return;
+      }
       if (now >= sleepsAt) {
         log.info(`last session ${latest.id} was paused ${Math.round((now - pauseRow.at) / 60_000)} min ago and would have slept by now; asleep`);
         return;
@@ -6652,10 +6688,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     const closed = inside.find((r): r is Extract<LedgerRow, { type: "session.closed" }> => r.type === "session.closed" && r.sessionId === latest.id);
     // Ended on purpose: sleep, idle, the server. A lost close says the process died in it, as a cut does.
     if (closed && closed.reason !== "expired" && closed.reason !== "connection_lost" && closed.reason !== SESSION_LOST_REASON) return;
-    // Kevin's Stop inside the reconnect window after connection_lost is written after the
+    // Kevin's Stop or a dismissal inside the reconnect window after connection_lost is written after the
     // session's closed row — outside its span — so the day's own rows are asked.
-    if (closed && this.stoppedAfter(closed.at, now)) {
-      log.debug(`last session ${latest.id} lost its connection and ${this.userName} pressed stop before it reconnected; nothing to resume`);
+    if (closed && this.endedAfter(closed.at, now)) {
+      log.debug(`last session ${latest.id} lost its connection and was stopped or put to sleep before it reconnected; nothing to resume`);
       return;
     }
     if (now - lastAt > Engine.LOST_SESSION_MAX_AGE_MS) {
@@ -6676,11 +6712,13 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   /**
-   * A pressed `stop` row at or after `at` in the day files that could hold it (the day of
-   * `at`, and today when that is another day): Kevin's word after a session's closed row,
-   * which `readSession` places outside the session.
+   * A conversation's end at or after `at` in the day files that could hold it (the day of
+   * `at`, and today when that is another day): a pressed `stop` row, or a `sleep` row of
+   * any cause but `shutdown`. Kevin's word after a session's closed row (a pause's, or the
+   * server's), which `readSession` places outside the session. A shutdown is the process
+   * ending, not a word about the conversation: a pause held across a restart stays held.
    */
-  private stoppedAfter(at: number, now: number): boolean {
+  private endedAfter(at: number, now: number): boolean {
     const days = Ledger.dayFor(at) === Ledger.dayFor(now) ? [at] : [at, now];
     for (const day of days) {
       let rows: LedgerRow[];
@@ -6689,7 +6727,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       } catch {
         continue;
       }
-      if (rows.some((r) => r.type === "stop" && r.how === "pressed" && r.at >= at)) return true;
+      if (rows.some((r) => r.at >= at && ((r.type === "stop" && r.how === "pressed") || (r.type === "sleep" && r.cause !== "shutdown")))) return true;
     }
     return false;
   }
