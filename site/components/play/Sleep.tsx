@@ -45,8 +45,8 @@ const SNOOZE = Number(/\d+/.exec(ISLAND.snooze)?.[0] ?? 10);
 const PHASE: Record<S, Phase> = { asleep: "asleep", saying: "speaking", ringing: "listening", done: "asleep" };
 
 /**
- * Sleep: it sleeps at $0 with its alarm armed, the plate gone to ink, the island asleep with the clock. When the plate
- * first comes into view the night runs on that clock from 12:37 to 07:10 and the alarm rings while it sleeps: the row
+ * Sleep: it sleeps at $0 with its alarm armed, the plate gone to ink, the island asleep with the alarm in its foot. When the
+ * plate first comes into view the night runs on the plate's clock from 12:37 to 07:10 and the alarm rings while it sleeps: the row
  * lights, the island rings, the blob looks up, Snooze 10 or Done (Done leaves it asleep: no session, nothing billed).
  * Say "night." and it says it back, closes the session and the night runs again. The still is the night: asleep at $0,
  * 12:37, the alarm armed.
@@ -64,10 +64,13 @@ export function Sleep(): ReactElement {
   const raf = useRef(0);
   const run = useRef(0);
 
+  // The island wears the night's moment, and the Mac's time is the plate's clock (the bar reads it, lib/live.ts Show.clock),
+  // so the bar says 07:10 while the 07:10 alarm rings.
+  const hhmm = fmt(clock);
   useEffect(() => {
-    const show: Show = s === "saying" ? { kind: "speaking", line: NIGHT } : s === "ringing" ? { kind: "alarm" } : { kind: "asleep", clock: fmt(clock) };
-    claim("sleep", show);
-  }, [s, clock]);
+    const show: Show = s === "saying" ? { kind: "speaking", line: NIGHT } : s === "ringing" ? { kind: "alarm" } : { kind: "asleep" };
+    claim("sleep", { ...show, clock: hhmm });
+  }, [s, hhmm]);
   useEffect(() => {
     if (s === "ringing" && root.current?.contains(document.activeElement)) done.current?.focus({ preventScroll: true });
   }, [s]);

@@ -96,7 +96,7 @@
 #                                                                                                     # leaves, gone 1.5 s after (tagShow 1.2 s); the cell has one tracking area
 #   … ORB_STOP_AT=3 … / … ORB_SLEEP_AT=4 …                                                            # every satellite shivers and is gone within 300 ms (the `fleet: retired N` line, then the counts)
 #   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting ORB_FLY_AT=99 ORB_NOTCH_STRIP_PROBE=2.5 ORB_EXIT_AFTER=3 Scripts/orb-preview.sh
-#                                                                                                     # the working strip without threads: the hairline and the counter both at work·(1−park) — 0.50 at
+#                                                                                                     # the working strip without threads: the counter at work·(1−park), no colour on its contour — 0.50 at
 #                                                                                                     # park ½ and at work ½, measured off an offscreen render (the pre-fleet alpha; the transitions only)
 #   ORB_SELFTEST=1 Scripts/orb-preview.sh                                                             # the pure checks (FleetBudget ladder on a synthetic clock, landing(for:avoiding:)); exit 0 / 1
 #

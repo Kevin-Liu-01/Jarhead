@@ -1,7 +1,7 @@
 /**
  * The page's one live state, so the island at the top answers what the visitor does. Every demo claims the island for its
- * own section with a Show: the kind, and where the flow says so the line it heard or says, its question, the thread tiles,
- * the foot's figure and the clock. The hero's blob claims it for the hero. The section spy writes the section in view, and
+ * own section with a Show: the kind, and where the flow says so the line it heard or says, its question, the thread tiles
+ * and the foot's figures. The hero's blob claims it for the hero. The section spy writes the section in view, and
  * a claim shows only while its own section is in view (`resolveShow`), so the island never wears another demo's state. A
  * section whose demo has claimed nothing wears its own kind with nothing heard. A tiny external store, so the top engine's
  * rAF never re-renders the page: only a change notifies.
@@ -26,10 +26,12 @@ export interface Show {
   readonly answer?: (yes: boolean) => void;
   /** Acting: the thread tiles. */
   readonly tiles?: readonly Tile[];
-  /** The foot's figure (`7.2 min · $0.36`) and the meter beside it, 0 to 1. */
+  /** The foot's figures (`7.2 min · $0.36`). */
   readonly foot?: string;
-  readonly meter?: number;
-  /** The clock: the asleep island's big line, and the foot's clock. */
+  /**
+   * The Mac's time where a demo runs its own clock (Sleep's night, 12:37 to the 07:10 alarm): the menu bar's clock and the
+   * island's awake foot read it. Absent, they read the island's 12:37.
+   */
   readonly clock?: string;
 }
 
@@ -62,7 +64,7 @@ export function setLive(patch: Partial<Pick<LiveState, "kind" | "section">>): vo
 
 function same(a: Show | undefined, b: Show): boolean {
   if (!a) return false;
-  return a.kind === b.kind && a.line === b.line && a.ask === b.ask && a.answer === b.answer && a.foot === b.foot && a.meter === b.meter && a.clock === b.clock && JSON.stringify(a.tiles) === JSON.stringify(b.tiles);
+  return a.kind === b.kind && a.line === b.line && a.ask === b.ask && a.answer === b.answer && a.foot === b.foot && a.clock === b.clock && JSON.stringify(a.tiles) === JSON.stringify(b.tiles);
 }
 
 /** A demo (or the hero) puts its moment on the island; it shows while the owner's section is in view. */

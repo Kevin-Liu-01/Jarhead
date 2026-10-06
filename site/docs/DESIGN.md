@@ -104,23 +104,91 @@ its face never under 32 px.
 ## The sticky top (`components/site/Top.tsx`, `MenuBar.tsx`, `components/desk/*`, `styles/desk.css`)
 
 - **The bar** (37 px; 44 on the phone) is the paper itself with one hairline: the Apple mark, `Jarhead`, the sections as its
-  menus (the one in view marked), the phase dot and word, GitHub with the live star count, the theme, Install, the clock.
-  Menus drop last first as the bar narrows; the phone keeps the mark, the name, GitHub and the theme, each a 40 px target.
-- **The island** is the app's open island at 1:1 (420 × 184) hung from the notch, scaled as one from its top edge: over the
-  hero at `--hero-s`, then its foot rises with the scroll until it docks at `--compact-s` (0.62: 37 + 114 = 151 px). It
-  never folds. Every word in it takes `max(its size, 11px / --top-s)`. Once docked a band of the page's ground dissolves in
+  menus (the one in view marked), the phase dot and word, GitHub with the live star count, the theme, Install, the clock
+  (the Mac's time: 12:37, or the clock of the demo in view where it runs one, Sleep's night to 07:10, `Show.clock`).
+  Its two sides stop short of the band at its widest (the hero scale) and its ear, and `fitBar` (Top.tsx) drops whole
+  items that would cross it, never a clipped word: the menus from the last, then the clock, then the phase word, GitHub's
+  word and the star count (those three stay for the screen reader). Nothing pops in or out while the island docks.
+- **The band** is the notch grown, as NotchNook, Boring Notch and the Dynamic Island open it: one black silhouette from the
+  page's top edge, the island's width at every scale (`.top-band`, drawn in the island's own scaled box and
+  counter-scaled in height, so it is always the bar's height and runs 2 island px under the body), over the bar and its
+  hairline, with 10 px concave ears (8 on the phone) where it meets the top edge, each running 1 screen px into the band
+  so no column antialiases twice. There is no separate notch column any more (`Notch.tsx` is gone). The band is the page's
+  own drawing: the page fits its bar round it (nothing a visitor needs lives under it). The app does not lay a band over a
+  real menu bar, whose status items are the user's: its open island hangs from the notch's column with concave fillets
+  and rounded top corners, as installed, and shares the body's 24 pt bottom corners (NotchInk.swift `openLevel`; at 30 the
+  foot's Console · Sleep pair came within 1.6 px of the curve).
+- **The island** is the app's open island at 1:1 (420 × 184), the body under the band, square where it meets it and 24 px
+  at its bottom corners, scaled as one from its top edge: over the hero at `--hero-s`, then its foot rises with the scroll
+  until it docks at `--compact-s` (0.62: 37 + 114 = 151 px). It never folds. Every word in it takes `max(its size, a floor
+  / --top-s)` by its role, so docking keeps the app's hierarchy instead of flattening it to one size: the hero never under
+  13.5 px on screen, the phase word, the buttons and the Say box never under 10.5, the head, the foot and the tiles never
+  under 9.5 (`--isl-hero`, `--isl-word`, `--isl-small`), the hero at least 1.4 times the quiet lines. The hero is the app's
+  18 pt SF Pro set as 17.4 px Inter (where Inter's cap height and widths meet SF's) on the 22 px pitch from 29.5. The middle
+  beat (Allow · Deny, Snooze · Done, the tiles) sits at the app's 82 until the grown hero needs more, then 8 px under a
+  two-line hero (`--isl-mid`), so docked it keeps air above and below; docked a tile is its name alone, one row. The head
+  and the foot are the app's 11 pt sans with tabular figures; only the alarm's time is mono. The app's seam (white .10,
+  one screen px) runs over the foot. The boxes are the app's: black .42 under a paper hairline at .26, their glyphs the
+  paper at .78, the Say box's placeholder at .62. The tool glyphs are the app's symbols in Phosphor Fill: browser (Window)
+  and moon (Sleep) as Phosphor draws them, and three composed from Phosphor's parts where it has no glyph that reads as the
+  app's (scripts/vendor-icons.mjs): a ring open at its upper right with a pencil crossing the gap (Circle,
+  pencil.and.outline), Phosphor's chat bubble with its question mark knocked out (Ask, questionmark.bubble.fill), two
+  tiles stacked beside one tall (Console, rectangle.3.group.fill). Asleep, a key that takes no press (Ask, the spent Sleep)
+  keeps its box and draws its glyph at the app's .35. Once docked a band of the page's ground dissolves in
   one-device-pixel Bayer cells under it, a grain that reads as a fade, so words and ink plates thin out before they reach
   the island and never break into a checkerboard; every section's words start below that band.
 - **What it wears** (`lib/live.ts`): each demo **claims** the island for its own section with a `Show` (its kind, the line
-  it heard or says, its question, its thread tiles, the foot's figure and meter, the clock), and the hero claims it for the
+  it heard or says, its question, its thread tiles, the foot's figures), and the hero claims it for the
   hero. A claim shows only while its section is in view (`resolveShow`), so the island never wears another demo's state; a
-  section that has claimed nothing wears its own kind with nothing heard. The island's own question (`Slack asks: send "I'm
-  running late" to Ben?` with Allow and Deny) appears only when a demo asks for it: Threads at `asks`, Rails when Send is
-  sorted into Confirm. Any other spoken line (a reason, `night.`, a reading) is said without buttons.
-- **Its motion**: a new kind fades the content out over `--jh-quick`, lands, and the island settles from 0.965 on `SPRING`
-  from its top edge (`transform-origin: 50% 0`), so it never leaves the notch. The ink breathes, the head's level trace
-  moves, Working counts, the face blinks and turns to the pointer, at 8 fps while the tab is visible. Calm: one pose per
-  change and a stepped scale.
+  section that has claimed nothing wears its own kind with nothing heard. The island's own question (the head `Slack asks`,
+  its hand the only amber, the hero `Send “I'm running late” to Ben?`, Allow and Deny) appears only when a demo asks for
+  it: Threads at `asks`,
+  Rails when Send is sorted into Confirm. Any other spoken line (a reason, `night.`, a reading) is said without buttons.
+  Asleep, the hero is the wake gate's own words set calm (`Listening for “jarhead”`, 0.72), as the app's island; the foot
+  is one line in the app's asleep row (NotchPanel.swift drawAsleepRow): the crescent, `asleep` as its bright noun, then
+  `· next Alarm 07:10` as its quieter clause, the alarm the Sleep night runs to (its name `· Wake up, Kevin` gives way
+  docked). While it rings the clause is `· nothing billed`, and the hero is the app's ring: `07:10` in the mono, ` · Wake
+  up, Kevin` in the sans, a calm second line at 0.72. Awake the foot is `12:37 · 7.2 min · $0.36`, every ` · ` one word
+  space. The alarm offers Snooze 10 and Done (the app's other presets show only on hover, which a drawing has none of).
+- **Its face** (`lib/eyes.ts` as SVG, the app's Eyes.swift the same table): the app's own pair per kind, drawn. Asleep the
+  wake gate's beads (`. .`: a small round pupil with one point of light, still, the installed app's dots drawn); listening
+  `O O`, blinking every 3 to 6 s; thinking its lowered lids `- -`, churning to `~ ~` one beat in three, looking up and away
+  whatever the pointer does; acting `o o`, blinking; speaking `^ ^` with its sparkle; ringing `o o`. A blink is a
+  compositor squash of the open eyes, so a slow frame never leaves them shut.
+- **Its ink** (`lib/island.ts`, NotchInk.swift's math, cell for cell): the app's poured island, calmed. The orb's blue
+  pours out of the band's black, deepest under the notch (to 0.76 of the height under its 185 px) and falling away
+  diagonally over the wings to 0.26 at the island's ends, so the black reads as poured into the blue, never as a strip
+  along the top. Under it the orb ramp runs diagonally (0.16 to 1.0 across 0.68 x + 0.32 y: the light blues toward the
+  face, the deep blue at the far corner), the icon's pale-cyan highlight pulls the left end toward the pale (σ 20 px at
+  (2, 0.36 h), 0.45), and a vignette (0.24) lets the words read to the edges. Two quantities per 1.5 island px cell (the
+  app's 1.5 pt, whole device pixels on screen, so the grain is the same share of the island docked as open) on ONE Bayer
+  threshold, both rounding the same way (the light on 1 − t: a cell that steps toward the deep end also steps toward the
+  black, so the two errors add into one crosshatch and never cancel into vertical streaks): the ramp's band (6 steps) and
+  the light kept (6 steps), the colour their product; the light going also walks the ramp toward its deep end, so the
+  black pools through navy, never through a dimmed, muddy teal. The light falls toward the foot (by 0.35 from 90 px above
+  the bottom edge to 20 above it, a long fall and never a band), so the foot's words clear 4.5:1 over the ramp's pale end;
+  they sit on the app's ink shadow too (black .55, 1 px down), as the head's do. The installed island stacked four dithers
+  whose steps crossed; this is two on one threshold, so every step edge runs with the pour. The first
+  2 px under the band are black outright. Every kind wears it, asleep included, as the app's does; it is one still image
+  per scale (it never breathes, so it repaints only when the scale moves). It covers the body to its edges and the body's
+  rounded clip trims it, so no frame of black shows between the ink and the page, and no line runs along the contour.
+- **Its instruments**: the paper alone, never the phase tone or the alarm's amber, and nothing bar-shaped rides the head
+  or the foot (the foot's figures are words). Listening, the level trace fills the hero's slot, its midline level with the
+  word under the face (one-cell bars on a three-cell pitch, at most 40 px tall and 0.84 alpha, the newest two cells in
+  from its end and growing in, the older half settling to 40 % and thinning through the tile; silence draws nothing but a
+  short dotted lead at the newest end, never a rule across the slot, and a lone level between two silent ones is
+  silence too), or the lines a heard line leaves free; acting with
+  no tiles (`Click Save`), a small swell of ticks runs there and back along a 96 px strip under the line, never a rule.
+  Go is the app's ring: a disk of the notch's black at .40 under one screen px of the phase tone at .90. Thinking's ring
+  takes the eye's paper tint, since its tone is the ink's own blue; while the alarm rings the island keeps the asleep tone
+  (eyes and ring) as the app does, and the alarm's amber is the head's glyph alone.
+- **Its motion**: the app's beats. A new kind takes the display and the foot out over `--jh-quick`, drifting up 4 px,
+  then brings the new kind's in over `--jh-base` from 6 px below, 30 ms apart (the head, the hero and its instrument, the
+  middle, the control row, the foot), while the body's height springs from 176 to 184 on `SPRING` under the band (never
+  its width or a scale), so the silhouette stays one shape; the anchor holds. The phase word changes
+  in two steps (the old one out, then the new one in), never two words in its slot. The instruments move, Working counts,
+  the face blinks and turns to the pointer, at 8 fps while the tab is visible. Calm: one pose per change and a stepped
+  scale.
 
 ## The demos (`components/play/*`, `styles/play.css`)
 
@@ -139,7 +207,7 @@ plate's top right). Threads, Hands, Rails and Sleep play their own route once wh
 | `rails` | the table always shows what it holds: Run ends on `"Click Save" runs.`; Confirm lists send, pay, delete, post and purchase and asks every time; Refuse lists NEVER's seven commands. A call in the tray springs into its slot (shared layout), a wire draws down the rail into its row, the row lights, the blob says a second deck line (or frowns at a refusal, its command lit in NEVER) | press a tray chip; press a sorted chip to send it back | Send sorted into Confirm | acting for a run, the question for Send, the reason for the other verbs, listening after a refusal |
 | `sleep` | asleep at `$0` with the alarm armed, the plate gone to ink; the night runs on the island's own clock from 12:37 to 07:10 and the alarm rings while it sleeps (the row lights, Snooze 10 or Done; Done leaves it asleep, nothing billed); `"night."` says it back, closes the session and runs the night again | the `"night."` chip; Snooze 10, Done (focused when it rings) | asleep, 12:37, the alarm armed | asleep with the running clock, then the alarm |
 | `numbers` | the six latencies race in real time on one honest linear scale; each bar is a `scaleX` of a CSS property written by one rAF that runs only while the plate is on screen; the figure and its n land with the bar | the scale (`8.9 s` shows all six to size, `457 ms` makes the reflex rows race and runs the rest off the edge; a radio group with arrows); `Replay` | the finished race | listening |
-| `costs` | the serif figure follows the minutes at five cents a minute to three dollars at the hour; the blob talks while you drag; Asleep makes it `$0` | the native range (drag, tap, arrows); Listening or Asleep (a radio group with arrows) | 7.2 min and $0.36, the island's own reading | the reading on its foot and meter, said while dragging; asleep |
+| `costs` | the serif figure follows the minutes at five cents a minute to three dollars at the hour; the blob talks while you drag; Asleep makes it `$0` | the native range (drag, tap, arrows); Listening or Asleep (a radio group with arrows) | 7.2 min and $0.36, the island's own reading | the reading on its foot, said while dragging; asleep |
 | `install` | the blob at the h2's stop wakes on any Copy | `Copy` on the one-liner or a command | asleep | asleep, then listening |
 
 The wires (`components/play/Wires.tsx`) are measured from the laid-out pieces; Say's and Threads' resting wires are also
@@ -182,7 +250,10 @@ Tokens only: no raw colour outside `app/globals.css` and `styles/kit.css`.
 
 ## The phone (390 × 844)
 
-The bar keeps its four items at 40 px; the island shrinks to fit and docks at 0.6. The hero sets the h1 on one line with
+From 581 to 720 px the bar keeps the mark, the name, GitHub (with its stars where `fitBar` finds room) and the theme round
+the band. At 580 px and under the bar is the band itself, the bezel edge to edge with its words in the screen's tones (the
+mark, the name, GitHub and its stars, the theme, each a 40 px target), and the island hangs from it with its ears at the
+bar's foot, at `min((100vw - 24px) / 420, clamp(0.6, 100svh / 1100, 0.86))` (0.77 at 390 × 844), docking at 0.6. The hero sets the h1 on one line with
 its stop, the blob standing over it at 108 px, and the lead, both calls and the terms line all in the first screen. Every
 section stacks words first, then its plate; plates reflow by container query (the router, the cards and the table stack,
 their wires drop). Every control is at least 40 px. No sideways scroll.

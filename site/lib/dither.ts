@@ -1,8 +1,9 @@
 /**
  * The dither material (Dither.swift, scripts/dither.ts; facts-orb.md §1, §4): the classic 8×8 Bayer
- * tile, the five ramps, the ordered quantiser, and the canvas renderers every shaded surface on the
- * site shares. Flat fills stay flat; anything that shades is banded and dithered so the pattern is
- * seen. Pure functions: no DOM beyond the canvas passed in, one ImageData per render.
+ * tile, the five ramps, the ordered quantiser and the cell and colour helpers every shaded surface on
+ * the site shares (each surface's renderer lives with it: lib/island.ts, lib/blob.ts, lib/field.ts).
+ * Flat fills stay flat; anything that shades is banded and dithered so the pattern is seen. Pure
+ * functions: no DOM beyond the device pixel ratio and its media query.
  */
 
 export type RGB = readonly [number, number, number];
@@ -121,70 +122,3 @@ export function parseColor(css: string): RGB {
   return [7, 7, 7];
 }
 
-/** Little-endian ABGR for a Uint32 view of ImageData. */
-function pack(c: RGB, alpha = 255): number {
-  return ((alpha << 24) | (Math.round(c[2]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[0])) >>> 0;
-}
-
-function context(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
-  return canvas.getContext("2d");
-}
-
-/**
- * A meter (Dither.swift:937-1015): a flat track, a flat fill and an 8-cell Bayer leading edge, in 1.5 px
- * cells (6 px tall = 4 rows). Cell (i, j) of the edge is fill iff BAYER8[j·8+i] ≥ (i + .5) / 8.
- */
-export function renderMeter(
-  canvas: HTMLCanvasElement,
-  o: { width: number; height: number; fraction: number; fill: RGB; track: RGB },
-): void {
-  const cell = cellCss(1.5);
-  const nx = Math.max(1, Math.round(o.width / cell));
-  const ny = Math.max(1, Math.round(o.height / cell));
-  canvas.width = nx;
-  canvas.height = ny;
-  canvas.style.width = `${o.width}px`;
-  canvas.style.height = `${o.height}px`;
-  const g = context(canvas);
-  if (!g) return;
-  const img = g.createImageData(nx, ny);
-  const px = new Uint32Array(img.data.buffer);
-  const F = pack(o.fill);
-  const T = pack(o.track);
-  const fillCells = Math.floor(clamp01(o.fraction) * nx);
-  const edgeStart = fillCells - 8;
-  for (let y = 0; y < ny; y++) {
-    const row = (y & 7) * 8;
-    const base = y * nx;
-    for (let x = 0; x < nx; x++) {
-      let on = x < fillCells;
-      if (on && x >= edgeStart) {
-        const i = x - edgeStart;
-        on = (BAYER8[row + (i & 7)] ?? 0) >= (i + 0.5) / 8;
-      }
-      px[base + x] = on ? F : T;
-    }
-  }
-  g.putImageData(img, 0, 0);
-}
-
-const GLYPH_RAMP = " .:-=+*#%@";
-
-/**
- * The loading ramp (Dither.swift:1017-1046): one glyph per tile cell, glyph = ramp[((rank + 8·frame) % 64) · 10 / 64],
- * frame 0…7 at 8 fps. Still: "." below rank 32, "#" above. Returns one string per row.
- */
-export function ditherGlyphs(cols: number, rows: number, frame: number, still?: boolean): string[] {
-  const out: string[] = [];
-  const f = ((Math.floor(frame) % 8) + 8) % 8;
-  for (let y = 0; y < rows; y++) {
-    let line = "";
-    for (let x = 0; x < cols; x++) {
-      const rank = BAYER8_RANKS[(y & 7) * 8 + (x & 7)] ?? 0;
-      if (still) line += rank < 32 ? "." : "#";
-      else line += GLYPH_RAMP[Math.floor((((rank + 8 * f) % 64) * 10) / 64)] ?? " ";
-    }
-    out.push(line);
-  }
-  return out;
-}

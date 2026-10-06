@@ -13,6 +13,10 @@ export const ISLAND = {
     alarm: "07:10 · Wake up, Kevin",
   } as const,
   alarmSub: "Monday · standup notes at 9",
+  /** Asleep, the hero is the wake gate's own words, set calm (the app's island, Kevin's screenshot, 2026-10-05). */
+  gate: "Listening for “jarhead”",
+  /** The question in the hero; the head names who asks (`headSpeaking`), so the hero never says it twice. */
+  question: "Send “I'm running late” to Ben?",
   headSpeaking: "Slack asks",
   headAlarm: "Alarm · weekdays",
   working: "Working",
@@ -22,13 +26,17 @@ export const ISLAND = {
   deny: "Deny",
   snooze: "Snooze 10",
   done: "Done",
-  five: "5",
-  thirty: "30",
   sayAwake: "Say something…",
   sayAsleep: "Asleep · press Go",
   footClock: "12:37",
   footMeter: "7.2 min · $0.36",
-  /** The asleep foot line, as the app draws it: `asleep`, then the next thing armed (notch-island-alarm.png). */
+  /**
+   * The app's asleep row with a timer armed (notch-island-alarm.png): `asleep`, then the next thing. The island's own
+   * asleep row names the 07:10 alarm the Sleep night runs to (its noun is this line's first word); Sleep cuts its timer
+   * example from here.
+   */
   footAsleep: "asleep · next Timer 11:56 · pasta",
+  /** The asleep row's clause with no fire armed and nothing used today (NotchPanel.swift asleepClause): while the alarm rings. */
+  footRing: "nothing billed",
   clockBase: { thinking: 1, acting: 8 } as const,
 };

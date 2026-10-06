@@ -10,35 +10,48 @@ import QuartzCore
 // from the one `BlobSim`, so the face and the colour are continuous.
 //
 //   tucked   asleep: only the eyes — `- -` (the gate faces while the gate listens
-//            or asks), dark grey on the notch's black, in a 12 pt lip at the notch's
-//            bottom edge — plus a one-pixel glow along the lip that breathes. Marks
-//            survive sleep: while any waits the glow takes the mark tone and a small
-//            `◎2` chip sits right of the eyes.
+//            or asks), rimmed dark grey on the notch's black, in a 12 pt lip at the
+//            notch's bottom edge. Marks survive sleep: while any waits a small `◎2` chip
+//            in the mark tone sits right of the eyes.
 //   peeking  awake: a 26 pt island hanging under the notch, the face centred, widening
-//            by up to 30 pt and pulsing with the audio while listening or speaking,
-//            the phase colour as a hairline along its bottom edge, never a wash.
+//            by up to 30 pt and pulsing with the audio while listening or speaking. No
+//            coloured line on any edge: the phase colour is the eyes' tint alone.
 //            The island body carries the app icon's dithered orb gradient (NotchInk.swift
 //            over UI/Dither.swift), pooling out of the pure-black notch — unmistakably
-//            the orb's colour even in this strip, the eyes on their ground under-copy.
+//            the orb's colour even in this strip, the eyes drawn on it (Eyes.swift, the
+//            site's eyes: ink pupils rimmed in the phase-tinted paper).
 //            Right of the face: the working counter, the thread dots, then glance
 //            chips — a thread's question, the circled count, a problem's glyph, the
 //            meter — never sentences, at most four, the strip widening by their width
 //            and never past the island's. Marking replaces them with `◎ Circle
 //            something · Esc`.
 //   island   hover (or the capsule toggle, ⌥⇧Return): 420×184, sprung open
-//            (`Motion.island`), a composed control surface of four bands that never
+//            (`Motion.island`) out of the notch's column: one black silhouette from the
+//            bezel, concave fillets onto its top edge, rounded top corners where it hangs
+//            from the menu bar (which keeps its status items: nothing is laid over the
+//            bar), 24 pt bottom corners (`NotchInk.shape`);
+//            a composed control surface of four bands that never
 //            reflow — an ANCHOR column at the left (the face at (57, 40), the phase word
 //            under it, Go · Stop · Mute at its foot), a DISPLAY on the black pool under
-//            the notch (a mono head line — the level trace, `Working · m:ss`, `✋ Slack
-//            asks`, `◎ 2` or a film's caption at the right end — then the hero: one
-//            18 pt line to three, the thread's question, the running delegation's
-//            request, the last thing said or the gate's words asleep; under it, by kind:
-//            tiles for live threads or a chip line at 3+, Allow · Deny with the
+//            the notch (a head line — `Working · m:ss`, `✋ Slack asks`, `⏰ Alarm`,
+//            `◎ 2` or a film's caption at the right end, never a bar — then the hero:
+//            one 18 pt line to three, the thread's question (its asker named once, in
+//            the head), the running delegation's request, the last thing said or the
+//            gate's words asleep (set calm); listening with nothing said, the level
+//            trace in its place, else under a short line; under it, by kind: tiles for
+//            live threads or a chip line at 3+, the working sweep (a small travelling
+//            swell of ticks, no rule) under the request while a hand works with no
+//            threads, Allow · Deny with the
 //            thumbnails as minis while a question waits, or 84×60 films of what was
 //            circled), a CONTROL ROW (the Say box in the middle, the circling keys —
-//            Clear · Circle · Window · Ask — as one strip at the right) and a FOOT (the
-//            meter as `4:12` · a dithered bar · figures, or the problem row with its
-//            remedy; Console · Sleep as a pair in the corner; the phase hairline). The
+//            Clear · Circle · Window · Ask — as one strip at the right) and a FOOT (one
+//            line in the problem row's grammar, a bright noun and a quieter clause: the
+//            meter as `4:12 · 7.2 min · $0.36 · today`, asleep `☾ asleep · next Alarm
+//            07:10` or `☾ asleep · today 44.0 min`, or the problem row with its remedy;
+//            Console · Sleep as a pair in the corner). One
+//            ink for every phase, asleep included. Every instrument is paper, never the
+//            phase tone, nothing bar-shaped rides the head or the foot, and no edge
+//            carries a coloured line. The
 //            content fades in and rises a few points in six beats (≤ 150 ms stagger) as
 //            the island opens and fades on close (none of the rise or stagger under
 //            Reduce Motion); a kind change swaps the display while the anchor and the
@@ -98,8 +111,14 @@ struct NotchGeometry: Equatable {
     static let peekWidthCap: CGFloat = 360
     static let peekHeight: CGFloat = 26
     static let lipHeight: CGFloat = 12
-    /// The notch's corner radius, matched on the island's bottom corners.
+    /// The notch's corner radius, matched on the lip's and the peek's bottom corners.
     static let radius: CGFloat = 12
+    /// The open island's bottom corners: generous, the notch apps' open panel (the site's
+    /// styles/desk.css .desk-island, 24 px), and no more: at 30 the foot's Console · Sleep
+    /// pair (its right edge at 406, its bottom 4 pt up) came within 1.6 pt of the curve, its
+    /// hairline pinned to the contour; at 24 it keeps 3.4. They grow from `radius` as the
+    /// island opens (`NotchInk.openLevel`).
+    static let bottomRadius: CGFloat = 24
 
     /// Set by the preview harness (ORB_NOTCH=1): report a notch at the measured size
     /// on the main display whether or not the hardware has one.
@@ -371,7 +390,7 @@ final class NotchDock {
     /// The blob is in the notch: the face shows and the sim is stepped from here.
     ///
     /// The hand-off is a crossfade, not a pop: flipping this fades the notch's face,
-    /// gradient, hairline and the island's content (glyphs included) in or out over
+    /// gradient and the island's content (glyphs included) in or out over
     /// `Motion.base` (the ink itself grows or shrinks on `Motion.island`). Contract with
     /// the blob's tuck (OrbPanelController,
     /// the body slipping up into the notch scaled and fading): the controller sets
@@ -960,6 +979,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         didSet {
             guard parked != oldValue else { return }
             parkedChangedAt = window == nil ? -1 : CACurrentMediaTime()
+            // Out of the notch the blob's face is its own again (`onFrame` sets the ring's while parked).
+            if !parked { sim.sparkleFace = nil }
             needsDisplay = true
         }
     }
@@ -1017,9 +1038,6 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     static let filmSize = NSSize(width: 84, height: 60)
     /// A thread's tile (the plain kind, one or two threads).
     static let tileSize = NSSize(width: 140, height: 32)
-    /// The meter's bar in the foot and the level trace in the head: 6 pt = four rows of 1.5 pt dither cells.
-    static let barSize = NSSize(width: 88, height: 6)
-    static let traceSize = NSSize(width: 96, height: 6)
     /// The hero's line pitch (18 pt SF Pro).
     static let heroPitch: CGFloat = 22
     /// The island's content elements, for the stagger: the anchor deck, the word + head, the hero, the middle, the control row, the foot.
@@ -1101,10 +1119,6 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private var heroKey = 0
     private var heroChangedAt = -1.0
     private var heroPrevious: (lines: [NSString], attrs: [NSAttributedString.Key: Any])?
-    /// The meter bar's fill easing from → to over `Motion.base` from `at` (< 0: snapped).
-    private var meterFillFrom: CGFloat = 0
-    private var meterFillTo: CGFloat = 0
-    private var meterFillAt = -1.0
 
     /// A kind or hero change's whole window: the leave over `quick`, the arrival over
     /// `base`, the last display beat's stagger. `isAnimating` keeps the link alive for
@@ -1112,8 +1126,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private var swapWindow: Double { seconds(Motion.quick) + seconds(Motion.base) + Double(Self.contentElements) * Motion.stagger }
 
     /// After any change to what the display shows — `content`, the last line, the working
-    /// state (each has its own setter; the hero reads all three): the kind, the hero and
-    /// the meter's target are compared with the last frame's, and each that moved starts
+    /// state (each has its own setter; the hero reads all three): the kind and the hero
+    /// are compared with the last frame's, and each that moved starts
     /// its own window. Only with the island's content shown (a change while folded snaps:
     /// the content arrives whole with the open).
     private func noteCanvasChanges() {
@@ -1146,30 +1160,6 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             heroKey = key
             heroLinesCache = nil
         }
-        let target = meterFillTarget()
-        if abs(target - meterFillTo) > 0.0005 {
-            meterFillFrom = live ? meterFill(now) : target
-            meterFillTo = target
-            meterFillAt = live && !reduced ? now : -1
-        }
-    }
-
-    /// The bar's fill: billed ÷ max(today, billed) in session or paused; 0 asleep (a track only).
-    private func meterFillTarget() -> CGFloat {
-        let m = content.meter
-        guard m.inSession || m.paused, let b = m.billedSeconds, b.isFinite, b >= 0 else { return 0 }
-        let today = m.todaySeconds ?? 0
-        let denominator = max(today.isFinite ? today : 0, b)
-        guard denominator > 0 else { return 0 }
-        return finite01(CGFloat(b / denominator))
-    }
-
-    /// The fill this frame, eased over `Motion.base` on `Motion.easeOut` (snapped under Reduce Motion).
-    private func meterFill(_ now: Double) -> CGFloat {
-        guard meterFillAt >= 0 else { return meterFillTo }
-        let t = finite01((now - meterFillAt) / seconds(Motion.base))
-        let e = CGFloat(Motion.easeOutCurve.value(at: t))
-        return finite01(meterFillFrom + (meterFillTo - meterFillFrom) * e)
     }
 
     #if JARHEAD_ORB_PREVIEW
@@ -1301,6 +1291,10 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// The tiles' meta, the chip line and the foot's figures: the counter's mono at the same step, truncating at the end.
     private static let threadAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72), .paragraphStyle: truncating]
     private static let threadShadow: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 0, alpha: 0.55), .paragraphStyle: truncating]
+    /// The foot's left end (the elapsed, or `asleep` beside the moon): a step up from the
+    /// figures, since the ink under the foot's left is the ramp's pale end and 0.72 fell
+    /// under 4.5:1 there (the site's styles/desk.css .desk-foot-l).
+    private static let footLeftAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.92), .paragraphStyle: truncating]
     /// The paused foot, a step dimmer.
     private static let footPausedAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.48), .paragraphStyle: truncating]
     /// Mono words at the empty step (the hint face; "Circle something · ⌃⌥C" now lives in Circle's tooltip).
@@ -1324,10 +1318,17 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// The problem row: the noun bright, the clause a step dimmer, both mono.
     private static let problemNounAttrs: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor(white: 1, alpha: 0.92), .paragraphStyle: truncating]
     private static let problemClauseAttrs: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor(white: 1, alpha: 0.62), .paragraphStyle: truncating]
-    /// The Say box's placeholder at rest, the field's own face at the empty step.
-    private static let placeholderAttrs: [NSAttributedString.Key: Any] = [.font: fieldFont, .foregroundColor: NSColor(white: 1, alpha: 0.46), .paragraphStyle: truncating]
-    /// The head's dim figures: `◎ 2` once every mark is used, a film's caption.
-    private static let headDimAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.46), .paragraphStyle: truncating]
+    /// The Say box's placeholder at rest, a step over the empty step: on the box's
+    /// translucent ink over the ramp 0.46 measured under 4.5:1, 0.56 too (3.75:1 at its
+    /// lowest); 0.62, with the light falling toward the foot (`NotchInk.footShade`), clears it
+    /// in every cell (4.95:1 at its lowest; the site's .desk-say-ph).
+    static let placeholderAlpha: CGFloat = 0.62
+    private static let placeholderAttrs: [NSAttributedString.Key: Any] = [.font: fieldFont, .foregroundColor: NSColor(white: 1, alpha: placeholderAlpha), .paragraphStyle: truncating]
+    /// The head's dim figures: `◎ 2` once every mark is used, a film's caption. 0.72, as the
+    /// site's head: the ink under the head is a thin lip now, so 0.46 fell below 4.5:1.
+    private static let headDimAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72), .paragraphStyle: truncating]
+    /// The head's `◎ N` under the pointer, a step brighter than the dim figures.
+    private static let headHotAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.92), .paragraphStyle: truncating]
     /// The mark-landed pill's words, the meter's mono in the mark tone.
     private static let markPillAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: markTone]
     /// The `◎ N` in the head while marks are pending, the mark tone.
@@ -1439,7 +1440,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     func focusField(placeholder: String) {
         guard let w = window else { return }
         fieldFocused = true
-        field.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor(white: 1, alpha: 0.46)])
+        field.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor(white: 1, alpha: Self.placeholderAlpha)])
         layoutField()
         field.isHidden = false
         w.makeFirstResponder(field)
@@ -1591,6 +1592,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     func setMode(_ m: NotchDock.Mode, animated: Bool) {
         mode = m
         if m != .island { pendingPress = nil }
+        // Tucked in the lip the face rests: it breathes but never flares from the menu bar.
+        sim.faceQuiet = parked && m == .tucked
         let n = geometry?.notch.width ?? 185
         if !parked {
             // The blob is out. Working — or with threads live — the notch keeps a quiet
@@ -1681,18 +1684,44 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         if !contentShown, contentClosedAt >= 0, now - contentClosedAt < seconds(Motion.quick) { return true }
         if flashPress != nil, now - flashAt < base { return true }
         if workingChangedAt >= 0, now - workingChangedAt < base { return true }
-        // A kind or hero change mid-open, the meter's fill on its way.
+        // A kind or hero change mid-open.
         let swap = swapWindow
         if canvasChangedAt >= 0, now - canvasChangedAt < swap { return true }
         if heroChangedAt >= 0, now - heroChangedAt < swap { return true }
-        if meterFillAt >= 0, now - meterFillAt < base { return true }
         return false
     }
 
-    /// The level trace is live: the island open, in a session, listening or speaking.
+    /// The level trace is live: the island open, in a session, listening (the one
+    /// instrument that reads the voice; the head carries no level meter).
     private var traceLive: Bool {
-        contentShown && parked && muteEnabled && (sim.phase == .listening || sim.phase == .speaking)
+        contentShown && parked && muteEnabled && sim.phase == .listening
     }
+
+    /// A fixed ring of levels (0…1), newest last: appending never allocates.
+    struct LevelHistory {
+        static let capacity = 200
+        private var ring = [Float](repeating: 0, count: capacity)
+        private var next = 0
+        private(set) var count = 0
+        mutating func append(_ v: Float) {
+            ring[next] = v.isFinite ? min(1, max(0, v)) : 0
+            next = (next + 1) % Self.capacity
+            count = min(Self.capacity, count + 1)
+        }
+        /// The `i`-th newest level (0 the newest); 0 past the oldest.
+        func newest(_ i: Int) -> Float {
+            guard i >= 0, i < count else { return 0 }
+            return ring[(next - 1 - i + 2 * Self.capacity) % Self.capacity]
+        }
+        mutating func removeAll() { next = 0; count = 0 }
+    }
+    /// The level trace's history: `sim.islandLevel` sampled once a `traceTick` while the
+    /// island listens (the site's 8 fps trace, lib/island.ts renderLevelTrace), as many as
+    /// the widest trace shows; emptied each time listening comes back, so the trace starts
+    /// from silence, never from a voice minutes old or Jarhead's own.
+    private var levelHistory = LevelHistory()
+    private var traceSampledAt = -1.0
+    static let traceTick = 0.125
 
     /// How present the working counter is: 1 working, 0 not, crossfading over
     /// `Motion.base` (`Motion.easeOut` in, `Motion.easeIn` out) from the last flip.
@@ -1730,8 +1759,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let dt = min(0.1, now - lastTick)
         lastTick = now
         // Peeking, the island breathes with the sound: up to 30 pt wider on the eased
-        // level (the spring smooths it into a pulse; `draw` brightens the hairline with
-        // it). Not under reduce motion, where the island holds its size.
+        // level (the spring smooths it into a pulse). Not under reduce motion, where the
+        // island holds its size.
         if parked, mode == .peek, let n = geometry?.notch.width {
             // Working, the peek also carries the counter right of the face: room for it,
             // eased in; then the thread dots, then the chips.
@@ -1744,6 +1773,21 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             if springsSettled { widthSpring.snap(); heightSpring.snap(); openSpring.snap() }
         }
         if springsSettled, pendingPress != nil { firePendingPress() }
+        // The level trace's history: a sample a tick while the island listens (a late frame
+        // takes one, never a burst), from silence each time listening comes back.
+        if traceLive, sim.phase == .listening {
+            if traceSampledAt < 0 { levelHistory.removeAll(); traceSampledAt = now - Self.traceTick }
+            if now - traceSampledAt >= Self.traceTick {
+                levelHistory.append(Float(finite01(sim.islandLevel)))
+                traceSampledAt = now - traceSampledAt > 4 * Self.traceTick ? now : traceSampledAt + Self.traceTick
+            }
+        } else {
+            traceSampledAt = -1
+        }
+        // A ring opens the face to `o o` on the island and the peek (never at the lip, where the
+        // pill says it): the sparkle steps on the pair drawn, so the ring's eyes flare as any
+        // open face's do, asleep included (the sim's own pair is the gate's bead or `- -` then).
+        if parked { sim.sparkleFace = content.ring != nil && !(mode == .tucked && openSpring.value < 0.5) ? BlobSim.Face("o") : nil }
         let animating = isAnimating(now)
         // The shared sim is stepped here only while the blob is parked (the field's
         // own link is paused then); at the sim's cadence, so a parked blob costs what
@@ -1840,24 +1884,28 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     // MARK: layout
 
     /// The face's place this frame: sliding from the island's centre (tucked, peek) to
-    /// the anchor's head (island) with `open`, growing on the way (17 → 27.2 pt).
+    /// the anchor's head (island) with `open`, growing on the way — R 32.5 in the peek
+    /// (the lip's 0.85 of it) to the site island's R 52 open (Eyes.swift: the body's
+    /// radius the eyes are drawn for; the pair 0.31 R either side of the centre).
     private struct FaceLayout {
         let centre: CGPoint
-        let size: Double
-        let gap: CGFloat
-        /// Where the face ends, for what follows it on the peek.
-        var right: CGFloat { centre.x + gap / 2 + CGFloat(size) * 0.6 }
+        let radius: Double
+        /// Where the face ends (the right eye's rim), for what follows it on the peek.
+        var right: CGFloat {
+            centre.x + CGFloat(radius * (Eyes.spread + Eyes.openEye.rx * Eyes.scale(radius))) + Eyes.rimWidth(radius)
+        }
     }
 
     /// `shift` moves the small island's face (peek, tucked) sideways — while working the
     /// face gives half the counter's width so face + counter stay centred under the notch.
-    /// Open, the face is the anchor's head at (57, 40), level with the hero's first line.
+    /// Open, the face is the anchor's head at (57, 40), level with the hero's first line,
+    /// where the site's island centres it (components/desk/Island.tsx, R 52).
     private func faceLayout(island: NSRect, open: CGFloat, lipFace: Bool, shift: CGFloat = 0) -> FaceLayout {
-        let size = (lipFace ? BlobSim.eyeSizePt * 0.85 : BlobSim.eyeSizePt) * Double(1 + 0.6 * open)
-        let gap = CGFloat(size) * 0.95
+        let peek = Eyes.islandR / 1.6
+        let radius = (lipFace ? peek * 0.85 : peek) * Double(1 + 0.6 * open)
         let x = island.minX + (island.width / 2) * (1 - open) + 57 * open + (shift.isFinite ? shift : 0) * (1 - open)
         let y = island.minY + (island.height / 2) * (1 - open) + 40 * open + (lipFace ? -1 : 0)
-        return FaceLayout(centre: CGPoint(x: x, y: y), size: size, gap: gap)
+        return FaceLayout(centre: CGPoint(x: x, y: y), radius: radius)
     }
 
     /// What the display shows under the hero: tiles (or the chip line) for live threads,
@@ -1889,13 +1937,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// content comes and goes. The budget (points):
     ///
     ///   anchor   face centre (57, 40) · word (14, 60, 86, 16) · go (14, 123, 22, 22) · stop (42, 122, 26, 24) · mute (74, 122, 26, 24)
-    ///   head     (114, 12, 292, 18): the left span — trace (114, 18, 96, 6) · counter · `✋ Name asks`; the right span ends at 406 — `◎ N` · the film caption
-    ///   hero     (114, 30, 292, 66): lines at y 30 / 52 / 74, pitch 22 — 3 plain without tiles, 2 with tiles or a question, 1 with films
+    ///   head     (114, 12, 292, 18): the left span — counter · `✋ Name asks` · `⏰ Alarm` (words, never a bar); the right span ends at 406 — `◎ N` · the film caption
+    ///   hero     (114, 30, 292, 66): lines at y 30 / 52 / 74, pitch 22 — 3 plain without tiles, 2 with tiles or a question, 1 with films;
+    ///            asleep with nothing to say, the clock (44 pt mono) from y 28
+    ///            levelTrace (114, 46, 292, 40): listening with nothing said, the level trace in the hero's place (its midline
+    ///            level with the word); under a one- or two-line hero it moves under the lines (`levelTraceRect`)
     ///   middle   tiles (114, 80, 140, 32) / (266, 80, 140, 32) · chips (114, 86, 292, 20) · allow (114, 82, 84, 28) / deny (206, 82, 84, 28)
     ///            minis (340, 85, 30, 22) / (376, 85, 30, 22) · films (114 / 206 / 298, 56, 84, 60)
     ///   control  field (114, 122, 176, 24) · clear (302) | circle (328) | window (354) | ask (380), 26×24 at y 122, one strip
-    ///   foot     seam y 153.5 · footLeft (14, 160, 40, 16) · bar (60, 165, 88, 6) · footRight (156, 160, 186, 16) · console (354, 156) | sleep (380, 156)
-    ///            the problem row in the meter's place: remedy right-aligned to 342, 18 tall at y 159 · the phase hairline at y 183.5
+    ///   foot     seam y 153.5 · footLeft (14, 160, 40, 16), its words running on after it to footRight's end (156, 160, 186, 16) · console (354, 156) | sleep (380, 156)
+    ///            the problem row in the meter's place: remedy right-aligned to 342, 18 tall at y 159; no line on the bottom contour
     private struct Zones {
         let face: CGPoint
         let word: NSRect
@@ -1905,7 +1956,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let head: NSRect
         let headLeft: NSRect
         let headRight: NSRect
-        let trace: NSRect
+        let levelTrace: NSRect
         let hero: NSRect
         let heroLines: Int
         let tile0: NSRect
@@ -1922,7 +1973,6 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let ask: NSRect
         let footSeamY: CGFloat
         let footLeft: NSRect
-        let bar: NSRect
         let footRight: NSRect
         let foot: NSRect
         let remedy: NSRect?
@@ -1931,8 +1981,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let kind: CanvasKind
         /// Every rect a number: the only layout that reaches a draw.
         var isFinite: Bool {
-            let rects = [word, go, stop, mute, head, headLeft, headRight, trace, hero, tile0, tile1, chips, allow, deny,
-                         field, clear, circle, window, ask, footLeft, bar, footRight, foot, console, sleep] + mini + film
+            let rects = [word, go, stop, mute, head, headLeft, headRight, levelTrace, hero, tile0, tile1, chips, allow, deny,
+                         field, clear, circle, window, ask, footLeft, footRight, foot, console, sleep] + mini + film
             guard rects.allSatisfy({ $0.isFiniteRect }), face.isFinitePoint, footSeamY.isFinite else { return false }
             if let r = remedy, !r.isFiniteRect { return false }
             return true
@@ -1953,7 +2003,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let rightW = headRightWidth(kind: kind)
         let headRight = at(406 - rightW, 12, rightW, 18)
         let headLeft = at(114, 12, 292 - rightW - (rightW > 0 ? 8 : 0), 18)
-        let trace = at(114, 18, Self.traceSize.width, Self.traceSize.height)
+        let levelTrace = at(114, 46, 292, 40)
         let hero = at(114, 30, 292, 3 * Self.heroPitch)
         let heroLines = Self.heroLines(kind: kind, threads: content.threads.count)
         let tile0 = at(114, 80, Self.tileSize.width, Self.tileSize.height)
@@ -1970,15 +2020,14 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let ask = at(380, 122, box.width, box.height)
         let footSeamY = y0 + 153.5
         let footLeft = at(14, 160, 40, 16)
-        let bar = at(60, 165, Self.barSize.width, Self.barSize.height)
         let footRight = at(156, 160, 186, 16)
         let foot = at(14, 154, 392, 30)
         let remedy = remedyBox(at: at(0, 159, 0, 18), rightEdge: x0 + 342)
         let console = at(354, 156, box.width, box.height)
         let sleep = at(380, 156, box.width, box.height)
-        return Zones(face: face, word: word, go: go, stop: stop, mute: mute, head: head, headLeft: headLeft, headRight: headRight, trace: trace,
-                     hero: hero, heroLines: heroLines, tile0: tile0, tile1: tile1, chips: chips, allow: allow, deny: deny, mini: mini, film: film,
-                     field: field, clear: clear, circle: circle, window: window, ask: ask, footSeamY: footSeamY, footLeft: footLeft, bar: bar,
+        return Zones(face: face, word: word, go: go, stop: stop, mute: mute, head: head, headLeft: headLeft, headRight: headRight,
+                     levelTrace: levelTrace, hero: hero, heroLines: heroLines, tile0: tile0, tile1: tile1, chips: chips, allow: allow, deny: deny, mini: mini, film: film,
+                     field: field, clear: clear, circle: circle, window: window, ask: ask, footSeamY: footSeamY, footLeft: footLeft,
                      footRight: footRight, foot: foot, remedy: remedy, console: console, sleep: sleep, kind: kind)
     }
 
@@ -2084,11 +2133,37 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// The hero's text and face this frame (`previewLineText` mirrors it).
     private func heroChoice() -> (hero: Hero, text: String, attrs: [NSAttributedString.Key: Any]) {
         if let r = content.ring { return (.ring, r.line, Self.heroBrightAttrs) }
-        if let q = content.question { return (.question, q.text, Self.heroBrightAttrs) }
+        if let q = content.question { return (.question, Self.heroQuestion(q.text, asker: q.name), Self.heroBrightAttrs) }
         if workingSince != nil, let r = content.request, !r.isEmpty { return (.request, r, Self.heroAttrs) }
         if !lastLine.isEmpty { return (.lastLine, lastLine, Self.heroAttrs) }
-        if !awake, let g = content.gateLabel, !g.isEmpty { return (.gate, g, Self.heroCalmAttrs) }
+        if !awake, let g = content.gateLabel, !g.isEmpty { return (.gate, Self.islandWords(g), Self.heroCalmAttrs) }
         return (.none, "", Self.heroAttrs)
+    }
+
+    /// The question as the hero says it. The head already names who asks (`✋ Slack asks`),
+    /// so the island never says it twice: a closing ` on Slack` / ` in Slack` / ` via Slack`
+    /// before the question mark goes, and so does an opening `Slack asks: `. Anything else
+    /// is the thread's own words; the tooltip keeps them whole.
+    static func heroQuestion(_ text: String, asker: String) -> String {
+        let name = asker.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return text }
+        var t = text
+        for lead in ["\(name) asks: ", "\(name) asks — "] where t.hasPrefix(lead) {
+            let rest = t.dropFirst(lead.count)
+            t = rest.prefix(1).uppercased() + rest.dropFirst()
+        }
+        for tail in [" on \(name)?", " in \(name)?", " via \(name)?"] where t.hasSuffix(tail) && t.count > tail.count {
+            t = String(t.dropLast(tail.count)) + "?"
+        }
+        return t
+    }
+
+    /// The gate's words as the island sets them: its sentences never carry an em dash (the
+    /// site's copy rule, site/docs/DESIGN.md), so `Wake word off — microphone not granted`
+    /// reads `Wake word off · microphone not granted`, the island's own separator. The status
+    /// menu keeps its wording.
+    static func islandWords(_ text: String) -> String {
+        text.replacingOccurrences(of: " — ", with: " · ")
     }
 
     /// Lines the hero may take: one over the films, two over Allow · Deny or the tiles, else three.
@@ -2533,13 +2608,13 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         pillRect = nil
 
         // The ink, one shape from the bezel down (`NotchInk.shape`): the hardware notch,
-        // pure black (nothing lives behind it), its column through the menu bar band,
-        // concave fillets curving out of the column onto the island's top edge, the
-        // island's convex rounded top corners where it hangs from the bar, and the
-        // notch's radius on its bottom corners — the notch grown into an island, not a
-        // rectangle hung under the bar. Radii follow the island's size each frame, so
-        // the spring never kinks; at the notch's width it is the column with rounded
-        // bottom corners. Snapped to device pixels: no seam against the real notch.
+        // pure black (nothing lives behind it), and under it the island — the notch's
+        // column through the menu bar with concave fillets onto the island's top edge,
+        // rounded top corners where it hangs from the bar (the bar keeps its status items:
+        // nothing is laid over them), and bottom corners growing from the notch's radius
+        // to `NotchGeometry.bottomRadius` (24 pt) as it opens (`NotchInk.openLevel`). Radii
+        // follow the island's size each frame, so the spring never kinks. Snapped to device
+        // pixels: no seam against the real notch.
         let shape = NotchInk.shape(column: n.minX...n.maxX, island: islandRaw, scale: scale)
         let island = shape.island
         cg.setFillColor(CGColor(gray: 0, alpha: 1))
@@ -2556,7 +2631,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         // counter and the thread dots alone on the strip (no face — that is on the body),
         // fading with the park level's inverse; the counter with the work level too.
         if work > 0.005 || !threads.isEmpty, park < 0.995, island.isFiniteRect, island.height >= 1 {
-            drawWorkingStrip(cg, shape: shape, island: island, color: sim.displayColor, alpha: 1 - park, work: work)
+            drawWorkingStrip(cg, shape: shape, island: island, alpha: 1 - park, work: work)
         }
         #if JARHEAD_ORB_PREVIEW
         if previewStripOnly { return }
@@ -2571,7 +2646,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.clip()
 
         // The orb's gradient pooling out of the notch, clipped to the island (the column
-        // and the band through the menu bar stay black), drawn at the mode's intensity:
+        // through the menu bar stays black), drawn at the mode's intensity:
         // a breath of it along the tucked lip, unmistakably in the peek, fully on the
         // island. The image is the island's size rounded up to 2 pt, centred on it, its
         // top at the island's, the excess clipped: the dither stays 1:1. Until this size
@@ -2603,7 +2678,6 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         }
 
         let color = sim.displayColor
-        let glyphs = BlobGlyphs.shared
         cg.saveGState()
         cg.setAllowsAntialiasing(true)
         cg.setShouldAntialias(true)
@@ -2612,13 +2686,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.setShouldSubpixelPositionFonts(true)
         cg.setAlpha(park)
 
-        // The face. Tucked: dark grey dashes at the lip, the sim's face (the gate's
-        // while it listens or asks). Peeking: the phase colour a step up, centred.
-        // Island: the face as the anchor's head at (57, 40). It slides with the spring; its
-        // ground under-copy (`drawEye`) keeps it readable over the gradient's light end.
-        // A ring lifts the eyes to `o o` (the asleep brown, 85 % lifted) on the island and the peek — never at
+        // The face, drawn as the site's island draws it (Eyes.swift): ink pupils and lines
+        // in the island's black, each rimmed in the paper tinted with the face's tone (the
+        // phase's, the orb's blue while thinking), the paper sparkle on an ink halo — the
+        // sim's own face, lids, look and sparkle. Tucked: the lip's face (the gate's while
+        // it listens or asks), its rim a dark grey with the gate off. Peeking: centred.
+        // Island: the anchor's head at (57, 40). It slides and grows with the spring.
+        // A ring opens the eyes to `o o` (85 % lifted) on the island and the peek — never at
         // the lip, where the pill says it — crossfading with the sim's face over `Motion.base` as it comes and goes.
-        var face = sim.face
+        var face = sim.faceDrawn
+        var lids: (left: Double, right: Double)?
         let lipFace = mode == .tucked && open < 0.5
         let ringing = content.ring != nil && !lipFace
         var ringFade: CGFloat = 1
@@ -2626,52 +2703,35 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             // A dip crossfade: the old pair fades out to the midpoint, the new one fades in from it.
             let t = finite01((now - ringFaceChangedAt) / seconds(Motion.base))
             ringFade = CGFloat(abs(2 * Double(t) - 1))
-            if ringing == (t >= 0.5) { face = BlobSim.Face("o") }
+            if ringing == (t >= 0.5) { face = BlobSim.Face("o"); lids = (1, 1) }
         } else if ringing {
             face = BlobSim.Face("o")
+            lids = (1, 1)
         }
         // Working in the peek: the face gives half the counter's width (and the dots', and the chips') to keep the pair centred.
         let peekShift: CGFloat = lipFace ? 0 : -(Self.workExtraWidth * work + peekDotsExtraWidth + chipsExtraWidth) / 2
         let fl = faceLayout(island: island, open: open, lipFace: lipFace, shift: peekShift)
-        // Cell shift: the look moves the pair by up to a glyph's third.
-        let shiftX = CGFloat(sim.faceLookX) * CGFloat(fl.size) * 0.3
-        let shiftY = CGFloat(sim.faceLookY) * CGFloat(fl.size) * 0.18
-        let ink: RGB
+        // The look moves the pair (8 pt sideways, 5 up or down at R 52, as the site's island
+        // follows the pointer) and turns it (the far eye narrows).
+        let R = fl.radius
+        let lookScale = R / Eyes.islandR
+        let tone = sim.faceTone
+        let rim: RGB
         if lipFace, sim.gate == .off || sim.gate == .lockedOut {
-            ink = RGB(hex: 0x4a4d55)
+            rim = RGB(hex: 0x4a4d55)
         } else if lipFace {
-            ink = color.mixed(with: RGB(1, 1, 1), 0.35)
+            rim = tone.mixed(with: RGB(1, 1, 1), 0.35)
         } else {
-            ink = color.mixed(with: RGB(1, 1, 1), ringing ? 0.85 : sim.eyeLift)
+            rim = tone.mixed(with: RGB(1, 1, 1), ringing ? 0.85 : sim.eyeLift)
         }
-        let left = CGPoint(x: fl.centre.x - fl.gap / 2 + shiftX, y: fl.centre.y + shiftY)
-        let right = CGPoint(x: fl.centre.x + fl.gap / 2 + shiftX, y: fl.centre.y + shiftY)
-        cg.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-        cg.saveGState()
-        if ringFade < 1 { cg.setAlpha(finite01(park * ringFade)) }
-        BlobFieldView.drawEye(cg, glyph: face.left, size: fl.size, at: left, ink: ink, glyphs: glyphs)
-        BlobFieldView.drawEye(cg, glyph: face.right, size: fl.size, at: right, ink: ink, glyphs: glyphs)
-        cg.restoreGState()
+        let pose = sim.facePose(open: lids)
+        let marks = Eyes.marks(face.left, face.right, cx: Double(fl.centre.x) + sim.faceLookX * 8 * lookScale,
+                               cy: Double(fl.centre.y) + sim.faceLookY * 5 * lookScale, R: R, pose: pose)
+        Eyes.draw(cg, marks, ink: FaceInk(ink: CGColor(gray: 0, alpha: 1), light: CGColor(gray: 1, alpha: 1), rim: rim.cgColor),
+                  rim: Eyes.rimWidth(R), halo: Eyes.haloWidth(R, pose: pose), alpha: finite01(park * ringFade))
 
-        // The phase colour: a hairline along the island's bottom edge (peeking, island),
-        // a one-pixel glow that breathes along the lip (tucked) — in the mark tone while
-        // marks wait. Peeking, the hairline pulses with the sound as the island widens with it (`onFrame`).
-        let hairAlpha: Double
-        var hairColor = color
-        if lipFace {
-            hairAlpha = 0.18 + 0.22 * (sim.reducedMotion ? 0.5 : breath)
-            if content.pendingMarks > 0 { hairColor = Self.markToneRGB }
-        } else if mode == .peek, open < 0.5 {
-            hairAlpha = 0.55 + 0.4 * (sim.reducedMotion ? 0.5 : finite01(sim.islandLevel))
-        } else {
-            hairAlpha = 0.9
-        }
-        let inset = max(shape.bottomRadius, 2)
-        cg.setStrokeColor(hairColor.cgColor(alpha: finite01(hairAlpha)))
-        cg.setLineWidth(1)
-        cg.move(to: CGPoint(x: island.minX + inset, y: island.maxY - 0.5))
-        cg.addLine(to: CGPoint(x: island.maxX - inset, y: island.maxY - 0.5))
-        cg.strokePath()
+        // No coloured line on any edge, tucked, peeking or open: the phase colour lives in
+        // the eyes' tint (and, open, the Go ring), never along the island's contour.
 
         // Tucked with marks waiting: the small `◎2` right of the eyes, in the mark tone.
         if lipFace, content.pendingMarks > 0, island.height >= 10 {
@@ -2890,9 +2950,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     // MARK: 0 · the anchor deck
 
     /// Go (the one circle, ringed in the phase colour), Stop and Mute — fixed in every kind.
+    /// Thinking's ring takes the eyes' paper tint: its tone is a violet-blue that sank into
+    /// the ink's own blue (the site's .desk-go, thinking).
     private func drawAnchorDeck(_ cg: CGContext, _ z: Zones, _ a: Beat, _ s: DrawState) {
         let base = finite01(s.park * a.alpha)
-        drawRing(cg, rect: z.go.offsetBy(dx: 0, dy: a.dy), color: s.color, symbol: AppState.transportLabel(for: sim.phase).symbol,
+        let ringColor = sim.phase == .thinking ? s.color.mixed(with: RGB(1, 1, 1), Self.ringPaperLift) : s.color
+        drawRing(cg, rect: z.go.offsetBy(dx: 0, dy: a.dy), color: ringColor, symbol: AppState.transportLabel(for: sim.phase).symbol,
                  hot: s.hovered == .pause, down: s.pressed == .pause, flash: flashLevel(.pause, now: s.now), alpha: base)
         // Asleep the Stop box rests at .45 — spent, still a button (design13 § Stop); the accent press flash stays.
         drawBox(cg, which: .stop, rect: z.stop.offsetBy(dx: 0, dy: a.dy), symbol: "stop.fill", enabled: true, dim: NotchPanel.stopDim(sim.phase),
@@ -2902,6 +2965,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
                 glyphDim: muteGlyphAlpha, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
         drawMicDot(cg, box: muteRect, alpha: base)
     }
+
+    /// How far thinking's Go ring is lifted toward white: the eyes' own lift (`BlobSim.eyeLift`).
+    static let ringPaperLift: Double = 0.85
 
     // design12: the island says the microphone's state on the mute box — no fourth box, no gesture.
 
@@ -2959,9 +3025,10 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     // MARK: 1 · the anchor's word and the head
 
-    /// The phase word centred under the face; the head's left span (the level trace,
-    /// `Working · m:ss`, or `✋ Name asks` while a question waits) and its right span
-    /// (`◎ N` with any marks, the film's caption while films show).
+    /// The phase word centred under the face; the head's left span (`Working · m:ss`,
+    /// `✋ Name asks` while a question waits, the ring's `⏰ Alarm · weekdays`) and its right
+    /// span (`◎ N` with any marks, the film's caption while films show). Words only: the
+    /// head never carries a bar (the voice's level is the trace's, in the hero's slot).
     private func drawAnchorWordAndHead(_ cg: CGContext, _ z: Zones, _ a: Beat, _ s: DrawState) {
         let base = finite01(s.park * a.alpha)
         cg.saveGState()
@@ -2985,8 +3052,6 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
                 cg.setAlpha(finite01(base * work))
                 Self.drawShadowed(text, in: NSRect(x: left.minX, y: left.minY + 1, width: w, height: left.height), Self.workAttrs, shadow: Self.workShadow)
                 cg.restoreGState()
-            } else if traceLive {
-                drawBar(cg, rect: z.trace.offsetBy(dx: 0, dy: a.dy), fraction: finite01(sim.islandLevel), alpha: 1)
             }
         }
         drawHeadRight(cg, z, a, base, hot: s.hovered == .console)
@@ -3082,9 +3147,58 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         } else if heroPrevious != nil {
             heroPrevious = nil
         }
+        // The hero's instruments ride the new lines' arrival: the level trace (listening),
+        // the working sweep (a hand at work with no threads).
+        let beat: Beat = (finite01(base * arrive.alpha), a.dy + arrive.dy)
+        if beat.alpha > 0.005, let rect = levelTraceRect(z) {
+            drawLevelTrace(cg, rect: rect.offsetBy(dx: 0, dy: beat.dy), alpha: beat.alpha)
+        }
+        if beat.alpha > 0.005, let rect = sweepRect(z, lines: hero.lines.count) {
+            // There and back over `sweepSeconds` each way, eased at each end as a hand slows to turn; held mid-strip under Reduce Motion.
+            let p = reduced ? 0.5 : CGFloat(0.5 - 0.5 * cos(Double.pi * s.now / Self.sweepSeconds))
+            drawSweep(cg, rect: rect.offsetBy(dx: 0, dy: beat.dy), at: p, alpha: beat.alpha)
+        }
         guard !hero.lines.isEmpty else { return }
         drawHeroLines(cg, hero.lines, hero.attrs, in: z.hero, beat: (arrive.alpha, a.dy + arrive.dy), base: base)
     }
+
+    /// The level trace's rect this frame, or nil: listening (`traceLive`, the voice being
+    /// heard) in the plain kind with no threads. With nothing said it has the hero's place
+    /// (`z.levelTrace`, its midline level with the word under the face); under a heard line,
+    /// the lines the line leaves free — 6 pt under it, at most 40 tall, down to the control
+    /// row's air at 112 — and none when that leaves it under 24 (three lines: the line
+    /// alone). The site's Top.tsx paintMeters places it the same way.
+    private func levelTraceRect(_ z: Zones) -> NSRect? {
+        guard traceLive, sim.phase == .listening, z.kind == .plain, content.threads.isEmpty else { return nil }
+        switch heroChoice().hero {
+        case .none:
+            return z.levelTrace
+        case .lastLine:
+            let top = 30 + CGFloat(heroLinesNow(z).lines.count) * Self.heroPitch + 6
+            let height = min(40, 112 - top)
+            guard height >= 24 else { return nil }
+            return NSRect(x: z.levelTrace.minX, y: z.hero.minY - 30 + top, width: z.levelTrace.width, height: height)
+        default:
+            return nil
+        }
+    }
+
+    /// The working sweep's strip, or nil: acting, the request as the hero, no threads (their
+    /// tiles say the work), in the plain kind — 10 pt under the request's last line at its
+    /// left, `sweepWidth` long and 3 cells tall (`drawSweep`), none when the request leaves it
+    /// no air (past 104). Short, so it reads as a hand at work under the words, never a rule
+    /// across the island.
+    private func sweepRect(_ z: Zones, lines: Int) -> NSRect? {
+        guard sim.phase == .acting, content.threads.isEmpty, z.kind == .plain, heroChoice().hero == .request else { return nil }
+        let top = 30 + CGFloat(max(1, lines)) * Self.heroPitch + 10
+        guard top <= 104 else { return nil }
+        return NSRect(x: z.hero.minX, y: z.hero.minY - 30 + top, width: Self.sweepWidth, height: 4.5)
+    }
+    /// One crossing of the working sweep (there and back is two), its strip's length and its
+    /// swell's half-width, a fraction of the strip.
+    static let sweepSeconds = 1.6
+    static let sweepWidth: CGFloat = 96
+    static let sweepHalf: CGFloat = 0.2
 
     /// The ring's hero: `07:10 · Wake up, Kevin` — the clock mono, the line sans, 18 pt at 1.0 — and one calm
     /// second line at 0.72 (the echo's tail or the next fire). Its identity is the ring's line, so a re-chime
@@ -3290,7 +3404,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         drawStrip(cg, cells: cells.map { $0.offset(dy: a.dy) }, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
     }
 
-    /// The Say box: the box grammar with the placeholder at 0.46 at rest; with key the
+    /// The Say box: the box grammar with the placeholder at 0.62 at rest; with key the
     /// hairline is the 1 pt accent ring and the NSTextField draws its own words.
     private func drawFieldBox(_ cg: CGContext, rect: NSRect, hot: Bool, base: CGFloat) {
         guard rect.isFiniteRect else { return }
@@ -3365,8 +3479,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     // MARK: 5 · the foot
 
-    /// The foot seam, then the meter — `4:12` · the bar · `2.3 min · $0.12 · today 12.3 min`
-    /// — or the problem row in its place, and Console | Sleep as one pair in the corner.
+    /// The foot seam, then one line: the problem row, else asleep `☾ asleep · …` (the next
+    /// fire, else the day's figures), else the meter `4:12 · 2.3 min · $0.12 · today 12.3 min`;
+    /// and Console | Sleep as one pair in the corner.
     private func drawFoot(_ cg: CGContext, _ z: Zones, _ a: Beat, _ s: DrawState) {
         let base = finite01(s.park * a.alpha)
         cg.saveGState()
@@ -3380,8 +3495,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.restoreGState()
         if let p = content.problem {
             drawProblemRow(cg, p, z, a, s, base: base)
-        } else if !awake, let n = content.next {
-            drawNoticeRow(cg, n, z, a, base: base, now: s.now)
+        } else if !awake {
+            drawAsleepRow(cg, clause: asleepClause(now: s.now), z, a, base: base)
         } else {
             drawMeter(cg, z, a, base: base, now: s.now)
         }
@@ -3390,47 +3505,61 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         drawStrip(cg, cells: cells.map { $0.offset(dy: a.dy) }, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
     }
 
-    /// The meter as an instrument: the elapsed at the left, the bar (fill = billed ÷ the
-    /// day's, a track only asleep, frozen and dim paused), the figures at the right.
+    /// The meter as one line in the problem row's grammar: the elapsed as its noun (0.92,
+    /// the foot's left end), then ` · 7.2 min · $0.36 · today 8.5 min` as its clause at 0.72
+    /// right after it, one word space on, as every other ` · ` in the line (paused the whole
+    /// line a step dimmer), tail-truncated at the words' end. No bar: the figures say it,
+    /// and nothing bar-shaped rides the foot.
     private func drawMeter(_ cg: CGContext, _ z: Zones, _ a: Beat, base: CGFloat, now: Double) {
         let f = meterFigures(now: now)
         let attrs = f.dim ? Self.footPausedAttrs : Self.threadAttrs
         cg.saveGState()
         cg.setAlpha(base)
+        var x = z.footLeft.minX
         if let left = f.left {
-            Self.drawShadowed(left as NSString, in: z.footLeft.offsetBy(dx: 0, dy: a.dy), attrs, shadow: Self.threadShadow)
+            let noun = left as NSString
+            let nounAttrs = f.dim ? Self.footPausedAttrs : Self.footLeftAttrs
+            Self.drawShadowed(noun, in: NSRect(x: x, y: z.footLeft.minY + a.dy, width: Self.textWidth(noun, nounAttrs) + 2, height: z.footLeft.height), nounAttrs, shadow: Self.threadShadow)
+            x += Self.textWidth(noun, nounAttrs)
         }
         if !f.right.isEmpty {
-            Self.drawShadowed(f.right as NSString, in: z.footRight.offsetBy(dx: 0, dy: a.dy), attrs, shadow: Self.threadShadow)
+            let clause = (f.left == nil ? f.right : " · " + f.right) as NSString
+            Self.drawShadowed(clause, in: NSRect(x: x, y: z.footRight.minY + a.dy, width: max(0, z.footRight.maxX - x), height: z.footRight.height), attrs, shadow: Self.threadShadow)
         }
         cg.restoreGState()
-        drawBar(cg, rect: z.bar.offsetBy(dx: 0, dy: a.dy), fraction: meterFill(now), alpha: finite01(base * (f.dim ? 0.48 / 0.72 : 1)))
     }
 
-    /// The notice row in the meter's place while asleep: `☾ asleep` mono 0.72 at the left, the bar as a
-    /// track only, `next Timer 12:00 · pasta` mono 0.72 at the right (a timer counts down). The meter's
-    /// words wait in the foot's tooltip. A problem row still wins the foot.
-    private func drawNoticeRow(_ cg: CGContext, _ n: DockContent.NextRow, _ z: Zones, _ a: Beat, base: CGFloat, now: Double) {
+    /// The asleep row in the meter's place, in the problem row's grammar: the moon, `asleep`
+    /// at 0.92 as its noun, then ` · next Timer 12:00 · pasta` (a timer counts down) or the
+    /// day's figures ` · today 44.0 min · $2.20` at 0.72, one word space on, tail-truncated
+    /// at the words' end. Nothing is billed asleep. A problem row still wins the foot.
+    private func drawAsleepRow(_ cg: CGContext, clause: String, _ z: Zones, _ a: Beat, base: CGFloat) {
         cg.saveGState()
         cg.setAlpha(base)
         let glyphCentre = CGPoint(x: z.foot.minX + 7, y: z.foot.minY + 14 + a.dy)
-        if let img = Self.symbol("moon.fill", pointSize: 10, tint: NSColor(white: 1, alpha: 0.72)) {
+        if let img = Self.symbol("moon.fill", pointSize: 10, tint: NSColor(white: 1, alpha: 0.92)) {
             img.draw(in: NSRect(x: glyphCentre.x - img.size.width / 2, y: glyphCentre.y - img.size.height / 2, width: img.size.width, height: img.size.height),
                      from: .zero, operation: .sourceOver, fraction: base, respectFlipped: true, hints: nil)
         }
         let y = z.foot.minY + 6 + a.dy
-        // `asleep` is wider than the meter's 40 pt slot with the moon before it: the word runs on and the bar's
-        // track (empty asleep) starts after it — the zones hold, the track is what gives.
-        let word = "asleep" as NSString
+        let word = Self.asleepNoun as NSString
         let wordX = z.foot.minX + 18
-        let wordW = min(Self.textWidth(word, Self.threadAttrs) + 2, max(0, z.bar.maxX - 8 - wordX))
-        Self.drawShadowed(word, in: NSRect(x: wordX, y: y, width: wordW, height: 16), Self.threadAttrs, shadow: Self.threadShadow)
-        Self.drawShadowed(Self.noticeText(n) as NSString, in: z.footRight.offsetBy(dx: 0, dy: a.dy), Self.threadAttrs, shadow: Self.threadShadow)
+        let wordW = Self.textWidth(word, Self.footLeftAttrs)
+        Self.drawShadowed(word, in: NSRect(x: wordX, y: y, width: wordW + 2, height: 16), Self.footLeftAttrs, shadow: Self.threadShadow)
+        let x = wordX + wordW
+        Self.drawShadowed(" · \(clause)" as NSString, in: NSRect(x: x, y: z.footRight.minY + a.dy, width: max(0, z.footRight.maxX - x), height: z.footRight.height),
+                          Self.threadAttrs, shadow: Self.threadShadow)
         cg.restoreGState()
-        let trackX = max(z.bar.minX, wordX + wordW + 6)
-        if z.bar.maxX - trackX >= 12 {
-            drawBar(cg, rect: NSRect(x: trackX, y: z.bar.minY + a.dy, width: z.bar.maxX - trackX, height: z.bar.height), fraction: 0, alpha: base)
-        }
+    }
+
+    /// The asleep row's noun, and its clause: the next fire while one is armed, else the
+    /// day's figures (`today 44.0 min · $2.20`), else `nothing billed` (the noun already says
+    /// there is no session).
+    static let asleepNoun = "asleep"
+    private func asleepClause(now: Double) -> String {
+        if let n = content.next { return Self.noticeText(n) }
+        if let t = content.meter.todaySeconds, t > 0 { return "today " + TransportFormat.billed(t) }
+        return "nothing billed"
     }
 
     /// "next Timer 12:00 · pasta" — the timer's clock counts down; every other kind names its fire time.
@@ -3496,64 +3625,121 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         return (String(text[..<r.lowerBound]), String(text[r.upperBound...]))
     }
 
-    /// A 6 pt bar: a flat track at white 0.10, a flat fill at 0.72, the fill's leading
-    /// 12 pt dithered through one Bayer period (8 cells of 1.5 pt) so the edge reads as
-    /// the icon's dither, not a hard stop. Nothing shades that is not dithered.
-    private func drawBar(_ cg: CGContext, rect: NSRect, fraction: CGFloat, alpha: CGFloat) {
-        guard rect.isFiniteRect, rect.width > 0 else { return }
-        let f = finite01(fraction)
+    /// The instruments' grammar (the site's lib/island.ts): one-cell ticks on a three-cell
+    /// pitch in `Dither.cellPixels` cells (1.5 pt on Retina), always the paper (white),
+    /// never the phase or the mark tone, so no instrument reads as a loose coloured bar,
+    /// and no rule drawn across the island while nothing moves.
+    static let tickPitch = 3
+    /// The level under which the voice is silence: the trace draws nothing there but its
+    /// short lead at the newest end, whatever the trace's height in cells (the site's
+    /// lib/island.ts SILENCE).
+    static let traceSilence: Float = 0.1
+
+    /// The working sweep (the site's renderSweep): a swell of ticks up to three cells tall
+    /// at `at` along the strip (0 its left end … 1 its right), its middle tallest and
+    /// brightest, falling off over `sweepHalf` of the strip either side at the words'
+    /// alpha (0.72): a small wave crossing under the words, never a bar and never a rule.
+    /// Snapped rect fills, nothing allocated.
+    private func drawSweep(_ cg: CGContext, rect: NSRect, at: CGFloat, alpha: CGFloat) {
+        let a = finite01(alpha)
+        guard rect.isFiniteRect, rect.width > 0, a > 0.005 else { return }
+        let scale = window?.backingScaleFactor ?? 2
+        let cell = CGFloat(Dither.cellPixels(scale: scale)) / scale
+        let nx = max(1, Int((rect.width / cell).rounded()))
+        let x0 = (rect.minX * scale).rounded() / scale
+        let y0 = ((rect.midY - 1.5 * cell) * scale).rounded() / scale
+        let half = max(0.01, Self.sweepHalf)
+        // The swell's middle never leaves the strip by more than its half: it turns inside it.
+        let centre = half + finite01(at) * (1 - 2 * half)
         cg.saveGState()
-        cg.setAlpha(finite01(alpha))
-        cg.setFillColor(CGColor(gray: 1, alpha: 0.10))
-        cg.fill(rect)
-        let fillW = (rect.width * f).rounded()
-        if fillW > 0.5 {
-            let edge: CGFloat = min(12, fillW)
-            let solid = NSRect(x: rect.minX, y: rect.minY, width: fillW - edge, height: rect.height)
-            cg.setFillColor(CGColor(gray: 1, alpha: 0.72))
-            if solid.width > 0 { cg.fill(solid) }
-            let scale = window?.backingScaleFactor ?? 2
-            if let img = Self.barEdge(scale: scale) {
-                cg.saveGState()
-                cg.interpolationQuality = .none
-                let dst = NSRect(x: rect.minX + fillW - edge, y: rect.minY, width: edge, height: rect.height)
-                cg.clip(to: dst)
-                cg.translateBy(x: 0, y: dst.midY)
-                cg.scaleBy(x: 1, y: -1)
-                cg.translateBy(x: 0, y: -dst.midY)
-                cg.draw(img, in: NSRect(x: rect.minX + fillW - 12, y: rect.minY, width: 12, height: rect.height))
-                cg.restoreGState()
+        cg.setAlpha(a)
+        cg.setShouldAntialias(false)
+        var x = Self.traceInset
+        while x < nx {
+            let d = abs((CGFloat(x) + 0.5) / CGFloat(nx) - centre) / half
+            if d < 1 {
+                let w = 0.5 + 0.5 * cos(.pi * d)
+                let cells = Int((3 * w).rounded())
+                if cells > 0 {
+                    cg.setFillColor(CGColor(gray: 1, alpha: 0.72 * (0.45 + 0.55 * w)))
+                    let top = y0 + CGFloat(3 - cells) * cell / 2
+                    cg.fill(CGRect(x: x0 + CGFloat(x) * cell, y: (top * scale).rounded() / scale, width: cell, height: CGFloat(cells) * cell))
+                }
             }
+            x += Self.tickPitch
         }
         cg.restoreGState()
     }
+    /// The trace's lead: the dotted midline at its newest end while the voice is silent, this
+    /// many ticks long, fading to nothing toward the older side (alpha `ruleAlpha` at the
+    /// newest), so a quiet trace shows a live cursor, never a rule across the island. Ticks'
+    /// inset from the right end, in cells.
+    static let ruleAlpha: CGFloat = 0.26
+    static let leadTicks = 8
+    static let traceInset = 2
 
-    /// The bar's leading edge: a 12×6 pt white coverage ramp (1 → 0 left to right) through
-    /// the shared Bayer tile in 1.5 pt cells, at 0.72 — one image per scale.
-    private static var barEdgeCache: [Int: CGImage] = [:]
-    private static func barEdge(scale: CGFloat) -> CGImage? {
-        let key = Int((scale * 100).rounded())
-        if let hit = barEdgeCache[key] { return hit }
-        let s = max(1, scale)
-        let W = Int((12 * s).rounded()), H = Int((6 * s).rounded())
-        let cell = max(1, Dither.cellPixels(scale: s)), n = Dither.tileSize, tile = Dither.tile
-        var px = [UInt8](repeating: 0, count: W * H * 4)
-        for y in 0..<H {
-            let noiseRow = ((y / cell) % n) * n
-            for x in 0..<W {
-                let t = tile[noiseRow + (x / cell) % n]
-                let ramp = 1 - (Float(x / cell) + 0.5) / Float(max(1, W / cell))
-                let on = ramp > t
-                let i = (y * W + x) * 4
-                px[i] = on ? 255 : 0; px[i + 1] = on ? 255 : 0; px[i + 2] = on ? 255 : 0; px[i + 3] = on ? 184 : 0
+    /// The level trace (the site's lib/island.ts renderLevelTrace): the last levels as bars
+    /// one cell wide on a three-cell pitch, centred on the midline, newest at the right two
+    /// cells in from the end, each as tall as its level; silence (a level under
+    /// `traceSilence`, judged on the level, never on cells, so it reads the same at every
+    /// height) draws nothing but the short dotted lead at the newest end, and so does a lone
+    /// level between two silent ones (a stray tick between phrases). The newest three
+    /// grow in; the older half settles to 40 % of its height and thins out through the
+    /// Bayer tile toward the left, fading as a voice does, never as faint full-height
+    /// scratches. The paper alone. Snapped rect fills (a whole column of lit cells is one),
+    /// nothing allocated.
+    private func drawLevelTrace(_ cg: CGContext, rect: NSRect, alpha: CGFloat) {
+        let a = finite01(alpha)
+        guard rect.isFiniteRect, rect.width > 0, rect.height > 0, a > 0.005 else { return }
+        let scale = window?.backingScaleFactor ?? 2
+        let cell = CGFloat(Dither.cellPixels(scale: scale)) / scale
+        let nx = max(1, Int((rect.width / cell).rounded())), ny = max(1, Int((rect.height / cell).rounded()))
+        let x0 = (rect.minX * scale).rounded() / scale, y0 = (rect.minY * scale).rounded() / scale
+        let mid = ny / 2
+        let tile = Dither.tile, n = Dither.tileSize
+        let pitch = Self.tickPitch, inset = Self.traceInset
+        let bars = max(1, nx / pitch)
+        let levels = levelHistory
+        cg.saveGState()
+        cg.setAlpha(a)
+        cg.setShouldAntialias(false)
+        var i = 0
+        var x = nx - 1 - inset
+        while x >= 0 {
+            var midLit = false
+            // A lone level over silence between two silent ones is a click, not a voice (a stray tick between phrases): silence.
+            let lone = levels.newest(i + 1) < Self.traceSilence && (i == 0 || levels.newest(i - 1) < Self.traceSilence)
+            if i < bars, i < levels.count, levels.newest(i) >= Self.traceSilence, !lone {
+                let age = Float(i) / Float(bars)
+                let grow = min(1, Float(i + 1) / 3)
+                let settle = 1 - 0.6 * Dither.smoothstep(0.5, 1, age)
+                let half = levels.newest(i) * Float(ny) * grow * settle / 2
+                // A level over silence too short for a cell either side of the midline: the lead shows.
+                if half >= 1 {
+                    let cover = 1 - 0.6 * Dither.smoothstep(0.55, 1, age)
+                    let top = max(0, Int((Float(mid) + 0.5 - half).rounded()))
+                    let bot = min(ny, Int((Float(mid) + 0.5 + half).rounded()))
+                    cg.setFillColor(CGColor(gray: 1, alpha: CGFloat(0.84 - 0.38 * Dither.smoothstep(0.3, 1, age))))
+                    let cx = x0 + CGFloat(x) * cell
+                    if cover >= 1 {
+                        cg.fill(CGRect(x: cx, y: y0 + CGFloat(top) * cell, width: cell, height: CGFloat(bot - top) * cell))
+                        midLit = top <= mid && mid < bot
+                    } else {
+                        for y in top..<max(top, bot) where tile[(y % n) * n + x % n] < cover {
+                            cg.fill(CGRect(x: cx, y: y0 + CGFloat(y) * cell, width: cell, height: cell))
+                            if y == mid { midLit = true }
+                        }
+                    }
+                }
             }
+            if !midLit, i < Self.leadTicks {
+                cg.setFillColor(CGColor(gray: 1, alpha: Self.ruleAlpha * CGFloat(Self.leadTicks - i) / CGFloat(Self.leadTicks)))
+                cg.fill(CGRect(x: x0 + CGFloat(x) * cell, y: y0 + CGFloat(mid) * cell, width: cell, height: cell))
+            }
+            i += 1
+            x -= pitch
         }
-        guard let provider = CGDataProvider(data: Data(px) as CFData), let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-        let img = CGImage(width: W, height: H, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: W * 4, space: space,
-                          bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue), provider: provider, decode: nil,
-                          shouldInterpolate: false, intent: .defaultIntent)
-        if let img { barEdgeCache[key] = img }
-        return img
+        cg.restoreGState()
     }
 
     /// The foot's words: in session "4:12 · 2.3 min · $0.12 · today 12.3 min"; paused
@@ -3561,7 +3747,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// "No session. Nothing billed." The whole line is the foot's tooltip and the
     /// harness's `previewFootText`; `meterFigures` splits it for the instrument.
     private func footText(now: Double) -> (text: String, dim: Bool) {
-        if noticeShown, let n = content.next { return ("asleep · " + Self.noticeText(n), false) }
+        if !awake, content.problem == nil { return ("\(Self.asleepNoun) · " + asleepClause(now: now), false) }
         let f = meterFigures(now: now)
         var parts: [String] = []
         if let l = f.left { parts.append(l) }
@@ -3713,17 +3899,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     /// The working strip: the blob is out at its target, a delegation runs (or threads
     /// are live). The ink is already down (the notch grown to peek height); this adds
-    /// the phase colour as the hairline along the bottom edge and "Working · 0:12"
-    /// centred with the thread dots right of it — nothing else, so the notch reads as
-    /// busy without competing with the body on the screen.
+    /// "Working · 0:12" centred with the thread dots right of it — nothing else, no line
+    /// on its contour, so the notch reads as busy without competing with the body on
+    /// the screen.
     ///
     /// Alphas: `alpha` is the park level's inverse. The counter is drawn at
     /// `alpha · work` — `CGContext.setAlpha` REPLACES the state's alpha, it does not
-    /// multiply, so the product is computed here — and so is the hairline while no
-    /// thread is live: the strip is then exactly what it was before the fleet
-    /// (`work · (1 − park)` on both). With threads the strip is theirs: the hairline
-    /// and the dots hold at `alpha` while the counter comes and goes with `work`.
-    private func drawWorkingStrip(_ cg: CGContext, shape: NotchInk.Shape, island: NSRect, color: RGB, alpha: CGFloat, work: CGFloat) {
+    /// multiply, so the product is computed here: with no thread live the strip is
+    /// `work · (1 − park)`. With threads the strip is theirs: the dots hold at `alpha`
+    /// while the counter comes and goes with `work`.
+    private func drawWorkingStrip(_ cg: CGContext, shape: NotchInk.Shape, island: NSRect, alpha: CGFloat, work: CGFloat) {
         let a = finite01(alpha)
         let counter = finite01(a * finite01(work))
         guard a > 0.005, counter > 0.005 || !threads.isEmpty else { return }
@@ -3731,12 +3916,6 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.addPath(shape.path)
         cg.clip()
         cg.setAlpha(threads.isEmpty ? counter : a)
-        let inset = max(shape.bottomRadius, 2)
-        cg.setStrokeColor(color.cgColor(alpha: 0.9))
-        cg.setLineWidth(1)
-        cg.move(to: CGPoint(x: island.minX + inset, y: island.maxY - 0.5))
-        cg.addLine(to: CGPoint(x: island.maxX - inset, y: island.maxY - 0.5))
-        cg.strokePath()
         let text = workingText()
         let w = counter > 0.005 ? Self.textWidth(text, Self.workAttrs) : 0
         // The counter and the dots as one centred run: the counter, 8 of air, the dots.
@@ -4014,9 +4193,40 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         guard parked else { return nil }
         let p = convert(point, from: superview)
         if fieldFocused, !field.isHidden, field.frame.contains(p) { return field }
-        if inkRect.insetBy(dx: -2, dy: -2).contains(p) || notchRect.contains(p) { return self }
+        let n = notchRect
+        if Self.roundedInk(inkRect, column: n.minX...max(n.minX, n.maxX), contains: p, slop: 2) || n.contains(p) { return self }
         if let pill = pillRect, pill.insetBy(dx: -2, dy: -2).contains(p) { return self }
         return nil
+    }
+
+    /// `rect` (the ink a click may land on) holds `p` within `slop`, its corners rounded as
+    /// `NotchInk.shape` draws them: the bottom two (the notch's 12 pt folded, 24 pt open) and
+    /// the convex top two where the island hangs from the bar past the notch's `column` (18 pt
+    /// open). A click in the empty corner beside any curve reaches what is under the island,
+    /// never the island.
+    static func roundedInk(_ rect: NSRect, column: ClosedRange<CGFloat>, contains p: NSPoint, slop: CGFloat) -> Bool {
+        guard rect.isFiniteRect, rect.insetBy(dx: -slop, dy: -slop).contains(p) else { return false }
+        let r = NotchInk.bottomCornerRadius(height: rect.height)
+        // Flipped: the bottom edge is maxY, the top (the bar's bottom edge) minY. Only the
+        // four corner squares are curved.
+        var corner: (centre: NSPoint, radius: CGFloat)?
+        if p.y > rect.maxY - r {
+            if p.x < rect.minX + r {
+                corner = (NSPoint(x: rect.minX + r, y: rect.maxY - r), r)
+            } else if p.x > rect.maxX - r {
+                corner = (NSPoint(x: rect.maxX - r, y: rect.maxY - r), r)
+            }
+        } else {
+            let left = NotchInk.topCornerRadius(excess: column.lowerBound - rect.minX, height: rect.height, bottomRadius: r)
+            let right = NotchInk.topCornerRadius(excess: rect.maxX - column.upperBound, height: rect.height, bottomRadius: r)
+            if p.x < rect.minX + left, p.y < rect.minY + left {
+                corner = (NSPoint(x: rect.minX + left, y: rect.minY + left), left)
+            } else if p.x > rect.maxX - right, p.y < rect.minY + right {
+                corner = (NSPoint(x: rect.maxX - right, y: rect.minY + right), right)
+            }
+        }
+        guard let c = corner else { return true }
+        return hypot(p.x - c.centre.x, p.y - c.centre.y) <= c.radius + slop
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -4147,6 +4357,19 @@ extension NotchView {
     }
     /// The island rect as the springs give it (view coordinates), before any guard.
     var previewIslandRectRaw: NSRect { islandRect }
+    /// The level trace's history replaced (newest last), for a still of the trace with no voice behind it.
+    func previewSetLevelHistory(_ levels: [Float]) {
+        levelHistory.removeAll()
+        for l in levels.suffix(LevelHistory.capacity) { levelHistory.append(l) }
+        needsDisplay = true
+    }
+    /// The springs held at one size and openness (at rest there), for a still of the spring's way open or closed.
+    func previewHoldIsland(width: CGFloat, height: CGFloat, open: CGFloat) {
+        widthSpring = Spring(value: Double(width))
+        heightSpring = Spring(value: Double(height))
+        openSpring = Spring(value: Double(open))
+        needsDisplay = true
+    }
     /// The thread dots this view holds ("Slack:working Spotify:working"), for the harness.
     var previewThreadDots: String { threads.map { "\($0.name):\($0.status.rawValue)" }.joined(separator: " ") }
 
@@ -4188,12 +4411,12 @@ extension NotchView {
         }
         let face = String(format: "face x%.0f–%.0f y%.0f–%.0f", z.face.x - island.minX, z.face.x - island.minX, z.face.y - island.minY, z.face.y - island.minY)
         let heroUsed = NSRect(x: z.hero.minX, y: z.hero.minY, width: z.hero.width, height: CGFloat(z.heroLines) * Self.heroPitch)
-        var parts = [face, r("word", z.word), r("go", z.go), r("stop", z.stop), r("mute", z.mute), r("head", z.head), r("headRight", z.headRight), r("trace", z.trace), r("hero", z.hero),
+        var parts = [face, r("word", z.word), r("go", z.go), r("stop", z.stop), r("mute", z.mute), r("head", z.head), r("headRight", z.headRight), r("levelTrace", z.levelTrace), r("hero", z.hero),
                      r("heroUsed", heroUsed), r("tile0", z.tile0), r("tile1", z.tile1), r("chips", z.chips), r("allow", z.allow), r("deny", z.deny)]
         for (i, m) in z.mini.enumerated() { parts.append(r("mini\(i)", m)) }
         for (i, f) in z.film.enumerated() { parts.append(r("film\(i)", f)) }
         parts += [r("field", z.field), r("clear", z.clear), r("circle", z.circle), r("window", z.window), r("ask", z.ask), r("foot", z.foot),
-                  r("footLeft", z.footLeft), r("bar", z.bar), r("footRight", z.footRight),
+                  r("footLeft", z.footLeft), r("footRight", z.footRight),
                   z.remedy.map { r("remedy", $0) } ?? "remedy x0–0 y0–0", r("console", z.console), r("sleep", z.sleep), "kind:\(z.kind.rawValue)"]
         return String(format: "island %.0f×%.0f | ", island.width, island.height) + parts.joined(separator: " | ")
     }
@@ -4202,7 +4425,6 @@ extension NotchView {
     /// The hero's lines as wrapped this frame (the last one before its tail ellipsis).
     var previewHeroLines: [String] { heroLinesNow(zones(in: islandOpenRect)).lines.map { $0 as String } }
     /// The meter bar's target fill (billed ÷ the day's; 0 asleep) and the trace's level.
-    var previewMeterFill: CGFloat { meterFillTarget() }
     var previewTraceLevel: CGFloat { traceLive ? finite01(sim.islandLevel) : 0 }
     /// The foot is the problem row right now (island open, a problem set).
     var previewFootProblem: Bool { mode == .island && parked && content.problem != nil }
@@ -4253,8 +4475,9 @@ extension NotchView {
     }
     /// The lip's marks chip ("◎2"), or "" — tucked with pending marks.
     var previewLipChip: String { mode == .tucked && content.pendingMarks > 0 ? "◎\(content.pendingMarks)" : "" }
-    /// The lip glow's colour name this frame: "mark" while marks wait, else "phase".
-    var previewLipGlow: String { mode == .tucked && content.pendingMarks > 0 ? "mark" : "phase" }
+    /// The lip glow's colour name: "none" — the lip draws no line (Kevin's bar rule,
+    /// site/docs/TWIN.md); pending marks are the `◎ N` chip alone.
+    var previewLipGlow: String { "none" }
     /// The hero's words (the field's own text while it has key; "" when nothing is said).
     var previewLineText: String {
         if fieldFocused { return field.stringValue }
@@ -4405,16 +4628,16 @@ extension NotchView {
     var previewMiddleDead: Bool { pressIsDead(.done) }
 
     /// The working strip's alphas, measured rather than read off the code: the strip
-    /// alone is rendered into a bitmap at forced park / work levels, and the hairline
-    /// (the chromatic pixels — the phase colour) and the counter (the achromatic ones —
-    /// white text) are summed as brightness over black, each as a fraction of the full
-    /// strip's (park 0, work 1). Both must follow work · (1 − park): 0.5 at park ½ and
-    /// 0.5 at work ½ — the formula the strip had before the fleet, which the settled
+    /// alone is rendered into a bitmap at forced park / work levels, and the counter (the
+    /// achromatic pixels — white text) is summed as brightness over black as a fraction of
+    /// the full strip's (park 0, work 1). It must follow work · (1 − park): 0.5 at park ½
+    /// and 0.5 at work ½ — the formula the strip had before the fleet, which the settled
     /// shots and the printed mode lines cannot see (only the 0.24 s transitions differ).
+    /// The chromatic pixels must be none: no coloured line on the strip's contour.
     /// Needs the counter ("Working · m:ss": ORB_NOTCH_WORKING=1 in an acting phase) and
-    /// no live threads (the dots are chromatic too, and hold at 1 − park by design).
+    /// no live threads (the dots are chromatic, and hold at 1 − park by design).
     func previewStripProbe() -> String {
-        func render(park: CGFloat, work: CGFloat) -> (hair: Double, text: Double)? {
+        func render(park: CGFloat, work: CGFloat) -> (colour: Double, text: Double)? {
             previewForcedLevels = (park, work)
             previewStripOnly = true
             defer { previewForcedLevels = nil; previewStripOnly = false }
@@ -4422,7 +4645,7 @@ extension NotchView {
             cacheDisplay(in: bounds, to: rep)
             guard let data = rep.bitmapData else { return nil }
             let w = rep.pixelsWide, h = rep.pixelsHigh, bpr = rep.bytesPerRow, spp = rep.samplesPerPixel
-            var hair = 0.0, text = 0.0
+            var colour = 0.0, text = 0.0
             for y in 0..<h {
                 let row = data + y * bpr
                 for x in 0..<w {
@@ -4430,22 +4653,21 @@ extension NotchView {
                     let r = Double(p[0]), g = Double(p[1]), b = Double(p[2])
                     let hi = max(r, g, b), lo = min(r, g, b)
                     guard hi > 8 else { continue }
-                    if hi - lo > 24 { hair += hi } else { text += hi }
+                    if hi - lo > 24 { colour += hi } else { text += hi }
                 }
             }
-            return (hair, text)
+            return (colour, text)
         }
-        guard threads.isEmpty else { return "notch strip probe: skipped — threads live (the dots would count as hairline)" }
+        guard threads.isEmpty else { return "notch strip probe: skipped — threads live (the dots are chromatic)" }
         guard let full = render(park: 0, work: 1) else { return "notch strip probe: nothing rendered" }
-        guard full.hair > 0, full.text > 0 else {
-            return String(format: "notch strip probe: full strip hairline %.0f text %.0f — no counter? (ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting)", full.hair, full.text)
+        guard full.text > 0 else {
+            return String(format: "notch strip probe: full strip text %.0f — no counter? (ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting)", full.text)
         }
         guard let halfPark = render(park: 0.5, work: 1), let halfWork = render(park: 0, work: 0.5) else { return "notch strip probe: nothing rendered" }
-        let hp = halfPark.hair / full.hair, tp = halfPark.text / full.text
-        let hw = halfWork.hair / full.hair, tw = halfWork.text / full.text
-        let ok = [hp, tp, hw, tw].allSatisfy { abs($0 - 0.5) <= 0.08 }
-        return String(format: "notch strip probe: hairline %.2f @park½ %.2f @work½ | counter %.2f @park½ %.2f @work½ (want 0.50 each = work·(1−park); full hairline %.0f counter %.0f) %@",
-                      hp, hw, tp, tw, full.hair, full.text, ok ? "OK" : "FAIL")
+        let tp = halfPark.text / full.text, tw = halfWork.text / full.text
+        let ok = [tp, tw].allSatisfy { abs($0 - 0.5) <= 0.08 } && full.colour == 0
+        return String(format: "notch strip probe: counter %.2f @park½ %.2f @work½ (want 0.50 each = work·(1−park); full counter %.0f) · colour on the contour %.0f (want 0) %@",
+                      tp, tw, full.text, full.colour, ok ? "OK" : "FAIL")
     }
 }
 

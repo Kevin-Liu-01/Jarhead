@@ -20,7 +20,7 @@ drawing, both faces at the page's sizes and every vendored icon. Look at it befo
 | face | file | where | weights |
 |---|---|---|---|
 | Inter 4.1 (rsms, OFL) | `app/fonts/InterVariable.woff2`, `LICENSE-Inter.txt` | every word: headings, leads, lines, the bar, card names, row words, captions, feet | 400, 500 (600 on the bar's app name alone) |
-| JetBrains Mono 2.304 (OFL) | `app/fonts/JetBrainsMono-wght.woff2` (23.7 KB), `OFL-JetBrainsMono.txt` | every value, command, call, source, date, n and tag in a drawing; the island's head, foot and clock; the terminal; the bar's star count; the foot's figures | 400, 500 |
+| JetBrains Mono 2.304 (OFL) | `app/fonts/JetBrainsMono-wght.woff2` (23.7 KB), `OFL-JetBrainsMono.txt` | every value, command, call, source, date, n and tag in a drawing; the island's alarm clock (the app's SF Mono); the terminal; the bar's star count; the foot's figures | 400, 500 |
 
 - The mono is subset with fontTools to Latin, the punctuation, the arrows and the Mac key symbols the page sets (`⌥ ⇧ ⌘ ≥
   · → − × …`), its ligatures and cv/ss features dropped (GSUB keeps `ccmp`, `locl`), so Inter's `cv11 ss01 ss03` on the

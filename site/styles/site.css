@@ -1,6 +1,6 @@
 /*
- * site.css · the page's shell: the Mac's top edge fixed over everything (the bar, the notch, the island, the dissolve once
- * docked), the hero (the h1 in Newsreader with the blob as its full stop, the two calls on a dithered horizon), the
+ * site.css · the page's shell: the Mac's top edge fixed over everything (the bar, the island grown out of the notch over
+ * it, the dissolve once docked), the hero (the h1 in Newsreader with the blob as its full stop, the two calls on a dithered horizon), the
  * sections (one idea per screen: a serif h2, one line, a plate), Install's terminal and the foot. The demos' own classes
  * are in styles/play.css. Tokens only (app/globals.css); weight ≤ 500 except the bar's app name; no shadow but the one
  * token; the one glass is the hero's Install.
@@ -9,7 +9,8 @@
 /* ---------- the page's measures ---------- */
 :root {
   --bar-h: 37px;
-  --notch-w: 185px;
+  /* the band's ears: the concave fillets where the island's silhouette meets the page's top edge */
+  --ear: 10px;
   --pad: clamp(20px, 6vw, 112px);
   --wrap: min(100% - 2 * var(--pad), 1296px);
   /* the island's scale over the hero (0.86 at 950 px of height, 0.7 to 0.86) and docked (0.62: 37 + 114 = 151 px) */
@@ -25,18 +26,29 @@
 
 .page { position: relative; }
 
-/* ---------- the top: fixed, the bar edge to edge, the island hanging from the notch ---------- */
+/* ---------- the top: fixed, the bar edge to edge, the island grown out of the notch over it ---------- */
 .top { position: fixed; left: 0; right: 0; top: 0; z-index: 50; height: var(--bar-h); pointer-events: none; --top-s: var(--hero-s); }
 .bar { position: relative; z-index: 2; height: var(--bar-h); display: flex; align-items: center; padding: 0 14px; background: var(--jh-bar); border-bottom: 1px solid var(--jh-hair-row);
   color: var(--jh-fg-2); font-size: 13px; line-height: 1; letter-spacing: -0.005em; white-space: nowrap; pointer-events: auto; }
-.bar-l { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 12px; max-width: calc(50% - var(--notch-w) / 2 - 20px); overflow: hidden; }
+/* both sides stop short of the band at its widest (the hero scale) and its ear; Top.tsx fitBar drops whole items to fit.
+   They clip across only, never up and down: each is the bar's height, with 4 px of room at its outer ends (given back by
+   the negative margin), so a focus ring is never cut. No item shrinks: an overflow shows to fitBar as an item crossing the
+   band's edge, never as a squeezed control. Until fitBar has run (the bar wears data-fit) the menus and the right side
+   are hidden, so no first paint shows a cut word or a squeezed control; without the script they show at 3 s. */
+.bar-l { flex: 1 1 0; min-width: 0; align-self: stretch; display: flex; align-items: center; gap: 12px; padding-inline: 4px; margin-inline: -4px; max-width: calc(50% - 210px * var(--hero-s) - var(--ear) - 6px + 8px); overflow-x: clip; overflow-y: visible; }
+.bar-l > *, .bar-r > *, .bar-menus a { flex-shrink: 0; }
+.bar:not([data-fit]) :is(.bar-menus, .bar-r) { visibility: hidden; animation: jh-visible 0s linear 3s forwards; }
+@keyframes jh-visible { to { visibility: visible; } }
 .bar-apple { width: 15px; height: 15px; flex: none; color: var(--jh-fg); }
 .bar-app { font-weight: 600; color: var(--jh-fg); flex: none; }
 .bar-menus { display: flex; align-items: center; gap: 1px; min-width: 0; }
 .bar-menus a { display: inline-flex; align-items: center; height: 24px; padding: 0 7px; border-radius: 5px; color: var(--jh-fg-2); transition: color var(--jh-instant) var(--jh-ease-out), background-color var(--jh-instant) var(--jh-ease-out); }
 .bar-menus a[aria-current] { color: var(--jh-fg); background-color: var(--jh-lift); }
 @media (hover: hover) { .bar-menus a:hover, .bar-item:hover { color: var(--jh-fg); background-color: var(--jh-hover); } }
-.bar-r { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.bar-r { flex: 1 1 0; min-width: 0; align-self: stretch; display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding-inline: 4px; margin-inline: auto -4px; max-width: calc(50% - 210px * var(--hero-s) - var(--ear) - 6px + 8px); overflow-x: clip; overflow-y: visible; }
+/* what fitBar dropped: gone, or kept for the screen reader where it names something */
+.bar [data-off] { display: none; }
+.bar .bar-phase[data-off], .bar .bar-gh-word[data-off], .bar .stars[data-off] { display: inline; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; min-width: 0; }
 .bar-phase { display: inline-flex; align-items: center; gap: 7px; min-width: 84px; margin-right: 6px; color: var(--jh-fg-2); }
 .bar-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--desk-phase); flex: none; transition: background-color var(--jh-drift) var(--jh-ease-in-out); }
 .bar-item { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 5px; color: var(--jh-fg-2); }
@@ -46,14 +58,21 @@
 .bar-install:active { opacity: 0.8; }
 .bar-clock { color: var(--jh-fg); font-variant-numeric: tabular-nums; padding-right: 2px; }
 .bar a:focus-visible, .bar button:focus-visible { outline: 2px solid var(--jh-accent); outline-offset: 1px; }
-@media (max-width: 1250px) { .bar-menus a:nth-child(8) { display: none; } }
-@media (max-width: 1160px) { .bar-menus a:nth-child(7), .bar-clock { display: none; } }
-@media (max-width: 1060px) { .bar-menus a:nth-child(2), .bar-menus a:nth-child(6) { display: none; } }
-@media (max-width: 960px) { .bar-phase { display: none; } }
 @media (max-width: 900px) { .bar-menus { display: none; } .bar-gh-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } }
 
-/* the island at 1:1 in its 420 × 184 box, scaled as one from the notch's centre by --top-s */
-.top-scale { position: absolute; left: 50%; top: var(--bar-h); z-index: 1; width: 420px; height: 184px; margin-left: -210px; transform: scale(var(--top-s)); transform-origin: top center; pointer-events: none; }
+/* the island at 1:1 in its 420 × 184 box, scaled as one from the notch's centre by --top-s, over the bar */
+.top-scale { position: absolute; left: 50%; top: var(--bar-h); z-index: 3; width: 420px; height: 184px; margin-left: -210px; transform: scale(var(--top-s)); transform-origin: top center; pointer-events: none; }
+/* the band: the notch grown to the island's width, one black silhouette from the page's top edge down to the island's
+   foot. It is drawn in the island's own scaled box, so it is exactly the island's width at every scale, and counter-scaled
+   in height, so it is always the bar's (4 island px more above the page's edge and 2 under the island's black lip, so
+   no subpixel seam at either). Its ears are --ear concave fillets at the top edge, the same on screen at every scale;
+   each runs one screen px into the band (--e1), so the band's edge and the ear's never antialias the same column twice.
+   It takes the pointer: nothing under it is pressable. */
+.top-band { position: absolute; left: 0; top: calc(var(--bar-h) / var(--top-s) * -1 - 4px); width: 420px; height: calc(var(--bar-h) / var(--top-s) + 6px); background: var(--jh-desk-notch); pointer-events: auto; cursor: default;
+  --e: calc(var(--ear) / var(--top-s)); --e1: calc(1px / var(--top-s)); }
+.top-band::before, .top-band::after { content: ""; position: absolute; top: 0; width: calc(var(--e) + var(--e1)); height: calc(var(--e) + 4px); }
+.top-band::before { right: calc(100% - var(--e1)); background: radial-gradient(circle at 0 100%, transparent calc(var(--e) - 0.75px), var(--jh-desk-notch) var(--e)); }
+.top-band::after { left: calc(100% - var(--e1)); background: radial-gradient(circle at 100% 100%, transparent calc(var(--e) - 0.75px), var(--jh-desk-notch) var(--e)); }
 .top-probe { position: absolute; left: 0; top: 0; width: 0; visibility: hidden; }
 .top-probe--hero { height: calc(184px * var(--hero-s)); }
 .top-probe--dock { height: calc(184px * var(--compact-s)); }
@@ -109,6 +128,12 @@ html[data-arrive] .hero-char { opacity: 0; animation: jh-show 0s linear 3s forwa
 /* the calls line up by their tops (the key's cap with Read the source); the key's wall hangs below */
 .hero-calls { margin-top: clamp(28px, 4.6svh, 52px); display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 14px; }
 .hero-terms { margin-top: 18px; font: 400 13px/1.4 var(--font-mono); color: var(--jh-fg-3-word); font-variant-numeric: tabular-nums; }
+/* the licence: the Open Source Initiative's keyhole (thesvg, mono) before MIT, in the line's colour (currentColor), its
+   24-unit box set at the mono's cap height (0.73 em) and sat on the baseline like a capital, a narrow space after it. Its
+   ring is 0.79 of 24 units, a third of a px at this size: a 1.2-unit stroke in the same colour sets it at the mono's stem
+   (about 0.8 px), so it reads beside MIT rather than as a grey wire */
+.hero-terms-lic { white-space: nowrap; }
+.hero-terms-mark { display: inline-block; width: 0.73em; height: 0.73em; margin-right: 0.4em; vertical-align: baseline; fill: currentColor; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
 
 /* the glass Install as a physical key (components/site/InstallKey.tsx; the one glass surface): the anchor is the key's
    steady box (the cap and its body, the focus ring's frame, the hit target); inside it the key leans toward the pointer,
@@ -275,12 +300,17 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
 /* ---------- the phone: the bar at the tap floor, the island shrunk to fit and always shown, the calls stacked ---------- */
 @media (max-width: 720px) {
   /* the h1's 8.88 em (the stop's breath and the blob) fits the wrap from 600 to 720 */
-  :root { --bar-h: 44px; --notch-w: 132px; --compact-s: min(0.6, var(--fit-s)); --h1: calc((100vw - 2 * var(--pad)) / 8.95); --h2: clamp(28px, 7.8vw, 42px); }
+  /* the island never leaves less than a 40 px status item, its 4 px from the edge and 4 px from the ear beside it
+     (--phone-s: 2 × (4 + 40 + 4 + --ear)); at 580 px and under the bar is the band and the island hangs under it */
+  :root { --bar-h: 44px; --ear: 8px; --phone-s: tan(atan2(100vw - 112px, 420px)); --hero-s: min(var(--phone-s), clamp(0.6, tan(atan2(100svh, 1100px)), 0.86));
+    --compact-s: min(0.6, var(--phone-s)); --h1: calc((100vw - 2 * var(--pad)) / 8.95); --h2: clamp(28px, 7.8vw, 42px); }
   .bar { padding: 0 6px 0 12px; }
   .bar-l { gap: 10px; }
   .bar-r { gap: 0; }
-  .bar-install, .bar-clock { display: none; }
+  .bar-phase, .bar-install, .bar-clock { display: none; }
   .bar-item { height: 40px; min-width: 40px; justify-content: center; padding: 0 8px; }
+  /* 40 px items in a 44 px bar: the ring sits inside the item, so the bar's edges never cut it */
+  .bar-item:focus-visible, .bar-app:focus-visible { outline-offset: -2px; }
   .bar-theme { width: 40px; }
   .bar-app { display: inline-flex; align-items: center; height: 40px; }
   .hero-in { padding-bottom: 48px; }
@@ -303,6 +333,21 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
   .term-cmds .kit-btn-hold { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .foot-in { padding: 80px 0 64px; }
 }
+/* a phone: the island is nearly the bar's width, so the bar is the band, the bezel edge to edge with its words in the
+   screen's tones (the mark, the name, GitHub with its stars, the theme), and the island hangs from it at the size its
+   face and words read at (only a 12 px gutter each side). The band is then just the join under the bar, and its ears
+   sit where the body leaves the bar's foot, concave, so the bar pours into the island. */
+@media (max-width: 580px) {
+  :root { --hero-s: min(var(--fit-s), clamp(0.6, tan(atan2(100svh, 1100px)), 0.86)); --compact-s: min(0.6, var(--fit-s)); }
+  .bar { background: var(--jh-desk-notch); border-bottom-color: transparent; color: var(--jh-screen-fg-2); }
+  .bar-apple, .bar-app { color: var(--jh-paper); }
+  .bar-item { color: var(--jh-screen-fg-2); }
+  @media (hover: hover) { .bar-item:hover { color: var(--jh-paper); background-color: var(--jh-screen-hover); } }
+  .bar-l, .bar-r { max-width: none; }
+  .top-band { top: -1px; height: 3px; }
+  /* each ear starts one island px up, under the bar's black, so its first device row is wholly ink (no seam row) */
+  .top-band::before, .top-band::after { top: 0; height: calc(var(--e) + 1px); }
+}
 /* the phone's hero: the h1 on one line with its full stop, the blob standing over it at a size its face reads at, and the
    lead, the calls and the terms all in the first screen under the top */
 @media (max-width: 600px) {
@@ -314,8 +359,4 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
   .hero-char { width: 108px; height: 108px; left: -54px; bottom: 12px; }
   .hero-lead { margin-top: 20px; }
   .hero-calls { margin-top: 26px; }
-}
-@media (max-width: 380px) {
-  :root { --notch-w: 100px; }
-  .bar-gh .stars { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }

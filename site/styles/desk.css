@@ -1,38 +1,57 @@
 /*
- * The desk: the Mac's own top edge (components/site/Top.tsx and MenuBar.tsx draw it; styles/site.css lays it out). The notch
- * is cut out of the menu bar at the centre (--notch-w × --bar-h, the one pure black on the page: it is the bezel) with its two
- * 14 px fillets. The island hangs under it at 1:1 (420 × 184: its four bands, the blob's face in the anchor band), always
- * open. Every class is .desk-*; every colour is a --jh-* token or a mix of two; the phase colour arrives as --desk-phase (set
- * inline from the kind). The island is a screen: black-and-orb in both themes, its whites composed from --jh-paper with
- * color-mix, its box hairline the plate's (.22).
+ * The desk: the Mac's own top edge (components/site/Top.tsx and MenuBar.tsx draw it; styles/site.css lays it out). The
+ * island is the notch grown, as a notch app opens it: one black silhouette from the page's top edge (the band over the
+ * bar, styles/site.css .top-band, the one pure black on the page: it is the bezel), with small concave ears where it
+ * meets the top edge (on a phone the bar is the band and the ears sit at its foot), and this body under it at 1:1
+ * (420 × 184: its four bands, the blob's face in the anchor band), always open, square where it meets the band and 24 px
+ * at its bottom corners (at 30 the foot's Console · Sleep pair came within 1.6 px of the curve). Its ink is lib/island.ts: the orb's blue poured out of the band's black, every kind the same. Every class is .desk-*; every colour is a --jh-* token or a mix of
+ * two; the phase colour arrives as --desk-phase (set inline from the kind) and lives only in the eyes' tint and the Go
+ * ring: no line runs along the island's contour, and its instruments are the paper alone. The island is a screen:
+ * black-and-orb in both themes, its whites composed from --jh-paper with color-mix, its boxes the app's (black .42 under a
+ * paper hairline at .26, their glyphs the paper at .78; NotchPanel.swift drawBox, drawStrip).
  *
- * Legibility: the island is drawn at --top-s (set by the top engine as it docks), so every word in it takes
- * max(its own size, 11 px / --top-s) and never renders under 11 px on screen, docked or not (--isl-min below).
+ * Legibility: the island is drawn at --top-s (set by the top engine as it docks), so every word in it takes max(its own
+ * size, a floor in screen px / --top-s) by its role, and the app's hierarchy survives docking: the hero never under
+ * 13.5 px on screen, the phase word, the buttons and the Say box never under 10.5, the head, the foot and the tiles never
+ * under 9.5 (--isl-hero, --isl-word, --isl-small below), so the hero stays at least 1.4 times the quiet lines. The middle
+ * beat (Allow · Deny, Snooze · Done, the tiles) sits at the app's 82 until the hero's grown pitch needs more, then 8 island
+ * px under a two-line hero (--isl-mid), so docked it keeps air from the hero above and the Say row below; docked a tile
+ * is its name alone (the head already counts the work), one row the Say box's height.
  */
 
 /* ---- the holder: the island's custom properties ---- */
-.desk { position: relative; --desk-phase: var(--jh-listening); --desk-eye-ink: color-mix(in srgb, var(--desk-phase) 15%, var(--jh-paper)); --desk-white-92: color-mix(in srgb, var(--jh-paper) 92%, transparent); --desk-white-72: color-mix(in srgb, var(--jh-paper) 72%, transparent); --desk-white-48: color-mix(in srgb, var(--jh-paper) 48%, transparent); --desk-box: color-mix(in srgb, var(--jh-desk-notch) 35%, transparent); --isl-min: calc(11px / var(--top-s, 1)); font-family: var(--font-sans); font-feature-settings: "cv11", "ss01", "ss03"; }
+.desk { position: relative; --desk-phase: var(--jh-listening); --desk-eye-ink: color-mix(in srgb, var(--desk-phase) 15%, var(--jh-paper)); --desk-white-92: color-mix(in srgb, var(--jh-paper) 92%, transparent); --desk-white-72: color-mix(in srgb, var(--jh-paper) 72%, transparent); --desk-white-78: color-mix(in srgb, var(--jh-paper) 78%, transparent); --desk-white-62: color-mix(in srgb, var(--jh-paper) 62%, transparent); --desk-box: color-mix(in srgb, var(--jh-desk-notch) 42%, transparent); --desk-hair: color-mix(in srgb, var(--jh-paper) 26%, transparent); --isl-hero: max(17.4px, calc(13.5px / var(--top-s, 1))); --isl-word: max(12px, calc(10.5px / var(--top-s, 1))); --isl-small: max(11px, calc(9.5px / var(--top-s, 1))); --isl-pitch: max(22px, calc(var(--isl-hero) * 1.1)); --isl-mid: max(82px, calc(29.5px + 2 * var(--isl-pitch) + 8px)); font-family: var(--font-sans); font-feature-settings: "cv11", "ss01", "ss03"; }
 
-/* ---- the notch, cut out of the bar at the centre over its hairline, and the two fillets that join it to the island's top edge (NotchInk.swift:45-51) ---- */
-.desk-notch { position: absolute; left: calc(50% - var(--notch-w) / 2); top: 0; width: var(--notch-w); height: calc(var(--bar-h) + 1px); background: var(--jh-desk-notch); z-index: 3; }
-.desk-fillet { position: absolute; top: calc(var(--bar-h) - 13px); width: 14px; height: 14px; z-index: 3; background: radial-gradient(circle at 0 0, transparent 13.5px, var(--jh-desk-notch) 14px); }
-.desk-fillet-l { left: calc(50% - var(--notch-w) / 2 - 14px); }
-.desk-fillet-r { left: calc(50% + var(--notch-w) / 2); background: radial-gradient(circle at 100% 0, transparent 13.5px, var(--jh-desk-notch) 14px); }
-
-/* ---- the island: one open shape (design.md §4.3–4.4), its top edge continuous with the notch's shoulders ---- */
+/* ---- the island's body: one open shape (design.md §4.3–4.4) under the band, square where it meets it, 24 px below ---- */
 /* it takes the pointer, so a press on it never lands on the page hidden beneath it; only a live Allow or Deny answers */
-.desk-island { position: absolute; left: calc(50% - 210px); top: 0; width: 420px; height: 184px; background: var(--jh-desk-notch); border-radius: 18px 18px 12px 12px; overflow: hidden; z-index: 4; color: var(--jh-paper); transform-origin: 50% 0; pointer-events: auto; cursor: default; }
-.desk-ink { position: absolute; left: 0; top: 0; image-rendering: pixelated; }
+.desk-island { position: absolute; left: calc(50% - 210px); top: 0; width: 420px; height: 184px; background: var(--jh-desk-notch); border-radius: 0 0 24px 24px; overflow: hidden; z-index: 4; color: var(--jh-paper); transform-origin: 50% 0; pointer-events: auto; cursor: default; }
+/* the ink hangs from the body's bottom edge: a kind change springs the body's height from 176 to 184, and the spring eats
+   into the black poured under the band (black there anyway), never into the contour or the foot. It covers the body to
+   its edges (rounded up a cell) and the body's rounded clip trims it; once it is down the body's own black goes, so the
+   contour antialiases once, ink against the page, and no black frames the ink */
+.desk-ink { position: absolute; left: 0; top: auto; bottom: 0; image-rendering: pixelated; }
+.desk-island[data-inked] { background: transparent; }
 .desk-island > * { position: absolute; }
-.desk-anchor, .desk-display, .desk-foot { left: 0; top: 0; width: 100%; height: 100%; transition: opacity var(--jh-quick) var(--jh-ease-in-out); pointer-events: none; }
-.desk-display[data-swap], .desk-foot[data-swap] { opacity: 0; }
+.desk-anchor, .desk-display, .desk-foot { left: 0; top: 0; width: 100%; height: 100%; transition: opacity var(--jh-quick) var(--jh-ease-in-out), transform var(--jh-quick) var(--jh-ease-in-out); pointer-events: none; }
 .desk-anchor > *, .desk-display > *, .desk-foot > * { position: absolute; }
+/* the app's beats (NotchPanel contentAppearance): a new kind takes the display and the foot out over --jh-quick, drifting
+   up, then brings the new kind's in over --jh-base from 6 px below, beat by beat 30 ms apart (the head, the hero and its
+   instrument, the middle, the control row, the foot); the anchor holds. Island.tsx keys the display and the foot by kind,
+   so each arrival plays once */
+.desk-display[data-swap], .desk-foot[data-swap] { opacity: 0; transform: translateY(-4px); }
+.desk-display > *, .desk-foot > * { animation: desk-in var(--jh-base) var(--jh-ease-out) 120ms backwards; }
+.desk-display > .desk-head { animation-delay: 30ms; }
+.desk-display > :is(.desk-hero, .desk-trace, .desk-sweep) { animation-delay: 60ms; }
+.desk-display > :is(.desk-tiles, .desk-btn) { animation-delay: 90ms; }
+.desk-foot > * { animation-delay: 150ms; }
+@keyframes desk-in { from { opacity: 0; transform: translateY(6px); } }
+.desk[data-still] :is(.desk-display, .desk-foot) > * { animation: none; }
 
 /* the anchor: the face at (57, 40), the word, Go · Stop · Mute */
 .desk-eyes { left: 57px; top: 40px; width: 0; height: 0; transition: transform var(--jh-quick) var(--jh-ease-out); }
 /* the face: the blob's own eyes as SVG (Island.tsx islandFace), ink pupils and lines rimmed in the phase-tinted paper, the
    paper sparkle on an ink halo */
-.desk-face { position: absolute; left: -40px; top: -28px; overflow: visible; color: var(--desk-eye-ink); transition: color var(--jh-drift) var(--jh-ease-in-out); }
+.desk-face { position: absolute; left: -40px; top: -28px; overflow: visible; color: var(--desk-eye-ink); transform-origin: 50% 45%; transition: color var(--jh-drift) var(--jh-ease-in-out); }
 .desk-face path { stroke-linecap: round; stroke-linejoin: round; }
 .desk-face .rim { fill: currentColor; stroke: currentColor; }
 .desk-face .ink { fill: var(--jh-desk-notch); }
@@ -40,81 +59,112 @@
 .desk-face .glint { fill: var(--jh-paper); }
 .desk-face .halo { fill: none; stroke: var(--jh-desk-notch); }
 .desk-face .line { fill: none; }
-.desk-word { left: 6px; top: 60px; width: 102px; height: 16px; font-size: max(12px, var(--isl-min)); font-weight: 500; line-height: 16px; text-align: center; color: var(--desk-white-92); white-space: nowrap; }
+/* the phase word in the paper itself (the app's phaseAttrs, 1.0): at 11 px on screen over the pale end of the ramp 92%
+   measured 4.0:1, the paper 4.6. A new word never shares the slot with the old one: the old fades out, then the new in */
+.desk-word { left: 6px; top: 60px; width: 102px; height: 16px; font-size: var(--isl-word); font-weight: 500; line-height: 16px; text-align: center; color: var(--jh-paper); white-space: nowrap; text-shadow: 0 1px 0 var(--jh-desk-notch); }
 .desk-word-x { position: relative; display: block; }
 .desk-word-x > span { position: absolute; left: 0; right: 0; top: 0; }
-.desk-word-out { animation: desk-word-out var(--jh-drift) var(--jh-ease-in-out) forwards; }
-.desk-word-in { animation: desk-word-in var(--jh-drift) var(--jh-ease-in-out) both; }
+.desk-word-out { animation: desk-word-out var(--jh-quick) var(--jh-ease-in-out) forwards; }
+.desk-word-in { animation: desk-word-in var(--jh-quick) var(--jh-ease-out) var(--jh-quick) both; }
+/* a word that came while the last was still fading in: that one is dropped and this one fades in at once */
+.desk-word-in.is-now { animation-delay: 0s; }
 @keyframes desk-word-out { to { opacity: 0; } }
 @keyframes desk-word-in { from { opacity: 0; } to { opacity: 1; } }
-.desk-go { left: 14px; top: 123px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--desk-phase); display: flex; align-items: center; justify-content: center; color: var(--jh-paper); transition: border-color var(--jh-drift) var(--jh-ease-in-out); }
-.desk-box { background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; color: var(--desk-white-92); }
+/* Go, the app's ring (drawRing): a disk of the notch's black at .40 under one screen px of the phase tone at .90, its glyph
+   the paper at .92. While the alarm rings the tone is still asleep's (Top.tsx ISLAND_TONE): the amber is the head's glyph */
+.desk-go { left: 14px; top: 123px; width: 22px; height: 22px; border-radius: 50%; border: max(1px, calc(1px / var(--top-s, 1))) solid color-mix(in srgb, var(--desk-phase) 90%, transparent); background: color-mix(in srgb, var(--jh-desk-notch) 40%, transparent); display: flex; align-items: center; justify-content: center; color: var(--desk-white-92); transition: border-color var(--jh-drift) var(--jh-ease-in-out); }
+/* thinking's tone is the orb's own blue, which the ink is: its ring takes the eye's paper tint so it still reads */
+.desk-island[data-kind="thinking"] .desk-go { border-color: var(--desk-eye-ink); }
+.desk-box { background: var(--desk-box); border: 1px solid var(--desk-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; color: var(--desk-white-78); }
 .desk-stop { left: 42px; top: 122px; width: 26px; height: 24px; }
 .desk-mute { left: 74px; top: 122px; width: 26px; height: 24px; }
-.desk-mute.is-dim { opacity: .4; }
+.desk-mute.is-dim { opacity: .35; }
+/* asleep, Stop rests spent at .45, still a button (the app's stopDim) */
+.desk-stop.is-spent { opacity: .45; }
 
-/* the display: the head, the hero line, the kind's middle */
-.desk-head { left: 114px; top: 12px; width: 292px; height: 18px; display: flex; align-items: center; justify-content: space-between; font: 500 max(11px, var(--isl-min))/1 var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* the display: the head (words only, never a bar: the app's 11 pt sans with tabular figures at 0.72, its one glyph in the
+   kind's amber while it asks or rings), the hero line, the kind's middle */
+.desk-head { left: 114px; top: 12px; width: 292px; height: 18px; display: flex; align-items: center; justify-content: space-between; font: 400 var(--isl-small)/1 var(--font-sans); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; text-shadow: 0 1px 0 color-mix(in srgb, var(--jh-desk-notch) 55%, transparent); }
 .desk-meter { image-rendering: pixelated; display: block; }
-.desk-meter-head { width: 100px; height: 6px; }
-.desk-head-work, .desk-head-ask, .desk-head-alarm, .desk-head-asleep { display: inline-flex; align-items: center; gap: 6px; }
-.desk-head-ask { color: var(--jh-speaking); }
-.desk-dot { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--jh-mark); flex: none; }
-.desk-glyphs { color: var(--desk-white-48); letter-spacing: .02em; white-space: pre; }
-.desk-hero { left: 114px; top: 30px; width: 292px; max-height: 66px; font-size: max(18px, var(--isl-min)); line-height: 22px; font-weight: 400; letter-spacing: -.012em; color: var(--desk-white-92); text-shadow: 0 1px 0 var(--jh-desk-notch); overflow: hidden; }
-.desk-hero.is-question { color: var(--jh-paper); }
+/* listening: the level trace in the hero's slot, its midline level with the word under the face while nothing is heard
+   (Top.tsx moves it under a heard line, or hides it when the line leaves it no room) */
+.desk-trace { left: 114px; top: 46px; width: 292px; height: 40px; image-rendering: pixelated; }
+/* acting with no tiles: the working sweep under the line at its left, a short swell of ticks (Top.tsx places it) */
+.desk-sweep { left: 114px; top: 62px; width: 96px; }
+.desk-head-work { white-space: pre; }
+.desk-head-ask, .desk-head-alarm { display: inline-flex; align-items: center; gap: 6px; }
+.desk-head-ask .jh-ico { color: var(--jh-speaking); }
+.desk-head-alarm .jh-ico { color: var(--jh-mark); }
+/* the hero: 18 px lines on the app's 22 px pitch, three at most (two over tiles, a question's or a ring's buttons), balanced
+   so a wrap never strands a word; docked its floor (--isl-hero) grows the lines a touch and the pitch with them */
+.desk-hero { --hero-pitch: var(--isl-pitch); left: 114px; top: 29.5px; width: 292px; max-height: calc(3 * var(--hero-pitch)); font-size: var(--isl-hero); line-height: var(--hero-pitch); font-weight: 400; letter-spacing: -.005em; color: var(--desk-white-92); text-shadow: 0 1px 0 var(--jh-desk-notch); overflow: hidden; text-wrap: balance; }
+.desk-hero.is-question { color: var(--jh-paper); max-height: calc(2 * var(--hero-pitch)); }
 /* acting with thread tiles: the line holds two lines above them */
-.desk-hero.is-short { max-height: 44px; }
-.desk-hero.is-mono { font-family: var(--font-mono); font-size: max(17px, var(--isl-min)); letter-spacing: 0; font-variant-numeric: tabular-nums; }
-/* asleep: the clock the app's foot carries, set as the island's one big line in the quiet white */
-.desk-hero.is-clock { top: 28px; max-height: none; font: 500 44px/52px var(--font-mono); letter-spacing: -0.02em; color: var(--desk-white-72); font-variant-numeric: tabular-nums; }
-.desk-hero-dim { display: block; color: var(--desk-white-48); font-family: var(--font-sans); font-size: max(13px, var(--isl-min)); letter-spacing: -.005em; }
+.desk-hero.is-short { max-height: calc(2 * var(--hero-pitch)); }
+/* the ring: `07:10` in the mono, ` · Wake up, Kevin` in the sans, both the paper; its calm second line at 0.72 */
+.desk-hero.is-ring { color: var(--jh-paper); max-height: calc(2 * var(--hero-pitch)); }
+.desk-hero-clock { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+/* asleep: the wake gate's own words, the app's calm hero (its heroCalmAttrs, 0.72) */
+.desk-hero.is-calm { color: var(--desk-white-72); }
+.desk-hero-dim { display: block; color: var(--desk-white-72); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .desk-tiles { left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
-.desk-tile { position: absolute; top: 80px; width: 140px; min-height: 32px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 3px 8px; font-size: max(11px, var(--isl-min)); line-height: 1.2; }
-.desk-tile-name { display: flex; align-items: center; gap: 5px; font-weight: 500; color: var(--jh-paper); }
+/* a thread's tile, the app's: its name (11 medium, 0.92) over `working · 0:08` (11, tabular, 0.72); docked its name alone,
+   one row the Say box's height, so the grown words keep the app's air (the head already counts the work) */
+.desk-tile { position: absolute; top: calc(var(--isl-mid) - 2px); width: 140px; min-height: 32px; background: var(--desk-box); border: 1px solid var(--desk-hair); border-radius: var(--jh-radius); padding: 2px 8px; font-size: var(--isl-small); line-height: 1.1; }
+.desk-tile-name { display: flex; align-items: center; gap: 5px; font-weight: 500; color: var(--desk-white-92); }
 .desk-tile-name i { width: 6px; height: 6px; background: var(--jh-acting); border-radius: 1px; }
 .desk-tile[data-state="asks"] .desk-tile-name i { background: var(--jh-speaking); }
 .desk-tile[data-state="done"] .desk-tile-name i { background: var(--jh-listening); }
 .desk-tile[data-state="stopped"] { opacity: .45; }
-.desk-tile-s { display: block; font: 500 max(10px, var(--isl-min))/1.2 var(--font-mono); color: var(--desk-white-72); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: clip; }
-/* docked, a tile keeps its name and its Stop: the clock line would not fit at the legible size */
-.top[data-docked] .desk-tile-s { display: none; }
-.top[data-docked] .desk-tile { display: flex; align-items: center; }
+.desk-tile-s { display: block; padding-right: 12px; color: var(--desk-white-72); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: clip; }
 .desk-tile-stop { position: absolute; right: 8px; top: 10px; width: 8px; height: 8px; background: var(--desk-white-92); border-radius: 1px; }
-.desk-btn { height: 28px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; font-size: max(12px, var(--isl-min)); font-weight: 500; letter-spacing: -0.01em; white-space: nowrap; color: var(--desk-white-92); }
-.desk-btn.is-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.top[data-docked] .desk-tile { min-height: 0; height: 24px; display: flex; align-items: center; padding-block: 0; }
+.top[data-docked] .desk-tile-s { display: none; }
+.top[data-docked] .desk-tile-stop { top: 7px; }
+/* its label never meets its border: side padding, and the alarm's row sized to its labels docked (Island.tsx) */
+.desk-btn { top: var(--isl-mid); height: 28px; padding: 0 6px; background: var(--desk-box); border: 1px solid var(--desk-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; font-size: var(--isl-word); font-weight: 500; letter-spacing: -0.01em; white-space: nowrap; color: var(--desk-white-92); }
 /* live: the demo that asks put its answer on the island (Threads' Slack question), so its Allow and Deny decide it too */
 .desk-btn[data-live] { pointer-events: auto; cursor: pointer; transition: opacity var(--jh-instant) var(--jh-ease-out); }
 .desk-btn[data-live]:active { opacity: .8; }
 
 /* the control row: the Say box and the strip */
-.desk-say { left: 114px; top: 122px; width: 176px; height: 24px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 0 8px; display: flex; align-items: center; overflow: hidden; font-size: max(11.5px, var(--isl-min)); color: var(--jh-paper); white-space: nowrap; }
-.desk-say-ph { color: var(--desk-white-48); }
+.desk-say { left: 114px; top: 122px; width: 176px; height: 24px; background: var(--desk-box); border: 1px solid var(--desk-hair); border-radius: var(--jh-radius); padding: 0 8px; display: flex; align-items: center; overflow: hidden; font-size: var(--isl-word); color: var(--jh-paper); white-space: nowrap; }
+/* the placeholder at .62 (the app's placeholderAlpha): over the box on the ramp's pale end .56 fell to 3.4:1; at .62, with
+   the light falling toward the foot (lib/island.ts FOOT_SHADE), it is 4.95:1 at its lowest */
+.desk-say-ph { color: var(--desk-white-62); }
 .desk-caret { flex: none; width: 1px; height: 13px; background: var(--jh-paper); margin-right: 1px; animation: desk-caret .5s steps(1) infinite; }
 .desk[data-still] .desk-caret { animation: none; }
 @keyframes desk-caret { 50% { opacity: 0; } }
-.desk-strip { top: 122px; height: 24px; display: flex; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); overflow: hidden; color: var(--desk-white-92); }
+.desk-strip { top: 122px; height: 24px; display: flex; background: var(--desk-box); border: 1px solid var(--desk-hair); border-radius: var(--jh-radius); overflow: hidden; color: var(--desk-white-78); }
 .desk-strip i { flex: 1; display: flex; align-items: center; justify-content: center; }
-.desk-strip i + i { border-left: 1px solid var(--jh-plate-hair); }
-.desk-strip--foot { left: 354px; top: 156px; width: 52px; }
+.desk-strip i + i { border-left: 1px solid var(--desk-hair); }
+/* a key that takes no press (the app's disabled cell): asleep, Ask (no typed line wakes it) and the spent Sleep, the glyph
+   at .35 in its box */
+.desk-strip i.is-off > .jh-ico { opacity: .35; }
+/* the foot hangs from the body's bottom edge (4 px up), so the height's spring never cuts its words */
+.desk-strip--foot { left: 354px; top: auto; bottom: 4px; width: 52px; }
 
-/* the foot: the clock, the meter and its figure; asleep, the crescent and `asleep`, then the next thing armed (the app's own line) */
-.desk-foot-row { left: 14px; top: 156px; width: 332px; height: 24px; display: flex; align-items: center; gap: 8px; overflow: hidden; font: 500 max(11px, var(--isl-min))/1 var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.desk-foot-l { display: inline-flex; align-items: center; gap: 6px; flex: none; }
-.desk-meter-foot { width: 64px; height: 6px; flex: none; }
-.desk-foot-r { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.desk-island[data-kind="asleep"] .desk-foot-r, .desk-island[data-kind="alarm"] .desk-foot-r { margin-left: auto; }
-/* docked, the asleep foot keeps its word: the next thing armed would not fit at the legible size */
-.top[data-docked] .desk-island[data-kind="asleep"] .desk-foot-r, .top[data-docked] .desk-island[data-kind="alarm"] .desk-foot-r { display: none; }
-.desk-hair { left: 0; right: 0; bottom: 0; height: 1px; background: var(--desk-phase); transition: background-color var(--jh-drift) var(--jh-ease-in-out); }
-.desk-island[data-kind="asleep"] .desk-hair { animation: desk-breathe 4s ease-in-out infinite; }
-.desk[data-still] .desk-hair { animation: none; }
-@keyframes desk-breathe { 0%, 100% { opacity: .35; } 50% { opacity: .9; } }
+/* the seam over the foot (the app's, y 153.5 at white .10, from 14 to 406): a rule inside the island, never along its
+   contour, one screen px at every scale; it hangs from the body's bottom edge with the foot */
+.desk-seam { left: 14px; right: 14px; top: auto; bottom: 30px; height: max(1px, calc(1px / var(--top-s, 1))); background: color-mix(in srgb, var(--jh-paper) 10%, transparent); }
+
+/* the foot: one line in the app's problem-row grammar (NotchPanel.swift drawMeter, drawAsleepRow): a bright noun, the
+   clock awake, `asleep` after the crescent, then a quieter clause one word space on, the figures or the next thing armed,
+   in the app's 11 pt sans with tabular figures, where the ink's light has fallen (lib/island.ts FOOT_SHADE) and on the
+   app's ink shadow (black .55, one px down), as the head's words. No meter: the figures say it, and nothing bar-shaped rides it */
+.desk-foot-row { left: 14px; top: auto; bottom: 4px; width: 332px; height: 24px; display: flex; align-items: center; gap: 6px; overflow: hidden; font: 400 var(--isl-small)/1 var(--font-sans); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; text-shadow: 0 1px 0 color-mix(in srgb, var(--jh-desk-notch) 55%, transparent); }
+.desk-foot-row > .jh-ico { color: var(--desk-white-92); }
+.desk-foot-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+/* the noun a step up (the app's problem noun, 0.92) */
+.desk-foot-noun { color: var(--desk-white-92); }
+/* docked, the next thing's name gives way, so its time is never cut at the legible size */
+.top[data-docked] .desk-foot-tail { display: none; }
 
 /* ---- the icons (Phosphor Fill, components/icons/Icon.tsx) ---- */
 .desk .jh-ico { display: block; flex: none; pointer-events: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .desk-caret, .desk-hair, .desk-word-in, .desk-word-out { animation: none; }
+  .desk-caret, .desk-word-in, .desk-word-out, .desk-display > *, .desk-foot > * { animation: none; }
+  .desk-display[data-swap], .desk-foot[data-swap] { transform: none; }
   .desk-word-out { display: none; }
 }

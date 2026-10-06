@@ -2,20 +2,32 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { Icon } from "@/components/icons/Icon";
 import { ISLAND } from "@/content/island";
-import { after, upTo } from "@/lib/cut";
+import { upTo } from "@/lib/cut";
 import { faceMarks, flareSize, type FacePose } from "@/lib/eyes";
 import type { Show, Tile } from "@/lib/live";
 import type { DeskKind } from "@/lib/phase";
 
-/** The asleep foot as the app splits it (notch-island-alarm.png): the crescent and `asleep` at the left, the next thing armed at the right. */
-const ASLEEP_WORD = upTo(ISLAND.footAsleep, " · ");
-const ASLEEP_NEXT = after(ISLAND.footAsleep, `${ASLEEP_WORD} · `);
+/**
+ * The island's face per kind, the app's own pairs (BlobField.swift renderEyes): the gate's small still eyes asleep (its ear
+ * open for "jarhead", Kevin's island), round eyes listening, the lowered lids thinking (churning to `~ ~`, Top.tsx), `o o`
+ * acting and while a ring is up, `^ ^` speaking.
+ */
+export const ISLAND_FACE: Record<DeskKind, string> = { listening: "O O", thinking: "- -", acting: "o o", speaking: "^ ^", asleep: ". .", alarm: "o o" };
+
+/**
+ * The foot asleep, the app's asleep row (NotchPanel.swift drawAsleepRow): the crescent, `asleep` as its noun, then the next
+ * thing armed, the alarm the Sleep night runs to; its name (` · Wake up, Kevin`) is the tail, which gives way docked so the
+ * time stays whole at the legible size. While the alarm rings the clause is what the night cost.
+ */
+const ASLEEP_NOUN = upTo(ISLAND.footAsleep, " · ");
+const ALARM_AT = upTo(ISLAND.hero.alarm, " · ");
+const ALARM_NAME = ISLAND.hero.alarm.slice(ALARM_AT.length);
+const NEXT_WHEN = `next ${upTo(ISLAND.headAlarm, " · ")} ${ALARM_AT}`;
 
 export interface IslandRefs {
   ink: RefObject<HTMLCanvasElement | null>;
-  meterHead: RefObject<HTMLCanvasElement | null>;
-  meterFoot: RefObject<HTMLCanvasElement | null>;
-  glyphs: RefObject<HTMLSpanElement | null>;
+  trace: RefObject<HTMLCanvasElement | null>;
+  sweep: RefObject<HTMLCanvasElement | null>;
   clock: RefObject<HTMLSpanElement | null>;
   tiles: RefObject<HTMLDivElement | null>;
   eyes: RefObject<HTMLDivElement | null>;
@@ -69,25 +81,35 @@ export function islandFace(pair: string, pose: FacePose = REST): string {
   return rims + face + parted + glints;
 }
 
-/** The phase word crossfades over --jh-drift: the old word fades out under the new one. */
+/**
+ * The phase word changes in two steps, never two words at once: the old one fades out, then the new one fades in, each
+ * step to its own end (the in step keeps its class until its own animation ends, so it is never cut to full). A change
+ * while a step plays never restarts a word from full: during the out step the waiting word is swapped for the newest, and
+ * a word still fading in is dropped where it stands and the newest fades in from nothing at once (`now`).
+ */
 function WordCrossfade({ text }: { text: string }): ReactElement {
-  const [pair, setPair] = useState<{ cur: string; prev: string | null; n: number }>({ cur: text, prev: null, n: 0 });
+  const [pair, setPair] = useState<{ cur: string; prev: string | null; n: number; fading: boolean; now: boolean }>({ cur: text, prev: null, n: 0, fading: false, now: false });
   const prevText = useRef(text);
   useEffect(() => {
     if (prevText.current === text) return;
     const old = prevText.current;
     prevText.current = text;
-    setPair((p) => ({ cur: text, prev: old, n: p.n + 1 }));
+    setPair((p) => {
+      if (p.prev) return { ...p, cur: text };
+      if (p.fading) return { cur: text, prev: null, n: p.n + 1, fading: true, now: true };
+      return { cur: text, prev: old, n: p.n + 1, fading: true, now: false };
+    });
   }, [text]);
-  const settle = () => setPair((p) => (p.prev ? { ...p, prev: null } : p));
+  const outDone = () => setPair((p) => (p.prev ? { ...p, prev: null } : p));
+  const inDone = () => setPair((p) => (p.fading && !p.prev ? { ...p, fading: false, now: false } : p));
   return (
     <span className="desk-word-x">
       {pair.prev ? (
-        <span key={`p${pair.n}`} className="desk-word-out" onAnimationEnd={settle}>
+        <span key={`p${pair.n}`} className="desk-word-out" onAnimationEnd={outDone}>
           {pair.prev}
         </span>
       ) : null}
-      <span key={`c${pair.n}`} className={pair.prev ? "desk-word-in" : undefined}>
+      <span key={`c${pair.n}`} className={pair.fading ? `desk-word-in${pair.now ? " is-now" : ""}` : undefined} onAnimationEnd={inDone}>
         {pair.cur}
       </span>
     </span>
@@ -97,9 +119,8 @@ function WordCrossfade({ text }: { text: string }): ReactElement {
 interface IslandProps {
   readonly kind: DeskKind;
   readonly swap: boolean;
-  readonly still: boolean;
   readonly refs: IslandRefs;
-  /** What the demo in view put on the island (lib/live.ts): its line, its question, its tiles, the foot, the clock. */
+  /** What the demo in view put on the island (lib/live.ts): its line, its question, its tiles, the foot's figures. */
   readonly show: Show;
 }
 
@@ -111,17 +132,21 @@ function tileWord(t: Tile): string | null {
 }
 
 /**
- * The island (design.md §4.3–4.4): one open shape over the ink canvas, never folded to the lip, four DOM bands in px from
- * its top-left: the anchor (the face, the word, Go · Stop · Mute), the display (the head, the hero line, the kind's middle),
- * the control row (the Say box with its placeholder, Circle · Window · Ask), the foot (the clock, the meter and its figure, or the asleep line;
- * then the app's Console · Sleep tiles), and the phase hairline along the bottom. It wears all six kinds open: asleep is the
- * app's quiet island (the titanium ink, `- -`, the crescent, the clock), the alarm rings over it. Every control and tile
- * icon is Phosphor Fill (components/icons), the site's one family. A drawing of the app, so aria-hidden: the menu bar names
- * its state in words.
+ * The island (design.md §4.3–4.4): the body of the notch grown (the band over the bar is styles/site.css .top-band), one
+ * open shape over the ink canvas, never folded to the lip, four DOM bands in px from its top-left: the anchor (the face,
+ * the word, Go · Stop · Mute), the display (the head's words, the hero line and under it, in the lines it leaves free, the
+ * level trace listening or the working sweep acting with no tiles; the kind's middle), the control row (the Say box with
+ * its placeholder, Circle · Window · Ask), and the foot (one line in the app's problem-row grammar: a bright noun, then a
+ * quieter clause, the figures or the next thing armed; then the app's Console · Sleep tiles). No line runs along its
+ * contour and nothing bar-shaped rides its head or its foot: the phase tone is the eyes' tint, the Go ring and the head's
+ * one glyph while it asks or rings, every instrument the paper. It wears all six kinds open, all in the one blue ink:
+ * asleep is the app's island (the gate's small still eyes, its words as the hero, set calm, `☾ asleep · next Alarm 07:10`
+ * in the foot), the alarm rings over it. Every control and tile icon is Phosphor Fill (components/icons), the site's one
+ * family. A drawing of the app, so aria-hidden: the menu bar names its state in words.
  */
-export function Island({ kind, swap, still, refs, show }: IslandProps): ReactElement {
-  // The face the server draws (the top engine writes every later one straight to the DOM): asleep's flat pair at first.
-  const [face] = useState(() => islandFace(kind === "listening" ? "O O" : "- -"));
+export function Island({ kind, swap, refs, show }: IslandProps): ReactElement {
+  // The face the server draws (the top engine writes every later one straight to the DOM): the kind's own pair.
+  const [face] = useState(() => islandFace(ISLAND_FACE[kind]));
   const sleeping = kind === "asleep" || kind === "alarm";
   // The island asks only its own question, and only when a demo says so (Threads' Slack, Rails' send); any other spoken
   // line (a reason, "night.", a reading) is said without Allow and Deny.
@@ -131,7 +156,15 @@ export function Island({ kind, swap, still, refs, show }: IslandProps): ReactEle
   const answer = question ? show.answer : undefined;
   const working = kind === "thinking" || kind === "acting";
   const tiles = kind === "acting" ? show.tiles : undefined;
-  const line = question ? ISLAND.hero.speaking : kind === "alarm" ? ISLAND.hero.alarm : (show.line ?? "");
+  const line = question ? ISLAND.question : (show.line ?? "");
+  // Listening, the level trace takes the hero's slot (NotchPanel.swift drawHero): with nothing heard yet it is the middle,
+  // level with the word under the face, and the head stays clear; once a line is heard it sits in the lines the line leaves
+  // free (the top engine places it). The head never carries a meter.
+  const listening = kind === "listening";
+  // Acting with no tiles (a hand at work, Rails' and Hands' `Click Save`), the line's free lines carry the working sweep: a
+  // small swell of ticks running there and back under the line, so the middle says the work is under way (NotchPanel.swift
+  // drawSweep).
+  const sweeping = kind === "acting" && !tiles;
   return (
     <div className="desk-island" data-kind={kind} aria-hidden="true">
       <canvas ref={refs.ink} className="desk-ink" />
@@ -145,24 +178,19 @@ export function Island({ kind, swap, still, refs, show }: IslandProps): ReactEle
         <div className="desk-go">
           <Icon name={sleeping ? "play" : "pause"} size={12} />
         </div>
-        <div className="desk-box desk-stop">
+        <div className={`desk-box desk-stop${sleeping ? " is-spent" : ""}`}>
           <Icon name="stop" size={12} />
         </div>
         <div className={`desk-box desk-mute${sleeping ? " is-dim" : ""}`}>
           <Icon name="microphone" size={14} />
         </div>
       </div>
-      <div className="desk-display" data-swap={swap ? "" : undefined}>
+      <div key={`d${kind}`} className="desk-display" data-swap={swap ? "" : undefined}>
         <div className="desk-head">
-          {kind === "listening" || (kind === "speaking" && !question) ? <canvas ref={refs.meterHead} className="desk-meter desk-meter-head" /> : null}
           {working ? (
             <span className="desk-head-work">
-              {ISLAND.working} · <span ref={refs.clock}>{`0:0${ISLAND.clockBase[kind]}`}</span>
-              {kind === "thinking" ? (
-                <span ref={refs.glyphs} className="desk-glyphs">
-                  {still ? ".#.#.#.#" : "        "}
-                </span>
-              ) : null}
+              {`${ISLAND.working} · `}
+              <span ref={refs.clock}>{`0:0${ISLAND.clockBase[kind]}`}</span>
             </span>
           ) : null}
           {question ? (
@@ -173,23 +201,27 @@ export function Island({ kind, swap, still, refs, show }: IslandProps): ReactEle
           ) : null}
           {kind === "alarm" ? (
             <span className="desk-head-alarm">
-              <i className="desk-dot" />
+              <Icon name="alarm" size={12} />
               {ISLAND.headAlarm}
             </span>
           ) : null}
-          {kind === "asleep" ? (
-            <span className="desk-head-asleep">
-              <Icon name="moon" size={12} />
-              {ASLEEP_WORD}
-            </span>
-          ) : null}
         </div>
+        {listening ? <canvas ref={refs.trace} className="desk-trace" /> : null}
+        {sweeping ? <canvas ref={refs.sweep} className="desk-meter desk-sweep" /> : null}
         {kind === "asleep" ? (
-          <div className="desk-hero is-clock">{show.clock ?? ISLAND.footClock}</div>
+          <div className="desk-hero is-calm">{ISLAND.gate}</div>
         ) : (
-          <div className={`desk-hero${question ? " is-question" : ""}${kind === "alarm" ? " is-mono" : ""}${tiles ? " is-short" : ""}`}>
-            {line}
-            {kind === "alarm" ? <span className="desk-hero-dim">{ISLAND.alarmSub}</span> : null}
+          <div className={`desk-hero${question ? " is-question" : ""}${kind === "alarm" ? " is-ring" : ""}${tiles ? " is-short" : ""}`}>
+            {kind === "alarm" ? (
+              <>
+                {/* the app's ring hero: the clock in mono, the line in the sans, the calm second line at 0.72 */}
+                <span className="desk-hero-clock">{ALARM_AT}</span>
+                {ALARM_NAME}
+                <span className="desk-hero-dim">{ISLAND.alarmSub}</span>
+              </>
+            ) : (
+              line
+            )}
           </div>
         )}
         {tiles ? (
@@ -216,27 +248,23 @@ export function Island({ kind, swap, still, refs, show }: IslandProps): ReactEle
         ) : null}
         {question ? (
           <>
-            <div className="desk-btn" data-live={answer ? "" : undefined} onClick={answer ? () => answer(true) : undefined} style={{ left: 114, top: 82, width: 84 }}>
+            <div className="desk-btn" data-live={answer ? "" : undefined} onClick={answer ? () => answer(true) : undefined} style={{ left: 114, width: 84 }}>
               {ISLAND.allow}
             </div>
-            <div className="desk-btn" data-live={answer ? "" : undefined} onClick={answer ? () => answer(false) : undefined} style={{ left: 206, top: 82, width: 84 }}>
+            <div className="desk-btn" data-live={answer ? "" : undefined} onClick={answer ? () => answer(false) : undefined} style={{ left: 206, width: 84 }}>
               {ISLAND.deny}
             </div>
           </>
         ) : null}
         {kind === "alarm" ? (
           <>
-            <div className="desk-btn" style={{ left: 114, top: 82, width: 84 }}>
+            {/* sized to their labels, which grow in island px as the island docks (the 10.5 px floor): Snooze has the room. The
+                app's other presets (5, 30) show only while Snooze is hovered; a drawing holds the two the alarm offers */}
+            <div className="desk-btn" style={{ left: 114, width: 104 }}>
               {ISLAND.snooze}
             </div>
-            <div className="desk-btn" style={{ left: 206, top: 82, width: 84 }}>
+            <div className="desk-btn" style={{ left: 226, width: 68 }}>
               {ISLAND.done}
-            </div>
-            <div className="desk-btn is-mono" style={{ left: 300, top: 82, width: 48 }}>
-              {ISLAND.five}
-            </div>
-            <div className="desk-btn is-mono" style={{ left: 356, top: 82, width: 48 }}>
-              {ISLAND.thirty}
             </div>
           </>
         ) : null}
@@ -244,48 +272,45 @@ export function Island({ kind, swap, still, refs, show }: IslandProps): ReactEle
           {kind === "listening" ? <span className="desk-caret" /> : null}
           <span className="desk-say-ph">{sleeping ? ISLAND.sayAsleep : ISLAND.sayAwake}</span>
         </div>
+        {/* Circle · Window · Ask, the app's pencil.and.outline, rectangle.inset.filled, questionmark.bubble.fill; asleep Ask
+            takes no press (a typed line would wake it, and the placeholder says press Go), its glyph at the app's 0.35 */}
         <div className="desk-strip" style={{ left: 328, width: question ? 52 : 78 }}>
           <i>
-            <Icon name="crosshairSimple" size={14} />
+            <Icon name="pencilOutline" size={14} />
           </i>
           <i>
-            <Icon name="appWindow" size={14} />
+            <Icon name="browser" size={14} />
           </i>
           {question ? null : (
-            <i>
-              <Icon name="question" size={14} />
+            <i className={sleeping ? "is-off" : undefined}>
+              <Icon name="questionBubble" size={14} />
             </i>
           )}
         </div>
       </div>
-      <div className="desk-foot" data-swap={swap ? "" : undefined}>
+      <div key={`f${kind}`} className="desk-foot" data-swap={swap ? "" : undefined}>
+        {/* the app's seam over the foot (y 153.5, white .10): a rule inside the island, never along its edge */}
+        <i className="desk-seam" />
         <div className="desk-foot-row">
-          {sleeping ? (
-            <>
-              <span className="desk-foot-l">
-                <Icon name="moon" size={12} />
-                {ASLEEP_WORD}
-              </span>
-              <span className="desk-foot-r">{ASLEEP_NEXT}</span>
-            </>
-          ) : (
-            <>
-              <span className="desk-foot-l">{show.clock ?? ISLAND.footClock}</span>
-              <canvas ref={refs.meterFoot} className="desk-meter desk-meter-foot" />
-              <span className="desk-foot-r">{show.foot ?? ISLAND.footMeter}</span>
-            </>
-          )}
+          {sleeping ? <Icon name="moon" size={12} /> : null}
+          {/* one run of text, so every ` · ` is the same word space: the noun a step up, the clause after it */}
+          <span className="desk-foot-line">
+            <span className="desk-foot-noun">{sleeping ? ASLEEP_NOUN : (show.clock ?? ISLAND.footClock)}</span>
+            {` · ${kind === "alarm" ? ISLAND.footRing : sleeping ? NEXT_WHEN : (show.foot ?? ISLAND.footMeter)}`}
+            {kind === "asleep" ? <span className="desk-foot-tail">{ALARM_NAME}</span> : null}
+          </span>
         </div>
+        {/* Console · Sleep, the app's rectangle.3.group.fill (wide, so drawn at 16 to the symbol's width) and moon.fill;
+            asleep Sleep is spent, its glyph at 0.35 */}
         <div className="desk-strip desk-strip--foot">
           <i>
-            <Icon name="layout" size={14} />
+            <Icon name="tilesThree" size={16} />
           </i>
-          <i>
+          <i className={sleeping ? "is-off" : undefined}>
             <Icon name="moon" size={12} />
           </i>
         </div>
       </div>
-      <div className="desk-hair" />
     </div>
   );
 }

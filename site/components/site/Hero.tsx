@@ -1,4 +1,5 @@
 import Github from "@thesvg/react/github";
+import OpenSourceInitiative from "@thesvg/react/open-source-initiative";
 import type { ReactElement } from "react";
 import { HERO, INSTALL, REPO_URL } from "@/content/deck";
 import { first, parts, row } from "@/lib/cut";
@@ -16,8 +17,9 @@ const LEAD = first(HERO.lead, 2);
 /** The glass button's second line: two parts of the figures line and Install's label. */
 const FACTS = parts(HERO.figures);
 const REQUIREMENTS = [row(FACTS, 2), row(FACTS, 3), INSTALL.label].join(" · ");
-/** Under the calls, the two facts a visitor asks in ten seconds: open source, and what it costs. */
-const TERMS = [row(FACTS, 1), row(FACTS, 4)].join(" · ");
+/** Under the calls, the two facts a visitor asks in ten seconds: open source (the licence), and what it costs. */
+const LICENCE = row(FACTS, 1);
+const PRICE = row(FACTS, 4);
 
 /**
  * The hero, nearly empty: paper, the h1 set large and quiet in Newsreader, and the character. The h1's full stop is the
@@ -25,7 +27,9 @@ const TERMS = [row(FACTS, 1), row(FACTS, 4)].join(" · ");
  * then looks at the visitor (HeroCharacter); on a phone it springs up to stand over the line and leaves the stop behind.
  * Two short sentences under it, then the two calls (the glass Install as a physical key the blob loves, InstallKey; Read
  * the source with the live star count) sitting on the one picture, a horizon of the accent dithered up from the hero's
- * foot and thinned to paper before the hero ends (--field-foot), and one quiet line: MIT, and the price.
+ * foot and thinned to paper before the hero ends (--field-foot), and one quiet line: the Open Source Initiative's keyhole
+ * before MIT (thesvg's mark, mono, in the line's colour: the licence has no logo of its own, and MIT's bars are the
+ * university's), then the price.
  */
 export function Hero({ stars }: { readonly stars: number | null }): ReactElement {
   return (
@@ -51,7 +55,14 @@ export function Hero({ stars }: { readonly stars: number | null }): ReactElement
             <Stars initial={stars} />
           </a>
         </div>
-        <p className="hero-terms">{TERMS}</p>
+        <p className="hero-terms">
+          <span className="hero-terms-lic">
+            <OpenSourceInitiative variant="mono" className="hero-terms-mark" aria-hidden="true" focusable="false" />
+            {LICENCE}
+          </span>
+          {" · "}
+          {PRICE}
+        </p>
       </div>
     </section>
   );

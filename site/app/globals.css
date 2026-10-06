@@ -33,8 +33,8 @@
   --jh-screen-fg-2: rgba(255, 255, 255, 0.72); --jh-screen-fg-3: rgba(255, 255, 255, 0.48); --jh-screen-hover: rgba(255, 255, 255, 0.05); --jh-screen-active: rgba(255, 255, 255, 0.08);
   --jh-accent-dark: #5b82ff; --jh-plate-hair: rgba(255, 255, 255, 0.22);
   --jh-blob-ground: #0b0c10;
-  /* the drawn Mac: the notch's black, the island's ground */
-  --jh-desk-notch: #000000; --jh-island-ground: #030407;
+  /* the drawn Mac: the notch's black, the island's ground under its ink */
+  --jh-desk-notch: #000000;
   /* the menu bar: the paper itself in light, the render's grey in dark */
   --jh-bar: #fbfaf7;
   /* agent marks (BrandMarks.swift:15-38) */

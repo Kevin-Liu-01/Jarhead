@@ -2821,7 +2821,6 @@ extension OrbPanelController {
     public var previewNotchThreadChips: [String] { notch?.view.previewThreadChips ?? [] }
     public var previewNotchCanvasKind: String { notch?.view.previewCanvasKind ?? "" }
     public var previewNotchHeroLines: [String] { notch?.view.previewHeroLines ?? [] }
-    public var previewNotchMeterFill: CGFloat { notch?.view.previewMeterFill ?? 0 }
     public var previewNotchTraceLevel: CGFloat { notch?.view.previewTraceLevel ?? 0 }
     public var previewNotchFootProblem: Bool { notch?.view.previewFootProblem ?? false }
     public var previewNotchFieldPlaceholder: String { notch?.view.previewFieldPlaceholder ?? "" }

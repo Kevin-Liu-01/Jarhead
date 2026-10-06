@@ -3120,8 +3120,8 @@ extension OrbPreviewDelegate {
                     let after = self.orb.previewNotchPillText
                     let l = self.lipAtLanding
                     let n = self.orb.previewDockContent.pendingMarks
-                    let ok = l.glow == "mark" && l.chip == "◎\(n)" && l.pill == "◎ \(n) circled · Go to ask" && l.kind == "mark-landed" && after.isEmpty
-                    self.check(ok, "tucked + pending marks → lip glow mark tone, lip chip ◎N; pill \"◎ 1 circled · Go to ask\" 6 s after landing, gone after",
+                    let ok = l.glow == "none" && l.chip == "◎\(n)" && l.pill == "◎ \(n) circled · Go to ask" && l.kind == "mark-landed" && after.isEmpty
+                    self.check(ok, "tucked + pending marks → no lip glow (the ◎N chip alone), lip chip ◎N; pill \"◎ 1 circled · Go to ask\" 6 s after landing, gone after",
                                "glow \(l.glow) chip '\(l.chip)' pill '\(l.pill)' (\(l.kind)); +6.4 s pill '\(after)'")
                 }
             }
@@ -4094,12 +4094,12 @@ extension OrbPreviewDelegate {
             let source = q.flatMap { qq in names.first { $0.name == "thread:\(qq.threadId)" } }?.rect
             // The head row draws at y 12–30; its hit rect takes a point more each way (≥ 20 pt).
             let sourceOK = source.map { abs($0.minY - 11) < 0.5 && abs($0.maxY - 31) < 0.5 && abs($0.minX - 114) < 0.5 } == true
-            let heroOK = q != nil && line == q?.text && heroLines.count >= 1 && heroLines.count <= 2
+            let heroOK = q != nil && line == q.map { NotchView.heroQuestion($0.text, asker: $0.name) } && heroLines.count >= 1 && heroLines.count <= 2
             let minisOK = minis.count <= 2 && zip(minis, [340.0, 376.0]).allSatisfy { abs($0.minX - CGFloat($1)) < 0.5 && abs($0.width - 30) < 0.5 }
             let ok = kind == "question" && sourceOK && heroOK && allow.map { abs($0.minX - 114) < 0.5 && abs($0.maxX - 198) < 0.5 && abs($0.minY - 82) < 0.5 && abs($0.maxY - 110) < 0.5 } == true
                 && deny.map { abs($0.minX - 206) < 0.5 && abs($0.maxX - 290) < 0.5 && abs($0.minY - 82) < 0.5 && abs($0.maxY - 110) < 0.5 } == true
                 && thumbs.count <= 2 && minisOK && hidden && tiles.isEmpty
-            check(ok, "question waiting → kind question; head \"✋ Slack asks\" hittable thread:ID; hero = the question ≤ 2 lines; Allow 114–198 / Deny 206–290 y 82–110; minis ≤ 2 at x 340/376; Ask/Clear absent; tiles absent (dots on the peek)",
+            check(ok, "question waiting → kind question; head \"✋ Slack asks\" hittable thread:ID; hero = the question (its asker named once, in the head) ≤ 2 lines; Allow 114–198 / Deny 206–290 y 82–110; minis ≤ 2 at x 340/376; Ask/Clear absent; tiles absent (dots on the peek)",
                   "kind \(kind); source \(source.map { "x\(Int($0.minX))–\(Int($0.maxX)) y\(Int($0.minY))–\(Int($0.maxY))" } ?? "none"); hero '\(line)' lines \(heroLines.count); allow \(allow.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none") deny \(deny.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none"); minis \(minis.map { Int($0.minX) }); ask/clear hidden \(hidden ? 1 : 0); tiles \(tiles)")
             // The count is the minis' and the `+n` slot's: no `◎ N` at the head's right end, and only the foot's `.console`.
             let consoles = names.filter { $0.name == "console" }
@@ -4377,12 +4377,9 @@ extension OrbPreviewDelegate {
         let v = (env["ORB_NOTCH_METER"] ?? "").split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
         guard v.count == 3 else { return }
         let footNow = orb.previewNotchFootText
-        let fillNow = orb.previewNotchMeterFill
-        let wantFill = CGFloat(v[1] / max(v[2], v[1]))
-        var asleepFill: CGFloat = -1
         let wantChip = TransportFormat.minutes(v[1])
         let wantFoot = "\(OrbStyle.mmss(v[0] + (CACurrentMediaTime() - launchedAt))) · \(TransportFormat.minutes(v[1])) · \(TransportFormat.dollars(v[1])) · today \(TransportFormat.minutes(v[2]))"
-        let wantAsleep = "today \(TransportFormat.billed(v[2]))"
+        let wantAsleep = "asleep · today \(TransportFormat.billed(v[2]))"
         let pauseAt = Double(env["ORB_PAUSE_AT"] ?? "") ?? -1
         let sleepAt = self.sleepAt ?? -1
         // The Pause press counts from `pauseScriptAt` and the fake engine answers with the phase 0.1 s later: the
@@ -4412,7 +4409,6 @@ extension OrbPreviewDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                     guard let self else { return }
                     let f = self.orb.previewNotchFootText
-                    asleepFill = self.orb.previewNotchMeterFill
                     asleepOK = f == wantAsleep
                     asleepNote = "asleep foot '\(f)' (want '\(wantAsleep)')"
                 }
@@ -4422,9 +4418,8 @@ extension OrbPreviewDelegate {
             guard let self else { return }
             let chipOK = self.meterPeekChip == wantChip
             let footOK = footNow == wantFoot
-            let fillOK = abs(fillNow - wantFill) <= 0.01 && (sleepAt < 0 || abs(asleepFill) < 0.001)
-            self.check(chipOK && footOK && pausedOK && asleepOK && fillOK, "meter: peek chip \"2.3 min\" in session; paused α 0.48 frozen; foot \"4:12 · 2.3 min · $0.12 · today 12.3 min\"; asleep foot \"today 12.3 min · $0.62\"; bar fill 138/738 = 0.19 ±0.01; asleep fill 0",
-                       "peek chip '\(self.meterPeekChip)' (want '\(wantChip)'); foot '\(footNow)' (want '\(wantFoot)'); \(pausedNote); \(asleepNote); " + String(format: "fill %.3f (want %.3f) asleep fill %.3f", fillNow, wantFill, asleepFill))
+            self.check(chipOK && footOK && pausedOK && asleepOK, "meter: peek chip \"2.3 min\" in session; paused α 0.48 frozen; foot \"4:12 · 2.3 min · $0.12 · today 12.3 min\" (words only, no bar); asleep foot \"asleep · today 12.3 min · $0.62\"",
+                       "peek chip '\(self.meterPeekChip)' (want '\(wantChip)'); foot '\(footNow)' (want '\(wantFoot)'); \(pausedNote); \(asleepNote)")
         }
     }
 

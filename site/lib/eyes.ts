@@ -4,8 +4,10 @@
  * (lib/blob.ts draws it on its face canvas), for the still orb (lib/orb.ts rasterises the same shapes as distance fields)
  * and for the island's face (faceMarks writes the same calls down as SVG paths), so every character on the page matches.
  *
- * The face pairs the engine uses, one glyph per eye: `O` open, `o` small open, `-` closed (a soft sag), `^` happy (an arc),
- * `u` content (a cup), `_` flat, `x` error, `>` `<` squeezed shut (each points at the middle), `~` wavy. Cute is low, close
+ * The face pairs the engine uses, one glyph per eye: `O` open, `o` small open, `.` a bead (the wake gate's ear asleep,
+ * listening for its name: a small round pupil with one point of light, held still, the installed app's `. .` drawn),
+ * `-` closed (a soft sag), `^` happy (an arc), `u` content (a cup), `_` flat, `x` error, `>` `<` squeezed shut (each points
+ * at the middle), `~` wavy (the app's Eyes.swift reads the same table). Cute is low, close
  * and round: the eyes sit just above the body's middle, a little over half a radius apart, taller than wide. Small blobs
  * (a disc under 52 px) draw their eyes a little larger and their lines never under 1.75 px, so a 32 px face still reads.
  *
@@ -19,11 +21,12 @@
  * Pure: no DOM.
  */
 
-export type EyeKind = "open" | "small" | "closed" | "happy" | "content" | "flat" | "error" | "in" | "wavy";
+export type EyeKind = "open" | "small" | "bead" | "closed" | "happy" | "content" | "flat" | "error" | "in" | "wavy";
 
 const KIND: Readonly<Record<string, EyeKind>> = {
   O: "open",
   o: "small",
+  ".": "bead",
   "-": "closed",
   "^": "happy",
   u: "content",
@@ -47,6 +50,8 @@ export const EYES = {
   look: [0.19, 0.13],
   open: { rx: 0.146, ry: 0.188 },
   small: { rx: 0.104, ry: 0.132 },
+  /** The bead: a round pupil `r` a touch under the eyes' line (`y`), its one point of light up and toward the gleam. */
+  bead: { r: 0.07, y: 0.02, light: { x: -0.32, y: -0.34, r: 0.026 } },
   /**
    * The catchlights, their centres as fractions of the eye's radii. The star sits up and toward the light (upper left),
    * its arms `ax` across and `ay` up and down in R units, its sides four parabolas (a quadratic from tip to tip, the control
@@ -196,6 +201,25 @@ export function drawFace(g: FacePen, pair: string, cx: number, cy: number, R: nu
     const ex = eyeX(cx, R, side, pose.turn);
     const far = Math.max(0, -side * pose.turn);
     const narrow = 1 - 0.14 * far;
+    if (kind === "bead") {
+      // still and round: no blink squashes it and no flare lights it (the gate listens; the face rests)
+      const r = EYES.bead.r * R * k;
+      const by = cy + EYES.bead.y * R * k;
+      if (pose.open < 0.22) {
+        lid(g, ex, by, r * 1.2, R * k);
+        continue;
+      }
+      g.fillStyle = ink.ink;
+      g.beginPath();
+      g.ellipse(ex, by, r * narrow, r, 0, 0, TAU);
+      g.fill();
+      const l = EYES.bead.light.r * R * k;
+      if (l * unit >= MIN_MARK) {
+        g.fillStyle = ink.light;
+        dot(g, ex + r * narrow * EYES.bead.light.x, by + r * EYES.bead.light.y, l);
+      }
+      continue;
+    }
     if (kind === "open" || kind === "small") {
       const o = pose.open < 0 ? 0 : pose.open > 1 ? 1 : pose.open;
       const shape = kind === "open" ? EYES.open : EYES.small;

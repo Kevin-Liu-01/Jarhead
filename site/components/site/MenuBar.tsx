@@ -2,11 +2,10 @@
 import Apple from "@thesvg/react/apple";
 import Github from "@thesvg/react/github";
 import type { ReactElement } from "react";
-import { Notch } from "@/components/desk/Notch";
 import { NAV, PHASES, REPO_URL } from "@/content/deck";
 import { ISLAND } from "@/content/island";
-import { useLive } from "@/lib/live";
-import { SECTIONS } from "./sections";
+import { resolveShow, useLive } from "@/lib/live";
+import { SECTION_KIND, SECTIONS } from "./sections";
 import { Stars } from "./Stars";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -14,14 +13,20 @@ import { ThemeToggle } from "./ThemeToggle";
 const MENUS = SECTIONS.filter((s) => s.id !== "install");
 
 /**
- * The Mac's menu bar as the page's own bar: edge to edge, opaque, one hairline under it, the notch cut out at the centre.
- * Left, as macOS draws an app's menus: the Apple mark, `Jarhead` in the one bold weight the canon allows, then the sections
- * as its menus (the one in view marked). Right, where the status items sit: the phase dot and word (the docked island's own
- * words are small, so the bar names its state), GitHub with the live star count, the theme, Install, and the clock the
- * island's foot also shows. Narrow bars drop the menus last first; a phone keeps the mark, the name, GitHub and the theme.
+ * The Mac's menu bar as the page's own bar: edge to edge, opaque, one hairline under it. The notch is not drawn here: the
+ * island grows out of it and covers the bar across its own width (components/site/Top.tsx, the band), and every item here
+ * yields to it (Top.tsx fitBar). Left, as macOS draws an app's menus: the Apple mark, `Jarhead` in the one bold weight the
+ * canon allows, then the sections as its menus (the one in view marked). Right, where the status items sit: the phase dot
+ * and word (the docked island's own words are small, so the bar names its state), GitHub with the live star count, the
+ * theme, Install, and the clock the island's foot also shows (the Mac's time: a demo that runs its own clock, Sleep's night
+ * to the 07:10 alarm, moves it while it is in view, lib/live.ts Show.clock). Narrow bars drop the menus last first, then
+ * the clock, the phase word, GitHub's word and the stars (the screen reader still reads what names something). At 580 px
+ * and under the bar is the band itself, the bezel edge to edge (styles/site.css): the mark, the name, GitHub with its stars
+ * and the theme in the screen's tones over it, and the island hanging from it.
  */
 export function MenuBar({ stars }: { readonly stars: number | null }): ReactElement {
   const live = useLive();
+  const clock = resolveShow(live, SECTION_KIND).clock ?? ISLAND.footClock;
   return (
     <div className="bar">
       <div className="bar-l">
@@ -37,7 +42,6 @@ export function MenuBar({ stars }: { readonly stars: number | null }): ReactElem
           ))}
         </nav>
       </div>
-      <Notch />
       <div className="bar-r">
         <span className="bar-phase">
           <i className="bar-dot" aria-hidden="true" />
@@ -53,7 +57,7 @@ export function MenuBar({ stars }: { readonly stars: number | null }): ReactElem
           {NAV.install}
         </a>
         <span className="bar-clock" aria-hidden="true">
-          {ISLAND.footClock}
+          {clock}
         </span>
       </div>
     </div>
