@@ -38,34 +38,46 @@
 //   with), or by an absolute path inside a shell line. In a shell line, a bare codex or claude where
 //   a command starts is the stub too, unless the PATH the shell is given finds a copy under
 //   os.tmpdir(). A command starts first, after ; & | ( { ` or a newline, and after if, then, else,
-//   elif, do, while, until or !. It starts past exec, command, env, nice, nohup, time, caffeinate,
-//   xargs, timeout and NAME=value words, and its name may be quoted. The same holds inside the quoted
-//   line of a shell the line starts (sh -c '…'). A test's own fake codex or claude lives in a mkdtemp
-//   dir and still runs; so does the node that runs the suite. Without this, the `auto` walk finds
-//   Codex in ChatGPT.app, links the user's ~/.codex/auth.json into a private CODEX_HOME and spends a
-//   model request on the thread's primer.
+//   elif, do, while, until, ! or {. It starts past NAME=value words and redirections, and its name
+//   may be quoted. Each command in a shell line is read word by word, as a spawn of those words is
+//   read: a path there is a program, and a wrapper or node there is read as below. The same holds
+//   inside the line of a shell the line starts (sh -c '…'). A test's own fake codex or claude lives
+//   in a mkdtemp dir and still runs; so does the node that runs the suite. Without this, the `auto`
+//   walk finds Codex in ChatGPT.app, links the user's ~/.codex/auth.json into a private CODEX_HOME
+//   and spends a model request on the thread's primer.
 // - What a wrapper runs is fenced as if it were spawned itself (C5). A wrapper is env, xargs,
-//   timeout (gtimeout), nohup, caffeinate, nice, time, arch or command, by any path or bare name. Its
-//   command is the first word past its flags and their values (and past env's NAME=value words and
-//   timeout's duration). A bare desktop or agent name there is pinned to what it runs, since env -i,
-//   env PATH=…, env -u PATH and env -P change where it is found. A shell, node or another wrapper
-//   there is read the same way. env -S's line is read as a shell line. With `shell: true`, Node joins
-//   the file and its args into one line; the fence reads that line whole.
+//   timeout (gtimeout), nohup, caffeinate, nice, time, arch or command, by any path or bare name. In
+//   a shell line exec, noglob and nocorrect are wrappers too. Its command is the first word past its
+//   flags and their values (and past env's NAME=value words and timeout's duration). One reader
+//   (`wrapped`) knows which of each wrapper's flags take a value, spawned or in a shell line, so
+//   caffeinate -u is not read as env -u. A bare desktop or agent name there is pinned to what it
+//   runs, since env -i, env PATH=…, env -u PATH and env -P change where it is found. A shell, node or
+//   another wrapper there is read the same way. env -S's string is read as more of env's own args.
+//   With `shell: true`, Node joins the file and its args into one line; the fence reads that line
+//   whole.
 // - node, by any path or bare name, runs the stub when its script, or a module it loads with
 //   --import, --require or --loader, is under /Applications or ~/Applications, or is an agent CLI's
-//   own (as above, a link followed), or a bare module name of one of those packages. Every stub runs
-//   under sh and under node alike, so `node <stub>` refuses too.
+//   own (as above, a link followed), or a bare module name of one of those packages. Its script is a
+//   path from the folder it runs in, as node reads it. A --flag not in NODE_VALUES may take the next
+//   word, so that word is read as a script too and the reading goes on: the fence fails closed on a
+//   flag Node adds later. A module NODE_OPTIONS loads counts too, in a spawn's env or inherited: a
+//   spawn under it runs the stub, whatever its program. fork, a Worker given a file and
+//   process.execve are read the same way. Every stub runs under sh and under node alike, so
+//   `node <stub>` refuses too.
 //
 // What the fences miss:
-// - An agent name a shell line reaches another way still runs: through a variable ($cmd), eval,
-//   find -exec, a script file, xargs with a flag whose value is not a number (-I {}), or a wrapper
-//   not named above (sudo, script, sandbox-exec). No agent stub stands on PATH, since the tests that
-//   look for Codex on PATH would find it. The desktop names have stubs on PATH, so those forms reach
-//   a desktop stub, but not in a login shell that runs a script file or that a line starts itself:
-//   path_helper puts /usr/bin first there.
-// - What arrives on stdin is never read: `xargs node` fed an agent CLI's script runs it.
-// - In a shell line, `node <agent script>` is refused only when the script may run as a program
-//   (npm makes every bin executable); a module name or a relative path there is not looked up.
+// - An agent name a shell line reaches another way still runs: through a variable ($cmd, "$(which
+//   claude)"), eval, find -exec, a case arm, a script file, or a wrapper not named above (sudo,
+//   script, sandbox-exec). No agent stub stands on PATH, since the tests that look for Codex on PATH
+//   would find it. The desktop names have stubs on PATH, so those forms reach a desktop stub, but not
+//   in a login shell that runs a script file or that a line starts itself: path_helper puts /usr/bin
+//   first there.
+// - In a shell line, a bare name that starts a command is looked up only when it is codex, claude or
+//   a desktop name: an app's program found on PATH runs there (a spawn's, or a wrapper's, is looked
+//   up). A relative path there is read from the folder the shell starts in, so a line that cds first
+//   may run another file.
+// - What node runs inline (-e, -p, a Worker's eval) or reads from stdin is never read: `xargs node`
+//   fed an agent CLI's script runs it.
 // - A node child a test starts as `node --import tsx …` does not load this preload. Jarhead's own
 //   entry points run that way: the daemon's main in single-instance.test.ts, and the CLI's main in
 //   v2-status, w2-1-ledger-cli, memory-cli and w3-3-ledger-search-cli. These children inherit the
@@ -85,6 +97,7 @@ import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import workerThreads from "node:worker_threads";
 import { SECRET_KEYS } from "@jarhead/protocol";
 
 // ---- temp dirs: every one a test makes is gone at exit -----------------------------------------
@@ -291,31 +304,34 @@ const WRAPPERS = new Map([
   ["arch", { words: ["-arch", "-d", "-e"] }],
   ["command", { flags: "", looks: "vV" }],
 ]);
+/** A shell's own words that run the next one, read like the wrappers in a shell line: exec (its -a takes a name), zsh's noglob and nocorrect. */
+const BUILTINS = new Map([
+  ["exec", { flags: "a" }],
+  ["noglob", { flags: "" }],
+  ["nocorrect", { flags: "" }],
+]);
 /**
  * Where a wrapper's command sits in its args (`at`, -1 for none), with the folder and the PATH it
  * runs under and the PATH it is found on: env may change all three (-C, -i, -u PATH, PATH=…, -P).
- * env -S's line is fenced in place, in `args`.
+ * env -S ends the reading at its string (`split`: the words it spans, the flags joined before it,
+ * its value), since env reads that string as more of its own args.
  */
 const wrapped = (spec, args, cwd, path) => {
-  const out = { at: -1, args: [...args], cwd, path, find: undefined };
-  const envOption = (flag, value, k, prefix) => {
-    if (flag === "-C" || flag === "--chdir") out.cwd = resolve(out.cwd, value);
+  const out = { at: -1, cwd, path, find: undefined, split: undefined };
+  /** The value of the option at word i: joined (`-n1`, `--signal=KILL`) or the next word. Returns the word index it ends on. */
+  const take = (flag, i, joined, before = "") => {
+    const end = joined === undefined ? i + 1 : i;
+    const value = joined ?? (end < args.length ? String(args[end]) : undefined);
+    if (!spec.env || value === undefined) return end;
+    if (flag === "-S" || flag === "--split-string") out.split = { from: i, to: end, before, value };
+    else if (flag === "-C" || flag === "--chdir") out.cwd = resolve(out.cwd, value);
     else if (flag === "-P") out.find = value;
     else if ((flag === "-u" || flag === "--unset") && value === "PATH") out.path = DEFAULT_PATH;
-    else if (flag === "-S" || flag === "--split-string") out.args[k] = prefix + commands(value, out.find ?? out.path);
-  };
-  /** The value of the option at word i: joined (`-n1`, `--signal=KILL`) or the next word. Returns the word index it ends on. */
-  const take = (flag, i, joined, prefix) => {
-    if (joined !== undefined) {
-      if (spec.env) envOption(flag, joined, i, prefix);
-      return i;
-    }
-    if (spec.env && i + 1 < args.length) envOption(flag, String(args[i + 1]), i + 1, "");
-    return i + 1;
+    return end;
   };
   let options = true;
   let skip = spec.skip ?? 0;
-  for (let i = 0; i < args.length; i++) {
+  for (let i = 0; i < args.length && !out.split; i++) {
     const a = String(args[i]);
     if (options && a === "--") {
       options = false;
@@ -331,14 +347,14 @@ const wrapped = (spec, args, cwd, path) => {
       } else if (a.startsWith("--")) {
         const eq = a.indexOf("=");
         const flag = eq < 0 ? a : a.slice(0, eq);
-        if (eq >= 0) take(flag, i, a.slice(eq + 1), flag + "=");
+        if (eq >= 0) take(flag, i, a.slice(eq + 1));
         else if (spec.long?.includes(flag)) i = take(flag, i);
       } else {
         for (let j = 1; j < a.length; j++) {
           if (spec.looks?.includes(a[j])) return { ...out, find: out.path };
           if (spec.env && a[j] === "i") out.path = DEFAULT_PATH;
           if (!spec.flags.includes(a[j])) continue;
-          i = take("-" + a[j], i, j + 1 < a.length ? a.slice(j + 1) : undefined, a.slice(0, j + 1));
+          i = take("-" + a[j], i, j + 1 < a.length ? a.slice(j + 1) : undefined, j > 1 ? a.slice(0, j) : "");
           break;
         }
       }
@@ -418,22 +434,33 @@ const moduleOf = (spec, cwd) => {
   }
   return spec.startsWith("/") || spec.startsWith(".") ? resolve(cwd, spec) : spec;
 };
-/** What a node command line loads and runs: its script (none after -e or -p), and every --import, --require or --loader module. */
-const nodeLoads = (args, cwd) => {
+/** node's script: a path from its folder, as node reads it (a bare name too), or a file URL. */
+const scriptOf = (spec, cwd) => (spec.startsWith("file:") ? moduleOf(spec, cwd) : resolve(cwd, spec));
+/**
+ * What a node command line loads and runs: its script (none after -e or -p), and every --import,
+ * --require or --loader module. It fails closed: a --flag not named above may take the next word,
+ * so that word is read as a script too and the reading goes on. Only a word `known` passes is
+ * read (a shell line's $HOME is not known here).
+ */
+const nodeLoads = (args, cwd, known = () => true) => {
   const out = [];
   let inline = false;
+  let unknown = false;
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
     if (a === "--" || !a.startsWith("-") || a === "-") {
       const script = a === "--" ? args[i + 1] : a;
-      if (!inline && script !== undefined && script !== "-") out.push(moduleOf(String(script), cwd));
-      break;
+      if (!inline && script !== undefined && script !== "-" && known(String(script))) out.push(scriptOf(String(script), cwd));
+      if (!unknown || a === "--") break;
+      unknown = false;
+      continue;
     }
     const eq = a.startsWith("--") ? a.indexOf("=") : -1;
     const flag = eq < 0 ? a : a.slice(0, eq);
+    unknown = a.startsWith("--") && eq < 0 && !NODE_VALUES.has(flag);
     if (NODE_INLINE.has(flag)) inline = true;
     const value = eq >= 0 ? a.slice(eq + 1) : NODE_VALUES.has(flag) ? String(args[++i] ?? "") : undefined;
-    if (value !== undefined && NODE_LOADS.has(flag)) out.push(moduleOf(value, cwd));
+    if (value !== undefined && NODE_LOADS.has(flag) && known(value)) out.push(moduleOf(value, cwd));
   }
   return out;
 };
@@ -444,6 +471,83 @@ const whyNode = (module) => {
   return why(module);
 };
 const isNode = (file) => /^node(js)?$/.test(basename(file)) || NODE.has(file);
+/** The stub for the first module node must not load, or undefined. */
+const refusedModule = (modules) => {
+  for (const module of modules) {
+    const what = whyNode(module);
+    if (what) return stubFor(module, what);
+  }
+  return undefined;
+};
+
+// ---- shell words: a shell line read word by word -----------------------------------------------
+
+/** What ends a simple command in a shell line, unquoted. */
+const OPERATORS = new Set([";", "&", "|", "(", ")", "`", "\n"]);
+/** A redirection's operator where a word starts: 2>, >>, >&, &>, <, <<< and the like. */
+const REDIRECT = /\d*(?:<<<|<<-|<<|<>|<&|>&|>>|>\||<|>)|&>>?/y;
+/**
+ * The words of a shell line from `at` to the end of its simple command (an unquoted operator, a
+ * newline or a comment): each word's text with its quotes and backslashes taken out, where it sits in
+ * the line, and whether it leaves a quote open. A redirection and its target are one word, marked.
+ * With `shell` false (env -S's string, NODE_OPTIONS) only the end of the text ends it.
+ */
+const words = (text, at = 0, shell = true) => {
+  const blank = (c) => c === " " || c === "\t" || (!shell && (c === "\n" || c === "\r"));
+  const ends = (c) => blank(c) || (shell && (OPERATORS.has(c) || c === "<" || c === ">"));
+  let i = at;
+  /** One word from i: its text, and whether a quote is left open. */
+  const read = () => {
+    let value = "";
+    let open = false;
+    while (i < text.length && !ends(text[i])) {
+      const c = text[i];
+      if (c === "\\") {
+        if (text[i + 1] !== "\n") value += text[i + 1] ?? "";
+        i += 2;
+      } else if (c === "'") {
+        const end = text.indexOf("'", i + 1);
+        open ||= end < 0;
+        value += text.slice(i + 1, end < 0 ? text.length : end);
+        i = end < 0 ? text.length : end + 1;
+      } else if (c === '"') {
+        let j = i + 1;
+        for (; j < text.length && text[j] !== '"'; j++) {
+          if (text[j] === "\\" && j + 1 < text.length && '"\\$`\n'.includes(text[j + 1])) {
+            j++;
+            if (text[j] !== "\n") value += text[j];
+          } else value += text[j];
+        }
+        open ||= j >= text.length;
+        i = Math.min(j + 1, text.length);
+      } else {
+        value += c;
+        i++;
+      }
+    }
+    return { value, open };
+  };
+  const out = [];
+  for (;;) {
+    while (i < text.length && (blank(text[i]) || (text[i] === "\\" && text[i + 1] === "\n"))) i += blank(text[i]) ? 1 : 2;
+    if (i >= text.length || text[i] === "#") return out;
+    const start = i;
+    REDIRECT.lastIndex = i;
+    const redirect = shell ? REDIRECT.exec(text) : null;
+    if (redirect) {
+      i += redirect[0].length;
+      while (i < text.length && blank(text[i])) i++;
+      read();
+      out.push({ text: "", start, end: i, open: false, redirect: true });
+      continue;
+    }
+    if (shell && OPERATORS.has(text[i])) return out;
+    const { value, open } = read();
+    out.push({ text: value, start, end: i, open });
+  }
+};
+/** A word the shell expands when the line runs ($HOME, `…`, ~): what it names is not known here. */
+const EXPANDS = /^~|[$`]/;
 
 /**
  * A program and its args as they run under the fence:
@@ -452,31 +556,37 @@ const isNode = (file) => /^node(js)?$/.test(basename(file)) || NODE.has(file);
  *   it was given first again;
  * - a wrapper's command (WRAPPERS) as a program of its own: a fenced bare name is pinned to what it
  *   runs, since the wrapper may change PATH, and a shell, node or another wrapper there is read the
- *   same way;
+ *   same way. env -S's string is read as more of env's args; where that fences anything, env gets
+ *   the string's words as args of their own;
  * - node is the stub when it would run a module `whyNode` refuses.
+ * `inLine` reads the words of a shell line (see `pins`): the shell's own BUILTINS count as wrappers,
+ * a word the shell expands is left alone, and a nested shell's line is left to NESTED.
  */
-const argv = (file, args, cwd, path, find = path) => {
-  if (typeof file !== "string" || file === "") return [file, args];
-  const spec = WRAPPERS.get(basename(file));
+const argv = (file, args, cwd, path, find = path, inLine = false) => {
+  if (typeof file !== "string" || file === "" || (inLine && EXPANDS.test(file))) return [file, args];
+  const spec = WRAPPERS.get(basename(file)) ?? (inLine ? BUILTINS.get(file) : undefined);
   if (spec) {
     const w = wrapped(spec, args, cwd, path);
-    if (w.at < 0) return [program(file, cwd, find), w.args];
-    const name = String(w.args[w.at]);
-    const [inner, rest] = argv((!name.includes("/") && bare(name, w.find)) || name, w.args.slice(w.at + 1), w.cwd, w.path, w.find);
-    return [program(file, cwd, find), [...w.args.slice(0, w.at), inner, ...rest]];
+    if (w.split) {
+      const { from, to, before, value } = w.split;
+      const split = [...args.slice(0, from), ...(before ? [before] : []), ...words(value, 0, false).map((x) => x.text), ...args.slice(to + 1)];
+      const [runs, runArgs] = argv(file, split, cwd, path, find, inLine);
+      return [runs, runArgs.length !== split.length || runArgs.some((a, k) => a !== split[k]) ? runArgs : args];
+    }
+    if (w.at < 0) return [program(file, cwd, find), args];
+    const name = String(args[w.at]);
+    const [inner, rest] = argv((!name.includes("/") && bare(name, w.find)) || name, args.slice(w.at + 1), w.cwd, w.path, w.find, inLine);
+    return [program(file, cwd, find), [...args.slice(0, w.at), inner, ...rest]];
   }
   if (isNode(file)) {
-    for (const module of nodeLoads(args, cwd)) {
-      const what = whyNode(module);
-      if (what) return [stubFor(module, what), args];
-    }
-    return [program(file, cwd, find), args];
+    const stub = refusedModule(nodeLoads(args, cwd, inLine ? (word) => !EXPANDS.test(word) : undefined));
+    return [stub ?? program(file, cwd, find), args];
   }
   const shell = SHELLS.exec(file)?.[2];
-  if (!shell) return [program(file, cwd, find), args];
+  if (!shell || inLine) return [program(file, cwd, find), args];
   const at = lineAt(args);
   const login = at > 0 && Boolean(path) && args.slice(0, at).some((a) => LOGIN_FLAG.test(String(a)));
-  return [program(file, cwd, find), args.map((a, k) => (k !== at ? line(a) : typeof a === "string" && login ? pathFirst(shell, path) + commands(a, path) : commands(a, path)))];
+  return [program(file, cwd, find), args.map((a, k) => (k !== at ? line(a) : typeof a === "string" && login ? pathFirst(shell, path) + commands(a, path, cwd) : commands(a, path, cwd)))];
 };
 const shellWord = (path) => (/^[\w/.+-]+$/.test(path) ? path : `'${path.replace(/'/g, "'\\''")}'`);
 /** An absolute path in a shell line: quoted whole, or bare up to the next space or operator (a backslash keeps a space). */
@@ -493,14 +603,6 @@ const line = (command) =>
         return what && mayRun(path) ? shellWord(stubFor(path, what)) : whole;
       });
 /**
- * A command's name where a shell line starts one: first, or after ; & | ( { ` $( or a newline; past
- * the words that run the next one (if, then, else, elif, do, while, until, !, exec, command, env,
- * nice, nohup, time, caffeinate, xargs, with their flags and numeric values; timeout and gtimeout
- * with their flags and the duration) and NAME=value words; bare, quoted or after a backslash.
- */
-const COMMAND =
-  /(^|[;&|({`\n])([ \t]*(?:(?:if|then|else|elif|do|while|until|!)[ \t]+|command(?:[ \t]+-p)?[ \t]+|(?:exec|env|nice|nohup|time|caffeinate|xargs)(?:[ \t]+-[\w-]+(?:[ \t]+\d+)?)*[ \t]+|g?timeout(?:[ \t]+-[\w-]+(?:[ \t]+\w+)?)*[ \t]+\d+(?:\.\d+)?[smhd]?[ \t]+|[A-Za-z_]\w*=[^\s;&|]*[ \t]+)*)\\?(["']?)([\w.-]+)\3(?=$|[\s;&|<>)}`])/g;
-/**
  * What a fenced bare name in a command line runs, pinned there, since a login shell's path_helper
  * puts the system's folders first and the line may change PATH itself. A test's own fake in a temp
  * dir, found on the PATH the shell is given (the desktop's stubs are one), runs; anything else is
@@ -513,28 +615,68 @@ const bare = (name, path) => {
   if (at !== undefined && underTmp(at)) return at;
   return desktop ? join(fence, name) : stubFor(name, "the agent CLIs");
 };
+/** Where a command may start in a shell line: first, and after ; & | ( { ` or a newline, inside quotes too, so $(…) and `…` count. */
+const STARTS = /[;&|({`\n]/g;
+/** The words a simple command may start with that the shell reads itself. */
+const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{"]);
+/**
+ * What fences a shell line, as edits ([start, end, text]): each simple command read as a spawn of its
+ * words (`argv`), past keywords, NAME=value words and redirections. A fenced bare name that starts
+ * it is pinned (`bare`); a path there, a wrapper's command and node's modules are read as a spawn
+ * reads them. Each word that changes is written back where it stood.
+ */
+const pins = (text, path, cwd) => {
+  const edits = [];
+  for (const at of [0, ...Array.from(text.matchAll(STARTS), (m) => m.index + 1)]) {
+    const ws = words(text, at).filter((w) => !w.redirect);
+    let k = 0;
+    while (k < ws.length && (KEYWORDS.has(text.slice(ws[k].start, ws[k].end)) || /^[A-Za-z_]\w*=/.test(text.slice(ws[k].start, ws[k].end)))) k++;
+    const [first, ...rest] = ws.slice(k);
+    if (first === undefined || first.open) continue;
+    const file = (!first.text.includes("/") && bare(first.text, path)) || first.text;
+    const [runs, args] = argv(file, rest.map((w) => w.text), cwd, path, "", true);
+    if (runs !== first.text) edits.push([first.start, first.end, shellWord(runs)]);
+    if (args.length === rest.length) {
+      rest.forEach((w, j) => {
+        if (args[j] !== w.text && !w.open) edits.push([w.start, w.end, shellWord(args[j])]);
+      });
+    } else if (!rest.some((w) => w.open)) {
+      edits.push([rest[0].start, rest.at(-1).end, args.map(shellWord).join(" ")]);
+    }
+  }
+  return edits;
+};
+/** The line with each edit made; one inside an earlier one is dropped, since the earlier one read its words already. */
+const edited = (text, edits) => {
+  let out = "";
+  let at = 0;
+  for (const [start, end, value] of edits.sort((a, b) => a[0] - b[0] || b[1] - a[1])) {
+    if (start < at) continue;
+    out += text.slice(at, start) + value;
+    at = end;
+  }
+  return out + text.slice(at);
+};
 const SHELL_NAMES = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "tcsh", "csh"];
 const SHELLS = new RegExp(`(^|/)(${SHELL_NAMES.join("|")})$`);
-/** A shell a line starts with a line of its own, quoted after its -c (or `-c --`): `sh -c '…'`, `bash -lc "…"`. */
+/** A shell a line starts with a line of its own after its -c (or `-c --`), quoted or one bare word: `sh -c '…'`, `bash -lc "…"`. */
 const NESTED = new RegExp(
-  String.raw`(?<![\w./-])((?:/[\w.-]+)*/)?(${SHELL_NAMES.join("|")})((?:[ \t]+(?:-o[ \t]+\w+|[-+][\w-]+))*?[ \t]+-[a-zA-Z]*c[a-zA-Z]*(?:[ \t]+--)?[ \t]+)('[^']*'|"(?:\\[\s\S]|[^"\\])*")`,
+  String.raw`(?<![\w./-])((?:/[\w.-]+)*/)?(${SHELL_NAMES.join("|")})((?:[ \t]+(?:-o[ \t]+\w+|[-+][\w-]+))*?[ \t]+-[a-zA-Z]*c[a-zA-Z]*(?:[ \t]+--)?[ \t]+)('[^']*'|"(?:\\[\s\S]|[^"\\])*"|[^\s'"\x60;&|<>()]+)`,
   "g",
 );
 const singleQuoted = (text) => `'${text.replace(/'/g, "'\\''")}'`;
-/** A command line: absolute paths as in `line`, every fenced bare name where a command starts, and the same inside a nested shell's line. */
-const commands = (command, path) =>
-  typeof command !== "string"
-    ? command
-    : line(command)
-        .replace(COMMAND, (whole, start, words, _quote, name) => {
-          const stub = bare(name, path);
-          return stub ? start + words + shellWord(stub) : whole;
-        })
-        .replace(NESTED, (whole, dir, shell, flags, quoted) => {
-          const inner = commands(quoted.slice(1, -1), path);
-          if (inner === quoted.slice(1, -1)) return whole;
-          return (dir ?? "") + shell + flags + (quoted[0] === "'" ? singleQuoted(inner) : `"${inner}"`);
-        });
+/** A command line: absolute paths as in `line`, each simple command as `pins` reads it, and the same inside a nested shell's line. */
+const commands = (command, path, cwd = process.cwd()) => {
+  if (typeof command !== "string") return command;
+  const text = line(command);
+  return edited(text, pins(text, path, cwd)).replace(NESTED, (whole, dir, shell, flags, given) => {
+    const quote = given[0] === "'" || given[0] === '"' ? given[0] : "";
+    const inner = quote ? given.slice(1, -1) : given;
+    const fenced = commands(inner, path, cwd);
+    if (fenced === inner) return whole;
+    return (dir ?? "") + shell + flags + (quote === "'" ? singleQuoted(fenced) : quote ? `"${fenced}"` : shellWord(fenced));
+  });
+};
 /** The flag a shell takes its command line after: -c, -lc, -ec. */
 const COMMAND_FLAG = /^-[a-zA-Z]*c[a-zA-Z]*$/;
 /** A login shell's flag: -l, --login, or one that holds an l (-lc, -il). */
@@ -573,6 +715,16 @@ const fenceEnv = (options) => {
   const path = fencedPath(options.env.PATH);
   return path === options.env.PATH ? options : { ...options, env: { ...options.env, PATH: path } };
 };
+/**
+ * NODE_OPTIONS in a spawn's env (or the one it inherits) is read by every node under it: the stub
+ * for the first module it loads that node must not, or undefined.
+ */
+const nodeOptionsStub = (options) => {
+  const env = options !== null && typeof options === "object" && options.env ? options.env : process.env;
+  const value = env["NODE_OPTIONS"];
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  return refusedModule(nodeLoads(words(value, 0, false).map((w) => w.text), cwdOf(options)));
+};
 // spawn, spawnSync, execFile, execFileSync: (file, args?, options?, callback?)
 const fileCall = (file, rest) => {
   const hasArgs = Array.isArray(rest[0]);
@@ -581,10 +733,12 @@ const fileCall = (file, rest) => {
   const options = rest[i] !== null && typeof rest[i] === "object" ? fenceEnv(rest[i]) : rest[i];
   const tail = i < rest.length ? [options, ...rest.slice(i + 1)] : [];
   const path = pathOf(options);
+  const refused = nodeOptionsStub(options);
+  if (refused) return [refused, ...(hasArgs ? [[]] : []), ...tail];
   // Through a shell (`shell: true`) Node joins the file and its args with spaces into one line: the
   // fence reads that line whole. Otherwise `argv` reads the program and its args.
   if (options !== null && typeof options === "object" && Boolean(options.shell)) {
-    return [commands(args.length ? [file, ...args].join(" ") : file, path), ...(hasArgs ? [[]] : []), ...tail];
+    return [commands(args.length ? [file, ...args].join(" ") : file, path, cwdOf(options)), ...(hasArgs ? [[]] : []), ...tail];
   }
   const [runs, runArgs] = argv(file, args, cwdOf(options), path);
   return [runs, ...(hasArgs ? [runArgs] : []), ...tail];
@@ -592,7 +746,8 @@ const fileCall = (file, rest) => {
 // exec, execSync: (command, options?, callback?), always through a shell
 const lineCall = (command, rest) => {
   const options = rest[0] !== null && typeof rest[0] === "object" ? fenceEnv(rest[0]) : rest[0];
-  return [commands(command, pathOf(options)), ...(rest.length ? [options, ...rest.slice(1)] : [])];
+  const refused = nodeOptionsStub(options);
+  return [refused ? shellWord(refused) : commands(command, pathOf(options), cwdOf(options)), ...(rest.length ? [options, ...rest.slice(1)] : [])];
 };
 const fenceFn = (fn, call) => {
   const real = childProcess[fn];
@@ -606,6 +761,41 @@ const fenceFn = (fn, call) => {
 };
 for (const fn of ["spawn", "spawnSync", "execFile", "execFileSync"]) fenceFn(fn, fileCall);
 for (const fn of ["exec", "execSync"]) fenceFn(fn, lineCall);
+// fork is node <module>, but Node's own fork calls its own spawn, past the fenced one. A refused
+// fork runs the stub under the suite's node with nothing preloaded, so no module loads first.
+const realFork = childProcess.fork;
+childProcess.fork = function fork(modulePath, ...rest) {
+  const at = Array.isArray(rest[0]) ? 1 : 0;
+  const options = rest[at] !== null && typeof rest[at] === "object" ? rest[at] : {};
+  const cwd = cwdOf(options);
+  const script = modulePath instanceof URL ? fileURLToPath(modulePath) : resolve(cwd, String(modulePath));
+  const execPath = typeof options.execPath === "string" ? program(options.execPath, cwd, pathOf(options)) : options.execPath;
+  const stub =
+    (execPath !== options.execPath ? execPath : undefined) ??
+    nodeOptionsStub(options) ??
+    refusedModule([...nodeLoads(Array.isArray(options.execArgv) ? options.execArgv : process.execArgv, cwd), script]);
+  if (stub === undefined) return realFork.call(childProcess, modulePath, ...rest);
+  return realFork.call(childProcess, stub, [], { ...options, execPath: process.execPath, execArgv: [], env: { ...(options.env ?? process.env), NODE_OPTIONS: "" } });
+};
+// A Worker given a file runs it as node would; one given code (eval: true) is not read.
+const RealWorker = workerThreads.Worker;
+workerThreads.Worker = class Worker extends RealWorker {
+  constructor(filename, options) {
+    const code = options !== null && typeof options === "object" && Boolean(options.eval);
+    const file = code ? undefined : filename instanceof URL ? (filename.protocol === "file:" ? fileURLToPath(filename) : undefined) : resolve(String(filename));
+    const stub = refusedModule([...nodeLoads(Array.isArray(options?.execArgv) ? options.execArgv : [], process.cwd()), ...(file ? [file] : [])]);
+    super(stub ?? filename, stub ? { ...options, eval: false, execArgv: [] } : options);
+  }
+};
+// process.execve(file, args, env) runs file in this process's place; args[0] is its argv[0].
+if (typeof process.execve === "function") {
+  const realExecve = process.execve;
+  process.execve = function execve(file, args = [], env = process.env) {
+    const refused = nodeOptionsStub({ env });
+    const [runs, runArgs] = refused ? [refused, []] : argv(file, args.slice(1), process.cwd(), env.PATH);
+    return realExecve.call(process, runs, args.length ? [args[0], ...runArgs] : runArgs, fenceEnv({ env }).env);
+  };
+}
 syncBuiltinESMExports();
 
 // ---- the network -------------------------------------------------------------------------------
