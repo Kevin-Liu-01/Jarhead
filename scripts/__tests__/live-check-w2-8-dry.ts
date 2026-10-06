@@ -13,14 +13,15 @@ import { findPlan, runCheck, type Report, type RunOptions } from "../live-check.
 /** The suite's wall-clock allowance (AGENTS.md): x3 on a GitHub runner, x1 on a Mac. */
 const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
 
-export async function dryRun(name: string, extra: Pick<RunOptions, "dryFaults" | "oversize"> = {}): Promise<Report> {
+/** `extra.scale`: wall ms per check ms (default DRY_SCALE); a larger one stretches the check toward its live timeline. */
+export async function dryRun(name: string, extra: Pick<RunOptions, "dryFaults" | "oversize" | "scale"> = {}): Promise<Report> {
   const plan = findPlan(name);
   assert.ok(plan, name);
   const out = mkdtempSync(join(tmpdir(), "jh-live-check-dry-"));
   const t0 = Date.now();
   const r = await runCheck({ plan, mode: "dry", capUsd: 1.0, out, slack: RUNNER_SLACK, ...extra, print: () => undefined });
   const hard = r.assertions.filter((a) => !a.soft);
-  console.log(`[measure] ${plan.id} ${plan.name} dry${extra.dryFaults ? ` (faults ${JSON.stringify(extra.dryFaults)})` : ""}: ${r.pass ? "pass" : "fail"} ${hard.filter((a) => a.pass).length}/${hard.length} in ${Date.now() - t0} ms; billed ${r.spend.billedSeconds.toFixed(1)} s (simulated)`);
+  console.log(`[measure] ${plan.id} ${plan.name} dry${extra.scale !== undefined ? ` at scale ${extra.scale}` : ""}${extra.dryFaults ? ` (faults ${JSON.stringify(extra.dryFaults)})` : ""}: ${r.pass ? "pass" : "fail"} ${hard.filter((a) => a.pass).length}/${hard.length} in ${Date.now() - t0} ms; billed ${r.spend.billedSeconds.toFixed(1)} s (simulated)`);
   assert.equal(r.error, undefined, r.error);
   assert.equal(r.ran, true, `${plan.id} ran to its end`);
   assert.equal(r.capHit, false, "inside its cap");

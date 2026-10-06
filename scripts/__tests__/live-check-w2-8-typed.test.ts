@@ -28,12 +28,14 @@ test("LC-1 cadence: frame gaps and output-audio gaps through 50 s of silence, th
   assert.ok(Number(r.metrics["audioFramesInWindow"]) > 0);
 });
 
-test("LC-2 meter: usage while muted, the pause row against the wall, continuity on resume, the meter against the closed rows", async () => {
+test("LC-2 meter: one session through the mute, the server's meter while muted, the pause row against the wall, continuity on resume, the meter against the closed rows", async () => {
   const r = await dryRun("LC-2");
   allPass(r);
   assert.equal(r.sessions.length, 2, "Go, Pause, Go: two sessions");
   assert.equal(r.sessions[1]?.continuity, true);
   assert.equal(r.ledger.filter((row) => row.type === "pause").length, 1);
+  assert.equal(typeof r.metrics["usageWhileMutedSeconds"], "number", "measured from the server's own figures");
+  assert.equal(typeof r.metrics["pauseSessionServerSeconds"], "number");
 });
 
 test("LC-3 append-cap: every client append is measured against the 500-token cap", async () => {
@@ -62,17 +64,22 @@ test("LC-3 --oversize: one raw append of varied prose, recorded with its size, d
   assert.ok(probe && (probe.chars ?? 0) === Number(r.metrics["oversizeChars"]), "sent whole, past the engine and the session");
 });
 
-test("LC-4 night: three farewells, each exactly night., each closed inside 1.8 s, asleep", async () => {
+test("LC-4 night: a typed dismissal Live answers with night. and never delegates (GPT-Live-1, 3 of 3) still sleeps it: night., heard at the speaker, closed inside 1.8 s of it, asleep, three times", async () => {
   const r = await dryRun("LC-4");
   allPass(r);
   assert.equal(r.sessions.length, 3);
   assert.equal(r.ledger.filter((row) => row.type === "sleep" && row.cause === "said").length, 3);
+  assert.equal(r.wire.delegations.length, 0, "the stand-in delegated nothing: the engine took the typed dismissal itself");
+  assert.ok(r.sink.every((f) => typeof f.rms === "number"), "every sink frame keeps its RMS");
 });
 
-test("LC-5 first-word: ten typed questions, typed send to the first audible frame", async () => {
+test("LC-5 first-word: ten typed questions; the engine's share of the first word judged, Live's typed path quoted", async () => {
   const r = await dryRun("LC-5");
   allPass(r);
   assert.equal((r.metrics["firstAudioMs"] as number[]).length, 10);
+  assert.equal((r.metrics["ownSendMs"] as number[]).length, 10);
+  assert.equal((r.metrics["sinkLagMs"] as number[]).length, 10);
+  assert.equal(assertion(r, /^GPT-Live-1's typed path/).soft, true, "Live's share is quoted, never failed on");
 });
 
 test("LC-8 drop: the brain is cut once, the runner let go, nothing accepted after Stop; a paused drop holds until Go", async () => {
@@ -82,11 +89,13 @@ test("LC-8 drop: the brain is cut once, the runner let go, nothing accepted afte
   assert.ok(r.sessions.some((s) => s.closeReason === "connection_lost"), "the drop reads as a lost connection");
 });
 
-test("LC-9 delegate: the reflex scrolls the fake hands, the haiku reaches the canned brain, nothing is typed", async () => {
+test("LC-9 delegate: the reflex scrolls the fake hands, a haiku Live delegates reaches the canned brain, nothing is typed", async () => {
   const r = await dryRun("LC-9");
   allPass(r);
   assert.ok(r.hands.acting.some((c) => c.op === "scroll"));
   assert.ok(r.brain.tasks.some((t) => /haiku/i.test(t.request)));
+  assert.equal(r.metrics["haikuBy"], "brain");
+  assert.equal(assertion(r, /Live's delegation for the haiku reaches the canned brain/).pass, true);
   // The stand-in does not delegate a line Jarhead handled: the reconcile is reported as not exercised, never as a pass.
   const reconcile = assertion(r, /reconciles as already done/);
   assert.deepEqual([reconcile.pass, reconcile.soft], [false, true]);
