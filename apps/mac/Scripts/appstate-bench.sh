@@ -8,7 +8,8 @@
 # prepend dedupes and keeps order and counts as loaded (prependedCount), a re-sent trimmed message
 # is skipped, isLive false when disconnected or ended, no final == false item survives the
 # daemon-problem republish, SettingsPatch json carries language / accent / memory, an empty
-# chain answer for a chain with members falls back. onboarding: the Done report's
+# chain answer for a chain with members falls back, a fired event rings only with ring:true
+# (SL-14), MissedWhy carries zone-moved. onboarding: the Done report's
 # "Cedar · English, American accent" (no accent phrase for none), the Voice / Accent rows keeping
 # a saved id outside their lists, ConsoleTheme.voices at 22.
 # Compiles with -D DEBUG (the benches sit behind `#if DEBUG`; the -O preview binaries carry none
@@ -41,8 +42,10 @@ run_model() {
 }
 
 run_onboarding() {
+  # The onboarding preview's list (Scripts/onboarding-preview.sh) with the bench's main in place of the preview's.
   build "$BUILD/onboarding-bench" "-D ONBOARDING_BENCH" \
     Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/Motion.swift Sources/Jarhead/UI/Dither.swift \
+    Sources/Jarhead/UI/Thumbnails.swift Sources/Jarhead/UI/HelpCopy.swift \
     Sources/Jarhead/UI/Console/*.swift Sources/Jarhead/UI/Onboarding/*.swift Scripts/AppStateBenchMain.swift
   [[ $BUILD_ONLY == 1 ]] || "$BUILD/onboarding-bench"
 }

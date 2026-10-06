@@ -1118,8 +1118,19 @@ public struct NextFire: Codable, Equatable {
     public var at: Double
 }
 
+/// Why a fire was missed or skipped (mirror of MissedWhy): Jarhead was off, the Mac slept through it, quiet hours held
+/// it, the brain budget was spent, or a time zone move put its wall clock behind now. The wire fields stay `String`
+/// (`AutomationEvent.why`, `LedgerRow.why`), so a value from a newer daemon still decodes; read them through this.
+public enum MissedWhy: String, Codable, CaseIterable {
+    case daemonDown = "daemon-down"
+    case macSlept = "mac-slept"
+    case quietHours = "quiet-hours"
+    case budget
+    case zoneMoved = "zone-moved"
+}
+
 /// One change on one row (`automation.event`). `kind`: set (automation) · fired (actions, line, ok, detail,
-/// lateMs, presses, ring) · state (state, nextAt, detail) · missed (dueAt, lateMs, skipped, why) · tick (remainingMs).
+/// lateMs, presses, ring) · state (state, nextAt, detail) · missed (dueAt, lateMs, skipped, why: a MissedWhy) · tick (remainingMs).
 public struct AutomationEvent: Codable, Equatable {
     public var seq: Int
     public var at: Double

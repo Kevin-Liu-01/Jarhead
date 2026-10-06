@@ -457,14 +457,16 @@ extension ConsoleFormat {
         ms >= 60_000 ? "\(Int((ms / 60_000).rounded())) min late" : "\(Int((ms / 1000).rounded())) s late"
     }
 
-    /// The MissedWhy words: `Jarhead was off` · `the Mac slept` · `quiet hours` · `the brain budget was spent`.
+    /// The MissedWhy words: `Jarhead was off` · `the Mac slept` · `quiet hours` · `the brain budget was spent` ·
+    /// `the time zone moved`. A value this build does not know reads as it came.
     static func missedWhyWords(_ why: String) -> String {
-        switch why {
-        case "daemon-down": return "Jarhead was off"
-        case "mac-slept": return "the Mac slept"
-        case "quiet-hours": return "quiet hours"
-        case "budget": return "the brain budget was spent"
-        default: return why
+        switch MissedWhy(rawValue: why) {
+        case .daemonDown: return "Jarhead was off"
+        case .macSlept: return "the Mac slept"
+        case .quietHours: return "quiet hours"
+        case .budget: return "the brain budget was spent"
+        case .zoneMoved: return "the time zone moved"
+        case nil: return why
         }
     }
 }

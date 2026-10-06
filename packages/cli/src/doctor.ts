@@ -591,7 +591,7 @@ export interface AutomationCheckInput {
 }
 
 /** Why a fire was missed, in words. */
-const MISSED_WORDS: Readonly<Record<MissedWhy, string>> = { "mac-slept": "the Mac slept", "daemon-down": "Jarhead was off", "quiet-hours": "quiet hours", budget: "brain minutes were spent" };
+const MISSED_WORDS: Readonly<Record<MissedWhy, string>> = { "mac-slept": "the Mac slept", "daemon-down": "Jarhead was off", "quiet-hours": "quiet hours", budget: "brain minutes were spent", "zone-moved": "the time zone moved" };
 
 /** pmset's weekday letters: M T W R F S U. */
 const PMSET_DAY: Readonly<Record<Weekday, string>> = { mon: "M", tue: "T", wed: "W", thu: "R", fri: "F", sat: "S", sun: "U" };
