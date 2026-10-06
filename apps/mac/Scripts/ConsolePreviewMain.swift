@@ -4288,7 +4288,7 @@ extension PreviewDelegate {
         expect("rail: the eight fold ids", SettingsWords.folds.joined(separator: ","),
                "settings.audio,settings.brain,settings.leaves,settings.session,settings.automations,settings.memory,settings.retention,settings.wake")
         let hints = [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint, SettingsWords.recordingHint, SettingsWords.soundsHint]
-        expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device / shares the mic / alarms always ring")
+        expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device / shares the mic / rings always sound")
         // The room beside a 60 pt toggle and its 10 pt gap in the 182 pt control column; ConsoleToggle pins lineLimit(1).
         let sans11 = NSFont.systemFont(ofSize: 11)
         let widest = hints.map { ($0 as NSString).size(withAttributes: [.font: sans11]).width }.max() ?? 0

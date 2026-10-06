@@ -1286,8 +1286,16 @@ public struct AutomationDraft: Encodable, Equatable {
 /// `local.say`: the app plays the earcon and the local speaker reads `text` — never model text except a redacted wake-brain line.
 public struct LocalSayMessage: Codable, Equatable {
     public var text: String?
+    /// The file, in the old system names: Pop · Glass · Ping · Hero (`Earcon.named`).
     public var sound: String?
+    /// What it rings for — `alarm` · `timer` · `chime`, the automation's kind as the engine set it (`Ring.of`); nil
+    /// for an open's tink, and from a daemon before the field (the name decides then, as it did).
+    public var ring: String?
     public var automationId: String
+
+    public init(text: String? = nil, sound: String? = nil, ring: String? = nil, automationId: String) {
+        self.text = text; self.sound = sound; self.ring = ring; self.automationId = automationId
+    }
 }
 
 /// `notify`: a banner with the ring's presses; a press lands on the same row as the island's.

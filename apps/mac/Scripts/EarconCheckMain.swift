@@ -6,13 +6,17 @@ import Foundation
 // clock; then every file the app can ask for, opened and decoded. Nothing is played: the recorder
 // stands in for the player, and the files are read with AVAudioFile, never handed to an output.
 
-/// Plays nothing: remembers what it was asked to do.
+/// Plays nothing: remembers what it was asked to do, and says a sound is playing for as long as the real
+/// player would (its length from the start, or to the end of a fade) on the check's scripted clock.
 @MainActor
 final class RecorderSink: EarconSink {
     var plays: [(Earcon, Float)] = []
-    var fades: [Earcon] = []
+    var fades: [(Earcon, Double)] = []
     var stopped = 0
-    var sounding: Set<Earcon> = []
+    private var until: [Earcon: Double] = [:]
+    private let clock: () -> Double
+
+    init(clock: @escaping () -> Double) { self.clock = clock }
 
     func load(_ files: [Earcon: URL]) -> [Earcon: Double] {
         var out: [Earcon: Double] = [:]
@@ -22,24 +26,25 @@ final class RecorderSink: EarconSink {
 
     func play(_ e: Earcon, gain: Float) -> Bool {
         plays.append((e, gain))
-        sounding.insert(e)
+        until[e] = clock() + e.seconds
         return true
     }
 
     func fadeOut(_ e: Earcon, over seconds: Double) {
-        guard sounding.contains(e) else { return }
-        fades.append(e)
-        sounding.remove(e)
+        guard isPlaying(e) else { return }
+        fades.append((e, seconds))
+        until[e] = min(until[e] ?? 0, clock() + seconds)
     }
 
-    func isPlaying(_ e: Earcon) -> Bool { sounding.contains(e) }
+    func isPlaying(_ e: Earcon) -> Bool { (until[e] ?? 0) > clock() }
 
     func stopAll() {
         stopped += 1
-        sounding.removeAll()
+        until.removeAll()
     }
 
     var played: [Earcon] { plays.map(\.0) }
+    var faded: [Earcon] { fades.map(\.0) }
 }
 
 @main
@@ -87,19 +92,25 @@ struct EarconCheckMain {
     static func names() {
         let s = "names"
         check(s, "twelve sounds, by file name", Earcon.allCases.map(\.rawValue) == ["heard", "awake", "pause", "sleep", "chime", "timer", "alarm", "snooze", "opened", "mark", "cue", "problem"])
-        check(s, "the gate's door: Pop → heard, Glass → awake, anything else → heard",
-              Earcon.gate("Pop") == .heard && Earcon.gate("Glass") == .awake && Earcon.gate("Ping") == .heard && Earcon.gate("") == .heard)
-        check(s, "local.say: Pop → opened, Glass → chime, Ping → timer, Hero → alarm, unknown or none → chime",
-              Earcon.ring("Pop") == .opened && Earcon.ring("Glass") == .chime && Earcon.ring("Ping") == .timer && Earcon.ring("Hero") == .alarm
-                && Earcon.ring("Basso") == .chime && Earcon.ring(nil) == .chime)
-        check(s, "the rings are chime, timer and alarm", Set(Earcon.allCases.filter(\.isRing)) == [.chime, .timer, .alarm])
+        let gate = [Earcon.gate("Pop"), Earcon.gate("Glass"), Earcon.gate("Ping"), Earcon.gate("")]
+        check(s, "the gate's door: Pop → heard, Glass → awake, anything else → heard", gate == [.heard, .awake, .heard, .heard])
+        let files = ["Pop", "Glass", "Ping", "Hero", "Basso"].map(Earcon.named)
+        check(s, "a local.say name picks the file: Pop → opened, Glass → chime, Ping → timer, Hero → alarm, unknown → none", files == [.opened, .chime, .timer, .alarm, nil])
+        let kinds = ["alarm", "timer", "chime", "nap"].map { Ring.of(kind: $0, name: "Pop") }
+        check(s, "the frame's ring decides the ring, whatever the name (an unknown kind is a chime)", kinds == [.alarm, .timer, .chime, .chime])
+        let legacy = ["Hero", "Ping", "Glass", "Pop", "Basso"].map { Ring.of(kind: nil, name: $0) }
+        check(s, "a daemon before `ring`: the name says it — Hero alarm, Ping timer, Glass chime, Pop an open (no ring), unknown chime",
+              legacy == [.alarm, .timer, .chime, nil, .chime] && Ring.of(kind: nil, name: nil) == .chime)
+        check(s, "each ring's own file is chime, timer and alarm", Ring.allCases.map(\.earcon) == [.alarm, .timer, .chime])
         let order: [Earcon] = [.alarm, .timer, .chime, .problem, .awake, .snooze, .heard, .cue, .opened, .mark]
         let descending = zip(order, order.dropFirst()).allSatisfy { $0.priority > $1.priority }
-        check(s, "priority: alarm > timer > chime > problem > awake · sleep · pause > snooze > heard > cue > opened > mark",
-              descending && Earcon.awake.priority == Earcon.sleep.priority && Earcon.sleep.priority == Earcon.pause.priority)
+        let tied = Earcon.awake.priority == Earcon.sleep.priority && Earcon.sleep.priority == Earcon.pause.priority
+        check(s, "priority: alarm > timer > chime > problem > awake · sleep · pause > snooze > heard > cue > opened > mark", descending && tied)
+        check(s, "a ring plays at its ring's priority, whichever file it names", EarconModel.priority(.opened, ring: .chime) == Earcon.chime.priority && EarconModel.priority(.opened, ring: nil) == Earcon.opened.priority)
         let lengths = Earcon.allCases.map(\.seconds)
-        check(s, "every sound is short: 0.12–1.6 s, interface sounds under 1 s", lengths.allSatisfy { $0 >= 0.12 && $0 <= 1.6 }
-              && Earcon.allCases.filter { !$0.isRing }.allSatisfy { $0.seconds < 1 })
+        let ringFiles = Set(Ring.allCases.map(\.earcon))
+        let interfaceShort = Earcon.allCases.filter { !ringFiles.contains($0) }.allSatisfy { $0.seconds < 1 }
+        check(s, "every sound is short: 0.12–1.6 s, interface sounds under 1 s", lengths.allSatisfy { $0 >= 0.12 && $0 <= 1.6 } && interfaceShort)
     }
 
     // MARK: - the one gate (pure)
@@ -109,7 +120,7 @@ struct EarconCheckMain {
         var m = EarconModel()
         let t = 1000.0
         check(s, "a session's microphone runs: an interface sound is dropped", m.decide(.heard, now: t, voiceRuns: true, voiceAudibleUntil: 0, requestedAt: t) == .drop(.session))
-        check(s, "a ring is dropped in a session too (the voice says the line)", m.decide(.chime, now: t, voiceRuns: true, voiceAudibleUntil: 0, requestedAt: t) == .drop(.session))
+        check(s, "a ring is dropped in a session too (the voice says the line)", m.decide(.chime, ring: .chime, now: t, voiceRuns: true, voiceAudibleUntil: 0, requestedAt: t) == .drop(.session))
         check(s, "awake plays at the session edge (connecting; the wire hold covers it)", m.decide(.awake, now: t, voiceRuns: true, voiceAudibleUntil: 0, requestedAt: t) == .play(gain: 0.7))
         check(s, "the gate's Glass and the connecting edge are one awake (deduped within 1.5 s)", m.decide(.awake, now: t + 1.0, voiceRuns: true, voiceAudibleUntil: 0, requestedAt: t + 1.0) == .drop(.duplicate))
         check(s, "…and a second awake 1.6 s later plays", m.decide(.awake, now: t + 1.6, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 1.6) == .play(gain: 0.7))
@@ -117,51 +128,71 @@ struct EarconCheckMain {
         m = EarconModel()
         m.config = EarconModel.Config(interface: false, volume: 0.5)
         check(s, "Sounds off: an interface sound is dropped", m.decide(.pause, now: t, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t) == .drop(.off))
-        check(s, "Sounds off: the timer still rings at the volume", m.decide(.timer, now: t, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t) == .play(gain: 0.5))
+        check(s, "Sounds off: the timer still rings at the volume", m.decide(.timer, ring: .timer, now: t, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t) == .play(gain: 0.5))
+        check(s, "Sounds off: a chime that names Pop still rings (the kind decides; the name picks the file)",
+              m.decide(.opened, ring: .chime, now: t + 3, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 3) == .play(gain: 0.5))
+        check(s, "Sounds off: an open's tink (Pop with no ring) is dropped", m.decide(.opened, now: t + 6, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 6) == .drop(.off))
         m.config.volume = 0
-        check(s, "volume 0: the chime is silent", m.decide(.chime, now: t + 10, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 10) == .drop(.silent))
-        if case .play(let g) = m.decide(.alarm, now: t + 20, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 20, automationId: "a") {
-            check(s, "volume 0: the alarm still rings at its floor 0.4, 4 dB down", near(g, 0.4 * pow(10, -4.0 / 20)), "gain \(g)")
-        } else {
-            check(s, "volume 0: the alarm still rings at its floor", false)
+        check(s, "volume 0: the chime is silent", m.decide(.chime, ring: .chime, now: t + 10, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 10) == .drop(.silent))
+        let zero = m.decide(.alarm, ring: .alarm, now: t + 20, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 20, automationId: "a")
+        check(s, "volume 0 and Sounds off: the alarm still rings, at its floor 0.67", zero == .play(gain: EarconModel.alarmFloor), "\(zero)")
+        let glass = m.decide(.chime, ring: .alarm, now: t + 25, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 25, automationId: "g")
+        check(s, "an alarm that names Glass rings at the alarm's floor too, never the volume", glass == .play(gain: EarconModel.alarmFloor), "\(glass)")
+
+        var firsts: [Double] = []
+        for v in [0.0, 0.4, 0.7, 1.0] {
+            var a = EarconModel()
+            a.config.volume = v
+            if case .play(let g) = a.decide(.alarm, ring: .alarm, now: t, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t, automationId: "x") { firsts.append(g) }
         }
+        check(s, "the alarm's first ring is the same at Volume 0, 40, 70 and 100 %", firsts == [0.67, 0.67, 0.67, 0.67], "\(firsts)")
+        let effective = -16.0 + 20 * log10(EarconModel.alarmFloor)
+        check(s, "…alarm.caf (−16.0 LUFS) at 0.67 is −19.5 LUFS: level with the system Hero it replaces, never under", near(effective, -19.5, 0.05), "\(effective)")
 
         m = EarconModel()
-        _ = m.decide(.alarm, now: t, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t, automationId: "a")
+        _ = m.decide(.alarm, ring: .alarm, now: t, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t, automationId: "a")
         check(s, "a lower sound under 250 ms after a higher one is dropped", m.decide(.heard, now: t + 0.1, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 0.1) == .drop(.outranked))
         check(s, "…and plays at 300 ms", m.decide(.heard, now: t + 0.3, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 0.3) == .play(gain: 0.7))
-        check(s, "a higher sound right after a lower one plays", m.decide(.timer, now: t + 0.35, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 0.35) == .play(gain: 0.7))
+        check(s, "a higher sound right after a lower one plays", m.decide(.timer, ring: .timer, now: t + 0.35, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 0.35) == .play(gain: 0.7))
+        check(s, "…and supersedes it: the lower one, 50 ms old, is the one to fade", m.superseded(by: .timer, ring: .timer, now: t + 0.35) == [.heard])
         m.forgetRings()
         check(s, "after Snooze faded the rings, the snooze sound is not outranked", m.decide(.snooze, now: t + 0.4, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 0.4) == .play(gain: 0.7))
+
+        m = EarconModel()
+        _ = m.decide(.heard, now: t, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t)
+        check(s, "auth none: heard, then awake 10 ms later — awake plays", m.decide(.awake, now: t + 0.01, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 0.01) == .play(gain: 0.7))
+        check(s, "…and supersedes heard", m.superseded(by: .awake, ring: nil, now: t + 0.01) == [.heard])
+        check(s, "a lower sound never supersedes a higher one", m.superseded(by: .heard, ring: nil, now: t + 0.02).isEmpty)
+
+        m = EarconModel()
+        _ = m.decide(.opened, now: t, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t)
+        check(s, "an open's tink, then a chime that names Pop 0.5 s later: the chime still rings",
+              m.decide(.opened, ring: .chime, now: t + 0.5, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 0.5) == .play(gain: 0.7))
+        check(s, "…at the chime's priority: a cue 100 ms after it is outranked", m.decide(.cue, now: t + 0.6, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 0.6) == .drop(.outranked))
+        check(s, "…and the same chime again within 1.5 s plays once", m.decide(.opened, ring: .chime, now: t + 1.0, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 1.0) == .drop(.duplicate))
 
         m = EarconModel()
         check(s, "the voice still audible: wait, looking again every 100 ms", m.decide(.sleep, now: t, voiceRuns: false, voiceAudibleUntil: t + 0.5, requestedAt: t) == .wait(until: t + 0.1))
         check(s, "…until its end + 150 ms", m.decide(.sleep, now: t + 0.6, voiceRuns: false, voiceAudibleUntil: t + 0.5, requestedAt: t) == .wait(until: t + 0.65))
         check(s, "…drained by then: it plays", m.decide(.sleep, now: t + 0.65, voiceRuns: false, voiceAudibleUntil: t + 0.5, requestedAt: t) == .play(gain: 0.7))
         check(s, "a flush ends the wait early (the queue's end moves to the flush)", m.decide(.pause, now: t + 5.3, voiceRuns: false, voiceAudibleUntil: t + 5.1, requestedAt: t + 5) == .play(gain: 0.7))
-        check(s, "a drain still running 2 s after the request drops it (the farewell is protected)",
-              m.decide(.chime, now: t + 10, voiceRuns: false, voiceAudibleUntil: t + 12, requestedAt: t + 10) == .wait(until: t + 10.1)
-                && m.decide(.chime, now: t + 12, voiceRuns: false, voiceAudibleUntil: t + 12.5, requestedAt: t + 10) == .drop(.drain))
+        let drainWait = m.decide(.chime, ring: .chime, now: t + 10, voiceRuns: false, voiceAudibleUntil: t + 12, requestedAt: t + 10)
+        let drainDrop = m.decide(.chime, ring: .chime, now: t + 12, voiceRuns: false, voiceAudibleUntil: t + 12.5, requestedAt: t + 10)
+        check(s, "a drain still running 2 s after the request drops it (the farewell is protected)", drainWait == .wait(until: t + 10.1) && drainDrop == .drop(.drain))
 
         m = EarconModel()
         var ramp: [Double] = []
         for i in 0..<6 {
             let at = t + Double(i) * 30
-            if case .play(let g) = m.decide(.alarm, now: at, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: at, automationId: "wake") { ramp.append((20 * log10(g / 0.7) * 10).rounded() / 10) }
+            if case .play(let g) = m.decide(.alarm, ring: .alarm, now: at, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: at, automationId: "wake") { ramp.append((20 * log10(g) * 10).rounded() / 10) }
         }
-        check(s, "the alarm's repeats rise from −4 dB by 1 dB per ring to 0 dB", ramp == [-4, -3, -2, -1, 0, 0], "\(ramp)")
-        if case .play(let g) = m.decide(.alarm, now: t + 400, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 400, automationId: "wake") {
-            check(s, "a ring after a long gap starts the ramp over", near(20 * log10(g / 0.7), -4, 0.05))
-        } else {
-            check(s, "a ring after a long gap starts the ramp over", false)
-        }
-        if case .play(let g) = m.decide(.alarm, now: t + 405, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 405, automationId: "other") {
-            check(s, "the ramp is per row", near(20 * log10(g / 0.7), -4, 0.05))
-        } else {
-            check(s, "the ramp is per row (another row's ring at +5 s plays)", false)
-        }
+        check(s, "the alarm's repeats: the floor (−3.5 dB, Hero's level), then −3, −2, −1 dB, then the file's full level", ramp == [-3.5, -3, -2, -1, 0, 0], "\(ramp)")
+        let late = m.decide(.alarm, ring: .alarm, now: t + 400, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 400, automationId: "wake")
+        check(s, "a ring after a long gap starts the ramp over", late == .play(gain: EarconModel.alarmFloor), "\(late)")
+        let other = m.decide(.alarm, ring: .alarm, now: t + 405, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 405, automationId: "other")
+        check(s, "the ramp is per row", other == .play(gain: EarconModel.alarmFloor), "\(other)")
         m.quitting = true
-        check(s, "quitting: nothing starts", m.decide(.chime, now: t + 900, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 900) == .drop(.quitting))
+        check(s, "quitting: nothing starts", m.decide(.chime, ring: .chime, now: t + 900, voiceRuns: false, voiceAudibleUntil: 0, requestedAt: t + 900) == .drop(.quitting))
     }
 
     // MARK: - the wire hold
@@ -178,19 +209,40 @@ struct EarconCheckMain {
         check(s, "the tail is the echo guard's own figure", EchoGuardModel.tail(latency: 0.01, bluetooth: false) == EchoGuardModel.baseTail + 0.01)
 
         let w = EarconWire()
-        w.note(start: 100, duration: 0.18, latency: 0.01, bluetooth: false, holdsWire: false)
+        w.note(.heard, start: 100, duration: 0.18, latency: 0.01, bluetooth: false, holdsWire: false)
         check(s, "heard never holds the wire", !w.holdsWire(at: 100.05))
         check(s, "…but its audible window is kept for the wake listener", near(w.audibleUntil, 100.19) && near(w.endsAt, 100.18))
-        w.note(start: 200, duration: 0.42, latency: 0.01, bluetooth: false, holdsWire: true)
+        w.note(.awake, start: 200, duration: 0.42, latency: 0.01, bluetooth: false, holdsWire: true)
         check(s, "awake holds the wire until its tail has passed", w.holdsWire(at: 200.5) && w.holdsWire(at: 200.739) && !w.holdsWire(at: 200.741))
         let chunks = (0..<10).map { w.judgeChunk(at: 200.05 + Double($0) * 0.1, seconds: 0.1) }
         check(s, "seven 100 ms chunks are zero-filled, then the wire is open", chunks == [true, true, true, true, true, true, true, false, false, false], "\(chunks)")
         check(s, "the holds are counted for `jarhead status`", w.counters.holds == 7 && near(w.counters.heldSeconds, 0.7))
         w.resetCounters()
         check(s, "the counters start over with the graph", w.counters == EarconWire.Stats())
-        w.note(start: 300, duration: 2.6, latency: 0.01, bluetooth: false, holdsWire: false)
-        w.cut(at: 300.12)
-        check(s, "a fade (Snooze, Done) ends the audible window", near(w.audibleUntil, 300.12) && near(w.endsAt, 300.12))
+
+        let v = EarconWire()
+        v.note(.alarm, start: 300, duration: 1.6, latency: 0.01, bluetooth: false, holdsWire: false)
+        v.note(.awake, start: 300.1, duration: 0.42, latency: 0.01, bluetooth: false, holdsWire: true)
+        v.cut([.alarm], at: 300.22)
+        check(s, "a fade (Snooze, Done) ends only the faded sound's window", near(v.endsAt, 300.52) && near(v.audibleUntil, 300.53), "ends \(v.endsAt)")
+        check(s, "…and never shortens awake's hold", near(v.holdUntil, 300.84), "\(v.holdUntil)")
+        v.cut([.awake], at: 300.2)
+        check(s, "…not even when awake itself is cut", near(v.holdUntil, 300.84) && near(v.endsAt, 300.22))
+
+        let x = EarconWire()
+        x.note(.alarm, start: 500, duration: 1.6, latency: 0.01, bluetooth: false, holdsWire: false)
+        check(s, "a ring alone never holds the wire", !x.holdsWire(at: 500.2))
+        x.cut([.alarm], at: 500.25)
+        let held = x.holdSounding()
+        check(s, "the session's edge at +0.2 s: the wire is held through the 50 ms fade, the latency and the guard's tail", near(held, 500.25 + 0.01 + 0.31), "\(held)")
+        let y = EarconWire()
+        y.note(.chime, start: 10, duration: 1.4, latency: 0.01, bluetooth: false, holdsWire: false)
+        y.holdSounding()
+        check(s, "…a sound long over holds nothing now", !y.holdsWire(at: 100))
+        let z = EarconWire()
+        z.note(.awake, start: 600, duration: 0.42, latency: 0.01, bluetooth: false, holdsWire: true)
+        z.cutAll(at: 600.1)
+        check(s, "quitting ends every window and the hold", !z.holdsWire(at: 600.2) && near(z.endsAt, 600.1))
 
         let clock = VoiceOutputClock()
         clock.noteOutput(rms: 0, seconds: 0.2, now: 10)
@@ -238,6 +290,25 @@ struct EarconCheckMain {
         check(s, "automation.*, disk.low, dock and the other permissions stay silent",
               !["automation.missed", "automation.failed", "disk.low", "dock", "permission.screenRecording", "brain.local", "other"].contains(where: EarconCues.problemSounds))
 
+        let intoVoice = [EarconCues.entersVoice(from: .asleep, to: .connecting), EarconCues.entersVoice(from: .paused, to: .connecting),
+                         EarconCues.entersVoice(from: .error, to: .connecting), EarconCues.entersVoice(from: .asleep, to: .listening)]
+        check(s, "the edge into the mic's phases: asleep, paused or error → connecting, and asleep → listening (a skipped snapshot)", intoVoice == [true, true, true, true])
+        let notInto = [EarconCues.entersVoice(from: .connecting, to: .listening), EarconCues.entersVoice(from: .listening, to: .asleep),
+                       EarconCues.entersVoice(from: .asleep, to: .paused), EarconCues.entersVoice(from: .asleep, to: .asleep)]
+        check(s, "…not inside a session, not out of one, not between quiet phases", notInto == [false, false, false, false])
+
+        var hold = EarconCues.LocalSayHold()
+        let tea = LocalSayMessage(sound: "Ping", ring: "timer", automationId: "tea")
+        check(s, "local.say asleep: it plays", hold.arrive(tea, phase: .asleep, now: 0) == .play)
+        check(s, "…in a session: dropped (the voice says the fire's lines)", hold.arrive(tea, phase: .listening, now: 0) == .drop)
+        check(s, "…connecting: held, not lost", hold.arrive(tea, phase: .connecting, now: 1) == .hold && hold.held.count == 1)
+        check(s, "…still connecting: nothing yet", hold.settle(phase: .connecting, now: 2).isEmpty && hold.held.count == 1)
+        check(s, "…the handshake failed (error): it plays then", hold.settle(phase: .error, now: 3) == [tea] && hold.held.isEmpty)
+        _ = hold.arrive(tea, phase: .connecting, now: 10)
+        check(s, "…a session opened: dropped, the voice has it", hold.settle(phase: .listening, now: 11).isEmpty && hold.held.isEmpty)
+        _ = hold.arrive(tea, phase: .connecting, now: 20)
+        check(s, "…older than 30 s when the phase settles: dropped", hold.settle(phase: .asleep, now: 51).isEmpty && hold.held.isEmpty)
+
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "UTC")!
         func at(_ h: Int, _ m: Int) -> Date { cal.date(from: DateComponents(year: 2026, month: 10, day: 6, hour: h, minute: m))! }
@@ -267,9 +338,10 @@ struct EarconCheckMain {
     @MainActor
     static func player(sounds: String?) {
         let s = "player"
-        let rec = RecorderSink()
-        let earcons = Earcons(sink: rec)
         var clock = 10_000.0
+        let rec = RecorderSink(clock: { clock })
+        let wire = EarconWire()
+        let earcons = Earcons(sink: rec, wire: wire)
         var runs = false
         var voiceUntil = 0.0
         var scheduled: [(Double, @MainActor () -> Void)] = []
@@ -284,7 +356,6 @@ struct EarconCheckMain {
             scheduled.removeAll { $0.0 <= clock + 1e-9 }
             for (_, work) in due { work() }
         }
-        EarconWire.shared.resetForHarness()
 
         if let sounds {
             let loaded = earcons.load(directory: URL(fileURLWithPath: sounds, isDirectory: true))
@@ -296,12 +367,12 @@ struct EarconCheckMain {
         advance(0.2)
         earcons.play(.awake)
         check(s, "grant then the connecting edge: one awake at 70 %", rec.played == [.awake] && rec.plays.first?.1 == 0.7)
-        check(s, "awake holds the wire past its own end", EarconWire.shared.holdsWire(at: clock + 0.4) && !EarconWire.shared.holdsWire(at: clock + 0.6))
+        check(s, "awake holds the wire past its own end", wire.holdsWire(at: clock + 0.4) && !wire.holdsWire(at: clock + 0.6))
 
         runs = true
         advance(5)
         earcons.play(.cue)
-        earcons.ring("Glass", automationId: "r1")
+        earcons.ring("Glass", kind: "chime", automationId: "r1")
         check(s, "in a session nothing plays", rec.played == [.awake])
         runs = false
 
@@ -320,12 +391,13 @@ struct EarconCheckMain {
         voiceUntil = 0
 
         advance(5)
-        earcons.ring("Hero", automationId: "wake")
-        check(s, "Hero rings the alarm, 4 dB down at 70 %", rec.played.last == .alarm && abs(Double(rec.plays.last!.1) - 0.7 * pow(10, -4.0 / 20)) < 1e-4)
-        advance(2)
+        earcons.ring("Hero", kind: "alarm", automationId: "wake")
+        let alarmGain = Double(rec.plays.last?.1 ?? 0)
+        check(s, "an alarm rings at its floor 0.67 at the default 70 %", rec.played.last == .alarm && abs(alarmGain - EarconModel.alarmFloor) < 1e-4, "\(alarmGain)")
+        advance(0.5)
         let sounded = earcons.fadeRings(for: "wake")
         if sounded { earcons.play(.snooze) }
-        check(s, "Snooze fades the sounding alarm and plays the snooze sound", sounded && rec.fades == [.alarm] && rec.played.last == .snooze)
+        check(s, "Snooze fades the sounding alarm over 120 ms and plays the snooze sound", sounded && rec.faded == [.alarm] && rec.fades.last?.1 == Earcons.ringFade && rec.played.last == .snooze)
         check(s, "a row that never rang gets no snooze sound", !earcons.fadeRings(for: "never"))
         advance(700)
         check(s, "a ring older than the 10-minute linger gets none either", !earcons.fadeRings(for: "wake"))
@@ -333,17 +405,101 @@ struct EarconCheckMain {
         earcons.configure(interface: false, volume: 0.5)
         advance(5)
         earcons.play(.mark)
-        earcons.ring("Ping", automationId: "tea")
+        earcons.ring("Ping", kind: "timer", automationId: "tea")
         check(s, "Sounds off: the mark is silent, the timer rings at 50 %", rec.played.last == .timer && rec.plays.last?.1 == 0.5 && !rec.played.contains(.mark))
+        advance(2)
+        earcons.ring("Pop", kind: "chime", automationId: "pop")
+        check(s, "Sounds off: a chime that names Pop rings (the opened file, at 50 %)", rec.played.last == .opened && rec.plays.last?.1 == 0.5)
+        advance(2)
+        let tink = earcons.ring("Pop", kind: nil, automationId: "open")
+        check(s, "Sounds off: an open's tink (Pop, no ring) is silent", tink == .drop(.off))
+        advance(2)
+        earcons.configure(interface: false, volume: 0)
+        earcons.ring("Glass", kind: "alarm", automationId: "glass-alarm")
+        let glassGain = Double(rec.plays.last?.1 ?? 0)
+        check(s, "Volume 0 and Sounds off: an alarm that names Glass rings the chime file at the alarm's floor", rec.played.last == .chime && abs(glassGain - EarconModel.alarmFloor) < 1e-4, "\(glassGain)")
+        let snoozedGlass = earcons.fadeRings(for: "glass-alarm")
+        check(s, "…and Snooze fades it like any ring", snoozedGlass && rec.faded.last == .chime)
         earcons.configure(interface: true, volume: 0.7)
         advance(5)
         earcons.play(.heard)
         check(s, "the wake listener waits out the sound (LocalSpeaker.isQuiet)",
               !LocalSpeaker.isQuiet(speaking: false, lastFinishedAt: .distantPast, earconAudibleUntil: earcons.audibleUntil, now: Date(timeIntervalSinceReferenceDate: clock + 0.3)))
+
+        // auth none: the gate's heard, then its awake at once — heard gives way.
+        advance(5)
+        earcons.play(.heard)
+        advance(0.01)
+        earcons.play(.awake)
+        check(s, "auth none: heard, then awake 10 ms later — heard fades over 50 ms under it",
+              Array(rec.played.suffix(2)) == [.heard, .awake] && rec.faded.last == .heard && rec.fades.last?.1 == Earcons.quickFade)
+        check(s, "…and the line after it waits only for awake's tail", near(wire.endsAt, clock + 0.42))
+
+        // The session's edge: an alarm ringing, then Go (or the notch) 0.2 s in.
+        advance(5)
+        earcons.ring("Hero", kind: "alarm", automationId: "edge")
+        advance(0.2)
+        runs = true
+        let faded = earcons.enterVoice()
+        let edgeHold = wire.holdUntil
+        check(s, "connecting 0.2 s into an alarm: the alarm fades over 50 ms", faded == [.alarm] && rec.faded.last == .alarm && rec.fades.last?.1 == Earcons.quickFade)
+        check(s, "…and the wire is held through the fade and the guard's tail before awake asks (+0.37 s)", near(edgeHold, clock + 0.05 + 0.01 + 0.31), "\(edgeHold - clock)")
+        earcons.play(.awake)
+        let awakeAt = clock
+        check(s, "…then awake plays: the faded alarm outranks nothing", rec.played.last == .awake)
+        check(s, "…and the hold is the later of the two (awake's +0.74 s)", near(wire.holdUntil, awakeAt + 0.74), "\(wire.holdUntil - awakeAt)")
+        advance(0.1)
+        check(s, "…awake itself never fades at the edge", earcons.enterVoice().isEmpty && near(wire.holdUntil, awakeAt + 0.74))
+
+        // A timer that rang 100 ms before connecting: under the 250 ms that used to drop awake and leave no hold.
+        runs = false
+        advance(5)
+        earcons.ring("Ping", kind: "timer", automationId: "t2")
+        advance(0.1)
+        runs = true
+        let early = earcons.enterVoice()
+        check(s, "a ring 100 ms before connecting: faded, and the wire held with no awake at all", early == [.timer] && near(wire.holdUntil, clock + 0.37), "\(wire.holdUntil - clock)")
+        earcons.play(.awake)
+        check(s, "…awake still plays and holds its own window", rec.played.last == .awake && near(wire.holdUntil, clock + 0.74))
+
+        // The gate's grant over a ringing alarm, then Snooze inside awake's hold: the ring's window ends, the hold stays.
+        runs = false
+        advance(5)
+        earcons.ring("Hero", kind: "alarm", automationId: "grant")
+        advance(0.3)
+        earcons.play(.awake)
+        let grantHold = wire.holdUntil
+        earcons.fadeRings(for: "grant")
+        check(s, "Snooze or Done inside awake's hold fades the ring and never shortens the hold",
+              rec.faded.last == .alarm && wire.holdUntil == grantHold && near(grantHold, clock + 0.74), "\(wire.holdUntil - clock)")
+
+        // Retry from error: no awake on that edge, the problem sound still ringing.
+        runs = false
+        advance(5)
+        earcons.play(.problem)
+        advance(0.1)
+        runs = true
+        let retry = earcons.enterVoice()
+        check(s, "Retry 0.1 s into the problem sound (error → connecting has no awake): it fades and the wire is held",
+              retry == [.problem] && wire.holdsWire(at: clock + 0.3) && !wire.holdsWire(at: clock + 0.4))
+
+        // A sound waiting for the voice's drain at the edge is dropped, and never plays later.
+        runs = false
+        advance(5)
+        let before = rec.plays.count
+        voiceUntil = clock + 0.4
+        earcons.play(.sleep)
+        runs = true
+        earcons.enterVoice()
+        runs = false
+        voiceUntil = 0
+        for _ in 0..<10 { advance(0.1) }
+        check(s, "a sound waiting for the drain at the edge is dropped, never played later", rec.plays.count == before)
+
         earcons.silence()
         advance(5)
-        earcons.ring("Hero", automationId: "late")
-        check(s, "quitting: everything stops and nothing new starts", rec.stopped == 1 && rec.played.last == .heard)
+        earcons.ring("Hero", kind: "alarm", automationId: "late")
+        check(s, "quitting: everything stops and nothing new starts", rec.stopped == 1 && rec.plays.count == before)
     }
 
     // MARK: - the files, decoded (never played)

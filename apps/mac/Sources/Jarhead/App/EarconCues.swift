@@ -36,6 +36,12 @@ enum EarconCues {
         }
     }
 
+    /// The edge into a phase where the session's microphone runs (`AppState.voiceAudioRuns`) from one where it
+    /// does not: `Earcons.enterVoice` runs here, before `updateAudioActivity()` starts the graph.
+    static func entersVoice(from: Phase, to: Phase) -> Bool {
+        AppState.voiceAudioRuns(in: to) && !AppState.voiceAudioRuns(in: from)
+    }
+
     /// The problem kinds that need Kevin and sound outside a session. `automation.*` stay silent (he was
     /// away; the island has them), and so does everything amber that can wait.
     static func problemSounds(_ kind: String) -> Bool {
@@ -55,6 +61,42 @@ enum EarconCues {
         let parts = clock.split(separator: ":")
         guard parts.count == 2, parts[1].count == 2, let h = Int(parts[0]), let m = Int(parts[1]), (0...23).contains(h), (0...59).contains(m) else { return nil }
         return h * 60 + m
+    }
+
+    /// A `local.say` that lands while `connecting`. The microphone already runs, so it is not sounded then, and
+    /// it is not lost either: the engine holds a fire's lines for the opening session and rings them only when
+    /// none opens, and that frame (or an open's tink, or an alarm's re-ring) can overtake the phase's snapshot.
+    /// Kept until the phase leaves `connecting`: it plays when the phase lands quiet (asleep, paused, error) and
+    /// is dropped when a session opened (the voice has the lines). Older than `maxAge` by then, it is dropped.
+    struct LocalSayHold {
+        enum Verdict: Equatable {
+            /// A quiet phase: ring and speak it now.
+            case play
+            /// Connecting: kept for `settle`.
+            case hold
+            /// A session's microphone runs: the voice says the fire's lines.
+            case drop
+        }
+
+        static let maxAge = 30.0
+        private(set) var held: [(message: LocalSayMessage, at: Double)] = []
+
+        mutating func arrive(_ message: LocalSayMessage, phase: Phase, now: Double) -> Verdict {
+            if phase == .connecting {
+                held.append((message, now))
+                return .hold
+            }
+            return AppState.voiceAudioRuns(in: phase) ? .drop : .play
+        }
+
+        /// The phase changed: what was held, to play now (oldest first) — nothing while still connecting, or
+        /// when a session opened.
+        mutating func settle(phase: Phase, now: Double) -> [LocalSayMessage] {
+            guard phase != .connecting else { return [] }
+            let out = AppState.voiceAudioRuns(in: phase) ? [] : held.filter { now - $0.at < LocalSayHold.maxAge }.map(\.message)
+            held.removeAll()
+            return out
+        }
     }
 
     /// The problem sound's own gate: never in the first 15 s after launch (the daemon is still settling and

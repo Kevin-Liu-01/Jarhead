@@ -58,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var problemGate = EarconCues.ProblemGate(launchedAt: CFAbsoluteTimeGetCurrent())
     /// A phase edge's sound that waits (the night tuck); any later edge cancels it.
     private var pendingCue: DispatchWorkItem?
+    /// `local.say` frames that landed while connecting, until the phase settles (EarconCues.LocalSayHold).
+    private var localSayHold = EarconCues.LocalSayHold()
 
     /// `CFBundleShortVersionString`, or "dev" for a `swift build` binary.
     static let appVersion: String = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
@@ -200,19 +202,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The signals the app observes for the daemon's watchers ride the socket as `system.signal` — data, never a command.
         state.signalHandler = { [weak self] signal in self?.client.sendSignal(signal) }
         // A fire while asleep: the ring and the fixed line through the gate's speaker, and the banner with Snooze ·
-        // Done. Never while the session's microphone runs — connecting included: the executor's `live()` is false
-        // while the handshake runs, and the mic's PCM is already queued for the opening session.
+        // Done. Never while the session's microphone runs. Connecting, it is held until the phase settles: played if
+        // that is quiet (the handshake failed or was stopped), dropped if a session opened (the engine hands a fire's
+        // lines to the opening session and rings them only when none opens; this covers a frame that overtook the
+        // phase's snapshot). A frame that overtook the connecting snapshot itself rings, and the edge fades it.
         client.onLocalSay = { [weak self] msg in
-            guard let self, !AppState.voiceAudioRuns(in: self.phaseSeen) else { return }
-            let text = String((msg.text ?? "").prefix(160))
-            if let sound = msg.sound {
-                Earcons.shared.ring(sound, automationId: msg.automationId)
-            } else if !text.isEmpty {
-                // A line with no sound of its own gets the cue first: a tap on the shoulder, not a voice from nowhere.
-                Earcons.shared.play(.cue)
+            guard let self else { return }
+            switch self.localSayHold.arrive(msg, phase: self.phaseSeen, now: CFAbsoluteTimeGetCurrent()) {
+            case .play: self.localSay(msg)
+            case .hold: appLog("local.say \(msg.automationId): held while connecting")
+            case .drop: break
             }
-            // The line waits for the sound's tail (`LocalSpeaker.speak` sets the pre-utterance delay).
-            if !text.isEmpty { self.state.localSpeaker.speak(text) }
         }
         client.onNotify = { [weak self] msg in self?.notifications.post(msg) }
         // The Ledger tab's list with every day's totals (LM-6); nil when nothing answered, and the Console asks again.
@@ -343,6 +343,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard let self else { return }
                     let from = self.phaseSeen
                     self.phaseSeen = phase
+                    // Into a phase where the mic runs, before the graph starts: whatever still sounds (a ring that
+                    // started a moment ago) fades and the wire is held through it; nothing waiting plays later.
+                    if EarconCues.entersVoice(from: from, to: phase) {
+                        let faded = Earcons.shared.enterVoice()
+                        if !faded.isEmpty {
+                            let names = faded.map(\.rawValue).joined(separator: ", ")
+                            let held = max(0, Earcons.shared.wire.holdUntil - CFAbsoluteTimeGetCurrent())
+                            appLog("earcon: \(names) faded at the session's edge; wire held \(String(format: "%.2f", held)) s")
+                        }
+                    }
                     // The edge's sound: `awake` before the graph starts (the wire is held while it sounds),
                     // `pause` / `sleep` / `problem` after the graph has stopped.
                     let cue = EarconCues.edge(from: from, to: phase, tuck: OrbPanelController.sleepTuckDelay)
@@ -350,6 +360,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.pendingCue = nil
                     if let cue, cue.earcon == .awake { self.playCue(cue, phase: phase) }
                     self.updateAudioActivity()
+                    // What landed while connecting, now the phase has settled: quiet → it rings (before the edge's
+                    // own sound, which it outranks); a session → the voice has it.
+                    for msg in self.localSayHold.settle(phase: phase, now: CFAbsoluteTimeGetCurrent()) { self.localSay(msg) }
                     if let cue, cue.earcon != .awake { self.playCue(cue, phase: phase) }
                 }
             }
@@ -711,6 +724,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         earcons.onDecision = { e, decision in appLog("earcon: \(e.rawValue) \(decision)") }
         // A mark kept while asleep or paused (OverlayManager.commitMark): the receipt that it waits for the next session.
         state.markKeptHandler = { Earcons.shared.play(.mark) }
+    }
+
+    /// A `local.say` in a quiet phase: its ring (the kind decides it rings; the name picks the file), or the cue
+    /// before a line with no sound of its own, then the line on the sound's tail.
+    private func localSay(_ msg: LocalSayMessage) {
+        let text = String((msg.text ?? "").prefix(160))
+        if msg.sound != nil || msg.ring != nil {
+            Earcons.shared.ring(msg.sound, kind: msg.ring, automationId: msg.automationId)
+        } else if !text.isEmpty {
+            // A tap on the shoulder, not a voice from nowhere.
+            Earcons.shared.play(.cue)
+        }
+        // The line waits for the sound's tail (`LocalSpeaker.speak` sets the pre-utterance delay).
+        if !text.isEmpty { state.localSpeaker.speak(text) }
     }
 
     /// Play an edge's sound now, or after its delay if the phase is still the one it belongs to.

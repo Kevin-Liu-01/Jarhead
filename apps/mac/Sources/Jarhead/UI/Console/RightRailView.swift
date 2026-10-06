@@ -84,7 +84,8 @@ enum SettingsWords {
     static let autoWakeHint = "wakes on launch"
     static let rememberHint = "learns while on"
     static let recordingHint = "shares the mic"
-    static let soundsHint = "alarms always ring"
+    /// Off silences the interface sounds only: an alarm, a timer and a chime still ring (99.6 pt at sans 11; the rail has 112).
+    static let soundsHint = "rings always sound"
     // words on the rows
     static let minutes = "min"
     static let notch = "Notch"
@@ -1710,7 +1711,8 @@ struct SettingsPanel: View {
     }
 
     /// The palette: Sounds turns the interface sounds on or off (until flipped it follows macOS's "Play user
-    /// interface sound effects"); timers and alarms ring either way. Volume is 0–100 %, times the system's.
+    /// interface sound effects"); chimes, timers and alarms ring either way. Volume is 0–100 %, times the
+    /// system's; an alarm keeps its own level.
     /// Both go out as the whole audio block through `set-settings`, like Recording.
     @ViewBuilder private var soundRows: some View {
         ConsoleFormRow(SettingsWords.soundsRow) {

@@ -762,8 +762,9 @@ final class AudioEngine {
         onMicBuffer?(mono, when)
         // The echo guard (plain graph only): `.hold` while Jarhead is audible plus the tail.
         let verdict = EchoGuard.shared.judge(mono: dst, frames: frames, sampleRate: rate)
-        // The `awake` earcon (both policies): it plays at the edge, outside the unit's echo reference, so the
-        // chunks captured before it and the guard's tail have passed are held the same way (`EarconWire`).
+        // The session's edge (both policies): `awake`, and whatever the edge faded (`Earcons.enterVoice`), play
+        // outside the unit's echo reference, so the chunks captured before they and the guard's tail have passed
+        // are held the same way (`EarconWire`).
         let earconHeld = EarconWire.shared.judgeChunk(at: CFAbsoluteTimeGetCurrent(), seconds: Double(frames) / rate)
 
         guard let out = convertToWire(mono, format: monoFormat, frames: frames, channels: channels) else { return }
