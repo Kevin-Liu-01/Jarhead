@@ -83,10 +83,18 @@ final class ConsoleSession: ObservableObject {
     @Published var ledgerDay: String?
     @Published var ledgerEntries: [StreamEntry] = []
     @Published var ledgerStats: LedgerStats?
-    /// Every day the ledger has read this session, by day: the Ledger rail prints a day's figures
-    /// on its row once they are known and the month head sums them (the wire returns no per-day
-    /// totals; a `ledger.days` totals message is a follow-up). Filled by `pick(day:)`.
+    /// Every day the ledger has read this session, by day (`pick(day:)`): a day's figures when the daemon sent no
+    /// totals for it (a daemon before LM-6, a harness).
     @Published private(set) var ledgerDayStats: [String: LedgerStats] = [:]
+    /// LM-6: every day's totals from the `ledger.days` answer (`LedgerDays`), by day: the Ledger rail's day rows and
+    /// month heads show these for every day, read or not. Refreshed with the list and after each pick.
+    @Published private(set) var ledgerTotals: [String: LedgerDayTotals] = [:]
+    /// A `ledger.days` ask that got no answer in time (a loaded Mac, a reconnect), or a `partial` one (the daemon
+    /// still reading some days' totals), is asked again this long after, up to `daysRetries` times in a row; what the
+    /// rail shows stays meanwhile (`askDays`).
+    static let daysRetryAfterMs: UInt64 = 2_000
+    static let daysRetries = 5
+    private var daysRetryTask: Task<Void, Never>?
 
     @Published var lightbox: ConsoleLightboxItem?
 
@@ -113,6 +121,7 @@ final class ConsoleSession: ObservableObject {
     @Published var searchOpen = false
     @Published var searchQuery = ""
     @Published var searchHits: [LedgerHit]?
+    /// The ledger is still being asked: the first page, or an older one (`landOlder`). The rail's "Searching…".
     @Published var searching = false
     /// Why the ledger's hits are missing (titles still match locally); nil while they come.
     @Published var searchGap: SearchGap?
@@ -124,11 +133,15 @@ final class ConsoleSession: ObservableObject {
         case daemon
         /// This build never installed `AppState.ledgerSearchHandler` (the app's wiring, not the daemon).
         case app
+        /// The newest pages landed, and an older one did not answer in time: the hits shown stand, the days before
+        /// went unread (`landOlder`).
+        case older
 
         var line: String {
             switch self {
             case .daemon: return "Titles only. The daemon did not answer the search; it may predate it."
             case .app: return "Titles only. Full search is not wired in this build."
+            case .older: return "Older days were not searched. The daemon did not answer in time."
             }
         }
     }
@@ -136,6 +149,8 @@ final class ConsoleSession: ObservableObject {
     @Published var searchFocusRequest = 0
     private var searchCache: [String: [LedgerHit]] = [:]
     private var searchTask: Task<Void, Never>?
+    /// How many hits the box asks the ledger for, across its pages.
+    static let searchLimit = 60
     /// The preview harness's `loading` scenario pinned every read in flight: `search` and `pick`
     /// leave their loading state up instead of answering. Never set in the app.
     private var holdForPreview = false
@@ -290,17 +305,59 @@ final class ConsoleSession: ObservableObject {
         searchTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: ConsoleSession.searchDebounceMs * 1_000_000)
             guard !Task.isCancelled else { return }
-            let answer = await state.ledgerSearch(q, limit: 60)
-            guard !Task.isCancelled, owner.searchOpen, ConsoleSession.searchKey(owner.searchQuery) == q else { return }
-            if let hits = answer {
-                owner.searchCache[q] = hits
-                owner.searchHits = hits
-                owner.searchGap = nil
-            } else {
-                owner.searchHits = []
-                owner.searchGap = .daemon
+            let current = { !Task.isCancelled && owner.searchOpen && ConsoleSession.searchKey(owner.searchQuery) == q }
+            guard let fetch = LedgerSearchPage.fetch else {
+                // No daemon client in this build (a harness): the handler's one page.
+                let answer = await state.ledgerSearch(q, limit: ConsoleSession.searchLimit)
+                guard current() else { return }
+                owner.land(q, answer.map { LedgerSearchPage(hits: $0) }, complete: true)
+                return
             }
-            owner.searching = false
+            // Page by page (search older): the daemon reads a bounded slice of day files per request, so a year of
+            // history never holds it for one long read, and the hits land as each page answers. The box keeps
+            // reading older pages until it has its hits or nothing older is left.
+            var page = await fetch(q, ConsoleSession.searchLimit, nil)
+            guard current() else { return }
+            owner.land(q, page, complete: page?.older == nil)
+            while let before = page?.older, let shown = owner.searchHits, shown.count < ConsoleSession.searchLimit {
+                page = await fetch(q, ConsoleSession.searchLimit - shown.count, before)
+                guard current() else { return }
+                owner.landOlder(q, page)
+            }
+        }
+    }
+
+    /// The first page landed (nil: nothing answered). `complete`: nothing older is left to read.
+    private func land(_ q: String, _ page: LedgerSearchPage?, complete: Bool) {
+        guard let page else {
+            searchHits = []
+            searchGap = .daemon
+            searching = false
+            return
+        }
+        searchHits = page.hits
+        searchGap = nil
+        if complete {
+            searchCache[q] = page.hits
+            searching = false
+        }
+    }
+
+    /// An older page landed (nil: it did not answer; the hits so far stand, and the gap line says the older days went
+    /// unread): its hits after the ones shown, the search done when nothing older is left or the box has its hits.
+    private func landOlder(_ q: String, _ page: LedgerSearchPage?) {
+        let shown = searchHits ?? []
+        guard let page else {
+            searchGap = .older
+            searching = false
+            return
+        }
+        let seen = Set(shown.map(\.id))
+        let all = shown + page.hits.filter { !seen.contains($0.id) }
+        searchHits = all
+        if page.older == nil || all.count >= ConsoleSession.searchLimit {
+            searchCache[q] = all
+            searching = false
         }
     }
 
@@ -379,9 +436,45 @@ final class ConsoleSession: ObservableObject {
         if ledgerDays != nil && !force { return }
         ledgerLoading = true
         ledgerError = nil
-        let days = await state.ledgerDays()
-        ledgerDays = days
+        if LedgerDays.fetch != nil {
+            // The list with every day's totals beside it (LM-6), asked again while it does not come or comes partial.
+            await askDays(retriesLeft: ConsoleSession.daysRetries)
+        } else {
+            ledgerDays = await state.ledgerDays()
+        }
         ledgerLoading = false
+    }
+
+    /// The totals again (a pick: the day being written moves, and a close or a carried decision can land on an
+    /// older one). The list comes with them; nothing changes when nothing answers, and it is asked again (`askDays`).
+    func refreshTotals() async {
+        await askDays(retriesLeft: ConsoleSession.daysRetries)
+    }
+
+    /// One `ledger.days` ask (LM-6). An answer sets the list and the totals; a `partial` one keeps what a day showed
+    /// until its total comes. No answer keeps the list on screen (still "Loading…" before the first). Either way it is
+    /// asked again `daysRetryAfterMs` later, `retriesLeft` more times; after the last, a list never answered is empty, as
+    /// before. A newer ask cancels the waiting one.
+    func askDays(retriesLeft: Int) async {
+        guard let fetch = LedgerDays.fetch else { return }
+        daysRetryTask?.cancel()
+        daysRetryTask = nil
+        let answer = await fetch()
+        if let answer {
+            if ledgerDays != answer.days { ledgerDays = answer.days }
+            let totals = answer.partial ? ledgerTotals.merging(answer.totals) { _, new in new } : answer.totals
+            if ledgerTotals != totals { ledgerTotals = totals }
+            if !answer.partial { return }
+        } else if retriesLeft <= 0 {
+            if ledgerDays == nil { ledgerDays = [] }
+        }
+        guard retriesLeft > 0 else { return }
+        daysRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: ConsoleSession.daysRetryAfterMs * 1_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.daysRetryTask = nil
+            await self.askDays(retriesLeft: retriesLeft - 1)
+        }
     }
 
     func pick(day: String, from state: AppState) async {
@@ -400,17 +493,25 @@ final class ConsoleSession: ObservableObject {
         // The user may have moved on while we were reading: either showLive()
         // already reset the flag, or a newer pick owns it now.
         guard ledgerDay == day else { return }
-        ledgerEntries = StreamBuilder.fromLedger(rows)
+        // A day's rows are the record where it was written: a decision a move carried into this day says so.
+        ledgerEntries = StreamBuilder.fromLedger(rows, reading: .day)
         let stats = StreamBuilder.stats(rows)
         ledgerStats = stats
         ledgerDayStats[day] = stats
         ledgerLoading = false
+        await refreshTotals()
     }
 
-    /// The figures a month head sums: the read days' stats, and how many of the month's days are read.
-    static func monthStats(_ days: [String], in cache: [String: LedgerStats]) -> (read: Int, billedSeconds: Double) {
-        let read = days.compactMap { cache[$0] }
-        return (read.count, read.reduce(0) { $0 + $1.billedSeconds })
+    /// A day's billed seconds as the rail shows them: the daemon's total (LM-6), else the figures of a read day, else
+    /// nil (not known yet).
+    static func billed(_ day: String, totals: [String: LedgerDayTotals], stats: [String: LedgerStats]) -> Double? {
+        totals[day]?.billedSeconds ?? stats[day]?.billedSeconds
+    }
+
+    /// The figures a month head sums: the days whose figures are known, and how many of the month's days that is.
+    static func monthStats(_ days: [String], totals: [String: LedgerDayTotals], stats: [String: LedgerStats]) -> (read: Int, billedSeconds: Double) {
+        let known = days.compactMap { billed($0, totals: totals, stats: stats) }
+        return (known.count, known.reduce(0, +))
     }
 }
 

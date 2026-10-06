@@ -32,6 +32,8 @@ struct ThreadPane: View, Equatable {
     var connected = true
     /// Settings.typedWakes: a typed line while asleep opens a paid session (Kevin's word; default off).
     var typedWakes = false
+    /// The snapshot carries `app.version` (ComposerHold.skewed): main's typed line is refused, so the words stay.
+    var skewed = false
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
@@ -41,6 +43,7 @@ struct ThreadPane: View, Equatable {
 
     static func == (a: ThreadPane, b: ThreadPane) -> Bool {
         a.thread == b.thread && a.store == b.store && a.phase == b.phase && a.connected == b.connected && a.typedWakes == b.typedWakes
+            && a.skewed == b.skewed
     }
 
     private var isMain: Bool { thread.id == "main" }
@@ -56,7 +59,8 @@ struct ThreadPane: View, Equatable {
         VStack(spacing: 0) {
             ThreadHeader(thread: thread, connected: connected, close: close)
             ThreadFeed(thread: thread, store: store, caretsOn: caretsOn, viewer: viewer)
-            ThreadComposer(thread: thread, phase: phase, typedWakes: typedWakes, close: close)
+            ThreadComposer(thread: thread, phase: phase, typedWakes: typedWakes, skewed: skewed,
+                           lastTypedId: isMain ? ComposerHold.lastTypedId(store?.entries.compactMap(\.item) ?? []) : nil, close: close)
         }
         // Allow / Deny on this feed's confirm rows answer THIS thread's question (StepRow).
         .environment(\.consoleConfirm, ConsoleConfirm(threadId: thread.id))
@@ -301,11 +305,17 @@ private struct ThreadComposer: View {
     let thread: WorkThread
     let phase: Phase
     let typedWakes: Bool
+    /// The builds differ (`app.version`): main's typed line is refused, and the words stay (ComposerHold.submitted).
+    let skewed: Bool
+    /// Main only: the newest line Kevin typed that reached the conversation (ComposerHold).
+    let lastTypedId: String?
     let close: () -> Void
 
     @Environment(\.consoleActions) private var actions
     @EnvironmentObject private var session: ConsoleSession
     @State private var text = ""
+    /// Main only: a line sent while the engine must resume or wake first stays until it lands (V6, ComposerHold).
+    @State private var held: ComposerHold.Held?
     @FocusState private var focused: Bool
 
     private var isMain: Bool { thread.id == "main" }
@@ -372,15 +382,23 @@ private struct ThreadComposer: View {
         .animation(Motion.gentle, value: question)
         .animation(Motion.fade, value: off)
         .onChange(of: session.composerFocusRequest) { focused = true }
+        .onChange(of: lastTypedId) { held = ComposerHold.landed(held, lastTypedId: lastTypedId, text: &text) }
+        .onChange(of: text) { held = ComposerHold.edited(held, text: text) }
+        .onChange(of: phase) { held = ComposerHold.phaseChanged(held, phase: phase, text: &text) }
     }
 
     private func submit() {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         actions.send(.threadSay(threadId: thread.id, text: t))
-        // Asleep, the engine refuses by default (no paid session on a stray Return) and toasts
-        // "asleep — press Go": the words stay where Kevin typed them. Everywhere else they went.
-        if !(isMain && asleep && !typedWakes) { text = "" }
+        // A spawned thread takes the line as a follow-up turn: the field clears. Main is the conversation's composer
+        // (ComposerHold): asleep the engine refuses by default ("asleep — press Go") and the words stay; paused it
+        // resumes first, and the words stay until the line lands, so a resume that fails leaves them here.
+        if isMain {
+            held = ComposerHold.submitted(t, phase: phase, typedWakes: typedWakes, skewed: skewed, lastTypedId: lastTypedId, text: &text)
+        } else {
+            text = ""
+        }
     }
 }
 

@@ -1076,6 +1076,19 @@
       { "at": 1789243420000, "type": "session.usage", "sessionId": "sess_e04b7c", "usageSeconds": 120 },
       { "at": 1789243447300, "type": "heard", "item": { "id": "u_41", "speaker": "kevin", "text": "what's next on my calendar", "startMs": 146200, "endMs": 147300, "at": 1789243447300, "final": true } },
       { "at": 1789243447300, "type": "session.closed", "sessionId": "sess_e04b7c", "reason": "lost", "usageSeconds": 120 },
+      { "at": 1789243500000, "type": "conversation.renamed", "chainId": "sess_e04b7c", "name": "Calendar check", "carried": true, "decidedAt": 1789157000000 },
+      { "at": 1789243500000, "type": "now.cleared", "sessionId": "sess_e04b7c", "carried": true, "decidedAt": 1789157100000 },
+      { "at": 1789243500000, "type": "agent.hidden", "agentId": "codex:019a2c", "hidden": true, "carried": true, "decidedAt": 1789157200000 },
+      {
+        "at": 1789243500000,
+        "type": "ledger.moved",
+        "day": "2026-09-08",
+        "what": "ledger",
+        "to": "trash",
+        "path": "/Users/kevin/.jarhead/trash/ledger/2026-09-08.jsonl",
+        "by": "kevin",
+        "lineage": { "sess_e04b7c": ["sess_a01f3d"] }
+      },
       { "at": 1789243262800, "type": "worker", "worker": { "id": "w_old", "name": "Spotify", "delegationId": "dlg_old", "task": "play the playlist Focus — a row as day files before 2026-09-13 hold it", "lane": "background", "status": "working", "startedAt": 1789243262500, "steps": 1 } },
       {
         "at": 1789243262900,
@@ -1328,5 +1341,13 @@
       { "day": "2026-09-11", "sessions": 2, "billedSeconds": 181 },
       { "day": "2026-09-10", "sessions": 0, "billedSeconds": 0 }
     ]
+  },
+  {
+    "type": "ledger.hits",
+    "id": "q_search",
+    "hits": [
+      { "sessionId": "sess_e04b7c", "chainId": "sess_e04b7c", "state": "active", "at": 1789243447300, "kind": "heard", "text": "what's next on my calendar" }
+    ],
+    "older": "2026-09-11"
   }
 ]

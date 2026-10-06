@@ -41,6 +41,8 @@ struct StreamPane: View, Equatable {
     /// Settings.typedWakes: a typed line while asleep opens a paid session (default off — the
     /// engine refuses and the composer keeps the words).
     var typedWakes = false
+    /// The snapshot carries `app.version` (ComposerHold.skewed): the daemon client refuses a typed line, so the words stay.
+    var skewed = false
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
@@ -49,7 +51,7 @@ struct StreamPane: View, Equatable {
         a.transcript == b.transcript && a.delegations == b.delegations && a.phase == b.phase && a.hasSession == b.hasSession
             && a.ledgerDay == b.ledgerDay && a.ledgerEntries == b.ledgerEntries && a.ledgerLoading == b.ledgerLoading
             && a.clearedAt == b.clearedAt && a.connected == b.connected
-            && a.threads == b.threads && a.typedWakes == b.typedWakes
+            && a.threads == b.threads && a.typedWakes == b.typedWakes && a.skewed == b.skewed
     }
 
     /// The caret may show at all: the live feed, a session open, the daemon connected. A ledger
@@ -99,7 +101,7 @@ struct StreamPane: View, Equatable {
             }
             .clipped()
             .animation(Motion.wipeAnimation, value: feedKey)
-            ComposerBar(phase: phase, stopHot: delegationRunning, typedWakes: typedWakes)
+            ComposerBar(phase: phase, stopHot: delegationRunning, typedWakes: typedWakes, lastTypedId: ComposerHold.lastTypedId(transcript), skewed: skewed)
         }
         .animation(Motion.gentle, value: ledgerDay == nil)
     }
@@ -1359,11 +1361,18 @@ struct ComposerBar: View {
     /// Settings.typedWakes (default off): a typed line while asleep opens a paid session. Off,
     /// the engine refuses with a toast ("asleep — press Go") and the words stay in the field.
     var typedWakes = false
+    /// The newest line Kevin typed that reached the conversation (`ComposerHold.lastTypedId`): a held line leaves the
+    /// field when a newer one lands.
+    var lastTypedId: String? = nil
+    /// The builds differ (`app.version`): a typed line is refused, and the words stay (ComposerHold.submitted).
+    var skewed = false
 
     @Environment(\.consoleActions) private var actions
     @Environment(\.consoleTransport) private var transport
     @EnvironmentObject private var session: ConsoleSession
     @State private var text = ""
+    /// A line sent while the engine must resume or wake first (V6): it stays in the field until it lands.
+    @State private var held: ComposerHold.Held?
     @State private var stopFlashing = false
     /// The composer's own width (the stream column's): `ComposerFit.cluster` reads it, so the voice
     /// cluster gives while the field is held near its floor, and the field gives only at the window's minimum.
@@ -1445,6 +1454,9 @@ struct ComposerBar: View {
         }
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
         .onChange(of: session.composerFocusRequest) { focused = true }
+        .onChange(of: lastTypedId) { held = ComposerHold.landed(held, lastTypedId: lastTypedId, text: &text) }
+        .onChange(of: text) { held = ComposerHold.edited(held, text: text) }
+        .onChange(of: phase) { held = ComposerHold.phaseChanged(held, phase: phase, text: &text) }
         .onChange(of: session.stopFlash) {
             // The press is felt at once — when there was something to stop. `phase` here is the
             // phase at the press: the engine's asleep arrives with the next snapshot.
@@ -1522,7 +1534,72 @@ struct ComposerBar: View {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         actions.send(.sayText(t))
-        if !ComposerBar.keepsText(phase: phase, typedWakes: typedWakes) { text = "" }
+        held = ComposerHold.submitted(t, phase: phase, typedWakes: typedWakes, skewed: skewed, lastTypedId: lastTypedId, text: &text)
+    }
+}
+
+/// V6: what a sent line does to the field. In session it goes straight to the conversation, and the field clears.
+/// Asleep (or in error) with typed wakes off the engine refuses it, and the words stay for the Go (`keepsText`).
+/// While the builds differ (`app.version`, APP-3) the daemon client refuses every typed line, in any phase, and the
+/// words stay too. Anywhere else (paused, connecting, asleep with typed wakes) the engine resumes or wakes first, and
+/// the words reach the conversation only if that works. So the field keeps them until the line lands (a newer typed
+/// line in the conversation), and "not sent · could not resume, still paused" leaves them where Kevin typed them.
+/// The session's return ends the hold too (`phaseChanged`): a voice pick typed while paused ("switch to the ballad
+/// voice") runs as a reflex and lands no typed line, so its words leave when the session resumes on the new voice.
+/// Typed asleep with typed wakes off, a voice pick still takes effect ("heard at the next Go"), and its words stay,
+/// like any line typed there: the engine's reflex sends no ack (engine.ts sayText), so the field cannot tell it apart.
+/// An edit drops the hold: the field is his again. The Console's composer and the main thread's pane share these rules.
+enum ComposerHold {
+    /// The line sent, and the newest typed line the conversation held at the send.
+    struct Held: Equatable {
+        let text: String
+        let after: String?
+    }
+
+    /// The newest typed line of Kevin's in a transcript (`source` "typed"): its id.
+    static func lastTypedId(_ items: [TranscriptItem]) -> String? {
+        items.last { $0.speaker == .kevin && $0.source == "typed" }?.id
+    }
+
+    /// Whether a line sent in `phase` waits for its landing before it leaves the field.
+    static func waitsToLand(phase: Phase, typedWakes: Bool) -> Bool {
+        !AppState.inSessionPhases.contains(phase) && !ComposerWords.keepsText(phase: phase, typedWakes: typedWakes)
+    }
+
+    /// Whether the snapshot says the app and the daemon are from different builds (the `app.version` row, APP-3).
+    static func skewed(_ problems: [Problem]) -> Bool {
+        problems.contains { $0.kind == "app.version" }
+    }
+
+    /// After a send: the field cleared (in session), kept (refused: asleep with typed wakes off, or the builds differ),
+    /// or kept and held until the line lands.
+    static func submitted(_ line: String, phase: Phase, typedWakes: Bool, skewed: Bool = false, lastTypedId: String?, text: inout String) -> Held? {
+        if skewed || ComposerWords.keepsText(phase: phase, typedWakes: typedWakes) { return nil }
+        if waitsToLand(phase: phase, typedWakes: typedWakes) { return Held(text: line, after: lastTypedId) }
+        text = ""
+        return nil
+    }
+
+    /// A typed line landed: a held line leaves the field (unless Kevin changed it); the hold ends either way.
+    static func landed(_ held: Held?, lastTypedId: String?, text: inout String) -> Held? {
+        guard let held, let lastTypedId, lastTypedId != held.after else { return held }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines) == held.text { text = "" }
+        return nil
+    }
+
+    /// The phase changed: back in session, a held line has gone with the resume or the wake (a typed line on its way, or
+    /// a reflex such as a voice pick that lands none), so it leaves the field (unless Kevin changed it); the hold ends.
+    static func phaseChanged(_ held: Held?, phase: Phase, text: inout String) -> Held? {
+        guard let held, AppState.inSessionPhases.contains(phase) else { return held }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines) == held.text { text = "" }
+        return nil
+    }
+
+    /// The field changed: an edit drops the hold, so a later landing never clears what Kevin is typing now.
+    static func edited(_ held: Held?, text: String) -> Held? {
+        guard let held else { return nil }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t == held.text ? held : nil
     }
 }
 

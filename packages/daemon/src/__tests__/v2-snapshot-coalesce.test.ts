@@ -5,6 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROTOCOL_VERSION } from "@jarhead/protocol";
 import { FRAME_JSON, FRAME_SPEAKER, FrameParser, encodeJson } from "../wire.ts";
 import * as serverModule from "../server.ts";
 import { DaemonServer, type EngineLike } from "../server.ts";
@@ -91,7 +92,8 @@ async function rig(): Promise<Rig> {
     for (const f of parser.push(chunk)) received.push(kindOf(f.type, f.payload));
   });
   await new Promise<void>((resolve) => client.once("connect", () => resolve()));
-  client.write(encodeJson({ type: "hello", pid: process.pid, audio: true }));
+  // The app's hello as EngineClient sends it: an app of this build (W3-3), so no `app.version` snapshot joins the count.
+  client.write(encodeJson({ type: "hello", pid: process.pid, audio: true, protocol: PROTOCOL_VERSION }));
   // Wait for the server to register the app (audio: true), then watch what it hands its socket.
   for (let i = 0; i < 200 && ![...clients].some((c) => c.audio); i++) await new Promise((r) => setTimeout(r, 5));
   const side = [...clients].find((c) => c.audio)!.socket;

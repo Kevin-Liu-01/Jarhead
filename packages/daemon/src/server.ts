@@ -1,11 +1,12 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { EventEmitter } from "node:events";
 import { closeSync, constants as fsConstants, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import { specByName } from "@jarhead/brain";
-import { isAudioState, isEngineCommand, type AudioState, type AudioTelemetryShed, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
+import { MAIN_THREAD_ID, PROTOCOL_VERSION, isAudioState, isEngineCommand, type AudioState, type AudioTelemetryShed, type EngineCommand, type EngineEvent, type Grant, type LedgerDayTotals, type OverlayCommand, type Problem } from "@jarhead/protocol";
 import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, parseClientMessage, type DaemonMessage } from "./wire.ts";
 
 /**
@@ -49,6 +50,40 @@ export const SNAPSHOT_BACKLOG_BYTES = 64 * 1024;
  */
 export const AUDIO_SHED_LINE_EVERY_MS = 60_000;
 
+/**
+ * APP-3 on the daemon's side. An app (`hello { audio: true }`) whose hello names another PROTOCOL_VERSION, or none (a
+ * build from before the field), was built from another checkout. The app judges the same skew from this daemon's
+ * hello (EngineClient), but an app from before that check judges nothing: so the daemon lays the `app.version` row over
+ * the snapshots it sends while such an app is attached, and refuses that app's commands that would open a paid
+ * session (`opensSession`) with a toast. The words are the app's own (EngineClient.skewProblemText and the two toasts).
+ */
+export const APP_VERSION_TEXT = "The app and the daemon are from different builds. Restart the daemon. If this stays, run pnpm build:mac.";
+export const APP_VERSION_REFUSED_TEXT = "Not started. The app and the daemon are from different builds.";
+export const APP_VERSION_NOT_SENT_TEXT = "Not sent. The app and the daemon are from different builds.";
+
+/** The commands that can open a paid session: Go, a resume, Switch now's reopen, and a line typed to main (it resumes a paused conversation, or wakes Jarhead with typed wakes on). EngineClient.opensSession's list. */
+export function opensSession(command: EngineCommand): boolean {
+  switch (command.type) {
+    case "go":
+    case "resume":
+    case "voice.reopen":
+    case "say-text":
+      return true;
+    case "thread.say":
+      return command.threadId === MAIN_THREAD_ID;
+    default:
+      return false;
+  }
+}
+
+/**
+ * LM-6: how long `ledger.days` waits for its totals before it answers with the list and the totals read so far
+ * (`partial`). The app's request gives up at 5 s; a cold year of day files on a loaded Mac took 6 to 9 s.
+ */
+export const LEDGER_DAYS_BUDGET_MS = 1500;
+/** How long after `listen` the daemon reads the day totals once in the background, so the Ledger tab's first ask finds them warm. */
+export const LEDGER_TOTALS_WARM_MS = 10_000;
+
 /** What the server needs from the engine; the real Engine satisfies it, and the test fakes implement all of it. */
 export interface EngineLike {
   on(event: "event", listener: (e: EngineEvent) => void): unknown;
@@ -74,10 +109,18 @@ export interface EngineLike {
     days(): string[];
     sessions(): unknown[];
     readSession(sessionId: string): unknown[];
-    /** Full-text hits over the live day files (`ledger.search`). */
+    /** Full-text hits over the live day files: every live day in one read. `ledger.search` uses it only on a ledger without `searchPage`. */
     search(query: string, limit?: number): unknown[];
+    /**
+     * One page of `search` (`ledger.search` → `ledger.hits`): the day files before `before`, newest first, until the
+     * page's byte bound (`maxBytes`, the ledger's SEARCH_PAGE_BYTES by default) or `limit` hits; `older` is the next
+     * page's `before` when the bound stopped it. Optional so the test fakes need none.
+     */
+    searchPage?(query: string, opts: { readonly limit?: number; readonly before?: string; readonly maxBytes?: number }): { readonly hits: readonly unknown[]; readonly older?: string };
     /** A whole chain's rows in one read (`ledger.chain`). */
     readChain(rootId: string): { readonly rows: unknown[]; readonly truncated: boolean };
+    /** The folder of the day files (`<stateDir>/ledger`): `ledger.days` reads its totals there (LM-6). A fake without it answers the list alone. */
+    readonly dir?: string;
   };
   /** The memory module's reads (`memory.list` / `memory.search`). */
   readonly memory: { list(state?: string, limit?: number): unknown[]; search(query: string, limit?: number): Promise<unknown[]> };
@@ -148,6 +191,8 @@ interface Client {
   bye: boolean;
   /** This client sent an `audio-state` frame: when its socket closes the snapshot's audioState is cleared (the graph left with the app). */
   audioState: boolean;
+  /** APP-3: an app whose hello named another PROTOCOL_VERSION, or none. Its session-opening commands are refused. */
+  skewed: boolean;
   /**
    * The conversations this client is showing — "agent:<id>" | "thread:<id>" — kept from
    * the open/close commands it sent; `route` reads it. A key stays while ANY of the
@@ -205,6 +250,14 @@ export interface DaemonServerOptions {
   readonly version?: string;
   /** APP_GONE_GRACE_MS, shorter in tests. */
   readonly appGoneGraceMs?: number;
+  /** Bytes of day files one `ledger.search` page reads; the ledger's own bound (SEARCH_PAGE_BYTES) when absent. Smaller in tests. */
+  readonly searchPageBytes?: number;
+  /** LEDGER_DAYS_BUDGET_MS, shorter in tests. */
+  readonly totalsBudgetMs?: number;
+  /** LEDGER_TOTALS_WARM_MS; Infinity reads nothing ahead. */
+  readonly totalsWarmMs?: number;
+  /** How DayTotals reads one day file (readFile); a test makes one slow. */
+  readonly readDayFile?: (path: string) => Promise<string>;
 }
 
 export class DaemonServer extends EventEmitter<DaemonServerEvents> {
@@ -225,6 +278,15 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   /** The last `audio-state: shed …` line, and the frames that shed something since (W2-5 / V2, PLAN W1.5). */
   private shedLineAt = Number.NEGATIVE_INFINITY;
   private shedFrames = 0;
+  private readonly searchPageBytes: number | undefined;
+  /** LM-6: the per-file tallies behind `ledger.days`' totals, made at the warm read or the first ask. */
+  private dayTotals: DayTotals | undefined;
+  private readonly totalsBudgetMs: number;
+  private readonly totalsWarmMs: number;
+  private readonly readDayFile: ((path: string) => Promise<string>) | undefined;
+  private totalsWarmTimer: NodeJS.Timeout | undefined;
+  /** APP-3: when the first skewed app of the current run attached (the row's `since`); undefined while none is. */
+  private appSkewSince: number | undefined;
 
   /** Over the engine, or over a ToolHost (a brain's private tool socket): then only `tool.run` does anything. */
   constructor(
@@ -235,6 +297,10 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     super();
     this.version = options.version ?? "2.0.0";
     this.appGoneGraceMs = options.appGoneGraceMs ?? APP_GONE_GRACE_MS;
+    this.searchPageBytes = options.searchPageBytes;
+    this.totalsBudgetMs = options.totalsBudgetMs ?? LEDGER_DAYS_BUDGET_MS;
+    this.totalsWarmMs = options.totalsWarmMs ?? LEDGER_TOTALS_WARM_MS;
+    this.readDayFile = options.readDayFile;
     this.engine = isEngine(engine) ? engine : toolOnlyEngine(engine);
     this.engine.on("event", (e) => {
       switch (e.type) {
@@ -300,6 +366,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       throw e;
     }
     log.info(`listening on ${path}`);
+    this.armTotalsWarm();
   }
 
   private async bindPath(path: string): Promise<void> {
@@ -358,11 +425,12 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   }
 
   private accept(socket: Socket): void {
-    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, bye: false, audioState: false, viewers: new Set(), panes: new Map(), pendingSnapshot: undefined, drainArmed: false };
+    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, bye: false, audioState: false, skewed: false, viewers: new Set(), panes: new Map(), pendingSnapshot: undefined, drainArmed: false };
     this.clients.add(client);
     socket.setNoDelay(true);
-    this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir });
-    this.writeSnapshot(client, encodeJson({ type: "snapshot", snapshot: this.engine.snapshot() }));
+    // `protocol` (APP-3): the app compares it with its own, and a difference is `app.version` with Go refused.
+    this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir, protocol: PROTOCOL_VERSION });
+    this.writeSnapshot(client, encodeJson({ type: "snapshot", snapshot: this.withAppSkew(this.engine.snapshot()) }));
     socket.on("data", (chunk: Buffer) => {
       let frames;
       try {
@@ -397,6 +465,8 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       }
       log.info(`client left (${this.clients.size} remaining)`);
       this.tellViewers();
+      // The last app of another build left: the snapshots lose its row.
+      if (client.skewed && !this.closing) this.noteAppSkew();
       if (client.audio && !client.bye) this.appGone();
       this.emit("leave", this.clients.size);
     });
@@ -415,12 +485,22 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     switch (msg.type) {
       case "hello":
         client.audio = msg.audio === true;
+        // APP-3: an app built from another checkout. A CLI client (`audio: false`) runs from this checkout and is never judged.
+        client.skewed = client.audio && msg.protocol !== PROTOCOL_VERSION;
+        if (client.skewed) log.warn(`the app (pid ${msg.pid}) says protocol ${msg.protocol ?? "none"}, this daemon ${PROTOCOL_VERSION}: app.version, and its Go is refused until it is rebuilt`);
         if (Number.isInteger(msg.pid)) this.engine.registerOwnPid(msg.pid);
         if (client.audio) this.appBack();
         this.tellViewers();
+        this.noteAppSkew();
         return;
       case "command": {
         if (!isEngineCommand(msg.command)) return this.send(client, { type: "error", message: "malformed command" });
+        if (client.skewed && opensSession(msg.command)) {
+          // APP-3: nothing opens a paid session for an app that may not read it. The row says what to do.
+          const typed = msg.command.type === "say-text" || msg.command.type === "thread.say";
+          log.info(`refused ${msg.command.type} from an app of another build (app.version)`);
+          return this.send(client, { type: "toast", text: typed ? APP_VERSION_NOT_SENT_TEXT : APP_VERSION_REFUSED_TEXT, tone: "warn" });
+        }
         // The × on one thumbnail names its mark; without an id there is nothing to forget, and the engine never sees it.
         if (msg.command.type === "mark.remove" && (typeof msg.command.id !== "string" || msg.command.id === "")) return this.send(client, { type: "error", message: "malformed command" });
         let command = msg.command;
@@ -472,9 +552,29 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         this.send(client, { type: "ledger.rows", id: msg.id, rows: Number.isFinite(t) ? this.engine.ledger.read(t) : [] });
         return;
       }
-      case "ledger.days":
-        this.send(client, { type: "ledger.days", id: msg.id, days: this.engine.ledger.days().map((f) => f.replace(/\.jsonl$/, "")).reverse() });
-        break;
+      case "ledger.days": {
+        // The day list, newest first, and each day's totals beside it (LM-6), so the Ledger tab's day rows and month
+        // heads show every day's figures, not only the days it opened. The totals are read off the day files
+        // asynchronously (a file at a time, kept while unchanged). The answer waits for them at most totalsBudgetMs:
+        // a cold read of a long history on a loaded Mac takes longer than the app waits, so the list goes then with
+        // the totals read so far and `partial`, the read goes on, and the app asks again. A read that fails sends the
+        // list alone.
+        const id = msg.id;
+        const days = this.dayList();
+        const totals = this.totals();
+        if (!totals) {
+          this.send(client, { type: "ledger.days", id, days });
+          return;
+        }
+        void totals
+          .within(days, this.totalsBudgetMs)
+          .then((got) => this.send(client, { type: "ledger.days", id, days, totals: got.totals, ...(got.partial ? { partial: true as const } : {}) }))
+          .catch((e: unknown) => {
+            log.warn(`ledger.days totals failed: ${(e as Error).message}`);
+            this.send(client, { type: "ledger.days", id, days });
+          });
+        return;
+      }
       case "ledger.sessions":
         this.send(client, { type: "ledger.sessions", id: msg.id, sessions: this.engine.ledger.sessions() });
         break;
@@ -508,13 +608,27 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         return;
       }
       case "ledger.search": {
-        // The Console's search box (K1): heard/said text and delegation requests/summaries over the
-        // LIVE day files, newest first, bounded by the ledger (50 by default, 200 at most). Synchronous
-        // over the walk's parsed cache; the trash is never read.
+        // The Console's search box (K1) and `jarhead ledger search`: heard/said text and delegation requests and
+        // summaries over the LIVE day files, newest first, one page per request (Ledger.searchPage): the day files
+        // before `before`, read until the page's byte bound or `limit` hits (50 by default, 200 at most). Synchronous,
+        // a raw-text prefilter over one page of files with nothing kept, so a year of history never holds the loop for
+        // one long read; `older` says where to go on. The trash is never read.
         const query = typeof msg.query === "string" ? msg.query : "";
         const limit = Number(msg.limit);
-        const hits = this.engine.ledger.search(query, ...(Number.isFinite(limit) && limit > 0 ? [limit] : []));
-        this.send(client, { type: "ledger.hits", id: String(msg.id ?? ""), hits });
+        const asked = Number.isFinite(limit) && limit > 0 ? limit : undefined;
+        const id = String(msg.id ?? "");
+        const ledger = this.engine.ledger;
+        if (!ledger.searchPage) {
+          this.send(client, { type: "ledger.hits", id, hits: ledger.search(query, ...(asked !== undefined ? [asked] : [])) });
+          return;
+        }
+        const before = typeof msg.before === "string" && DAY_RE.test(msg.before) ? msg.before : undefined;
+        const page = ledger.searchPage(query, {
+          ...(asked !== undefined ? { limit: asked } : {}),
+          ...(before !== undefined ? { before } : {}),
+          ...(this.searchPageBytes !== undefined ? { maxBytes: this.searchPageBytes } : {}),
+        });
+        this.send(client, { type: "ledger.hits", id, hits: [...page.hits], ...(page.older !== undefined ? { older: page.older } : {}) });
         return;
       }
       case "tool.run":
@@ -651,8 +765,71 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   /** A snapshot to every client, encoded once; a backed-up client keeps only the newest (`writeSnapshot`). */
   private broadcastSnapshot(snapshot: unknown): void {
     if (this.clients.size === 0) return;
-    const frame = encodeJson({ type: "snapshot", snapshot });
+    const frame = encodeJson({ type: "snapshot", snapshot: this.withAppSkew(snapshot) });
     for (const c of this.clients) this.writeSnapshot(c, frame);
+  }
+
+  /**
+   * APP-3: an app hello or an app leaving may have changed whether an app of another build is attached. When it did,
+   * every client gets the engine's snapshot again, with the `app.version` row on it or without it.
+   */
+  private noteAppSkew(): void {
+    const skewed = [...this.clients].some((c) => c.skewed);
+    if (skewed === (this.appSkewSince !== undefined)) return;
+    this.appSkewSince = skewed ? Date.now() : undefined;
+    let snapshot: unknown;
+    try {
+      snapshot = this.engine.snapshot();
+    } catch (e) {
+      log.debug(`snapshot for app.version: ${(e as Error).message}`);
+      return;
+    }
+    this.broadcastSnapshot(snapshot);
+  }
+
+  /** The snapshot with the `app.version` row laid over its problems while an app of another build is attached; as it is otherwise. */
+  private withAppSkew(snapshot: unknown): unknown {
+    if (this.appSkewSince === undefined || typeof snapshot !== "object" || snapshot === null) return snapshot;
+    const own = (snapshot as { problems?: unknown }).problems;
+    const problems = (Array.isArray(own) ? (own as Problem[]) : []).filter((p) => p?.kind !== "app.version");
+    const row: Problem = {
+      kind: "app.version",
+      text: APP_VERSION_TEXT,
+      remedy: { label: "Restart daemon", command: { type: "daemon.restart" }, copy: "pnpm build:mac" },
+      since: this.appSkewSince,
+    };
+    return { ...snapshot, problems: [...problems, row] };
+  }
+
+  /** The live day files as the day list spells them (YYYY-MM-DD), newest first. */
+  private dayList(): string[] {
+    return this.engine.ledger.days().map((f) => f.replace(/\.jsonl$/, "")).reverse();
+  }
+
+  /** The day totals over the ledger's folder; undefined for a ledger with none (a fake, a tool host). */
+  private totals(): DayTotals | undefined {
+    const dir = this.engine.ledger.dir;
+    if (!dir) return undefined;
+    this.dayTotals ??= new DayTotals(dir, this.readDayFile);
+    return this.dayTotals;
+  }
+
+  /** LM-6: once, `totalsWarmMs` after listen, every live day's tally is read in the background, a file at a time. */
+  private armTotalsWarm(): void {
+    if (!this.engine.ledger.dir || !Number.isFinite(this.totalsWarmMs)) return;
+    if (this.totalsWarmTimer) clearTimeout(this.totalsWarmTimer);
+    this.totalsWarmTimer = setTimeout(() => {
+      this.totalsWarmTimer = undefined;
+      const totals = this.closing ? undefined : this.totals();
+      if (!totals) return;
+      const days = this.dayList();
+      const t0 = Date.now();
+      void totals
+        .refresh(days)
+        .then(() => log.debug(`ledger.days totals read ahead: ${days.length} days in ${Date.now() - t0} ms`))
+        .catch((e: unknown) => log.debug(`ledger.days totals read ahead failed: ${(e as Error).message}`));
+    }, Math.max(0, this.totalsWarmMs));
+    this.totalsWarmTimer.unref?.();
   }
 
   /**
@@ -731,6 +908,8 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     this.closing = true;
     if (this.appGoneTimer) clearTimeout(this.appGoneTimer);
     this.appGoneTimer = undefined;
+    if (this.totalsWarmTimer) clearTimeout(this.totalsWarmTimer);
+    this.totalsWarmTimer = undefined;
     for (const c of this.clients) c.socket.destroy();
     this.clients.clear();
     await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
@@ -748,6 +927,176 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     }
     // Last, once the path is gone: a server that takes the lock next finds nothing to refuse.
     this.releaseSocketLock();
+  }
+}
+
+// ------------------------------------------------------- the ledger's day totals
+
+/** A day as the day files spell it (YYYY-MM-DD): what `ledger.search`'s `before` may be. */
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** What one day file says for the totals, kept while the file's mtime and size are what was read. */
+interface DayTally {
+  readonly mtimeMs: number;
+  readonly size: number;
+  /** `session.started` rows. */
+  readonly started: number;
+  /** Per session, its last `session.closed` row's seconds in this file. */
+  readonly closes: ReadonlyMap<string, number>;
+  /** Per session, its last `session.usage` row's seconds in this file. */
+  readonly usages: ReadonlyMap<string, number>;
+  /** Closed rows that name no session (day files from before 2026-09-13 hold `"?"`): each counts on its own. */
+  readonly unnamed: number;
+}
+
+/** A row's own spelling of its type (JSON.stringify writes no space): only these lines are parsed. */
+const SESSION_ROW = '"type":"session.';
+
+/**
+ * LM-6: each day's totals for the `ledger.days` reply (`LedgerDayTotals`), read off the day files in `dir`. A
+ * session counts once, in the day file of the row that carries its seconds: its last `session.closed` row (a
+ * SESSION_LOST_REASON close included), else, while it has none, its last `session.usage` row. Never both: a lost
+ * close repeats the seconds of the usage row before it. `sessions` is the file's `session.started` rows.
+ *
+ * Only the lines that hold a session row are parsed, a file is kept while its mtime and size hold (after the first
+ * pass only the day being written is read again), and the reads are async, one file at a time, newest first, so a
+ * year of history never holds the event loop for one long read. One pass runs at a time (`refresh`); an ask while
+ * one runs joins it. A session's close is never in an older file than its usage rows, so the tallies of the newest
+ * days alone already give those days' exact figures: `within` answers with them when the pass outlasts its budget.
+ * Live days only: the Trash is another folder.
+ */
+export class DayTotals {
+  private readonly tallies = new Map<string, DayTally>();
+  /** The pass under way and the days it covers; undefined between passes. */
+  private pass: { readonly days: ReadonlySet<string>; readonly done: Promise<void> } | undefined;
+
+  constructor(
+    private readonly dir: string,
+    private readonly read: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),
+  ) {}
+
+  /**
+   * Bring the tallies of `days` up to date, newest first, a file at a time. A pass under way that covers every one of
+   * `days` is joined; otherwise this one runs after it.
+   */
+  refresh(days: readonly string[]): Promise<void> {
+    const wanted = new Set(days);
+    const running = this.pass;
+    if (running && [...wanted].every((day) => running.days.has(day))) return running.done;
+    const done = (running?.done ?? Promise.resolve()).then(() => this.walk(wanted));
+    const pass = { days: wanted, done };
+    this.pass = pass;
+    void done
+      .finally(() => {
+        if (this.pass === pass) this.pass = undefined;
+      })
+      .catch(() => undefined);
+    return done;
+  }
+
+  /** The totals of `days` (YYYY-MM-DD), in the order given, once a pass over them is done; a day whose file cannot be read reads zero. */
+  async totals(days: readonly string[]): Promise<LedgerDayTotals[]> {
+    await this.refresh(days);
+    return this.compute(days, false);
+  }
+
+  /**
+   * `totals`, waiting at most `budgetMs` for the pass. `partial` when it was still under way: then `totals` holds only
+   * the days that have a tally (this pass's or a kept one), and the pass goes on, so the next ask finds more.
+   */
+  async within(days: readonly string[], budgetMs: number): Promise<{ readonly totals: LedgerDayTotals[]; readonly partial: boolean }> {
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(0, budgetMs));
+    });
+    const finished = await Promise.race([this.refresh(days).then(() => true as const), late]);
+    clearTimeout(timer);
+    return { totals: this.compute(days, !finished), partial: !finished };
+  }
+
+  /** One pass: the days no longer listed are let go, and every listed day's tally is checked, newest first. */
+  private async walk(days: ReadonlySet<string>): Promise<void> {
+    for (const day of [...this.tallies.keys()]) if (!days.has(day)) this.tallies.delete(day);
+    for (const day of [...days].sort().reverse()) await this.tally(day);
+  }
+
+  /** The figures from the tallies held now. `tallied`: leave out a day with none (a partial answer) instead of reading it as zero. */
+  private compute(days: readonly string[], tallied: boolean): LedgerDayTotals[] {
+    const oldestFirst = [...new Set(days)].sort();
+    // The file of each session's last closed row, else of its last usage row; later files win (oldest first).
+    const closedIn = new Map<string, { day: string; seconds: number }>();
+    const usedIn = new Map<string, { day: string; seconds: number }>();
+    for (const day of oldestFirst) {
+      const tally = this.tallies.get(day);
+      if (!tally) continue;
+      for (const [id, seconds] of tally.closes) closedIn.set(id, { day, seconds });
+      for (const [id, seconds] of tally.usages) usedIn.set(id, { day, seconds });
+    }
+    const billed = new Map<string, number>();
+    const add = (day: string, seconds: number): void => void billed.set(day, (billed.get(day) ?? 0) + seconds);
+    for (const { day, seconds } of closedIn.values()) add(day, seconds);
+    for (const [id, { day, seconds }] of usedIn) if (!closedIn.has(id)) add(day, seconds);
+    return days.flatMap((day) => {
+      const tally = this.tallies.get(day);
+      if (!tally && tallied) return [];
+      return [{ day, sessions: tally?.started ?? 0, billedSeconds: (billed.get(day) ?? 0) + (tally?.unnamed ?? 0) }];
+    });
+  }
+
+  /** One day file's tally: the kept one while the file is unchanged, else read again. Undefined when it cannot be read (it moved to the Trash meanwhile). */
+  private async tally(day: string): Promise<DayTally | undefined> {
+    const path = join(this.dir, `${day}.jsonl`);
+    let mtimeMs: number;
+    let size: number;
+    try {
+      ({ mtimeMs, size } = await stat(path));
+    } catch {
+      this.tallies.delete(day);
+      return undefined;
+    }
+    const kept = this.tallies.get(day);
+    if (kept && kept.mtimeMs === mtimeMs && kept.size === size) return kept;
+    let text: string;
+    try {
+      text = await this.read(path);
+    } catch {
+      this.tallies.delete(day);
+      return undefined;
+    }
+    // The stat before the read: a row appended between the two makes the next ask read the file again.
+    const tally = { mtimeMs, size, ...DayTotals.scan(text) };
+    this.tallies.set(day, tally);
+    return tally;
+  }
+
+  /** The session rows of one day file's text; a torn or malformed line is skipped. */
+  static scan(text: string): Omit<DayTally, "mtimeMs" | "size"> {
+    let started = 0;
+    let unnamed = 0;
+    const closes = new Map<string, number>();
+    const usages = new Map<string, number>();
+    for (let i = text.indexOf(SESSION_ROW); i !== -1; ) {
+      const start = text.lastIndexOf("\n", i) + 1;
+      let end = text.indexOf("\n", i);
+      if (end === -1) end = text.length;
+      let row: { type?: unknown; sessionId?: unknown; usageSeconds?: unknown } | undefined;
+      try {
+        row = JSON.parse(text.slice(start, end)) as typeof row;
+      } catch {
+        row = undefined;
+      }
+      if (row && typeof row === "object") {
+        const id = typeof row.sessionId === "string" && row.sessionId !== "" && row.sessionId !== "?" ? row.sessionId : undefined;
+        const seconds = typeof row.usageSeconds === "number" && Number.isFinite(row.usageSeconds) && row.usageSeconds > 0 ? row.usageSeconds : 0;
+        if (row.type === "session.started") started++;
+        else if (row.type === "session.closed") {
+          if (id === undefined) unnamed += seconds;
+          else closes.set(id, seconds);
+        } else if (row.type === "session.usage" && id !== undefined) usages.set(id, seconds);
+      }
+      i = text.indexOf(SESSION_ROW, end);
+    }
+    return { started, closes, usages, unnamed };
   }
 }
 

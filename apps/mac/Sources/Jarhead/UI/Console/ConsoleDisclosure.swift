@@ -360,7 +360,8 @@ enum ConsoleDisclosureSummary {
     /// The folded Older head: the oldest day inside — `since Aug 2`.
     static func older(since day: String) -> [Summary] { [.mono(ConsoleDisclosureWords.since(ConsoleFormat.shortDay(day)))] }
 
-    /// A ledger month: the read days' figures summed (`62 min · $3.10`), nothing until one is read.
+    /// A ledger month: its days' figures summed (`62 min · $3.10`; the daemon's totals, else the days read), nothing
+    /// while no day's figures are known.
     static func ledgerMonth(read: Int, billedSeconds: Double) -> [Summary] {
         read > 0 ? [.mono(ConsoleFormat.billed(billedSeconds))] : []
     }

@@ -4,11 +4,10 @@ import Foundation
 // JSON over the socket; every field name matches the TypeScript exactly. Unknown
 // enum values decode to a safe default so a newer daemon never crashes the app.
 
-/// Mirror of PROTOCOL_VERSION (APP-3). The app sends it in its hello and reads the daemon's; a difference, or a
-/// daemon hello without one, means the two were built from different checkouts (`app.version`). Bump it with the
-/// TypeScript constant: contract-additions.test.ts pins the two equal. No daemon sends it yet: W3-3 lands the
-/// daemon's send (server.ts), the app's send and this comparison in one change, since a comparison alone reads every
-/// daemon as a skew.
+/// Mirror of PROTOCOL_VERSION (APP-3). The app sends it in its hello and reads the daemon's (EngineClient); a
+/// difference, or a daemon hello without one, means the two were built from different checkouts: the app raises
+/// `app.version` and refuses Go until it clears. Bump it with the TypeScript constant: contract-additions.test.ts
+/// pins the two equal.
 public enum ProtocolVersion {
     public static let current = 1
 }
@@ -866,6 +865,41 @@ public struct LedgerDayTotals: Codable, Equatable {
     /// row (a `LedgerRow.lostReason` close included) counts that row's `usageSeconds`. Only a session with no closed
     /// row yet counts its last `session.usage` row. Never both: a lost close repeats its last usage row's seconds.
     public var billedSeconds: Double
+}
+
+/// LM-6: the whole `ledger.days` answer as the Ledger tab reads it: the day list, newest first, and each day's totals
+/// by day (none from a daemon before them, where a day's figures wait until it is read). `partial`: the daemon answered
+/// within its budget before it had read every day's totals, so `totals` leaves out the days still being read, and the
+/// Console asks again (ConsoleSession.askDays).
+public struct LedgerDays: Equatable {
+    public var days: [String]
+    public var totals: [String: LedgerDayTotals]
+    public var partial: Bool
+    public init(days: [String], totals: [String: LedgerDayTotals] = [:], partial: Bool = false) {
+        self.days = days; self.totals = totals; self.partial = partial
+    }
+
+    /// The daemon's answer, installed by the daemon client when it starts (EngineClient.start). AppState's
+    /// `ledgerDaysHandler` returns the list alone; the Console asks this first and falls back to it when nil (a
+    /// harness without a daemon client). nil from the call: nothing answered.
+    nonisolated(unsafe) public static var fetch: (() async -> LedgerDays?)?
+}
+
+/// One page of `ledger.search` (`ledger.hits`): the hits, newest first, and `older`, the day to send as the next
+/// page's `before` when the daemon's byte bound stopped the page with older days unread (nil: nothing older is
+/// left, or a daemon before paging, which reads every day at once).
+public struct LedgerSearchPage: Equatable {
+    public var hits: [LedgerHit]
+    public var older: String?
+    public init(hits: [LedgerHit], older: String? = nil) {
+        self.hits = hits; self.older = older
+    }
+
+    /// One page from the daemon: the query, the most hits, and the `before` to read on from. Installed by the daemon
+    /// client when it starts (EngineClient.start); AppState's `ledgerSearchHandler` carries no `before` and no
+    /// `older`, so the Console asks this first and falls back to the first page when nil. nil from the call: nothing
+    /// answered.
+    nonisolated(unsafe) public static var fetch: ((_ query: String, _ limit: Int, _ before: String?) async -> LedgerSearchPage?)?
 }
 
 /// GPT-Live-1 list price, for the meter. Billed per second.
@@ -2106,6 +2140,15 @@ public struct LedgerRow: Codable, Identifiable {
     public var duck: AudioDuckInfo?
     public var output: AudioOutputInfo?
     public var liveAudio: LiveAudioInfo?
+    /// A decision a day's move to the Trash carried (the protocol's CarriedDecision, on conversation.* / now.* /
+    /// agent.hidden rows): written again into the move's day file, `at` the move, `decidedAt` when Kevin decided. A
+    /// session or chain read answers it at `decidedAt`; a day's rows hold it where the move wrote it
+    /// (StreamBuilder.fromLedger's `.day` reading says so).
+    public var carried: Bool?
+    public var decidedAt: Double?
+    /// `ledger.moved` rows: per session that stays and continues a conversation, the sessions that left whose
+    /// conversation it continues (memory hides by it, decision D5).
+    public var lineage: [String: [String]]?
     /// V8 / LM-2: the `session.closed` reason for a session the daemon died in (SESSION_LOST_REASON). The next start
     /// sweeps before it appends anything and writes that close with the `usageSeconds` of the session's last
     /// `session.usage` row (sessionId, usageSeconds: the coalesced billed seconds, every 60 s and at detach), 0 s when
@@ -2134,6 +2177,7 @@ public struct LedgerRow: Codable, Identifiable {
         case automation, actions, ok, line, lateMs, ms, brainSeconds, state, dueAt, skipped, why, recipe
         case tailMs, heldMs, gated, chunks, breakthroughs, fallback
         case playout, duck, output, liveAudio
+        case carried, decidedAt, lineage
     }
 }
 
