@@ -113,7 +113,7 @@ test("ledger --speed leaves a negative interval out of its figures and says how 
     ...finished("early", T0 + 120_000, [click(T0 + 119_000)], { firstActionAt: T0 + 119_000, speechEndAt: T0 + 118_000 }),
   ];
   const r = analyzeSpeed(rows, ["2026-10-05"]);
-  assert.deepEqual([r.speechToActionMs.n, r.speechToActionMs.min, r.speechToActionMs.median], [2, 1000, 1000], "the skewed one is out; the early one's speech-to-action stands");
+  assert.deepEqual([r.speechToActionMs.n, r.speechToActionMs.min, r.speechToActionMs.median], [2, 1000, 1800], "the skewed one is out; the early one's speech-to-action stands (1000 ms, beside the good one's 2600: the median is their mean)");
   assert.ok(r.speechToActionMs.min >= 0);
   assert.deepEqual([r.firstActionMs.n, r.firstActionMs.min], [2, 2000], "the early one's delegation-to-action is out");
   assert.deepEqual(r.negative, { firstAction: 1, speechToAction: 1 });

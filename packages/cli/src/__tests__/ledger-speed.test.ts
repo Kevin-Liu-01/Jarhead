@@ -81,12 +81,12 @@ test("ledger --speed: the counters come out as worked by hand", () => {
   assert.deepEqual([r.gaps.afterAction.n, r.gaps.afterAction.median], [1, 5300]);
   assert.deepEqual([r.gaps.afterShot.n, r.gaps.afterShot.median], [1, 4500]);
   assert.deepEqual([r.gaps.other.n, r.gaps.other.median], [1, 4200]);
-  // Round trips by class: read-only = d1's verification shot 120, d2's focused text 12, d3's frontmost 8 (the eyes' shot is excluded); acting = 60, 70, 55 and the shell's 1200 (nearest-rank median of four = the second); other = none here.
+  // Round trips by class: read-only = d1's verification shot 120, d2's focused text 12, d3's frontmost 8 (the eyes' shot is excluded); acting = 60, 70, 55 and the shell's 1200 (the median of four is the mean of the middle two, 60 and 70); other = none here.
   assert.deepEqual([r.roundTrip.readOnly.n, r.roundTrip.readOnly.median, r.roundTrip.readOnly.p95], [3, 12, 120]);
-  assert.deepEqual([r.roundTrip.acting.n, r.roundTrip.acting.median, r.roundTrip.acting.p95], [4, 60, 1200]);
+  assert.deepEqual([r.roundTrip.acting.n, r.roundTrip.acting.median, r.roundTrip.acting.p95], [4, 65, 1200]);
   assert.equal(r.roundTrip.other.n, 0);
-  // First action: d1 4200, d2 3900 → median 3900 (nearest rank of two); speech end → action only where speechEndAt is stamped (d1: 4600).
-  assert.deepEqual([r.firstActionMs.n, r.firstActionMs.median], [2, 3900]);
+  // First action: d1 4200, d2 3900 → median 4050 (the mean of the two); speech end → action only where speechEndAt is stamped (d1: 4600).
+  assert.deepEqual([r.firstActionMs.n, r.firstActionMs.median], [2, 4050]);
   assert.deepEqual([r.speechToActionMs.n, r.speechToActionMs.median], [1, 4600]);
   assert.deepEqual([r.threads.started, r.threads.ended, r.threads.seconds.median, r.threads.steps.median], [1, 1, 12_000, 4]);
   const lines = renderSpeed(r);

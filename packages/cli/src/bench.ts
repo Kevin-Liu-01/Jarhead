@@ -308,11 +308,24 @@ export async function runDuckProbe(runs: number, timeoutMs = 180_000): Promise<{
   });
 }
 
-function percentile(values: readonly number[], p: number): number {
+/**
+ * The p-th percentile by nearest rank: the ⌈p/100 · n⌉-th smallest sample, no interpolation, so it is always one of the
+ * samples (p90 of ten is the 9th, p95 of ten the 10th). p50 of an even n is the lower middle value, so it is not the
+ * median: use `median`. NaN for no samples. `bench --brain` and `ledger --speed` read these two through bench-brain.ts.
+ */
+export function percentile(values: readonly number[], p: number): number {
   if (values.length === 0) return Number.NaN;
   const sorted = [...values].sort((a, b) => a - b);
   const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
   return sorted[idx] ?? Number.NaN;
+}
+
+/** The median: the middle sample of an odd n, the mean of the two middle samples of an even n. NaN for no samples. */
+export function median(values: readonly number[]): number {
+  if (values.length === 0) return Number.NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? (sorted[mid] ?? Number.NaN) : ((sorted[mid - 1] ?? Number.NaN) + (sorted[mid] ?? Number.NaN)) / 2;
 }
 
 export interface BenchOptions {
@@ -824,7 +837,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       for (const ms of probe.report.heldRestoreMs ?? []) add("barge-in: no confirmation, still speaking → back to unity", ms);
       if (probe.note) log(`  barge-in: ${probe.note}`);
       else {
-        const med = (v: readonly number[] | undefined): string => (v && v.length ? `${percentile(v, 50).toFixed(0)} ms` : "—");
+        const med = (v: readonly number[] | undefined): string => (v && v.length ? `${median(v).toFixed(0)} ms` : "—");
         log(`  barge-in: probe ok; confirmed by Live's transcript ${med(probe.report.liveConfirmMs)} after the duck (modelled at +${probe.report.liveModelledMs ?? "?"} ms from onset), by the ear's words ${med(probe.report.earConfirmMs)}; ${probe.report.refusedEchoPartials ?? 0} partial(s) of Jarhead's own words refused as confirmation`);
         if (probe.report.ranked?.length) log(`  barge-in: mic ranking on this Mac (auto): ${probe.report.ranked.join(" › ")}`);
       }
@@ -889,10 +902,10 @@ export function benchReport(samples: readonly Sample[], extras: Readonly<Record<
   const rows: BenchRow[] = metrics.map((metric) => {
     const mine = samples.filter((s) => s.metric === metric);
     const values = mine.map((s) => s.value);
-    const median = percentile(values, 50);
+    const mid = median(values);
     const p95 = percentile(values, 95);
     const target = targets[metric];
-    return { metric, unit: mine[0]?.unit ?? "ms", n: values.length, median, p90: percentile(values, 90), p95, max: Math.max(...values), target, pass: target === undefined ? undefined : (judgedAtP95.has(metric) ? p95 : median) <= target };
+    return { metric, unit: mine[0]?.unit ?? "ms", n: values.length, median: mid, p90: percentile(values, 90), p95, max: Math.max(...values), target, pass: target === undefined ? undefined : (judgedAtP95.has(metric) ? p95 : mid) <= target };
   });
   const gate = earGate(rows, { realHelper: run.realHelper, gate: run.gate });
   // One result for both outputs: the JSON and the table can never disagree on the exit.

@@ -362,9 +362,10 @@ Three kinds, kept apart:
 - **live**: the paid live checks against GPT-Live-1 (`scripts/live-check.mts`, below under Develop), run on
   2026-10-06; the reports are JSON files in `build/live-check/2026-10-06/`.
 
-The median of an even n is the mean of the middle two. The model-path harness, `pnpm jarhead ledger --speed`
-and the live-check print the lower one (nearest rank), so their output reads 4.4 s, 8.9 s, 3.8 s, 12.6 s,
-82 ms, 96 ms and 1.35 s where this table says 4.5 s, 9.0 s, 3.9 s, 13.3 s, 83 ms, 98 ms and 1.38 s.
+The median of an even n is the mean of the middle two. The bench, `ledger --speed` and the live-check print it.
+Their saved runs (2026-09-11 to 10-06) printed the lower one (nearest rank): 4.4 s, 8.9 s, 3.8 s and 1.35 s where
+this table says 4.5 s, 9.0 s, 3.9 s and 1.38 s. The bench rows with an even n (50, 20 and 30, on both dates) are
+that lower one. The perf audit's ledger script read 12.6 s, 82 ms and 96 ms for 13.3 s, 83 ms and 98 ms.
 
 Sources: [`docs/LATENCY.md`](docs/LATENCY.md), [`docs/latency/after.json`](docs/latency/after.json),
 [`docs/REDESIGN.md`](docs/REDESIGN.md) §12 · §13 · §16 · §20, [`packages/hands/native/README.md`](packages/hands/native/README.md).

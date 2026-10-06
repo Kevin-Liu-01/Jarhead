@@ -285,7 +285,7 @@ AFTER run: 2026-09-12 03:23 UTC, load average 3.9 / 4.3 / 4.8, `--runs 2`, effor
 | click-search-type | 3.5 → 2.2 | 3.5 → 4.7 | 8.7 → 18.4 (25.6 and 11.2: one run re-verified with a screenshot, `click_element`, `type`, a screenshot: 7 generations) | 3 → 5.5 |
 | scroll-down | 6.0 → 4.7 | 6.0 → 4.7 | 13.0 → 12.2 | 3 → 3 |
 
-Overall, brain path (n = 10 delegations; the after figures are the medians of `docs/latency/after.json`'s `summary.brainPath.overall.metrics` rounded to one decimal: firstModelTool 4365 ms, firstAction 4365 ms, done 8937 ms, the numbers §7 quotes. For an even n the summary takes the lower of the middle two; the README and the landing page quote the mean of the middle two, 4.5 s to the first action and 9.0 s to done): first model tool 4.3 s → 4.4 s median, p95 11.6 s → 6.7 s; first action 4.3 s → 4.4 s median, p95 11.6 s → 5.1 s; done 9.9 s → 8.9 s median, p95 16.1 s → 25.6 s (the one 7-generation click run); generation gap 3.2 s → 3.9 s median (the model, unchanged within noise); rollovers 0 → 0; bootstrap calls 0 → 0 (the private home was already in for the before-worktree sample; the analysts' production baseline had 13). Against the production baseline (§3a): first action 12.5 s / p95 17.5 s → 4.4 s / p95 5.1 s; verified completion 22.1 s / p90 40.7 s → 8.9 s median.
+Overall, brain path (n = 10 delegations; the after figures are the medians of `docs/latency/after.json`'s `summary.brainPath.overall.metrics` rounded to one decimal: firstModelTool 4365 ms, firstAction 4365 ms, done 8937 ms, the numbers §7 quotes. For an even n that saved summary holds the lower of the middle two, as the harness printed it then; it prints the mean of the middle two now, as the README and the landing page quote it: 4.5 s to the first action and 9.0 s to done. `--compare` summarizes a saved baseline again from its records, so its deltas are mean against mean): first model tool 4.3 s → 4.4 s median, p95 11.6 s → 6.7 s; first action 4.3 s → 4.4 s median, p95 11.6 s → 5.1 s; done 9.9 s → 8.9 s median, p95 16.1 s → 25.6 s (the one 7-generation click run); generation gap 3.2 s → 3.9 s median (the model, unchanged within noise); rollovers 0 → 0; bootstrap calls 0 → 0 (the private home was already in for the before-worktree sample; the analysts' production baseline had 13). Against the production baseline (§3a): first action 12.5 s / p95 17.5 s → 4.4 s / p95 5.1 s; verified completion 22.1 s / p90 40.7 s → 8.9 s median.
 
 Reflex path (reflexes on, the product path): open-safari 1 ms, scroll-down 1 ms, and **"search the wiki for design" 6 ms** (before-worktree: 13.8 s, it fell to the brain). The target class is instant when the grammar catches it and the search field is exposed.
 
@@ -354,7 +354,7 @@ on 2026-10-06 (`scripts/live-check.mts`, typed or fed audio, fake hands, the rep
 
 | clock | median | p90 | n | source |
 |---|---:|---:|---:|---|
-| a typed line sent → the first audible frame of GPT-Live-1's reply | 1.38 s | 1.67 s | 10 | LC-5 at 98c7cfe (the mean of the middle two; the harness prints the lower one, 1.35 s) |
+| a typed line sent → the first audible frame of GPT-Live-1's reply | 1.38 s | 1.67 s | 10 | LC-5 at 98c7cfe (the mean of the middle two; the harness printed the lower one then, and the saved report reads 1.35 s) |
 | the same, earlier the same night | 1.89 s | 2.25 s | 10 | LC-5 at c7d4e63 |
 | the end of a spoken request that delegates → the first audible "looking." | 2.20 s (1.73–2.54) | not computed | 5 | LC-10 at c7d4e63 |
 
@@ -365,8 +365,9 @@ LC-5 at 98c7cfe). The app's playout cushion adds 120 ms before the first chunk o
 rows are slower, and none of the three is Jarhead's share.
 
 The model-path row is the harness with canned hands. Production after this pass, read from
-Kevin's ledger by the launch audit (PERF-3, 2026-10-05, n not recorded): 7.0 s median and
-27.6 s p95 from the delegation to the first action, 12.6 s and 50.0 s to done.
+Kevin's ledger by the launch audit (PERF-3, 2026-10-05): 7.0 s median and 27.6 s p95 from
+the delegation to the first action (n = 15), 13.3 s and 50.0 s to done (n = 28). The audit's
+script printed the lower of the middle two for done, 12.6 s.
 
 **What is measured versus claimed.** Both Jarhead rows are measured by this repo's
 own harness on this Mac and read from the ledger (§2, §5): nearest-rank p95 over
