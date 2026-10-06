@@ -135,7 +135,7 @@ happens, a Swift helper owns the Mac.
   `brain.test.ts` pins the prompt's order, budget (1250 words, v3.5: the automations
   pass moved it from 1100, the name pass reworded the orders without pronouns, and v3.5
   fits the orders to each brain's tool table, 1225 words for the full table; the voice's
-  orders sit at their 1450-word ceiling, `instructions.test.ts`) and tool names.
+  orders are 1449 words under a 1450-word ceiling, `instructions.test.ts`) and tool names.
   The memory pass touched one rail by one optional field (`BrainTask.memory?:
   string` in `brain.ts`, no prompt text, no version bump) because Kevin asked for
   the memory module by name; `# Language` lives in the engine-assembled
@@ -636,8 +636,9 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   (reason, backtrace, the last 40 app log lines) and relaunches at most 3× per 10
   min; the daemon lingers 90 s after an app that left without a `bye` frame so the
   relaunched app re-attaches to the warm Codex thread. Read the crash file first.
-- **Narration is gated in one place.** The voice's `# Narration` rule (one clause
-  per state change, never per click, never a tool's name) is mirrored in the
+- **Narration is gated in one place.** The voice's `# Narration` rule (the shape
+  of the work, not the keystrokes: one clause per state change, never a tool's
+  name, silent between changes) is mirrored in the
   Delegator's relay (`Delegator.narrationVerdict`), so no brain has to be trusted
   with it: a brain line naming one of `ALL_TOOL_SPECS` or reading as one click
   ("Clicking Save.") after something was voiced stays on the Console's timeline
@@ -698,7 +699,9 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   when it may have been Kevin's unnamed answer (a confirmation waiting, or a
   question of Jarhead's under 2 min old and unanswered) he hears one aside cue,
   "say jarhead with …". A confirmation's yes past the exchange needs the name
-  or the Console. Lines the gate kept off the speaker are `unheard` on the
+  or the Console. The voice's orders still delegate that unnamed yes and, on a
+  refusal, say only the cue's line: the refusal and the cue come only through a
+  delegation (C1). Lines the gate kept off the speaker are `unheard` on the
   Transcript and the ledger's `said` row, and never on the Console's stream, the
   continuity, the brain's dialogue or the echo. Engine tests drive it through
   FakeLive, whose `nowMs` follows the test clock (no acks); the socket replays
