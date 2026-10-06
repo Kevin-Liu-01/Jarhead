@@ -11,7 +11,7 @@ import { ACTING_TOOLS, CodexBrain, parseReflex, probeCodex, type Brain, type Bra
 import type { NativeHands } from "@jarhead/hands";
 import type { Engine } from "@jarhead/engine";
 import type { Delegation, DelegationStep, Effort } from "@jarhead/protocol";
-import { benchConfig, benchEngine } from "./bench.ts";
+import { benchConfig, benchEngine, median, percentile } from "./bench.ts";
 
 /**
  * `pnpm jarhead bench --brain` — the representative-command benchmark
@@ -759,12 +759,8 @@ export function analyzeRun(input: AnalyzeInput): RunRecord {
 
 // ------------------------------------------------------------------ statistics
 
-export function percentile(values: readonly number[], p: number): number {
-  if (values.length === 0) return Number.NaN;
-  const sorted = [...values].sort((a, b) => a - b);
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
-  return sorted[idx] ?? Number.NaN;
-}
+/** bench.ts's helpers: percentiles by nearest rank, and the true median (the mean of the two middle values for an even n). Re-exported for ledger-speed.ts and the tests. */
+export { median, percentile };
 
 export interface Stat {
   readonly n: number;
@@ -776,7 +772,7 @@ export interface Stat {
 
 export function stat(values: readonly number[]): Stat {
   const xs = values.filter((v) => Number.isFinite(v));
-  return { n: xs.length, median: percentile(xs, 50), p95: percentile(xs, 95), min: xs.length ? Math.min(...xs) : Number.NaN, max: xs.length ? Math.max(...xs) : Number.NaN };
+  return { n: xs.length, median: median(xs), p95: percentile(xs, 95), min: xs.length ? Math.min(...xs) : Number.NaN, max: xs.length ? Math.max(...xs) : Number.NaN };
 }
 
 export const METRICS = ["firstThinking", "firstModelTool", "firstAction", "firstCommentary", "done"] as const;

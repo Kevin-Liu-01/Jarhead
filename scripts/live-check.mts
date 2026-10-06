@@ -1829,13 +1829,24 @@ export interface Judge {
   metric(name: string, value: unknown): void;
 }
 
+/**
+ * The p-th percentile by nearest rank: the ⌈p/100 · n⌉-th smallest sample, no interpolation, so it is always one of the
+ * samples (p90 of ten is the 9th). p50 of an even n is the lower middle value, so it is not the median: use `median`.
+ * NaN for no samples.
+ */
 export function percentile(values: readonly number[], p: number): number {
   if (values.length === 0) return Number.NaN;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))] ?? Number.NaN;
 }
 
-const median = (values: readonly number[]): number => percentile(values, 50);
+/** The median: the middle sample of an odd n, the mean of the two middle samples of an even n. NaN for no samples. */
+export function median(values: readonly number[]): number {
+  if (values.length === 0) return Number.NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? (sorted[mid] ?? Number.NaN) : ((sorted[mid - 1] ?? Number.NaN) + (sorted[mid] ?? Number.NaN)) / 2;
+}
 const normWord = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
 
 /** Words too common to say whose sentence they came from, and the words of Kevin's own LC-6 lines (an acknowledgement may echo them). */
