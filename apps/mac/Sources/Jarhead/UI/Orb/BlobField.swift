@@ -18,14 +18,15 @@ import QuartzCore
 //  * The eyes are drawn, not typed: the site's eyes (Eyes.swift, a port of
 //    site/lib/eyes.ts) — ink pupils with a paper star and dot, happy arcs with their
 //    own sparkle, sleepy lids — sized to the body as the site sizes them (R the body's
-//    radius, the pair 0.31 R either side of the middle, just above it), rimmed in the
-//    phase-tinted paper so they read on the glyphs and on any desktop. The expression
-//    is still a glyph pair (`- -` asleep, `O O` listening, `^ ^` talking or pleased,
-//    `o o` at work turning `> >` / `< <` toward the target, `u u` paused, `x x` error,
-//    `. .` the gate's still beads), the lids are eased per eye (a blink squashes
-//    the oval; the wall-side squint), the look a shift of the pair toward what it
-//    follows (`renderEyes`), and the catchlights breathe and flare (`EyeSparkle`). The
-//    same face is drawn in the notch (`NotchPanel`) from `BlobSim.face`.
+//    radius, the pair 0.31 R either side of the middle, just above it), on 1.5 pt dither
+//    cells (the halo's and the notch ink's grain, the Bayer tile at their edges), rimmed
+//    in whole cells of the phase-tinted paper so they read on the glyphs and on any
+//    desktop. The expression is still a glyph pair (`- -` asleep, the wake gate's ear
+//    open or not, `O O` listening, `^ ^` talking or pleased, `o o` at work turning
+//    `> >` / `< <` toward the target, `u u` paused, `x x` error), the lids are eased per
+//    eye (a blink squashes the oval; the wall-side squint), the look a shift of the
+//    pair toward what it follows (`renderEyes`), and the catchlights breathe and flare
+//    (`EyeSparkle`). The same face is drawn in the notch (`NotchPanel`) from `BlobSim.face`.
 //  * `BlobFieldView` runs one CADisplayLink for the whole orb (physics ticks at
 //    display rate, the field re-renders at 10–24 fps) and stops entirely
 //    when nothing moves, when muted, when fast asleep, or when the panel is hidden.
@@ -542,9 +543,14 @@ final class BlobSim {
     /// (`O`, `o`, `.`) keeps its glyph through a blink and its lid squashes the oval.
     private(set) var faceDrawn = Face("-")
     private(set) var faceLookX = 0.0, faceLookY = 0.0
-    /// The body's radius (pt) the face is drawn for, as the site sizes its blob's
-    /// (lib/blob.ts: the breathing, stretched body's radius; nine tenths of it muted).
+    /// The body's radius (pt) the face is drawn for, as the site sizes its blob's (lib/blob.ts:
+    /// the resting body's, never the breath's, the voice's or a drag's, so the eyes' cells hold
+    /// still while the body swells under them; the pen's smaller body, in quarter steps of the
+    /// pen's ease so its way in re-cuts the eyes four times, not every frame; nine tenths of it muted).
     private(set) var faceRadius: Double
+    /// The dither cell (pt) the face is drawn on (`BlobFieldView`: `Dither.cellPixels` at its
+    /// backing scale), for the slot the body clears under each eye.
+    var faceCellPt = Double(Dither.cellPoints)
     /// The lids as eased this frame (left, right), for the drawn face's blink.
     var faceOpen: (left: Double, right: Double) { (openL, openR) }
     /// The face rests (`EyeSparkle.quiet`): the notch sets it while the blob sleeps in the lip.
@@ -554,7 +560,7 @@ final class BlobSim {
     }
     /// A pair drawn over the sim's own, lids up (the notch's ring `o o`), or nil: the
     /// sparkle steps on the pair that is drawn, so the face that shows is the one that
-    /// flares. Asleep the sim's own pair is the gate's bead or `- -`, which never glint.
+    /// flares. Asleep the sim's own pair is `- -` (or Touch ID's `O O`, glancing at the key).
     var sparkleFace: Face?
     /// The sparkle's clock: the catchlights' breath, the flares, the happy pop. The main
     /// blob's is the lead face's quicker clock (`Twinkle.rest`); a satellite's the demo's.
@@ -587,10 +593,10 @@ final class BlobSim {
     /// change of expression goes through a blink (`Motion.blink`): lids down, the new
     /// glyph behind them, lids up — the paused `u u` and the sleepy `- -` arrive that
     /// way. Reactions are instant (a poke, a flick, a Stop's shiver, the gate's surprise
-    /// and refusal), and swaps among the low glyphs (`-`, `~`, `_`, `.`: sleep's breath,
+    /// and refusal), and swaps among the low glyphs (`-`, `~`, `_`: sleep's breath,
     /// thinking's churn) do not blink — they are the lids already.
     private var wantedPair = Face("-")
-    static let lowGlyphs: Set<Character> = ["-", "~", "_", "."]
+    static let lowGlyphs: Set<Character> = ["-", "~", "_"]
     /// The crouch before a flight (`Motion.anticipation`): the body squashes toward the
     /// target — compressed along the heading, a little wider across, leaning in — over
     /// the last beat of the wind-up, and lets go as the launch's own stretch takes over.
@@ -615,6 +621,10 @@ final class BlobSim {
     static let eyeRadiusPt = 8.6
     /// Under this openness the eye is a `-`: the blink, the squint, a body pressed flat.
     static let shutOpenness = 0.3
+    /// Where Touch ID is from the notch (the key at the keyboard's top right: down and to the
+    /// right), and the beat the asking eyes glance there and back on (s).
+    static let touchIDLook = (x: 0.6, y: 0.55)
+    static let touchIDBeat = 2.4
     /// Row height in points, from the view's metrics: the eyes are sized in points.
     var rowHeightPt = 10.5
 
@@ -864,8 +874,8 @@ final class BlobSim {
     /// at the lively 24 the `Motion.blink` (90 ms) stayed down 125–165 ms. The link caps
     /// a still body at 30 (a 33 ms grid: the lids come up at ~100 ms); a moving one runs at 60.
     /// A flare or the happy pop plays at 30 at least: its 0.4 s was four frames at the
-    /// asleep 10 fps (a ring's `o o` while asleep, stepped on `sparkleFace`; the gate's
-    /// `. .` bead holds still).
+    /// asleep 10 fps (a ring's `o o` while asleep, stepped on `sparkleFace`; Touch ID's
+    /// `O O` while the gate asks).
     var desiredFPS: Double {
         if t < blinkUntil { return 60 }
         let fps = isLively ? 24 : target.fps
@@ -1557,10 +1567,10 @@ final class BlobSim {
     /// ten a double), 120 ms shut. The sparkle (`EyeSparkle`) steps with the pair. Every
     /// quantity eased.
     ///
-    ///   asleep `- -` (a sleepy `~ ~` at the top of every other breath)  ·  gate listening `. .`
+    ///   asleep `- -` (a sleepy `~ ~` at the top of every other breath)  ·  gate listening the same lids
     ///   connecting `o o` glancing  ·  listening `O O`  ·  speaking `^ ^`  ·  thinking `- -` / `~ ~` looking up
     ///   acting `o o`, `> >` / `< <` toward the target  ·  muted `_ _` (small, dim, low, on a whole row)  ·  paused `u u`  ·  error `x x`
-    ///   wake heard `O O` then `^ ^`  ·  authenticating `. .`  ·  granted `^ ^`  ·  denied `> <`  ·  locked `- -`
+    ///   wake heard `O O` then `^ ^`  ·  authenticating `O O` glancing at Touch ID, blinking  ·  granted `^ ^`  ·  denied `> <`  ·  locked `- -`
     ///   poked `O o` then a blink  ·  flick `O O`  ·  pressed side `- o`  ·  blink `- -`
     private func renderEyes(cx: Double, cy: Double, base: Double, sq: Double, bias: (bx: Double, by: Double, total: Double)) {
         eyes.removeAll(keepingCapacity: true)
@@ -1648,10 +1658,9 @@ final class BlobSim {
             case .off:
                 break
             case .listening:
-                // An ear open: small, still eyes, brighter than sleep's dashes.
-                pair = Face(".")
-                open = 1
-                blinkable = false
+                // An ear open, still asleep: the sleeping lids and their breath (the phase's own
+                // `- -` / `~ ~` above). Nothing stares from the lip while it listens for its name.
+                break
             case .heard:
                 // Wide surprise, then pleased to be called.
                 pair = Face(gateAge < 0.4 ? "O" : "^")
@@ -1660,10 +1669,14 @@ final class BlobSim {
                 wantY = -0.3
                 reaction = true
             case .authenticating:
-                pair = Face(".")
+                // Awake for a moment, asking: the open eyes glance down to the Touch ID key (at the
+                // keyboard's top right) for most of each beat and back, and blink as open eyes do,
+                // so they never stare.
+                pair = Face("O")
                 open = 1
-                blinkable = false
-                wantX = 0.55; wantY = -0.1
+                blinkable = true
+                let glancing = reducedMotion || (gateAge.truncatingRemainder(dividingBy: Self.touchIDBeat) < Self.touchIDBeat * 0.7)
+                (wantX, wantY) = glancing ? Self.touchIDLook : (0.15, -0.1)
             case .granted:
                 pair = Face("^")
                 open = 1
@@ -1784,9 +1797,9 @@ final class BlobSim {
         openR += (targetR - openR) * ok
 
         // The lids as glyphs: under `shutOpenness` an eye is a `-`, unless the pair
-        // is already a low glyph (asleep's `-`, muted's `_`, the sleepy `~`, the gate's `.`).
+        // is already a low glyph (asleep's `-`, muted's `_`, the sleepy `~`).
         func lidded(_ g: Character, _ o: Double) -> Character {
-            if o < Self.shutOpenness, !["-", "_", "~", "."].contains(g) { return "-" }
+            if o < Self.shutOpenness, !Self.lowGlyphs.contains(g) { return "-" }
             return g
         }
         let drawn = Face(left: lidded(pair.left, openL), right: lidded(pair.right, openR))
@@ -1796,7 +1809,8 @@ final class BlobSim {
         let mutedFace = shown == .muted
         face = drawn
         faceDrawn = Face(left: kept(pair.left, drawn.left), right: kept(pair.right, drawn.right))
-        faceRadius = max(1, base * rowHeightPt * (mutedFace ? 0.9 : 1))
+        let penK = (cursorK * 4).rounded() / 4
+        faceRadius = max(1, Double(grid.rows) * 0.38 * (1 - Self.cursorShrink * penK) * rowHeightPt * (mutedFace ? 0.9 : 1))
         eyeLift = lift
         let over = sparkleFace
         sparkle.step(t: t, left: over?.left ?? pair.left, right: over?.right ?? pair.right, open: over == nil ? min(openL, openR) : 1,
@@ -1874,8 +1888,7 @@ final class BlobSim {
         let cellW = rowHeightPt / aspect
         let rim = Eyes.rimWidth(faceRadius)
         for (i, eye) in eyes.enumerated() {
-            let marks = Eyes.marks(eye: eye.glyph, side: i == 0 ? -1 : 1, ex: 0, cy: 0, R: faceRadius, pose: .rest)
-            let box = Eyes.bounds(marks.filter { $0.paint == .ink }, rim: rim)
+            let box = Eyes.inkBounds(eye: eye.glyph, side: i == 0 ? -1 : 1, R: faceRadius, cell: faceCellPt, rim: rim)
             guard !box.isNull else { continue }
             let ccol = eye.col + Double(box.midX) / cellW
             let crow = eye.row + Double(box.midY) / rowHeightPt
@@ -2339,28 +2352,45 @@ final class BlobFieldView: NSView {
             show(wetRuns, wetPositions)
         }
 
-        // The eyes, over everything, drawn (Eyes.swift): the ground's ink and the paper's
-        // light, every ink shape rimmed in the paper tinted with the face's tone (a step
-        // brighter than the body, as the glyph eyes were), each eye where the sim fitted it.
-        if !sim.eyes.isEmpty {
+        // The eyes, over everything, dithered on 1.5 pt cells (Eyes.swift): the ground's ink, the
+        // star's glow (the ink lit half way by the face's tone) and the paper's light, rimmed in
+        // whole cells of the paper tinted with the face's tone (a step brighter than the body, as
+        // the glyph eyes were), the pair where the sim fitted it, snapped to the grid as one (the
+        // grid's corner on a device pixel at the field's) and held there through the wobble
+        // (`faceHold`). On a dark appearance the lines are lit in that paper (a lid, an arc), as
+        // the notch's are: an inked line in a light rim reads there as a hollow outline.
+        if sim.eyes.count == 2 {
             let R = sim.faceRadius
-            let pose = sim.facePose()
-            let ink = FaceInk(ink: OrbPalette.ground.cgColor, light: CGColor(gray: 1, alpha: 1),
-                              rim: sim.faceTone.mixed(with: RGB(1, 1, 1), sim.eyeLift).cgColor)
-            var marks: [FaceMark] = []
-            for (i, eye) in sim.eyes.enumerated() {
-                let p = CGPoint(x: origin.x + (CGFloat(eye.col) + 0.5) * cw, y: origin.y + (CGFloat(eye.row) + 0.5) * rh)
-                // Never a face at a point or a size that is not a finite, positive number.
-                guard p.isFinitePoint, R.isFinite, R > 0 else { BadNumber.noteOnce("BlobFieldView eyes", "R \(R) at \(p)"); continue }
-                marks += Eyes.marks(eye: eye.glyph, side: i == 0 ? -1 : 1, ex: Double(p.x), cy: Double(p.y), R: R, pose: pose)
+            let left = sim.eyes[0], right = sim.eyes[1]
+            let pl = CGPoint(x: origin.x + (CGFloat(left.col) + 0.5) * cw, y: origin.y + (CGFloat(left.row) + 0.5) * rh)
+            let pr = CGPoint(x: origin.x + (CGFloat(right.col) + 0.5) * cw, y: origin.y + (CGFloat(right.row) + 0.5) * rh)
+            // Never a face at a point or a size that is not a finite, positive number.
+            if pl.isFinitePoint, pr.isFinitePoint, R.isFinite, R > 0 {
+                let scale = window?.backingScaleFactor ?? layer?.contentsScale ?? 2
+                let cell = Double(Dither.cellPixels(scale: scale)) / Double(scale)
+                sim.faceCellPt = cell
+                let grid = FaceGrid(cell: cell, x: Double((origin.x * scale).rounded() / scale), y: Double((origin.y * scale).rounded() / scale))
+                if grid != faceGrid { faceGrid = grid; faceHold.reset() }
+                let style = FaceStyle(rim: Eyes.rimWidth(R), lit: sim.darkAppearance, hold: faceHold)
+                let face = Eyes.pairCells(left.glyph, right.glyph, cx: Double(pl.x + pr.x) / 2, cy: Double(pl.y + pr.y) / 2,
+                                          half: Double(pr.x - pl.x) / 2, R: R, pose: sim.facePose(), grid: grid, style: style)
+                let tone = sim.faceTone
+                let glow = OrbPalette.ground.mixed(with: tone.mixed(with: RGB(1, 1, 1), 0.3), 0.5)
+                let ink = FaceInk(ink: OrbPalette.ground.cgColor, light: CGColor(gray: 1, alpha: 1),
+                                  rim: tone.mixed(with: RGB(1, 1, 1), sim.eyeLift).cgColor, glow: glow.cgColor)
+                Eyes.draw(cg, face, grid: grid, ink: ink)
+            } else {
+                BadNumber.noteOnce("BlobFieldView eyes", "R \(R) at \(pl), \(pr)")
             }
-            Eyes.draw(cg, marks, ink: ink, rim: Eyes.rimWidth(R), halo: Eyes.haloWidth(R, pose: pose))
         }
         cg.restoreGState()
     }
 
     /// Cells the body must not draw this frame (under the eyes); reused across frames. Sized by the grid in `init`.
     private var skip: [Bool]
+    /// The cell the face keeps through the body's wobble and the look, and the grid it is kept on.
+    private let faceHold = FaceHold()
+    private var faceGrid = FaceGrid(cell: 0, x: 0, y: 0)
 
     /// Refine the sim's halo and hand it to the glow layer as one premultiplied image:
     /// the phase colour over a faint dark backing, both shaped by the mask. Legibility

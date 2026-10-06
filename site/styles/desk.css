@@ -47,18 +47,9 @@
 @keyframes desk-in { from { opacity: 0; transform: translateY(6px); } }
 .desk[data-still] :is(.desk-display, .desk-foot) > * { animation: none; }
 
-/* the anchor: the face at (57, 40), the word, Go · Stop · Mute */
-.desk-eyes { left: 57px; top: 40px; width: 0; height: 0; transition: transform var(--jh-quick) var(--jh-ease-out); }
-/* the face: the blob's own eyes as SVG (Island.tsx islandFace), ink pupils and lines rimmed in the phase-tinted paper, the
-   paper sparkle on an ink halo */
-.desk-face { position: absolute; left: -40px; top: -28px; overflow: visible; color: var(--desk-eye-ink); transform-origin: 50% 45%; transition: color var(--jh-drift) var(--jh-ease-in-out); }
-.desk-face path { stroke-linecap: round; stroke-linejoin: round; }
-.desk-face .rim { fill: currentColor; stroke: currentColor; }
-.desk-face .ink { fill: var(--jh-desk-notch); }
-.desk-face .ink.line { stroke: var(--jh-desk-notch); }
-.desk-face .glint { fill: var(--jh-paper); }
-.desk-face .halo { fill: none; stroke: var(--jh-desk-notch); }
-.desk-face .line { fill: none; }
+/* the anchor: the face at (57, 40), the word, Go · Stop · Mute. The face itself is drawn into the ink canvas, on its own
+   cells (Island.tsx InkFace, Top.tsx): this is only the point the pointer's look is measured from */
+.desk-eyes { left: 57px; top: 40px; width: 0; height: 0; }
 /* the phase word in the paper itself (the app's phaseAttrs, 1.0): at 11 px on screen over the pale end of the ramp 92%
    measured 4.0:1, the paper 4.6. A new word never shares the slot with the old one: the old fades out, then the new in */
 .desk-word { left: 6px; top: 60px; width: 102px; height: 16px; font-size: var(--isl-word); font-weight: 500; line-height: 16px; text-align: center; color: var(--jh-paper); white-space: nowrap; text-shadow: 0 1px 0 var(--jh-desk-notch); }

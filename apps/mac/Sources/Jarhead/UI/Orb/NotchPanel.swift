@@ -9,9 +9,9 @@ import QuartzCore
 // hands the blob between this panel (parked) and the orb panel (flying); both draw
 // from the one `BlobSim`, so the face and the colour are continuous.
 //
-//   tucked   asleep: only the eyes — `- -` (the gate faces while the gate listens
-//            or asks), rimmed dark grey on the notch's black, in a 12 pt lip at the
-//            notch's bottom edge. Marks survive sleep: while any waits a small `◎2` chip
+//   tucked   asleep: only the eyes — the sleeping lids `- -` (whether or not the gate
+//            listens; Touch ID's open eyes while it asks), rimmed dark grey on the
+//            notch's black, in a 12 pt lip at the notch's bottom edge. Marks survive sleep: while any waits a small `◎2` chip
 //            in the mark tone sits right of the eyes.
 //   peeking  awake: a 26 pt island hanging under the notch, the face centred, widening
 //            by up to 30 pt and pulsing with the audio while listening or speaking. No
@@ -1090,6 +1090,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private var contentAt = 0.0
     /// When a ring arrived or left: the eyes crossfade `- -` ↔ `o o` over `Motion.base` from here (< 0: snapped).
     private var ringFaceChangedAt = -1.0
+    /// The cell the face keeps on the ink (Eyes.swift `FaceHold`) and the grid it is kept on.
+    private let faceHold = FaceHold()
+    private var faceHoldGrid = FaceGrid(cell: 0, x: 0, y: 0)
+    #if JARHEAD_ORB_PREVIEW
+    private var previewFaceDrawn: (cells: FaceCells, grid: FaceGrid, island: CGRect)?
+    #endif
     /// Until when the Snooze minis stay up after the pointer was last on a Snooze press (CACurrentMediaTime).
     private var ringMinisUntil = -1.0
 
@@ -1786,7 +1792,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         }
         // A ring opens the face to `o o` on the island and the peek (never at the lip, where the
         // pill says it): the sparkle steps on the pair drawn, so the ring's eyes flare as any
-        // open face's do, asleep included (the sim's own pair is the gate's bead or `- -` then).
+        // open face's do, asleep included (the sim's own pair is `- -` then, or Touch ID's `O O`).
         if parked { sim.sparkleFace = content.ring != nil && !(mode == .tucked && openSpring.value < 0.5) ? BlobSim.Face("o") : nil }
         let animating = isAnimating(now)
         // The shared sim is stepped here only while the blob is parked (the field's
@@ -1882,6 +1888,44 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     }
 
     // MARK: layout
+
+    /// The dither grid the island's ink is drawn on (`NotchInk.render`): the gradient image as
+    /// it was drawn this frame (`drawnWidth`; with none, the image of the island's size rounded
+    /// up to 2 pt), centred on the island on a device pixel, its top at the island's, one
+    /// `Dither.cellPixels` cell from its corner — so the face's cells are the ink's cells.
+    private func faceGrid(island: CGRect, drawnWidth: CGFloat?, notchWidth: CGFloat, scale: CGFloat) -> FaceGrid {
+        let s = scale.isFinite ? max(1, scale) : 2
+        let width = drawnWidth ?? NotchInk.pointSize(of: NotchInk.key(size: island.size, notchWidth: notchWidth, scale: s)).width
+        let x = ((island.midX - width / 2) * s).rounded() / s
+        return FaceGrid(cell: Double(Dither.cellPixels(scale: s)) / Double(s), x: Double(x), y: Double(island.minY))
+    }
+
+    /// The lip face's radius: `R`, or a step smaller at a time (at most six) until the face's
+    /// resting body (`FaceCells.bodyRows`, rim included) is no taller than the lip's `height`.
+    static func lipRadius(_ R: Double, face: BlobSim.Face, grid: FaceGrid, height: Double, turn: Double) -> Double {
+        var r = R
+        for _ in 0..<6 {
+            let rest = Eyes.faceCells(face.left, face.right, cx: 0, cy: 0, R: r, pose: FacePose(turn: turn), grid: grid,
+                                      style: FaceStyle(rim: Eyes.rimWidth(r), lit: true))
+            guard let body = rest.bodyRows, Double(body.last - body.first + 1) * grid.cell > height + 1e-6 else { break }
+            r *= 0.88
+        }
+        return r
+    }
+
+    /// The whole rows a face moves to sit between `top` and `bottom` (pt), judged by its body
+    /// (`FaceCells.bodyRows`: the ink and its rim): the lip's face, whose look glances down
+    /// toward Touch ID, never runs off the lip's 12 pt (the small eyes and their rim fill it
+    /// exactly). A face taller than the space keeps its top.
+    static func lipShift(_ f: FaceCells, grid: FaceGrid, top: Double, bottom: Double) -> Int {
+        guard let body = f.bodyRows, grid.cell > 0 else { return 0 }
+        let first = Int(((top - grid.y) / grid.cell - 1e-6).rounded(.up))
+        let last = Int(((bottom - grid.y) / grid.cell + 1e-6).rounded(.down)) - 1
+        var rows = 0
+        if body.last > last { rows = last - body.last }
+        if body.first + rows < first { rows = first - body.first }
+        return rows
+    }
 
     /// The face's place this frame: sliding from the island's centre (tucked, peek) to
     /// the anchor's head (island) with `open`, growing on the way — R 32.5 in the peek
@@ -2654,6 +2698,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         // and `notchInkRendered` redraws when the exact one lands.
         let breath = finite01(0.5 + 0.5 * sin(2 * .pi * sim.time / BlobSim.breathPeriod))
         let level = finite01(gradientLevel(height: island.height, open: open, breath: sim.reducedMotion ? 0.5 : breath))
+        // the width of the ink image drawn this frame, for the face's grid (the face sits on its cells)
+        var inkWidth: CGFloat?
         if level > 0.005, let g = geometry,
            let gradient = NotchInk.gradient(size: island.size, notchWidth: g.notch.width, scale: scale) {
             #if JARHEAD_ORB_PREVIEW
@@ -2669,6 +2715,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             cg.setAlpha(level * park)
             cg.interpolationQuality = gradient.exact ? .none : .low
             let size = gradient.size
+            inkWidth = size.width
             let x = ((island.midX - size.width / 2) * scale).rounded() / scale
             // The view is flipped; the image's first row is the island's top.
             cg.translateBy(x: 0, y: island.minY + size.height)
@@ -2686,12 +2733,17 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.setShouldSubpixelPositionFonts(true)
         cg.setAlpha(park)
 
-        // The face, drawn as the site's island draws it (Eyes.swift): ink pupils and lines
-        // in the island's black, each rimmed in the paper tinted with the face's tone (the
-        // phase's, the orb's blue while thinking), the paper sparkle on an ink halo — the
-        // sim's own face, lids, look and sparkle. Tucked: the lip's face (the gate's while
-        // it listens or asks), its rim a dark grey with the gate off. Peeking: centred.
-        // Island: the anchor's head at (57, 40). It slides and grows with the spring.
+        // The face, drawn as the site's island draws it (Eyes.swift): dithered on the ink's own
+        // 1.5 pt cells (the grid the gradient image is drawn on, its corner on a device pixel),
+        // ink pupils in the island's black with the star's glow scattered on them, rimmed in
+        // whole cells of the paper tinted with the face's tone (the phase's, the orb's blue while
+        // thinking) ramping through the tile to a foot of that tone, the lines (lids, arcs) in that
+        // paper itself (the notch is always black), the paper sparkle — the sim's own face,
+        // lids, look and sparkle, held on its cell (`faceHold`). Tucked: the lip's face (asleep
+        // the blob's own sleeping lids, the gate's ear open or not; Touch ID's open eyes while it
+        // asks, drawn `o` so they sit whole in the 12 pt lip), its rim a dark grey with the gate
+        // off and no ramp. Peeking: centred. Island: the anchor's head at (57, 40). It slides
+        // and grows with the spring, cell by cell.
         // A ring opens the eyes to `o o` (85 % lifted) on the island and the peek — never at
         // the lip, where the pill says it — crossfading with the sim's face over `Motion.base` as it comes and goes.
         var face = sim.faceDrawn
@@ -2708,12 +2760,22 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             face = BlobSim.Face("o")
             lids = (1, 1)
         }
+        // The lip's 12 pt holds the small open eyes whole, rim and all: an open `O` there (Touch ID asking) is drawn `o`.
+        if lipFace {
+            func small(_ g: Character) -> Character { g == "O" ? "o" : g }
+            face = BlobSim.Face(left: small(face.left), right: small(face.right))
+        }
         // Working in the peek: the face gives half the counter's width (and the dots', and the chips') to keep the pair centred.
         let peekShift: CGFloat = lipFace ? 0 : -(Self.workExtraWidth * work + peekDotsExtraWidth + chipsExtraWidth) / 2
         let fl = faceLayout(island: island, open: open, lipFace: lipFace, shift: peekShift)
         // The look moves the pair (8 pt sideways, 5 up or down at R 52, as the site's island
         // follows the pointer) and turns it (the far eye narrows).
-        let R = fl.radius
+        let grid = faceGrid(island: island, drawnWidth: inkWidth, notchWidth: n.width, scale: scale)
+        if grid != faceHoldGrid { faceHoldGrid = grid; faceHold.reset() }
+        let pose = sim.facePose(open: lids)
+        // The lip's face is sized to sit whole in its 12 pt, rim and all: at 2x the small eyes fill it
+        // exactly; on a 1x screen (2 pt cells) it draws a step smaller until its resting body fits.
+        let R = lipFace ? Self.lipRadius(fl.radius, face: face, grid: grid, height: Double(island.height), turn: pose.turn) : fl.radius
         let lookScale = R / Eyes.islandR
         let tone = sim.faceTone
         let rim: RGB
@@ -2724,11 +2786,22 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         } else {
             rim = tone.mixed(with: RGB(1, 1, 1), ringing ? 0.85 : sim.eyeLift)
         }
-        let pose = sim.facePose(open: lids)
-        let marks = Eyes.marks(face.left, face.right, cx: Double(fl.centre.x) + sim.faceLookX * 8 * lookScale,
-                               cy: Double(fl.centre.y) + sim.faceLookY * 5 * lookScale, R: R, pose: pose)
-        Eyes.draw(cg, marks, ink: FaceInk(ink: CGColor(gray: 0, alpha: 1), light: CGColor(gray: 1, alpha: 1), rim: rim.cgColor),
-                  rim: Eyes.rimWidth(R), halo: Eyes.haloWidth(R, pose: pose), alpha: finite01(park * ringFade))
+        let style = FaceStyle(rim: Eyes.rimWidth(R), lit: true, ramp: !lipFace, hold: faceHold)
+        let cx = Double(fl.centre.x) + sim.faceLookX * 8 * lookScale
+        let cy = Double(fl.centre.y) + sim.faceLookY * 5 * lookScale
+        var cells = Eyes.faceCells(face.left, face.right, cx: cx, cy: cy, R: R, pose: pose, grid: grid, style: style)
+        if lipFace {
+            // kept whole in the lip by its resting body (open, unlit), so a blink or a flare never moves it
+            let rest = Eyes.faceCells(face.left, face.right, cx: cx, cy: cy, R: R, pose: FacePose(turn: pose.turn), grid: grid, style: style)
+            cells = cells.shifted(cols: 0, rows: Self.lipShift(rest, grid: grid, top: Double(island.minY), bottom: Double(island.maxY)))
+        }
+        let paints = FaceInk(ink: CGColor(gray: 0, alpha: 1), light: CGColor(gray: 1, alpha: 1), rim: rim.cgColor,
+                             glow: RGB(0, 0, 0).mixed(with: tone, 0.5).cgColor,
+                             foot: lipFace ? nil : tone.mixed(with: RGB(1, 1, 1), 0.35).cgColor)
+        Eyes.draw(cg, cells, grid: grid, ink: paints, alpha: finite01(park * ringFade))
+        #if JARHEAD_ORB_PREVIEW
+        previewFaceDrawn = (cells, grid, island)
+        #endif
 
         // No coloured line on any edge, tucked, peeking or open: the phase colour lives in
         // the eyes' tint (and, open, the Go ring), never along the island's contour.
@@ -4357,6 +4430,9 @@ extension NotchView {
     }
     /// The island rect as the springs give it (view coordinates), before any guard.
     var previewIslandRectRaw: NSRect { islandRect }
+    /// The face as the last frame drew it: its cells, the grid they sit on and the island
+    /// (the harness checks the lip's face sits whole inside the lip at every scale).
+    var previewFace: (cells: FaceCells, grid: FaceGrid, island: CGRect)? { previewFaceDrawn }
     /// The level trace's history replaced (newest last), for a still of the trace with no voice behind it.
     func previewSetLevelHistory(_ levels: [Float]) {
         levelHistory.removeAll()

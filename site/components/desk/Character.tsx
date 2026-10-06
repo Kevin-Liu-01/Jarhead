@@ -7,11 +7,11 @@ import { useCalm } from "@/lib/motion";
 
 /**
  * The resting stills (app/stills/*): the awake blob (`O O`, its star and dot catchlights), the happy one (`^ ^` with its
- * sparkle), the quiet titanium one asleep (`- -`).
+ * sparkle), the quiet titanium one asleep (`- -`), their faces dithered on the disc's cells as the live blob's are.
  * The query names the face's drawing: when the eyes change, it changes, so a returning visitor never sees a still cached
  * under the old face (the stills keep an hour's max-age).
  */
-const FACE_V = "eyes-3";
+const FACE_V = "eyes-5";
 const STILL: Record<"awake" | "happy" | "quiet", string> = {
   awake: `/stills/awake.png?v=${FACE_V}`,
   happy: `/stills/happy.png?v=${FACE_V}`,

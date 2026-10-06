@@ -71,7 +71,26 @@ What that changes here:
    place, on purpose: on the page the island hangs from a band as wide as itself over the page's own bar, while the app's
    open island keeps the notch's column with concave fillets under the real menu bar, whose status items are the user's.
 2. **Items 2 to 6 stand**, and GROWN keeps them: no line along any edge, nothing bar-shaped in the head or the foot (the foot
-   is one line of words), the drawn eyes on both sides with the gate's beads for the installed dots, the band meshing with
-   the bar, the OSI keyhole, one Jarhead.
+   is one line of words), the drawn eyes on both sides, the band meshing with the bar, the OSI keyhole, one Jarhead. (The
+   gate's beads that stood in for the installed dots are gone since 2026-10-06: see "The eyes, dithered" below.)
 3. **The constraints stand**, with the one silhouette difference above as the exception to "the site shows nothing the app
    does not draw".
+
+## The eyes, dithered (2026-10-06)
+
+Kevin, on the eyes: "what if we included the dither over jarhead's eyes, as in just make the eyes dithered too", and "the
+eyez in the little tab like for asleep, are SUPER creepy it should be same eyes".
+
+1. **The eyes are dithered, on both sides.** lib/eyes.ts `faceCells` and Eyes.swift `faceCells` are one rasteriser, cell
+   for cell (a parity check runs every face the product draws through both): every shape on the cells of the world it
+   sits on (the island's ink cells, the blob's 1.5 px field, NotchInk's 1.5 pt grid), the Bayer tile at its edges, the
+   star's glow scattered on the pupil round it, the rim ramping from the tinted paper to a foot of the phase's tone on the
+   island and the peek, a flare bursting into a star of cells at its tip. On the island the face is painted into the ink
+   canvas itself, so it is the ink's own pixels.
+2. **The bead goes, everywhere.** Asleep the island, the app's peek and its lip show the blob's own sleeping lids (`- -`,
+   `~ ~` at the top of a breath) whether or not the wake gate listens; Touch ID asking opens the eyes and glances them to
+   the key and back, blinking (in the 12 pt lip drawn `o o`, whole). `. .` is no glyph any more (EyeKind, BlobSim's low
+   glyphs, the island's faces).
+3. **Nothing crawls.** Each eye is dithered in its own space and the pair snapped as one, held on its cell through a
+   wobble, so drift and gaze move whole cells and re-draw none; only a change of shape (a blink, a flare, the breath)
+   changes cells.
