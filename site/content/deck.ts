@@ -60,7 +60,7 @@ export const WAKE: Story & { readonly faces: string } = {
   phase: "listening",
   face: "O O",
   h2: ["Asleep, it wakes on a word.", "Touch ID opens it."], // README:57, README:365; paused, the word alone resumes (README:58)
-  lead: "Asleep it listens on-device for one word. Nothing billed. Then Touch ID, Apple Watch, the Mac password or a passphrase.", // README:57
+  lead: "Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.", // README:57; memory reads a closed conversation on your key at the next quiet tick (engine.ts:3208, :6111), so the voice is the subject
   lines: ["Three misses lock the gate for a minute.", "Speaker verification is not attempted.", "Say stop. It stops mid-sentence."], // README:57, README:365, README:56
   faces: "gate · heard · granted · denied · locked", // README:178
 };
@@ -97,8 +97,8 @@ export const HANDS: Story = {
   phase: "acting",
   face: "> >",
   h2: ["Label first. Click second.", "Screenshot last."], // README:60
-  lead: "The hands are a Swift helper. They find a control by label and click it. A screenshot only verifies.", // README:28, README:60
-  lines: ["Circle anything with ⌃⌥C. Every brain sees it.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:66, README:67, README:65
+  lead: "The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.", // README:28, README:60; not "only": each delegation starts with the eyes' pre-warm screenshot for a brain that takes images (engine.ts lookAtScreen)
+  lines: ["Circle anything with ⌃⌥C. Every brain is told where it is.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:66 (a text-only brain gets the coordinates and no image: compatible.ts userContent, local.ts acceptsImages), README:67, README:65
 };
 
 /** 05 · Rails */
@@ -127,7 +127,7 @@ export const SLEEP: Story = {
   face: "- -",
   h2: ["Say good night.", "Alarms still ring."], // README:69, README:301-305
   lead: 'It says "night." and closes the session. Ten minutes without a word to it do the same. Alarms, timers, watchers and routines fire while it sleeps.', // README:69, README:301-304, AUTOMATIONS:3-4
-  lines: ["No session, no brain turn, nothing billed.", "Set-up asks once. Fire time never asks.", "Nothing fires while Jarhead is quit."], // AUTOMATIONS:6-7, AUTOMATIONS:11-13, AUTOMATIONS:116-117
+  lines: ["No session. The voice bills nothing.", "Set-up asks once. Fire time never asks.", "Nothing fires while Jarhead is quit."], // AUTOMATIONS:6-7 (memory reads at the next quiet tick, engine.ts:3208 and :6111; a wake-brain row bills one brain turn, AUTOMATIONS §5), AUTOMATIONS:11-13, AUTOMATIONS:116-117
 };
 
 interface Figure {
@@ -146,12 +146,12 @@ export const NUMBERS = {
   figures: [
     { value: "126 ms", label: "prefire partials, p95", tip: "122 ms median · scroll, page, screenshot, circle · includes the 120 ms window · n = 20 · 2026-09-11" }, // README:338, REDESIGN §12
     { value: "457 ms", label: "careful partials, p95", tip: "455 ms median · keys, edits, type, click · includes the 450 ms window · n = 30 · 2026-09-11" }, // README:339
-    { value: "1.11 s", label: "GPT-Live-1 spoken reply, median", tip: "1.21 s p90 · Agora, third party · n = 30 per condition · 2026-07-09 · typed, on the wire: 1.35 s median, 1.67 s p90, n = 10, 2026-10-06 · an earlier run that day: 1.89 s" }, // README:345; live-check LC-5, 2026-10-06
-    { value: "4.4 s", label: "delegation to first visible action, median", tip: "5.1 s p95 · Codex through the app-server · canned hands · n = 6 · 2026-09-12 · in real use: 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28" }, // README:341; the author's ledger, 2026-09-12 to 09-28
-    { value: "8.9 s", label: "delegation to verified completion, median", tip: "25.6 s p95 · canned hands · n = 10 · 2026-09-12 · in real use: 12.6 s median, 50.0 s p95, n = 28, 2026-09-12 to 09-28" }, // README:342; the author's ledger, 2026-09-12 to 09-28
-    { value: "82 ms", label: "tool round trip, median", tip: "518 ms p95 · real use · n = 162 · 2026-09-12 to 09-28" }, // the author's ledger, 2026-09-12 to 09-28 (the perf audit's ledger-numbers script)
-    { value: "96 ms", label: "screenshot round trip, median", tip: "311 ms p95 · real use · n = 72 · 2026-09-12 to 09-28" }, // the author's ledger, 2026-09-12 to 09-28 (the perf audit's ledger-numbers script)
-    { value: "10.7k", label: "input tokens, cold Codex thread", tip: "from 22.3k · −52 % · a private CODEX_HOME · measured on a cold thread, 2026-09-11 · about 11.4k now, an estimate" }, // README:348, README:84, REDESIGN:2015-2018; the estimate: w3-4-tool-parity
+    { value: "1.11 s", label: "GPT-Live-1 spoken reply, median", tip: "1.21 s p90 · Agora, third party · n = 30 per condition · 2026-07-09 · typed, on the wire: 1.38 s median, 1.67 s p90, n = 10, 2026-10-06 · an earlier run that day, at c7d4e63: 1.89 s median, 2.25 s p90, n = 10" }, // README:345; live-check LC-5, 2026-10-06: lc-5-first-word-094046-879.json and -001836-863.json, firstAudioMs, the median of 10 being the mean of the middle two (the harness prints the lower one, 1.35 s)
+    { value: "4.5 s", label: "delegation to first visible action, median", tip: "5.1 s p95 · Codex through the app-server · canned hands · n = 6 · 2026-09-12 · in real use: 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28" }, // README:341; docs/latency/after.json brain-path firstAction, the mean of the middle two of 6 (the summary prints the lower one, 4.4 s); the author's ledger, 2026-09-12 to 09-28
+    { value: "9.0 s", label: "delegation to verified completion, median", tip: "25.6 s p95 · canned hands · n = 10 · 2026-09-12 · in real use: 13.3 s median, 50.0 s p95, n = 28, 2026-09-12 to 09-28" }, // README:342; docs/latency/after.json brain-path done, the mean of the middle two of 10 (the summary prints 8.9 s); the ledger's 28, likewise (the script printed 12.6 s)
+    { value: "83 ms", label: "tool round trip, median", tip: "518 ms p95 · real use · n = 162 · 2026-09-12 to 09-28" }, // the author's ledger, 2026-09-12 to 09-28 (the perf audit's ledger-numbers script); 82.5 ms, the mean of the middle two (the script printed the lower one, 82 ms)
+    { value: "98 ms", label: "screenshot round trip, median", tip: "311 ms p95 · real use · n = 72 · 2026-09-12 to 09-28" }, // the author's ledger, 2026-09-12 to 09-28 (the perf audit's ledger-numbers script); 97.5 ms, the mean of the middle two (the script printed the lower one, 96 ms)
+    { value: "10.7k", label: "input tokens, cold Codex thread", tip: "from 22.3k · −52 % · a private CODEX_HOME · measured on a cold thread, n = 1, 2026-09-12 · about 11.4k now, an estimate, w3-4-tool-parity" }, // README:348, README:84, REDESIGN:2015-2018 (n = 1, the date w3-4-tool-parity's BR-16 title gives; commit 4bf46c1 is 2026-09-11 20:30 -0700)
     { value: "71", label: "tools in ten families", tip: "16 permissions, 7 required · 6 brains + auto" }, // README:356
     { value: "3", label: "live threads beside the main one", tip: "25 steps / 180 s default · 40 / 300 cap · linger 30 s" }, // README:351
     { value: "1.5 s", label: "your key, click or scroll holds the hands", tip: "busy for 1500 ms" }, // README:353
@@ -201,7 +201,7 @@ export const INSTALL = {
     word: "Requirements",
     count: 6,
     items: [
-      "macOS 14 or newer on Apple silicon", // README:377
+      "macOS 14.5 or newer on Apple silicon", // README:377, README:383; Xcode 16 needs macOS 14.5 (scripts/install.sh:152), so the source install does too. The app runs on 14 (the hero's 14+)
       "Xcode 16 or newer", // README:383
       "Node 24 or newer and pnpm 10", // README:378-379
       "An OpenAI API key for the voice", // README:379

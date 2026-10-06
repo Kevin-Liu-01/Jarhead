@@ -53,7 +53,7 @@ eyebrow LINES above a heading, so never set them as a line. The `desk caption` m
 - `Thinking` · `The brain has the task.` (README:269-270)
 - `Acting` · `The hands are using the Mac.` (README:28, README:60)
 - `Speaking` · `It is talking. Say stop to interrupt.` (README:56)
-- `Alarm` · `Rings asleep. Nothing billed.` (README:304-307)
+- `Alarm` · `Rings asleep. The voice bills nothing.` (README:304-307, engine.ts:3208)
 
 Island strings per kind stay as design.md §4.4 lists them; they are the app's own rendered text.
 
@@ -64,7 +64,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 - eyebrow: `Listening` · `The mic is open. The meter runs.` · `O O`
 - h2, line 1: `Asleep, it wakes on a word.` (README:57; paused, the word alone resumes, README:58)
 - h2, line 2: `Touch ID opens it.` (README:365)
-- lead: `Asleep it listens on-device for one word. Nothing billed. Then Touch ID, Apple Watch, the Mac password or a passphrase.` (README:57)
+- lead: `Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.` (README:57). Memory reads a closed conversation on your key at the next quiet tick (engine.ts:3208, :6111), so the voice is the subject.
 - line 1: `Three misses lock the gate for a minute.` (README:57)
 - line 2: `Speaker verification is not attempted.` (README:365)
 - line 3: `Say stop. It stops mid-sentence.` (README:56)
@@ -78,6 +78,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 - h2, line 1: `Codex, Claude Code, a key,` (README:27-28, README:59)
 - h2, line 2 *grey*: `or a model on this Mac.` (README:59, LOCAL:3-4)
 - lead: `Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.` (README:61, README:269-270, README:59)
+- open, for Kevin before the redeploy: the brain card's badge. Say.tsx sets `NUMBERS.figures[3].value` (`4.5 s`) beside the lead's second sentence while Codex is picked, with no label. That figure is the canned-hands harness (docs/latency/after.json, n = 6, 2026-09-12). Real use is 7.0 s median, 27.6 s p95 (n = 15, 2026-09-12 to 09-28). No deck string fixes it, since figure 4 also drives the Numbers race. Drop the badge in Say.tsx, or label it from a deck string such as `canned hands`.
 - line 1: `"Click Save" runs. The voice is told after.` (README:61)
 - line 2: `Same policy for every brain. A local one gets fewer tools.` (README:59, LOCAL:78-79, brain local.ts LOCAL_TOOLS)
 - line 3: `A local brain keeps memory on the Mac.` (LOCAL:4-5, LOCAL:62-64)
@@ -101,8 +102,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 - eyebrow: `Acting` · `The hands are using the Mac.` · `> >`
 - h2, line 1: `Label first. Click second.` (README:60)
 - h2, line 2 *grey*: `Screenshot last.` (README:60)
-- lead: `The hands are a Swift helper. They find a control by label and click it. A screenshot only verifies.` (README:28, README:60). The 71 tools are the brain's; 31 of them reach the helper.
-- line 1: `Circle anything with ⌃⌥C. Every brain sees it.` (README:66)
+- lead: `The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.` (README:28, README:60). The 71 tools are the brain's; 31 of them reach the helper. Not "only verifies": each delegation starts with a screenshot for a brain that takes images (engine.ts lookAtScreen).
+- line 1: `Circle anything with ⌃⌥C. Every brain is told where it is.` (README:66). A brain that takes images also gets the image; a text-only one gets the coordinates alone (brain compatible.ts userContent, local.ts acceptsImages).
 - line 2: `The blob moves to where the hands act.` (README:67)
 - line 3: `The Console lists every coding-agent session.` (README:65)
 
@@ -138,7 +139,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 - h2, line 1: `Say good night.` (README:69)
 - h2, line 2 *grey*: `Alarms still ring.` (README:301-305)
 - lead: `It says "night." and closes the session. Ten minutes without a word to it do the same. Alarms, timers, watchers and routines fire while it sleeps.` (README:69, README:301-304, AUTOMATIONS:3-4)
-- line 1: `No session, no brain turn, nothing billed.` (AUTOMATIONS:6-7)
+- line 1: `No session. The voice bills nothing.` (AUTOMATIONS:6-7). Memory reads a closed conversation at the next quiet tick, on your key (engine.ts:3208, :6111), and a wake-brain row bills one brain turn (AUTOMATIONS §5).
 - line 2: `Set-up asks once. Fire time never asks.` (AUTOMATIONS:11-13, README:310-312)
 - line 3: `Nothing fires while Jarhead is quit.` (AUTOMATIONS:116-117). A clean quit stops the daemon at once; only a crash leaves it 90 s for the relaunch.
 
@@ -156,12 +157,12 @@ Figures, value · label · tooltip:
 
 1. `126 ms` · `prefire partials, p95` · `122 ms median · scroll, page, screenshot, circle · includes the 120 ms window · n = 20 · 2026-09-11` (README:338, facts:308)
 2. `457 ms` · `careful partials, p95` · `455 ms median · keys, edits, type, click · includes the 450 ms window · n = 30 · 2026-09-11` (README:339, facts:308)
-3. `1.11 s` · `GPT-Live-1 spoken reply, median` · `1.21 s p90 · Agora, third party · n = 30 per condition · 2026-07-09 · typed, on the wire: 1.35 s median, 1.67 s p90, n = 10, 2026-10-06 · an earlier run that day: 1.89 s` (README:345, facts:311, live-check LC-5)
-4. `4.4 s` · `delegation to first visible action, median` · `5.1 s p95 · Codex through the app-server · canned hands · n = 6 · 2026-09-12 · in real use: 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28` (README:341, facts:309, the ledger)
-5. `8.9 s` · `delegation to verified completion, median` · `25.6 s p95 · canned hands · n = 10 · 2026-09-12 · in real use: 12.6 s median, 50.0 s p95, n = 28, 2026-09-12 to 09-28` (README:342, facts:309, the ledger)
-6. `82 ms` · `tool round trip, median` · `518 ms p95 · real use · n = 162 · 2026-09-12 to 09-28` (the ledger)
-7. `96 ms` · `screenshot round trip, median` · `311 ms p95 · real use · n = 72 · 2026-09-12 to 09-28` (the ledger)
-8. `10.7k` · `input tokens, cold Codex thread` · `from 22.3k · −52 % · a private CODEX_HOME · measured on a cold thread, 2026-09-11 · about 11.4k now, an estimate` (README:348, README:84, REDESIGN:2015-2018)
+3. `1.11 s` · `GPT-Live-1 spoken reply, median` · `1.21 s p90 · Agora, third party · n = 30 per condition · 2026-07-09 · typed, on the wire: 1.38 s median, 1.67 s p90, n = 10, 2026-10-06 · an earlier run that day, at c7d4e63: 1.89 s median, 2.25 s p90, n = 10` (README:345, facts:311, live-check LC-5: lc-5-first-word-094046-879.json and -001836-863.json, firstAudioMs; the harness prints the lower of the middle two, 1.35 s)
+4. `4.5 s` · `delegation to first visible action, median` · `5.1 s p95 · Codex through the app-server · canned hands · n = 6 · 2026-09-12 · in real use: 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28` (README:341, facts:309, the ledger). docs/latency/after.json's six first actions are 3041 to 5099 ms; the middle two average 4.50 s. Its summary prints the lower one, 4.4 s.
+5. `9.0 s` · `delegation to verified completion, median` · `25.6 s p95 · canned hands · n = 10 · 2026-09-12 · in real use: 13.3 s median, 50.0 s p95, n = 28, 2026-09-12 to 09-28` (README:342, facts:309, the ledger). The middle two average 9.02 s (after.json) and 13.3 s (the ledger); the summaries printed the lower ones, 8.9 s and 12.6 s.
+6. `83 ms` · `tool round trip, median` · `518 ms p95 · real use · n = 162 · 2026-09-12 to 09-28` (the ledger; the middle two average 82.5 ms, the script printed 82)
+7. `98 ms` · `screenshot round trip, median` · `311 ms p95 · real use · n = 72 · 2026-09-12 to 09-28` (the ledger; the middle two average 97.5 ms, the script printed 96)
+8. `10.7k` · `input tokens, cold Codex thread` · `from 22.3k · −52 % · a private CODEX_HOME · measured on a cold thread, n = 1, 2026-09-12 · about 11.4k now, an estimate, w3-4-tool-parity` (README:348, README:84, REDESIGN:2015-2018; the date is the one brain w3-4-tool-parity's BR-16 title gives)
 9. `$0.05` · `per minute of open session` · `billed per second, muted or not · a closed session costs nothing` (README:349)
 10. `71` · `tools in ten families` · `16 permissions, 7 required · 6 brains + auto` (README:356)
 11. `3` · `live threads beside the main one` · `25 steps / 180 s default · 40 / 300 cap · linger 30 s` (README:351)
@@ -233,7 +234,7 @@ open -a Jarhead                       # Setup opens: your OpenAI key, a brain, p
 
 Requirements, head `Requirements · 6`:
 
-1. `macOS 14 or newer on Apple silicon` (README:377)
+1. `macOS 14.5 or newer on Apple silicon` (README:377, README:383). Xcode 16 needs macOS 14.5 (scripts/install.sh:152), so the source install does too. The app itself runs on macOS 14, the hero's `macOS 14+`.
 2. `Xcode 16 or newer` (README:383)
 3. `Node 24 or newer and pnpm 10` (README:378-379)
 4. `An OpenAI API key for the voice` (README:379)
@@ -252,7 +253,7 @@ Never on this page: "download", ".dmg", "cask", "Delete", "Empty Trash", a relea
 - brand: `Jarhead` (README:11)
 - line: `A voice-first Mac assistant that uses the computer for you.` (README:15)
 - line: `Built with Swift and TypeScript.` (README:22)
-- mono line: `GitHub · MIT · Kevin Liu · macOS 14+ · Apple silicon` (README:20, README:569, facts:15-16, README:377); `v2.0.0` joins it once the tag exists (D7)
+- mono line: `source only · MIT`, the hero figures line's first two parts as Footer.tsx sets them (facts:40-41, README:569); `v2.0.0` takes the first slot once the tag exists (D7)
 - disclosure 1: `Every picture is rendered by the app's own preview harnesses over fixed fake data.` (README:90-91)
 - disclosure 2: `None is a photo of a desktop.` (README:91)
 - disclosure 3: `The alarm's "Wake up, Kevin" is the harness's fixed data.` (facts:392, README:298)
@@ -313,7 +314,7 @@ named so a reviewer can put it back.
 
 ### Wake (d:121-129)
 
-- d:122 lead `Asleep it listens on-device for free. Awake only after Touch ID. Hearing "jarhead" opens nothing; Touch ID, Apple Watch, the Mac password or a passphrase does.` ("for free"; a semicolon sentence) → `Asleep it listens on-device for one word. Nothing billed. Then Touch ID, Apple Watch, the Mac password or a passphrase.`
+- d:122 lead `Asleep it listens on-device for free. Awake only after Touch ID. Hearing "jarhead" opens nothing; Touch ID, Apple Watch, the Mac password or a passphrase does.` ("for free"; a semicolon sentence) → `Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.`
 - d:124 `Speaker verification is deliberately not attempted; the gate is Touch ID, never your voice.` ("X, never Y") → `Speaker verification is not attempted.`
 - d:126 `Talks like a person` (metaphor) → cut as a heading; its fact `A spoken "stop" interrupts mid-sentence; the session stays open.` → `Say stop. It stops mid-sentence.`; `About a second to the first word back` → Numbers figure 3 with n and date (facts:388 wants the n and date beside it).
 - d:127 `Twenty-two voices · English, whatever it hears. British by default (Ballad); American or no accent is a setting, heard at the next wake.` → cut (README:73). Facts: 22 voices, English only, British by default, American or none as a setting.
@@ -343,9 +344,9 @@ named so a reviewer can put it back.
 ### Hands (d:191-200)
 
 - d:192 lead `71 tools in ten families. The hands are AX-first: find a control by label, read the focused text, click the element, screenshot only to verify.` (a colon list) → the h2 `Label first. Click second. / Screenshot last.` and the new lead. Cut: "AX-first"; read the focused text (README:60).
-- d:193 the ten family chips → cut (README:60). The count stays in the lead and in Numbers figure 10.
+- d:193 the ten family chips → cut (README:60). The count stays in the hero figures line and in Numbers figure 10.
 - d:195 `The blob flies to where the hands act and stays where it worked. Brains draw by hand: the blob becomes the pen and drags the line. Jelly drag, sticky walls, momentum.` (the pen metaphor; "brains draw by hand") → `The blob moves to where the hands act.` Cut: brains can draw shapes on screen through the blob (README:67, README:200); the drag physics.
-- d:196 `Press ⌃⌥C, draw around anything. The mark snaps to the largest control under it and every brain gets the image with the task. Films of what you circled sit on the island; a used one dims.` → `Circle anything with ⌃⌥C. Every brain sees it.` Cut: the snap to the largest control; films on the island (README:66, README:114-117).
+- d:196 `Press ⌃⌥C, draw around anything. The mark snaps to the largest control under it and every brain gets the image with the task. Films of what you circled sit on the island; a used one dims.` → `Circle anything with ⌃⌥C. Every brain is told where it is.` Cut: the snap to the largest control; films on the island (README:66, README:114-117).
 - d:197 `Lives in the notch · Tucked asleep, peeking awake, an island under the pointer: 420 by 184 points in four bands. Anchor, display, control row, foot. The peek carries glance chips, never sentences. Drag the blob into the notch and it sleeps.` → cut as a card; the hero desk shows the island live and its caption keeps `island 420×184` (README:68).
 - d:198 `Knows your agents · The Console lists every Claude Code, Codex and other coding-agent session on the Mac with its own mark. Step into one, watch it grow live, answer its Allow · Deny, talk to it. Every utterance, tool call and grant is a row in an append-only ledger; the Console shows only what was recorded.` → `The Console lists every coding-agent session.` and Made line 2. Cut: step into a session, answer its Allow / Deny, talk to it (README:65).
 - d:199 `A face per state` → cut; the hero's phase buttons show the faces (README:181).
@@ -364,7 +365,7 @@ named so a reviewer can put it back.
 ### Sleep (d:232-239)
 
 - d:233 lead `"That's all. Goodnight." It says exactly "night.", closes the session, tucks in. Alarms, timers, watchers and routines fire while it sleeps. Nothing billed.` ("tucks in") → `It says "night." and closes the session. Ten minutes without a word to it do the same. Alarms, timers, watchers and routines fire while it sleeps.`
-- d:235 `Say it once while awake: "wake me at seven ten on weekdays", "twelve-minute timer for the pasta", "when a PDF lands in Downloads, file it under Papers and tell me", "run the backup script every night at eleven". It reads one line back. Then say night. The daemon carries it out from its 1 s tick with the agent asleep: no Live session, no brain turn, nothing billed.` → line 1 `No session, no brain turn, nothing billed.` Cut: the four spoken examples and "it reads one line back" (README:301-304, AUTOMATIONS:21-28); the kinds and the action vocabulary (AUTOMATIONS:38-52).
+- d:235 `Say it once while awake: "wake me at seven ten on weekdays", "twelve-minute timer for the pasta", "when a PDF lands in Downloads, file it under Papers and tell me", "run the backup script every night at eleven". It reads one line back. Then say night. The daemon carries it out from its 1 s tick with the agent asleep: no Live session, no brain turn, nothing billed.` → line 1 `No session. The voice bills nothing.` Cut: the four spoken examples and "it reads one line back" (README:301-304, AUTOMATIONS:21-28); the kinds and the action vocabulary (AUTOMATIONS:38-52).
 - d:236 `The policy judges a row once, awake. Anything that would have to ask at fire time is refused when you set it. A recipe, a press or a brain wake asks once, cost said first. Rows Move to Trash and Restore.` → line 2 `Set-up asks once. Fire time never asks.` Cut: the brain wake's cost is said before your yes (AUTOMATIONS:10-12); rows are never deleted (AUTOMATIONS:13).
 - d:237 `"Go to sleep", "that's all for now", "power down", "good night". Ten idle minutes do the same. "Shut down my Mac" is a task, and it asks.` → the lead's second sentence. Cut: the cue list; "Shut down my Mac" is a task (README:69).
 - d:238 `The ring · A chime, the island opens pinned with the line and Snooze 10 · Done where Allow · Deny usually sit, a banner with the same two buttons. It re-chimes every 30 s and rings through quiet hours.` → cut; the alarm render's alt keeps Snooze 10 and Done (README:305-306, AUTOMATIONS:40).

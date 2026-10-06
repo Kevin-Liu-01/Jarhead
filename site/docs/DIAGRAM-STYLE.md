@@ -207,7 +207,7 @@ The idea: measured, with its n and date. The `3 ms` readout (the `hi` card, its 
 points at its row. Three groups, each headed by its icon, subject and where and when it ran (`Reflex rows` · `pnpm
 jarhead bench · 2026-09-11`; `The voice reply` · `Agora's measurement · 2026-07-09`; `Model rows` · `real Codex,
 canned hands · 2026-09-12`). Rows set label, value, bar (meter edge) and n on one line. Two honest linear scales end on
-their own values (`457 ms`, `8.9 s`), and the dithered lens shows the first is the first 457 ms of the second, to size.
+their own values (`457 ms`, `9.0 s`), and the dithered lens shows the first is the first 457 ms of the second, to size.
 
 ## 12. Briefs: the six after the first three
 
