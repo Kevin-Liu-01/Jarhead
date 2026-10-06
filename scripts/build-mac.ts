@@ -38,6 +38,8 @@ const INSTALLED = "/Applications/Jarhead.app";
 const LINK = join(OUT, "Jarhead.app");
 const MAC = join(REPO_ROOT, "apps", "mac");
 const RESOURCES_SRC = join(MAC, "Resources");
+/** The palette's sound files (docs/AUDIO.md § The sounds): staged into Contents/Resources/Sounds. */
+const SOUNDS_SRC = join(RESOURCES_SRC, "Sounds");
 
 function run(cmd: string, args: readonly string[], opts: { cwd?: string; quiet?: boolean } = {}): string {
   console.log(`[build-mac] ${cmd} ${args.join(" ")}`);
@@ -83,6 +85,7 @@ function iconIsStale(file: string): boolean {
 
 need(join(RESOURCES_SRC, "Info.plist"), "apps/mac/Resources/Info.plist is part of the repo");
 need(join(RESOURCES_SRC, "entitlements.plist"), "apps/mac/Resources/entitlements.plist is part of the repo");
+need(SOUNDS_SRC, "apps/mac/Resources/Sounds is part of the repo");
 
 // 2. Build the Swift package.
 run("swift", ["build", "-c", "release", "--package-path", MAC]);
@@ -105,6 +108,16 @@ chmodSync(join(macos, "jarhead-hands"), 0o755);
 copyFileSync(icns, join(resources, "Jarhead.icns"));
 copyFileSync(join(RESOURCES_SRC, "Info.plist"), join(contents, "Info.plist"));
 writeFileSync(join(contents, "PkgInfo"), "APPL????");
+// The sounds, before signing (the seal covers every resource). Every *.caf goes; apps/mac/Scripts/earcon-check.sh
+// pins that the names the app can ask for are all there and decode (`--bundle build/stage/Jarhead.app` checks this copy).
+const soundsDir = join(resources, "Sounds");
+mkdirSync(soundsDir, { recursive: true });
+const sounds = readdirSync(SOUNDS_SRC).filter((f) => f.endsWith(".caf")).sort();
+if (sounds.length === 0) {
+  console.error(`[build-mac] ${SOUNDS_SRC} holds no .caf; the app would play nothing`);
+  process.exit(1);
+}
+for (const f of sounds) copyFileSync(join(SOUNDS_SRC, f), join(soundsDir, f));
 
 const manifest = {
   repo: REPO_ROOT,
@@ -165,6 +178,7 @@ if (process.env["JARHEAD_BUILD_ONLY"] === "1") {
   console.log(`
   built      ${APP} (JARHEAD_BUILD_ONLY=1: signed and verified, not installed)
   binary     ${(stagedSize / (1024 * 1024)).toFixed(1)} MiB
+  sounds     ${sounds.length} in Contents/Resources/Sounds
   signed     ${signedLine}
   launch     ${unregistered.code === 0 ? "the stage unregistered from LaunchServices" : `the stage was not registered (lsregister -u exit ${unregistered.code})`}; only /Applications/Jarhead.app launches
 `);
@@ -243,6 +257,7 @@ const size = statSync(join(INSTALLED, "Contents", "MacOS", "Jarhead")).size;
 console.log(`
   built      ${INSTALLED}
   binary     ${(size / (1024 * 1024)).toFixed(1)} MiB
+  sounds     ${sounds.length} in Contents/Resources/Sounds
   daemon     ${manifest.node} ${manifest.tsx} ${manifest.daemon}
   signed     ${signedLine}
 
