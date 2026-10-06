@@ -477,3 +477,150 @@ test("the preload fences the agent CLIs: Codex in ChatGPT.app, /usr/local/bin/cl
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the preload fences what a wrapper runs: env, xargs, timeout, nohup, caffeinate, nice, time, arch and command (bare, by /usr/bin path, nested, under shell: true or in a shell line) never start an agent CLI, an app's program or a desktop binary; node never runs an app's script or an agent CLI's own package outside the temp dir, by script, --import or link; a test's own fakes and plain scripts still run (C5)", () => {
+  // As in the agent case: the child's os.tmpdir() is <root>/tmp, so <root>/bin and <root>/lib are outside it. Every
+  // stand-in prints "the real … ran" and exits 0, so a fence that fails shows without running anything real. macOS has
+  // no timeout, so a GNU-like one stands in on PATH: it skips its flags and the duration, then execs the rest. The
+  // desktop payload is the harmless `return "re" & "al"`: the real osascript prints `real`. The app paths do not exist.
+  const root = mkdtempSync(join(tmpdir(), "jh-hermetic-wrappers-"));
+  try {
+    for (const dir of ["tmp", "bin"]) mkdirSync(join(root, dir));
+    const write = (path: string, text: string, mode = 0o755): void => {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, text);
+      chmodSync(path, mode);
+    };
+    for (const name of ["codex", "claude"]) write(join(root, "bin", name), `#!/bin/sh\necho "the real ${name} ran"\n`);
+    write(join(root, "bin", "timeout"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in -k|-s) shift 2;; -*) shift;; *) break;; esac; done\nshift\nexec "$@"\n`);
+    // The agent CLIs' own npm packages, as `npm i -g` lays them out (outside the temp dir), and one that only names
+    // claude in its bin. A link to one from inside the temp dir is still the real package.
+    const lib = join(root, "lib", "node_modules");
+    const pkg = (name: string, bin: Record<string, string>, says: string): void => {
+      write(join(lib, name, "package.json"), JSON.stringify({ name, bin }), 0o644);
+      for (const file of Object.values(bin)) write(join(lib, name, file), `#!/usr/bin/env node\nconsole.log(${JSON.stringify(says)});\n`);
+    };
+    pkg("@anthropic-ai/claude-code", { claude: "cli.js" }, "the real claude ran");
+    pkg("@openai/codex", { codex: "bin/codex.js" }, "the real codex ran");
+    pkg("claude-fork", { claude: "index.mjs" }, "the real claude ran");
+    write(join(root, "bin", "codex.mjs"), `console.log("the real codex ran");\n`, 0o644);
+    write(join(root, "lib", "plain.mjs"), `console.log("plain ran");\n`, 0o644);
+    const cli = join(lib, "@anthropic-ai", "claude-code", "cli.js");
+    const codexJs = join(lib, "@openai", "codex", "bin", "codex.js");
+    const outside = join(root, "bin");
+    const shellPath = (process.env["PATH"] ?? "").split(":").filter((d) => d && !existsSync(join(d, "codex")) && !existsSync(join(d, "claude")));
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: join(root, "tmp"), PATH: [outside, ...shellPath].join(":") };
+    const app = "/Applications/Jarhead Fence Canary.app/Contents/MacOS/canary";
+    const osa = ["-e", 'return "re" & "al"'];
+    // Spawned directly: [file, args, stdin?]. Each must end nonzero with the stub's refusal.
+    const runs: Record<string, [string, string[], string?]> = {
+      "env claude": ["env", ["claude", "--version"]],
+      "/usr/bin/env claude": ["/usr/bin/env", ["claude", "--version"]],
+      "env NAME=value -u, then codex by path": ["env", ["-u", "HOME", "NO_COLOR=1", join(outside, "codex"), "--version"]],
+      "env PATH=… claude": ["env", ["PATH=/usr/bin:/bin", `PATH=${outside}`, "claude", "--version"]],
+      "env -i osascript": ["env", ["-i", "osascript", ...osa]],
+      "env /usr/bin/osascript": ["/usr/bin/env", ["/usr/bin/osascript", ...osa]],
+      "env an app": ["env", [app]],
+      "env -S": ["env", ["-S", "claude --version"]],
+      "env -- claude": ["env", ["--", "claude", "--version"]],
+      "xargs claude": ["xargs", ["claude"], "--version\n"],
+      "/usr/bin/xargs -n 1 codex": ["/usr/bin/xargs", ["-n", "1", "codex"], "--version\n"],
+      "xargs -0 -I {} claude": ["xargs", ["-0", "-I", "{}", "claude", "{}"], "--version"],
+      "timeout 5 claude": ["timeout", ["5", "claude", "--version"]],
+      "timeout -s KILL --foreground 5 codex": ["timeout", ["-s", "KILL", "--foreground", "5", "codex", "--version"]],
+      "nohup claude": ["nohup", ["claude", "--version"]],
+      "/usr/bin/nohup -- codex": ["/usr/bin/nohup", ["--", join(outside, "codex"), "--version"]],
+      "caffeinate -i claude": ["caffeinate", ["-i", "claude", "--version"]],
+      "/usr/bin/caffeinate -t 5 codex": ["/usr/bin/caffeinate", ["-t", "5", "codex", "--version"]],
+      "nice claude": ["nice", ["claude", "--version"]],
+      "nice -n 5 osascript": ["/usr/bin/nice", ["-n", "5", "/usr/bin/osascript", ...osa]],
+      "nested: env nice nohup claude": ["env", ["nice", "-n5", "nohup", "claude", "--version"]],
+      "/usr/bin/time claude": ["/usr/bin/time", ["claude", "--version"]],
+      "arch -arch … codex": ["/usr/bin/arch", ["-arch", process.arch === "arm64" ? "arm64" : "x86_64", "codex", "--version"]],
+      "/usr/bin/command claude": ["/usr/bin/command", ["claude", "--version"]],
+      "env sh -c": ["env", ["sh", "-c", "claude --version"]],
+      "nohup zsh -lc": ["nohup", ["/bin/zsh", "-lc", "codex --version"]],
+      "node <claude-code>/cli.js": [process.execPath, [cli, "--version"]],
+      "bare node <codex>/bin/codex.js": ["node", [codexJs, "--version"]],
+      "node, a bin named claude": ["node", [join(lib, "claude-fork", "index.mjs")]],
+      "node codex.mjs": [process.execPath, [join(outside, "codex.mjs")]],
+      "node --import <cli.js> -e": [process.execPath, ["--import", cli, "-e", "0"]],
+      "node --require=<cli.js>": [process.execPath, [`--require=${cli}`, "-e", "0"]],
+      "node -- <cli.js>": [process.execPath, ["--no-warnings", "--", cli]],
+      "node, a link in the temp dir": [process.execPath, ["@link"]],
+      "node, an app's script": [process.execPath, ["/Applications/Jarhead Fence Canary.app/Contents/Resources/cli.js"]],
+      "node, a script under /Applications": ["node", ["/Applications/jarhead-fence-canary/cli.js"]],
+      "the cli.js itself": [cli, ["--version"]],
+      "env node <cli.js>": ["env", ["node", cli]],
+    };
+    // Through a shell: Node joins the file and its args into one line; and in a shell line, the wrappers' command words.
+    const lines: Record<string, [string, string[], string?]> = {
+      "shell: true, env claude": ["env", ["claude", "--version"]],
+      "shell: true, nohup node <cli.js>": ["nohup", [process.execPath, cli]],
+      "sh -c, xargs": ["/bin/sh", ["-c", "echo --version | xargs claude"]],
+      "sh -c, xargs -n 1": ["/bin/sh", ["-c", "echo --version | xargs -n 1 codex"]],
+      "sh -c, timeout": ["/bin/sh", ["-c", "timeout 5 claude --version"]],
+      "sh -c, timeout -s KILL": ["/bin/sh", ["-c", "timeout -s KILL 5 codex --version"]],
+      "sh -c, caffeinate": ["/bin/sh", ["-c", "caffeinate -i claude --version"]],
+      "zsh -lc, caffeinate -t": ["/bin/zsh", ["-lc", "caffeinate -t 5 codex --version"]],
+    };
+    const script = `
+      import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+      import { spawnSync } from "node:child_process";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      const o = { encoding: "utf8", timeout: 20000 };
+      const done = (r) => ({ status: r.status, out: r.stdout ?? "", err: (r.stderr ?? "") + (r.error ? String(r.error.message) : "") });
+      const link = join(mkdtempSync(join(tmpdir(), "jh-link-")), "cli.js");
+      symlinkSync(${JSON.stringify(cli)}, link);
+      const runs = {};
+      for (const [name, [file, args, input]] of Object.entries(${JSON.stringify(runs)})) runs[name] = done(spawnSync(file, args.map((a) => (a === "@link" ? link : a)), { ...o, input: input ?? "" }));
+      const lines = ${JSON.stringify(lines)};
+      for (const [name, [file, args, input]] of Object.entries(lines)) runs[name] = done(spawnSync(file, args, { ...o, input: input ?? "", shell: name.startsWith("shell: true") }));
+      // A test's own fakes in a temp dir run: a fake agent package, a fake claude through env and xargs.
+      const own = mkdtempSync(join(tmpdir(), "jh-fake-agents-"));
+      mkdirSync(join(own, "node_modules", "@anthropic-ai", "claude-code"), { recursive: true });
+      writeFileSync(join(own, "node_modules", "@anthropic-ai", "claude-code", "package.json"), JSON.stringify({ name: "@anthropic-ai/claude-code", bin: { claude: "cli.js" } }));
+      writeFileSync(join(own, "node_modules", "@anthropic-ai", "claude-code", "cli.js"), "console.log('fake claude 9.9.9')\\n");
+      writeFileSync(join(own, "claude"), "#!/bin/sh\\necho fake claude 9.9.9\\n", { mode: 0o755 });
+      const withOwn = { ...o, env: { ...process.env, PATH: own + ":" + process.env.PATH } };
+      const fakes = {
+        "node, a fake package": done(spawnSync(process.execPath, [join(own, "node_modules", "@anthropic-ai", "claude-code", "cli.js")], o)),
+        "env, a fake claude": done(spawnSync("env", ["claude"], withOwn)),
+        "xargs, a fake claude by path": done(spawnSync("xargs", [join(own, "claude")], { ...o, input: "x\\n" })),
+        "caffeinate, a fake claude": done(spawnSync("caffeinate", ["-i", "claude"], withOwn)),
+      };
+      // What is not an agent's still runs: node on a plain script outside the temp dir, inline code, env on a plain program;
+      // command -v only looks a name up, so it names the real path.
+      const plain = {
+        script: done(spawnSync("node", [${JSON.stringify(join(root, "lib", "plain.mjs"))}], o)),
+        inline: done(spawnSync(process.execPath, ["-e", "console.log('inline ran')"], o)),
+        env: done(spawnSync("env", ["FOO=bar", "sh", "-c", "echo $FOO"], o)),
+        words: done(spawnSync("/bin/sh", ["-c", "echo env claude xargs codex"], o)),
+        "command -v": done(spawnSync("/usr/bin/command", ["-v", "claude"], o)),
+      };
+      console.log(JSON.stringify({ runs, fakes, plain }));
+    `;
+    const r = out<{ runs: Record<string, { status: number; out: string; err: string }>; fakes: Record<string, { status: number; out: string; err: string }>; plain: Record<string, { status: number; out: string; err: string }> }>(child(script, env));
+    assert.equal(Object.keys(r.runs).length, Object.keys(runs).length + Object.keys(lines).length);
+    for (const [name, run] of Object.entries(r.runs)) {
+      assert.notEqual(run.status, 0, `${name}: the fenced program exited 0 (${JSON.stringify(run)})`);
+      assert.doesNotMatch(run.out, /the real (codex|claude) ran|^real$/m, `${name}: the program ran (${JSON.stringify(run)})`);
+      assert.match(run.err, /^[\w .-]+: refused \(the test preload fences the (agent CLIs|desktop)\)$/m, `${name}: the stub said why (${JSON.stringify(run)})`);
+    }
+    assert.match(r.runs["node <claude-code>/cli.js"]!.err, /^cli\.js: refused \(the test preload fences the agent CLIs\)$/m);
+    assert.match(r.runs["node, an app's script"]!.err, /^cli\.js: refused \(the test preload fences the desktop\)$/m);
+    assert.match(r.runs["env -i osascript"]!.err, /^osascript: refused \(the test preload fences the desktop\)$/m);
+    assert.match(r.runs["env an app"]!.err, /^canary: refused \(the test preload fences the desktop\)$/m);
+    for (const [name, fake] of Object.entries(r.fakes)) assert.deepEqual(fake, { status: 0, out: "fake claude 9.9.9\n", err: "" }, `${name}: a test's own fake runs`);
+    assert.deepEqual(r.plain, {
+      script: { status: 0, out: "plain ran\n", err: "" },
+      inline: { status: 0, out: "inline ran\n", err: "" },
+      env: { status: 0, out: "bar\n", err: "" },
+      words: { status: 0, out: "env claude xargs codex\n", err: "" },
+      "command -v": { status: 0, out: `${join(outside, "claude")}\n`, err: "" },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

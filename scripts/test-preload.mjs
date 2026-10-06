@@ -31,23 +31,41 @@
 //   with no effect at all, a lone `return` of a string literal or of whole numbers added and taken
 //   away (`return 2 + 2` prints 4), so the runner's plumbing stays testable; it refuses anything else.
 // - The agent CLIs and the apps are fenced the same way (F1). A program named codex or claude
-//   outside os.tmpdir(), or any program inside an app under /Applications or ~/Applications, runs a
-//   refusing stub instead: spawned by path or by bare name (found on the PATH it is spawned with), or
-//   by an absolute path inside a shell line. In a shell line, a bare codex or claude where a command
-//   starts is the stub too, unless the PATH the shell is given finds a copy under os.tmpdir(). A
-//   command starts first, after ; & | ( { ` or a newline, and after if, then, else, elif, do, while,
-//   until or !. It starts past exec, command, env, nice, nohup and time and NAME=value words, and its
-//   name may be quoted. The same holds inside the quoted line of a shell the line starts (sh -c '…').
-//   A test's own fake codex or claude lives in a mkdtemp dir and still runs; so does the node that
-//   runs the suite. Without this, the `auto` walk finds Codex in ChatGPT.app, links the user's
-//   ~/.codex/auth.json into a private CODEX_HOME and spends a model request on the thread's primer.
+//   (claude.js and the like too) outside os.tmpdir(), a file inside an agent CLI's own npm package
+//   outside it (@anthropic-ai/claude-code, @openai/codex, or any package whose bin is codex or
+//   claude), or any program inside an app under /Applications or ~/Applications, runs a refusing stub
+//   instead, a link to one too: spawned by path or by bare name (found on the PATH it is spawned
+//   with), or by an absolute path inside a shell line. In a shell line, a bare codex or claude where
+//   a command starts is the stub too, unless the PATH the shell is given finds a copy under
+//   os.tmpdir(). A command starts first, after ; & | ( { ` or a newline, and after if, then, else,
+//   elif, do, while, until or !. It starts past exec, command, env, nice, nohup, time, caffeinate,
+//   xargs, timeout and NAME=value words, and its name may be quoted. The same holds inside the quoted
+//   line of a shell the line starts (sh -c '…'). A test's own fake codex or claude lives in a mkdtemp
+//   dir and still runs; so does the node that runs the suite. Without this, the `auto` walk finds
+//   Codex in ChatGPT.app, links the user's ~/.codex/auth.json into a private CODEX_HOME and spends a
+//   model request on the thread's primer.
+// - What a wrapper runs is fenced as if it were spawned itself (C5). A wrapper is env, xargs,
+//   timeout (gtimeout), nohup, caffeinate, nice, time, arch or command, by any path or bare name. Its
+//   command is the first word past its flags and their values (and past env's NAME=value words and
+//   timeout's duration). A bare desktop or agent name there is pinned to what it runs, since env -i,
+//   env PATH=…, env -u PATH and env -P change where it is found. A shell, node or another wrapper
+//   there is read the same way. env -S's line is read as a shell line. With `shell: true`, Node joins
+//   the file and its args into one line; the fence reads that line whole.
+// - node, by any path or bare name, runs the stub when its script, or a module it loads with
+//   --import, --require or --loader, is under /Applications or ~/Applications, or is an agent CLI's
+//   own (as above, a link followed), or a bare module name of one of those packages. Every stub runs
+//   under sh and under node alike, so `node <stub>` refuses too.
 //
 // What the fences miss:
 // - An agent name a shell line reaches another way still runs: through a variable ($cmd), eval,
-//   xargs, find -exec, a script file, or a wrapper not named above. No agent stub stands on PATH,
-//   since the tests that look for Codex on PATH would find it. The desktop names have stubs on PATH,
-//   so those forms reach a desktop stub, but not in a login shell that runs a script file or that a
-//   line starts itself: path_helper puts /usr/bin first there.
+//   find -exec, a script file, xargs with a flag whose value is not a number (-I {}), or a wrapper
+//   not named above (sudo, script, sandbox-exec). No agent stub stands on PATH, since the tests that
+//   look for Codex on PATH would find it. The desktop names have stubs on PATH, so those forms reach
+//   a desktop stub, but not in a login shell that runs a script file or that a line starts itself:
+//   path_helper puts /usr/bin first there.
+// - What arrives on stdin is never read: `xargs node` fed an agent CLI's script runs it.
+// - In a shell line, `node <agent script>` is refused only when the script may run as a program
+//   (npm makes every bin executable); a module name or a relative path there is not looked up.
 // - A node child a test starts as `node --import tsx …` does not load this preload. Jarhead's own
 //   entry points run that way: the daemon's main in single-instance.test.ts, and the CLI's main in
 //   v2-status, w2-1-ledger-cli, memory-cli and w3-3-ledger-search-cli. These children inherit the
@@ -64,7 +82,7 @@ import childProcess from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir, userInfo } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { SECRET_KEYS } from "@jarhead/protocol";
@@ -159,24 +177,60 @@ process.env["PATH"] = `${fence}:${process.env["PATH"] ?? ""}`;
 const ABSOLUTE = new RegExp(`(?<![\\w/.-])/usr/s?bin/(${FENCED.join("|")})(?![\\w.-])`, "g");
 
 const AGENTS = ["codex", "claude"];
+/** The agent CLIs' own npm packages. A package whose bin is codex or claude counts too. */
+const AGENT_PACKAGES = ["@anthropic-ai/claude-code", "@openai/codex"];
 const APPS = ["/Applications", ...(ACCOUNT_HOME ? [join(ACCOUNT_HOME, "Applications")] : [])];
 /** A path inside an app bundle under /Applications or the account's ~/Applications. */
 const inApp = (path) => APPS.some((apps) => path.startsWith(apps + "/") && /\.app\//.test(path.slice(apps.length)));
+/** A path anywhere under /Applications or ~/Applications: node runs a script from there, in an app or not. */
+const underApps = (path) => APPS.some((apps) => path.startsWith(apps + "/"));
 /** The node that runs the suite is never fenced, wherever it lives: node --test spawns it for every test file. */
 const NODE = new Set([process.execPath, realpathOr(process.execPath)]);
-/** Why a program at this path must not run: Codex or Claude Code outside the temp dir, or anything inside an app. */
-const why = (path) => {
-  if (NODE.has(path)) return undefined;
-  if (AGENTS.includes(basename(path).toLowerCase()) && !underTmp(path)) return "the agent CLIs";
-  return inApp(path) ? "the desktop" : undefined;
+/** A program's name as an agent's: claude.js, claude.mjs and Claude are claude. */
+const stem = (path) => basename(path).replace(/\.[cm]?js$/i, "").toLowerCase();
+/** A file inside an agent CLI's own package: the nearest package.json above it is one of AGENT_PACKAGES, or its bin is codex or claude. */
+const inAgentPackage = (path) => {
+  for (let dir = dirname(path); ; dir = dirname(dir)) {
+    const file = join(dir, "package.json");
+    if (fs.existsSync(file)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+        const bins = typeof pkg.bin === "string" ? [String(pkg.name ?? "").split("/").pop()] : pkg.bin && typeof pkg.bin === "object" ? Object.keys(pkg.bin) : [];
+        return AGENT_PACKAGES.includes(pkg.name) || bins.some((b) => AGENTS.includes(String(b).toLowerCase()));
+      } catch {
+        return false;
+      }
+    }
+    if (dirname(dir) === dir) return false;
+  }
 };
-/** The agents' and the apps' stubs live off PATH, made on first use, each named after its program. */
+/** Codex or Claude Code outside the temp dir: by its name, or by the package it ships in. */
+const agentAt = (path) => !underTmp(path) && (AGENTS.includes(stem(path)) || inAgentPackage(path));
+/** Why a program at this path must not run: Codex or Claude Code outside the temp dir, or anything inside an app; a link is followed. */
+const why = (path) => {
+  const real = realpathOr(path);
+  if (NODE.has(path) || NODE.has(real)) return undefined;
+  if (agentAt(path) || (real !== path && agentAt(real))) return "the agent CLIs";
+  return inApp(path) || inApp(real) ? "the desktop" : undefined;
+};
+/**
+ * The agents' and the apps' stubs live off PATH, made on first use, each named after its program. A
+ * stub runs under sh and under node alike (sh reads `":"` as a no-op, node as a string and the rest
+ * of the line as a comment), so a script path pointed at one is refused by the node that runs it.
+ */
 const stubs = fs.mkdtempSync(join(tmpdir(), "jh-test-agents-"));
 const stubFor = (path, what) => {
   const name = (what === "the agent CLIs" ? basename(path).toLowerCase() : basename(path)).replace(/[^\w .+-]/g, "-") || "program";
-  const stub = join(stubs, name.replace(/ /g, "-"));
+  const dir = join(stubs, what === "the agent CLIs" ? "agents" : "desktop");
+  const stub = join(dir, name.replace(/ /g, "-"));
   if (!fs.existsSync(stub)) {
-    fs.writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' '${REFUSED(name, what)}' >&2\nexit 1\n`);
+    fs.mkdirSync(dir, { recursive: true });
+    const said = JSON.stringify(REFUSED(name, what) + "\n");
+    fs.writeFileSync(
+      stub,
+      `#!/bin/sh\n":" //; printf '%s\\n' '${REFUSED(name, what)}' >&2; exit 1\n` +
+        `if (typeof require === "function") require("node:fs").writeSync(2, ${said}); else process.stderr.write(${said});\nprocess.exit(1);\n`,
+    );
     fs.chmodSync(stub, 0o755);
   }
   return stub;
@@ -200,18 +254,229 @@ const pathOf = (options) => (options !== null && typeof options === "object" && 
 /**
  * The program itself: a fenced binary under /usr/bin or /usr/sbin is its stub (a bare one finds the
  * stub on PATH). Codex, Claude Code and an app's program are their stubs, by path (the file need not
- * exist) or by bare name, and so is a link that leads into an app.
+ * exist) or by bare name found on `path`, and so is a link that leads to one.
  */
-const program = (file, options) => {
+const program = (file, cwd, path) => {
   if (typeof file !== "string" || file === "") return file;
   const m = /^\/usr\/s?bin\/([\w.-]+)$/.exec(file);
   if (m && FENCED.includes(m[1])) return join(fence, m[1]);
-  const at = file.includes("/") ? resolve(cwdOf(options), file) : onPath(file, pathOf(options));
+  const at = file.includes("/") ? resolve(cwd, file) : onPath(file, path);
   if (at === undefined) return file;
-  const real = realpathOr(at);
-  if (NODE.has(real)) return file;
-  const what = why(at) ?? (inApp(real) ? "the desktop" : undefined);
+  const what = why(at);
   return what ? stubFor(at, what) : file;
+};
+
+// ---- wrappers and node: what a program runs from its own args ----------------------------------
+
+/** Where execvp looks when PATH is unset (env -i, env -u PATH). */
+const DEFAULT_PATH = "/usr/bin:/bin";
+/**
+ * Programs that run a command named in their own args, and how each reads them: `flags` are its
+ * one-letter options that take a value (the rest of the word, or the next word), `long` its --options
+ * that take the next word, `skip` the words between its options and the command (timeout's
+ * duration), `words` its whole-word options that take the next word (arch's), `looks` the flags
+ * that make it only look the command up (command -v). Each stops reading options at `--` or at the
+ * first word that is not one. env also reads NAME=value words.
+ */
+const TIMEOUT = { flags: "ks", long: ["--kill-after", "--signal"], skip: 1 };
+const WRAPPERS = new Map([
+  ["env", { flags: "CLPSUau", long: ["--unset", "--chdir", "--split-string", "--argv0"], env: true }],
+  ["xargs", { flags: "EIJLPRSadns" }],
+  ["timeout", TIMEOUT],
+  ["gtimeout", TIMEOUT],
+  ["nohup", { flags: "" }],
+  ["caffeinate", { flags: "tw" }],
+  ["nice", { flags: "n", long: ["--adjustment"] }],
+  ["time", { flags: "fo" }],
+  ["arch", { words: ["-arch", "-d", "-e"] }],
+  ["command", { flags: "", looks: "vV" }],
+]);
+/**
+ * Where a wrapper's command sits in its args (`at`, -1 for none), with the folder and the PATH it
+ * runs under and the PATH it is found on: env may change all three (-C, -i, -u PATH, PATH=…, -P).
+ * env -S's line is fenced in place, in `args`.
+ */
+const wrapped = (spec, args, cwd, path) => {
+  const out = { at: -1, args: [...args], cwd, path, find: undefined };
+  const envOption = (flag, value, k, prefix) => {
+    if (flag === "-C" || flag === "--chdir") out.cwd = resolve(out.cwd, value);
+    else if (flag === "-P") out.find = value;
+    else if ((flag === "-u" || flag === "--unset") && value === "PATH") out.path = DEFAULT_PATH;
+    else if (flag === "-S" || flag === "--split-string") out.args[k] = prefix + commands(value, out.find ?? out.path);
+  };
+  /** The value of the option at word i: joined (`-n1`, `--signal=KILL`) or the next word. Returns the word index it ends on. */
+  const take = (flag, i, joined, prefix) => {
+    if (joined !== undefined) {
+      if (spec.env) envOption(flag, joined, i, prefix);
+      return i;
+    }
+    if (spec.env && i + 1 < args.length) envOption(flag, String(args[i + 1]), i + 1, "");
+    return i + 1;
+  };
+  let options = true;
+  let skip = spec.skip ?? 0;
+  for (let i = 0; i < args.length; i++) {
+    const a = String(args[i]);
+    if (options && a === "--") {
+      options = false;
+      continue;
+    }
+    if (options && spec.env && a === "-") {
+      out.path = DEFAULT_PATH; // env's old spelling of -i
+      continue;
+    }
+    if (options && a.startsWith("-") && a.length > 1) {
+      if (spec.words) {
+        if (spec.words.includes(a)) i++;
+      } else if (a.startsWith("--")) {
+        const eq = a.indexOf("=");
+        const flag = eq < 0 ? a : a.slice(0, eq);
+        if (eq >= 0) take(flag, i, a.slice(eq + 1), flag + "=");
+        else if (spec.long?.includes(flag)) i = take(flag, i);
+      } else {
+        for (let j = 1; j < a.length; j++) {
+          if (spec.looks?.includes(a[j])) return { ...out, find: out.path };
+          if (spec.env && a[j] === "i") out.path = DEFAULT_PATH;
+          if (!spec.flags.includes(a[j])) continue;
+          i = take("-" + a[j], i, j + 1 < a.length ? a.slice(j + 1) : undefined, a.slice(0, j + 1));
+          break;
+        }
+      }
+      continue;
+    }
+    if (spec.env && /^[A-Za-z_]\w*=/.test(a)) {
+      if (a.startsWith("PATH=")) out.path = a.slice(5);
+      options = false;
+      continue;
+    }
+    if (skip > 0) {
+      skip--;
+      options = false;
+      continue;
+    }
+    out.at = i;
+    break;
+  }
+  out.find ??= out.path;
+  return out;
+};
+
+/** node's flags whose word is a module it loads and runs. */
+const NODE_LOADS = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader"]);
+/** The flags after which node runs code given inline (or a package script), never a script file. */
+const NODE_INLINE = new Set(["-e", "--eval", "-p", "--print", "--run"]);
+/** node's flags that take the next word unless joined with `=`. */
+const NODE_VALUES = new Set([
+  ...NODE_LOADS,
+  ...NODE_INLINE,
+  "-C",
+  "--conditions",
+  "--input-type",
+  "--env-file",
+  "--env-file-if-exists",
+  "--experimental-config-file",
+  "--title",
+  "--inspect-port",
+  "--debug-port",
+  "--disable-warning",
+  "--redirect-warnings",
+  "--report-dir",
+  "--report-directory",
+  "--report-filename",
+  "--report-signal",
+  "--heapsnapshot-signal",
+  "--diagnostic-dir",
+  "--cpu-prof-dir",
+  "--cpu-prof-name",
+  "--heap-prof-dir",
+  "--heap-prof-name",
+  "--icu-data-dir",
+  "--openssl-config",
+  "--tls-cipher-list",
+  "--secure-heap",
+  "--secure-heap-min",
+  "--localstorage-file",
+  "--unhandled-rejections",
+  "--dns-result-order",
+  "--watch-path",
+  "--test-concurrency",
+  "--test-name-pattern",
+  "--test-skip-pattern",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--test-shard",
+  "--test-timeout",
+]);
+/** A module node is given: a file URL or a path becomes a path; a bare name stays as it is. */
+const moduleOf = (spec, cwd) => {
+  if (spec.startsWith("file:")) {
+    try {
+      return fileURLToPath(spec);
+    } catch {
+      return spec;
+    }
+  }
+  return spec.startsWith("/") || spec.startsWith(".") ? resolve(cwd, spec) : spec;
+};
+/** What a node command line loads and runs: its script (none after -e or -p), and every --import, --require or --loader module. */
+const nodeLoads = (args, cwd) => {
+  const out = [];
+  let inline = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = String(args[i]);
+    if (a === "--" || !a.startsWith("-") || a === "-") {
+      const script = a === "--" ? args[i + 1] : a;
+      if (!inline && script !== undefined && script !== "-") out.push(moduleOf(String(script), cwd));
+      break;
+    }
+    const eq = a.startsWith("--") ? a.indexOf("=") : -1;
+    const flag = eq < 0 ? a : a.slice(0, eq);
+    if (NODE_INLINE.has(flag)) inline = true;
+    const value = eq >= 0 ? a.slice(eq + 1) : NODE_VALUES.has(flag) ? String(args[++i] ?? "") : undefined;
+    if (value !== undefined && NODE_LOADS.has(flag)) out.push(moduleOf(value, cwd));
+  }
+  return out;
+};
+/** Why node must not run this module: anything under /Applications or ~/Applications, or an agent CLI's own (a bare name of its package, too). */
+const whyNode = (module) => {
+  if (!module.startsWith("/")) return AGENT_PACKAGES.some((p) => module === p || module.startsWith(p + "/")) ? "the agent CLIs" : undefined;
+  if (underApps(module) || underApps(realpathOr(module))) return "the desktop";
+  return why(module);
+};
+const isNode = (file) => /^node(js)?$/.test(basename(file)) || NODE.has(file);
+
+/**
+ * A program and its args as they run under the fence:
+ * - the program as `program` makes it;
+ * - a shell's line (the word after its -c) as `commands` makes it; a login shell's line puts the PATH
+ *   it was given first again;
+ * - a wrapper's command (WRAPPERS) as a program of its own: a fenced bare name is pinned to what it
+ *   runs, since the wrapper may change PATH, and a shell, node or another wrapper there is read the
+ *   same way;
+ * - node is the stub when it would run a module `whyNode` refuses.
+ */
+const argv = (file, args, cwd, path, find = path) => {
+  if (typeof file !== "string" || file === "") return [file, args];
+  const spec = WRAPPERS.get(basename(file));
+  if (spec) {
+    const w = wrapped(spec, args, cwd, path);
+    if (w.at < 0) return [program(file, cwd, find), w.args];
+    const name = String(w.args[w.at]);
+    const [inner, rest] = argv((!name.includes("/") && bare(name, w.find)) || name, w.args.slice(w.at + 1), w.cwd, w.path, w.find);
+    return [program(file, cwd, find), [...w.args.slice(0, w.at), inner, ...rest]];
+  }
+  if (isNode(file)) {
+    for (const module of nodeLoads(args, cwd)) {
+      const what = whyNode(module);
+      if (what) return [stubFor(module, what), args];
+    }
+    return [program(file, cwd, find), args];
+  }
+  const shell = SHELLS.exec(file)?.[2];
+  if (!shell) return [program(file, cwd, find), args];
+  const at = lineAt(args);
+  const login = at > 0 && Boolean(path) && args.slice(0, at).some((a) => LOGIN_FLAG.test(String(a)));
+  return [program(file, cwd, find), args.map((a, k) => (k !== at ? line(a) : typeof a === "string" && login ? pathFirst(shell, path) + commands(a, path) : commands(a, path)))];
 };
 const shellWord = (path) => (/^[\w/.+-]+$/.test(path) ? path : `'${path.replace(/'/g, "'\\''")}'`);
 /** An absolute path in a shell line: quoted whole, or bare up to the next space or operator (a backslash keeps a space). */
@@ -230,10 +495,11 @@ const line = (command) =>
 /**
  * A command's name where a shell line starts one: first, or after ; & | ( { ` $( or a newline; past
  * the words that run the next one (if, then, else, elif, do, while, until, !, exec, command, env,
- * nice, nohup, time, with their flags) and NAME=value words; bare, quoted or after a backslash.
+ * nice, nohup, time, caffeinate, xargs, with their flags and numeric values; timeout and gtimeout
+ * with their flags and the duration) and NAME=value words; bare, quoted or after a backslash.
  */
 const COMMAND =
-  /(^|[;&|({`\n])([ \t]*(?:(?:if|then|else|elif|do|while|until|!)[ \t]+|command(?:[ \t]+-p)?[ \t]+|(?:exec|env|nice|nohup|time)(?:[ \t]+-[\w-]+(?:[ \t]+\d+)?)*[ \t]+|[A-Za-z_]\w*=[^\s;&|]*[ \t]+)*)\\?(["']?)([\w.-]+)\3(?=$|[\s;&|<>)}`])/g;
+  /(^|[;&|({`\n])([ \t]*(?:(?:if|then|else|elif|do|while|until|!)[ \t]+|command(?:[ \t]+-p)?[ \t]+|(?:exec|env|nice|nohup|time|caffeinate|xargs)(?:[ \t]+-[\w-]+(?:[ \t]+\d+)?)*[ \t]+|g?timeout(?:[ \t]+-[\w-]+(?:[ \t]+\w+)?)*[ \t]+\d+(?:\.\d+)?[smhd]?[ \t]+|[A-Za-z_]\w*=[^\s;&|]*[ \t]+)*)\\?(["']?)([\w.-]+)\3(?=$|[\s;&|<>)}`])/g;
 /**
  * What a fenced bare name in a command line runs, pinned there, since a login shell's path_helper
  * puts the system's folders first and the line may change PATH itself. A test's own fake in a temp
@@ -310,23 +576,18 @@ const fenceEnv = (options) => {
 // spawn, spawnSync, execFile, execFileSync: (file, args?, options?, callback?)
 const fileCall = (file, rest) => {
   const hasArgs = Array.isArray(rest[0]);
-  const args = hasArgs ? rest[0] : undefined;
+  const args = hasArgs ? rest[0] : [];
   const i = hasArgs ? 1 : 0;
   const options = rest[i] !== null && typeof rest[i] === "object" ? fenceEnv(rest[i]) : rest[i];
+  const tail = i < rest.length ? [options, ...rest.slice(i + 1)] : [];
   const path = pathOf(options);
-  // Through a shell (`shell: true`) the file and its args are one line, the file first; a shell spawned
-  // by name (`sh -c '…'`, zsh -lc, as run_shell does) takes its line as the arg after its -c, and a
-  // login shell's line puts the PATH it was given first again.
-  const shellOption = options !== null && typeof options === "object" && Boolean(options.shell);
-  const shell = !shellOption ? SHELLS.exec(String(file))?.[2] : undefined;
-  const out = [shellOption ? commands(file, path) : program(file, options)];
-  if (hasArgs && (shellOption || shell)) {
-    const at = shell ? lineAt(args) : -1;
-    const login = at > 0 && Boolean(path) && args.slice(0, at).some((a) => LOGIN_FLAG.test(String(a)));
-    out.push(args.map((a, k) => (k !== at ? line(a) : typeof a === "string" && login ? pathFirst(shell, path) + commands(a, path) : commands(a, path))));
-  } else if (hasArgs) out.push(args);
-  if (i < rest.length) out.push(options, ...rest.slice(i + 1));
-  return out;
+  // Through a shell (`shell: true`) Node joins the file and its args with spaces into one line: the
+  // fence reads that line whole. Otherwise `argv` reads the program and its args.
+  if (options !== null && typeof options === "object" && Boolean(options.shell)) {
+    return [commands(args.length ? [file, ...args].join(" ") : file, path), ...(hasArgs ? [[]] : []), ...tail];
+  }
+  const [runs, runArgs] = argv(file, args, cwdOf(options), path);
+  return [runs, ...(hasArgs ? [runArgs] : []), ...tail];
 };
 // exec, execSync: (command, options?, callback?), always through a shell
 const lineCall = (command, rest) => {
