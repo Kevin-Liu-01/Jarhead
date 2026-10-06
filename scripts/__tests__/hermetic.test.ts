@@ -14,6 +14,10 @@ import { SECRET_KEYS } from "@jarhead/protocol";
  * this process was started with. Nothing here opens a socket off the Mac: the off-Mac address is
  * TEST-NET-1 (192.0.2.1, never routed), and api.openai.com is asked only after that one answered
  * offline.
+ *
+ * F1: nor on his HOME or his Codex and Claude logins, and no agent CLI or app runs. Before it, the
+ * `auto` walk found Codex in ChatGPT.app, linked ~/.codex/auth.json into a temp CODEX_HOME and ran
+ * a primer turn on Kevin's login: one real model request from `pnpm test`.
  */
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -44,8 +48,9 @@ const PLAIN_SECRET = `plain-${CANARY}-word`;
 
 /**
  * A HOME whose ~/.jarhead/env holds a canary for every secret key, Jarhead settings and a plain
- * secret-named value, and a shell env that exports more keys and settings: what a self-edit's
- * `pnpm run test` inherits from the daemon, which loaded that file.
+ * secret-named value, whose ~/.codex and ~/.claude hold a canary login, and a shell env that exports
+ * more keys and settings and points CODEX_HOME and CLAUDE_CONFIG_DIR at those logins: what a
+ * self-edit's `pnpm run test` inherits from the daemon, which loaded that file.
  */
 function canaryHome(): { root: string; home: string; env: NodeJS.ProcessEnv } {
   const root = mkdtempSync(join(tmpdir(), "jh-hermetic-"));
@@ -53,9 +58,15 @@ function canaryHome(): { root: string; home: string; env: NodeJS.ProcessEnv } {
   mkdirSync(join(home, ".jarhead"), { recursive: true });
   const file = [...SECRET_KEYS.map((k) => `${k}=sk-${CANARY}-file-${k}`), "JARHEAD_BRAIN=claude-code", `JARHEAD_BRAIN_MODEL=model-${CANARY}`, `SERVICE_TOKEN=${PLAIN_SECRET}`];
   writeFileSync(join(home, ".jarhead", "env"), file.join("\n") + "\n", { mode: 0o600 });
+  mkdirSync(join(home, ".codex"));
+  writeFileSync(join(home, ".codex", "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: `at-${CANARY}` } }), { mode: 0o600 });
+  mkdirSync(join(home, ".claude"));
+  writeFileSync(join(home, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: `at-${CANARY}` } }), { mode: 0o600 });
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
+    CODEX_HOME: join(home, ".codex"),
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
     JARHEAD_STATE_DIR: join(home, ".jarhead"),
     JARHEAD_SOCKET: join(home, ".jarhead", "jarhead.sock"),
     JARHEAD_AUTO_WAKE: "1",
@@ -277,7 +288,7 @@ test("the brain runner's redactor reads the state dir's env file, never $HOME/.j
   }
 });
 
-test("the preload fences the desktop: osascript and open never run, by bare name, by /usr/bin path, through a shell line or under a caller's own env, so a test that sends `tell application \"Spotify\" to play` plays nothing", () => {
+test("the preload fences the desktop: osascript and open never run, by bare name, by /usr/bin path, through a shell line (a login shell's too) or under a caller's own env, so a test that sends `tell application \"Spotify\" to play` plays nothing", () => {
   // The payload is harmless (`return "re" & "al"`): the stub refuses it (not a lone literal), and if the fence ever
   // fails, the real osascript prints `real` and exits 0.
   const script = `
@@ -293,6 +304,8 @@ test("the preload fences the desktop: osascript and open never run, by bare name
     sync("shell option", () => spawnSync("/usr/bin/osascript " + q, { shell: true, encoding: "utf8" }));
     sync("sh -c, own env", () => spawnSync("/bin/sh", ["-c", "osascript " + q], { env: { HOME: "/tmp" }, encoding: "utf8" }));
     sync("zsh -lc absolute", () => spawnSync("/bin/zsh", ["-lc", "/usr/bin/osascript " + q], { encoding: "utf8" }));
+    // A login shell's path_helper puts /usr/bin ahead of the fence on PATH; run_shell runs every line this way.
+    sync("zsh -lc bare", () => spawnSync("/bin/zsh", ["-lc", "osascript " + q], { encoding: "utf8" }));
     sync("execFileSync open", () => execFileSync("open", ["-a", "Spotify"], { encoding: "utf8", stdio: "pipe" }));
     const pexec = promisify(execFile);
     runs["promisify(execFile)"] = await pexec("osascript", ["-e", 'return "re" & "al"']).then((r) => ({ status: 0, out: r.stdout, err: r.stderr }), (e) => ({ status: e.code ?? 1, out: String(e.stdout ?? ""), err: String(e.stderr ?? "") }));
@@ -302,10 +315,115 @@ test("the preload fences the desktop: osascript and open never run, by bare name
     console.log(JSON.stringify(runs));
   `;
   const runs = out<Record<string, { status: number; out: string; err: string }>>(child(script, { ...process.env }));
-  assert.equal(Object.keys(runs).length, 10);
+  assert.equal(Object.keys(runs).length, 11);
   for (const [name, r] of Object.entries(runs)) {
     assert.notEqual(r.status, 0, `${name}: the fenced binary exited 0 (${r.out})`);
     assert.doesNotMatch(r.out, /real/, `${name}: the real osascript ran`);
     assert.match(r.err, /refused \(the test preload fences the desktop\)/, `${name}: the stub said why (${r.err})`);
+  }
+});
+
+test("the preload moves HOME: os.homedir() is a fresh temp dir with a test git identity, never the shell's home; CODEX_HOME and CLAUDE_CONFIG_DIR are unset, so Codex's home is never the login in the shell's ~/.codex (F1)", () => {
+  const { root, home, env } = canaryHome();
+  try {
+    const script = `
+      import { spawnSync } from "node:child_process";
+      import { existsSync, readFileSync } from "node:fs";
+      import { homedir, tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { codexHomeDir } from "./packages/brain/src/codex.ts";
+      const git = spawnSync("git", ["config", "--global", "--get", "user.email"], { encoding: "utf8" });
+      console.log(JSON.stringify({
+        homedir: homedir(), home: process.env.HOME, tmp: tmpdir(),
+        codexHome: process.env.CODEX_HOME ?? null, claudeConfig: process.env.CLAUDE_CONFIG_DIR ?? null,
+        codexHomeDir: codexHomeDir(), auth: existsSync(join(codexHomeDir(), "auth.json")),
+        gitconfig: existsSync(join(homedir(), ".gitconfig")) ? readFileSync(join(homedir(), ".gitconfig"), "utf8") : null, gitEmail: git.stdout.trim(),
+      }));
+      process.exit(0);
+    `;
+    const r = out<{ homedir: string; home: string; tmp: string; codexHome: string | null; claudeConfig: string | null; codexHomeDir: string; auth: boolean; gitconfig: string | null; gitEmail: string }>(child(script, env));
+    assert.notEqual(r.homedir, home, "os.homedir() is not the shell's home");
+    assert.ok(r.homedir.startsWith(r.tmp + "/") && /\/jh-test-home-[^/]+$/.test(r.homedir), `os.homedir() is a fresh dir under os.tmpdir() (${r.homedir})`);
+    assert.equal(r.home, r.homedir);
+    assert.equal(r.codexHome, null, "CODEX_HOME is unset");
+    assert.equal(r.claudeConfig, null, "CLAUDE_CONFIG_DIR is unset");
+    assert.ok(!r.codexHomeDir.startsWith(home), `codexHomeDir() is not under the shell's home (${r.codexHomeDir})`);
+    assert.equal(r.codexHomeDir, join(r.homedir, ".codex"));
+    assert.equal(r.auth, false, "no Codex login to link into a private CODEX_HOME");
+    assert.match(r.gitconfig ?? "", /name = Jarhead Test/);
+    assert.equal(r.gitEmail, "test@jarhead.invalid", "a test that commits in a temp repo has an identity");
+    assert.equal(existsSync(r.homedir), false, "the temp home is gone at exit");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the preload fences the agent CLIs: Codex in ChatGPT.app, /usr/local/bin/claude, a program inside an app under /Applications or ~/Applications, and a codex or claude outside the temp dir never run, by absolute path, bare name or shell line; a test's own fake codex in a temp dir still runs (F1)", () => {
+  // The child's os.tmpdir() is <root>/tmp, so <root>/bin is outside it: a codex and a claude there stand for the
+  // real ones on the shell's PATH. Each prints a canary and exits 0, so a fence that fails shows without running
+  // anything real. The app paths do not exist: before the fence they fail to spawn, after it the stub refuses them.
+  const root = mkdtempSync(join(tmpdir(), "jh-hermetic-agents-"));
+  try {
+    mkdirSync(join(root, "tmp"));
+    mkdirSync(join(root, "bin"));
+    for (const name of ["codex", "claude"]) {
+      writeFileSync(join(root, "bin", name), `#!/bin/sh\necho "the real ${name} ran"\n`);
+      chmodSync(join(root, "bin", name), 0o755);
+    }
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: join(root, "tmp"), PATH: `${join(root, "bin")}:${process.env["PATH"] ?? ""}` };
+    const script = `
+      import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+      import { execFile, execFileSync, execSync, spawn, spawnSync } from "node:child_process";
+      import { tmpdir, userInfo } from "node:os";
+      import { join } from "node:path";
+      import { promisify } from "node:util";
+      const outside = ${JSON.stringify(join(root, "bin"))};
+      const runs = {};
+      const sync = (name, fn) => { try { const r = fn(); runs[name] = { status: r.status ?? 0, out: String(r.stdout ?? r ?? ""), err: String(r.stderr ?? "") }; } catch (e) { runs[name] = { status: e.status ?? 1, out: String(e.stdout ?? ""), err: String(e.stderr ?? e.message) }; } };
+      const o = { encoding: "utf8" };
+      sync("ChatGPT.app codex", () => spawnSync("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex", ["--version"], o));
+      sync("/usr/local/bin/claude", () => spawnSync("/usr/local/bin/claude", ["--version"], o));
+      sync("an app under /Applications", () => spawnSync("/Applications/Jarhead Fence Canary.app/Contents/MacOS/canary", [], o));
+      sync("an app under ~/Applications", () => spawnSync(join(userInfo().homedir, "Applications", "Canary.app", "Contents", "MacOS", "canary"), [], o));
+      sync("bare codex on PATH", () => spawnSync("codex", ["--version"], o));
+      sync("bare claude, a caller's own env", () => spawnSync("claude", ["--version"], { ...o, env: { PATH: outside + ":/usr/bin:/bin" } }));
+      sync("execFileSync claude", () => execFileSync(join(outside, "claude"), ["--version"], { ...o, stdio: "pipe" }));
+      sync("sh -c absolute", () => spawnSync("/bin/sh", ["-c", join(outside, "codex") + " --version"], o));
+      sync("zsh -lc absolute", () => spawnSync("/bin/zsh", ["-lc", "/usr/local/bin/claude --version"], o));
+      sync("execSync, quoted app", () => execSync('"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex" --version', { ...o, stdio: "pipe" }));
+      sync("shell option", () => spawnSync(join(outside, "claude") + " --version", { ...o, shell: true }));
+      sync("sh -c bare", () => spawnSync("/bin/sh", ["-c", "true && claude --version"], o));
+      sync("zsh -lc bare", () => spawnSync("/bin/zsh", ["-lc", "cd / ; env NO_COLOR=1 codex --version"], o));
+      sync("execSync bare", () => execSync("claude --version", { ...o, stdio: "pipe" }));
+      runs["promisify(execFile)"] = await promisify(execFile)(join(outside, "codex"), ["--version"]).then((r) => ({ status: 0, out: r.stdout, err: r.stderr }), (e) => ({ status: e.code ?? 1, out: String(e.stdout ?? ""), err: String(e.stderr ?? "") }));
+      runs["spawn"] = await new Promise((done) => { const c = spawn("claude", ["--version"]); let out = "", err = ""; c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", (d) => (err += d)); c.on("error", (e) => done({ status: -1, out, err: e.message })); c.on("close", (status) => done({ status, out, err })); });
+      // A test's own fake, made in a temp dir: it runs, by path, by bare name first on PATH and through a shell line.
+      const dir = mkdtempSync(join(tmpdir(), "jh-fake-codex-"));
+      writeFileSync(join(dir, "codex"), "#!/bin/sh\\necho fake codex 9.9.9\\n");
+      chmodSync(join(dir, "codex"), 0o755);
+      const fakes = {
+        path: spawnSync(join(dir, "codex"), ["--version"], o),
+        bare: spawnSync("codex", ["--version"], { ...o, env: { ...process.env, PATH: dir + ":" + process.env.PATH } }),
+        shell: spawnSync("/bin/sh", ["-c", join(dir, "codex") + " --version"], o),
+        "bare in a shell line": spawnSync("/bin/sh", ["-c", "codex --version"], { ...o, env: { ...process.env, PATH: dir + ":" + process.env.PATH } }),
+      };
+      // A name that starts no command is a word like any other.
+      const words = spawnSync("/bin/sh", ["-c", "echo claude codex; command -v claude >/dev/null && echo found"], o).stdout;
+      console.log(JSON.stringify({ runs, words, fakes: Object.fromEntries(Object.entries(fakes).map(([k, r]) => [k, { status: r.status, out: r.stdout, err: r.stderr }])) }));
+    `;
+    const r = out<{ runs: Record<string, { status: number; out: string; err: string }>; words: string; fakes: Record<string, { status: number; out: string; err: string }> }>(child(script, env));
+    assert.equal(Object.keys(r.runs).length, 16);
+    for (const [name, run] of Object.entries(r.runs)) {
+      assert.equal(run.status, 1, `${name}: the stub exits 1 (${JSON.stringify(run)})`);
+      assert.doesNotMatch(run.out, /the real (codex|claude) ran/, `${name}: the program ran`);
+      assert.match(run.err, /^[\w .-]+: refused \(the test preload fences the (agent CLIs|desktop)\)$/m, `${name}: the stub said why (${run.err})`);
+    }
+    assert.match(r.runs["ChatGPT.app codex"]!.err, /^codex: refused \(the test preload fences the agent CLIs\)$/m);
+    assert.match(r.runs["/usr/local/bin/claude"]!.err, /^claude: refused \(the test preload fences the agent CLIs\)$/m);
+    assert.match(r.runs["an app under /Applications"]!.err, /^canary: refused \(the test preload fences the desktop\)$/m);
+    for (const [name, fake] of Object.entries(r.fakes)) assert.deepEqual(fake, { status: 0, out: "fake codex 9.9.9\n", err: "" }, `${name}: a test's own fake codex runs`);
+    assert.equal(r.words, "claude codex\nfound\n", "only a name that starts a command is pointed at the stub");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
