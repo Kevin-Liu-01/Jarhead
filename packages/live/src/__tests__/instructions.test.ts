@@ -72,6 +72,8 @@ test("the orders stay within the word budget (≤ 1450 words with the always-on 
   // 1100 through the threads pass (1098 used). design11 (automations) adds the capability line, the delegation
   // clause, the two safety sentences, the sleep clause and the narration clause — 315 words, every one asked
   // for in § Voice; the ceiling moves to 1450 for them and nothing else (the brain's moved to 1250 the same day).
+  // LC-7 (2026-10-06) bounds the exchange in # Attention inside it: 44 words, 1406 → 1450, so the next clause needs
+  // a cut or a reasoned move (language.test.ts carries the same ceiling).
   assert.ok(n <= 1450, `${n} words`);
   assert.ok(n >= 900, `${n} words — a section went missing`);
   assert.ok(!/[*`]/.test(live), "no markdown in a spoken prompt");
@@ -101,6 +103,41 @@ test("automations (design11 § Voice): one capability line, one delegation claus
   // No second yes path: the two sentences relay the backend's question and its refusal; they never let the voice arm or approve anything itself.
   assert.doesNotMatch(safety, /you may (arm|approve|confirm) /);
   for (const once of ["say its cost line exactly as given", "refused, not asked", "asks to be woken", "say its line once, with its name, and nothing more", "it rings with you asleep"]) assert.equal(live.split(once).length - 1, 1, once);
+});
+
+test("the always-on gate bounds the exchange: Go and the name open it, about eight quiet seconds end it with no exception, then unnamed speech is not for it (even commands and questions) except answers to its question, typed lines always are, and ignored words get no delegation", () => {
+  // LC-7 (2026-10-06): the gate said "continuing an exchange you are in" with no end and never said Go opens one, so
+  // GPT-Live-1 answered the room line spoken at Go, asked a question, and took every later line as that exchange.
+  // The voice's open question excepts answers only: it never holds the exchange open, or LC-7's state comes back.
+  // "Speech", not "words": typed lines and the engine's appended orders (an automation's line, the pre-sleep clause)
+  // reach the voice as instructions with no name in them, and the rule must not cover them.
+  const live = buildLiveInstructions({ alwaysOn: true });
+  const attention = live.slice(live.indexOf("# Attention"), live.indexOf("# Backchannel policy"));
+  const bound = {
+    a: "typed lines always are",
+    bOpens: "Session start or your name opens an exchange",
+    bEnds: "about eight seconds without words to or from you end it.",
+    bQuestion: "except answers to your question",
+    c: "Then speech without your name is not for you, even commands and questions",
+    d: "stay completely silent then, no backchannel and no delegation.",
+  };
+  const count = (hay: string, needle: string): number => hay.split(needle).length - 1;
+  for (const [k, phrase] of Object.entries(bound)) {
+    assert.equal(count(attention, phrase), 1, `(${k}) once in # Attention: ${phrase}`);
+    assert.equal(count(live, phrase), 1, `(${k}) nowhere else in the orders: ${phrase}`);
+  }
+  // The gate's own sentences stay, in their places: the bound sits between the exchange clause and the ignore clause.
+  assert.match(attention, /^# Attention\nYou are always listening in Kevin's room\. Only respond when Kevin is clearly talking to you: Kevin says your name \("Jarhead", also heard as "jar head", "jarred", "jared"\), or is continuing an exchange you are in\. Session start/);
+  assert.ok(attention.indexOf(bound.bOpens) < attention.indexOf(bound.c), "the exchange is defined before \"Then\"");
+  assert.ok(attention.indexOf(bound.c) < attention.indexOf("Ignore other people, media, and Kevin talking to someone else: stay completely silent then"), "the ignore clause closes the gate");
+  assert.ok(attention.indexOf(bound.c) < attention.indexOf(bound.bQuestion), "the question's exception sits in the \"Then\" sentence, after the exchange has ended");
+  assert.doesNotMatch(attention, /unless|unanswered|words without your name/, "nothing holds the exchange open past the window, and the rule covers speech only");
+  // Not always on: the plain gate carries none of it.
+  const off = buildLiveInstructions();
+  const offAttention = off.slice(off.indexOf("# Attention"), off.indexOf("# Backchannel policy"));
+  assert.equal(offAttention.trim(), "# Attention\nRespond to what Kevin says to you.");
+  for (const [k, phrase] of Object.entries(bound)) assert.equal(count(off, phrase), 0, `(${k}) absent when not always on: ${phrase}`);
+  assert.doesNotMatch(off, /no delegation|eight seconds|opens an exchange|speech without your name/);
 });
 
 test("release F1: the user's name is a variable — a different name renders everywhere the default did (the gate, the capability lines, sleep, safety) and never a literal Kevin; the words around it are the same", () => {
