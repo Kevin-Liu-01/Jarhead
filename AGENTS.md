@@ -572,18 +572,47 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   orders say, it answered 4 of 5 room lines and delegated 2. `voice-attention.ts`
   judges each of Kevin's utterances as it arrives (typed / named, the orders'
   mishearings and a name Live split around the voice's words included / begun
-  inside the exchange on the session timeline / room) and grants each voice turn
-  (words or sound, no 600 ms gap) by its first audible frame: an append's ask
-  (LiveSession emits `ask` on commentary and instructions appends), a reply to
-  an addressed utterance under 8 s old, addressed work with nothing from the room
-  since, or inside the exchange. An unasked turn is dropped whole, silence too,
-  and counts for nothing; a name within 600 ms of its first audible frame
-  releases it. A room delegation waits ≤ 1.2 s for a late name, then is refused
-  before the brain and closed with a silent `thinking` append. The exchange is
-  capped 120 s after its anchor (a name, a typed line, a circle, Go, or a line
-  the engine asked the voice to say). Engine tests drive it through FakeLive,
-  whose `nowMs` follows the test clock: a voice line with no cause, or bare room
-  words outside the window, are dropped and refused like the real thing.
+  inside the exchange on the session timeline, or his first answer to Jarhead's
+  own question within 30 s / room). A `window` utterance lapses to the room once
+  its words start 8 s past the later of the exchange's end and its own start, or
+  the cap closes: a video Kevin asked for, talking on, never keeps the window
+  open to its commands. A split item carries only the name across the split.
+  The ear names Live's open utterance only when it is the same speech (begun
+  after the ear's segment opened, less 600 ms; sharing a word that is not a
+  stopword, or its tail), and a name spent on it names nothing else.
+- **An ask carries its provenance.** LiveSession emits `ask` (with the event id
+  and content) on commentary and instructions appends, never on one sent with
+  `{ ask: false }` (the stop's "Stop speaking now", dictation's "Stay silent").
+  An append on a delegation the gate admitted only as `window` asks as `window`:
+  heard, the exchange goes on from it, but it anchors no cap and moves only the
+  idle clock, so a TV whose lines Live delegates sleeps by the cap plus the idle
+  limit (ADV-2: 186.5 s). Engine lines, typed and named work ask as `asked` and
+  anchor; the pre-sleep clause and the cue are `aside` (heard, count for
+  nothing, one sentence). GPT-Live-1 acks every append (`session.*.appended`,
+  with its `client_event_id`) 424-675 ms after the send and answers it later, so
+  a new voice turn takes an ask only once acked (800 ms without an ack at most):
+  a reply to the room already on its way does not take an ear reflex's ask.
+- **A voice turn is decided once.** One that takes an ask, or begins inside the
+  open exchange, at its first words; any other at its first audible frame, on
+  what it answers by the session timeline (Kevin's last utterance begun before
+  it), so a room line whose transcript lands just after the voice's words is
+  what it answers (ADV-5). Granted by a reply to an addressed utterance under
+  8 s old, or addressed work with nothing from the room since. An unasked turn
+  is dropped whole, silence too, and counts for nothing; a name within 600 ms of
+  its first audible frame releases it. An ask that lands while a dropped or
+  undecided turn streams starts a turn of its own at a pause (measured when the
+  ask landed), at the first sentence end once acked, or at words that say what
+  was asked; the old turn's sound still on its way (250 ms behind the new words'
+  `start_ms`) stays its own. A room delegation waits ≤ 1.2 s for a late name,
+  then is refused before the brain and closed with a silent `thinking` append;
+  when it may have been Kevin's unnamed answer (a confirmation waiting, or a
+  question of Jarhead's under 2 min old and unanswered) he hears one aside cue,
+  "say jarhead with …". A confirmation's yes past the exchange needs the name
+  or the Console. Lines the gate kept off the speaker are `unheard` on the
+  Transcript and the ledger's `said` row, and never on the Console's stream, the
+  continuity, the brain's dialogue or the echo. Engine tests drive it through
+  FakeLive, whose `nowMs` follows the test clock (no acks); the socket replays
+  share `live-rig.ts`.
 - **Carried history is a budget, not a transcript.** After a Codex rollover the
   fresh thread hears `renderCarry`: Kevin's words verbatim (never cut, even over
   budget), the spoken answers, and each tool result as one line — verbatim under

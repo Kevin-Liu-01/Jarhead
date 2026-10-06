@@ -700,10 +700,23 @@ export class Engine extends EventEmitter<EngineEvents> {
     now: () => this.now(),
     echo: (text) => this.echoOfJarhead(normalizeUtterance(text)),
     inExchange: () => this.inExchange(),
-    working: () => this.delegator?.active !== undefined,
-    spoke: (grant, clause) => this.voiceSpoke(grant, clause),
+    // The work running, by Live's delegation id ("" for one Live did not raise: an automation's wake-brain turn).
+    working: () => {
+      const active = this.delegator?.active;
+      return active ? (active.liveId ?? "") : undefined;
+    },
+    // A confirmation waiting on Kevin's yes (a send, a thread's question): past the exchange its yes needs the name.
+    confirming: () => (this.confirmations.pending && !this.confirmations.expired ? this.confirmations.pending.id : undefined),
+    spoke: (grant, aside) => this.voiceSpoke(grant, aside),
+    decided: (ids) => this.saidDecided(ids),
     log: (line) => log.info(line),
   });
+  /** Jarhead's lines that settled (final) while the gate had not yet decided whether Kevin heard them: written when it has. */
+  private readonly saidPending = new Map<string, TranscriptItem>();
+  /** Jarhead's lines already on the ledger as unheard (a late name may release one after all). */
+  private readonly saidUnheard = new Set<string>();
+  /** Set while the cue that an answer needs the name is asked for (`cueTheName`): its append's ask is an aside. */
+  private cueing = false;
   /**
    * The output gate: Live has no interrupt, so after a stop the voice's audio is
    * dropped here (and its transcript deltas do not count as speaking) until Kevin
@@ -1081,20 +1094,25 @@ export class Engine extends EventEmitter<EngineEvents> {
     // Read lazily — the first transcript is a field initializer, built before the constructor body sets `this.now`.
     const t = new Transcript(() => this.now(), 400, () => `t_${++this.utteranceSeq}`);
     t.onChange((item, kind) => {
-      if (kind === "final") {
-        this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
+      if (kind === "final" && item.speaker === "jarhead") {
+        // A line of Jarhead's goes on the record as the room-talk gate decided it: heard, or kept off the speaker
+        // (`unheard`: on the ledger only, never the Console's said rows, the continuity or the echo). Undecided yet (its
+        // turn waits for its first audible frame): written when it is (`saidDecided`).
+        const state = this.attention.saidState(item.id);
+        if (state === "pending") this.saidPending.set(item.id, item);
+        else this.saidSettled(item, state !== "unheard");
+      } else if (kind === "final") {
+        this.ledger.append({ at: item.at, type: "heard", item });
         // design12: while the software echo guard holds the wire (Recording, or the fallback rung), each Kevin turn
         // leaves the guard's counters beside it — a self-talk loop reads as rising `gated` with no break-through.
-        if (item.speaker === "kevin") this.appendGuardRow(item.at);
+        this.appendGuardRow(item.at);
         this.emit("utterance", item);
         // The main thread's pane: every utterance as it settles (typed lines included).
         this.mainLog.append({ kind: "utterance", item });
         // Kevin's final line: the spoken memory reflexes ("remember that …", "forget that") answer with a toast; every other line is pre-embedded for the delegation that may follow.
-        if (item.speaker === "kevin") {
-          void this.memory.onHeard(item, this.live?.session?.id).then((toast) => {
-            if (toast) this.toast(toast, "info");
-          });
-        }
+        void this.memory.onHeard(item, this.live?.session?.id).then((toast) => {
+          if (toast) this.toast(toast, "info");
+        });
       }
       this.scheduleSnapshot();
     });
@@ -2809,7 +2827,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.threads.publish(this.threads.table.status(MAIN_THREAD_ID, "idle"));
     }
     // Whatever was still open is an utterance now (on the ledger, out as an event), and
-    // this session's words move to the held record; the next session starts its own clock.
+    // this session's words move to the held record; the next session starts its own clock. A voice turn the room-talk
+    // gate had not decided never sounded: its lines are marked unheard first.
+    this.attention.close();
     this.transcript.settle(Number.MAX_SAFE_INTEGER);
     this.heldTranscript = [...this.heldTranscript, ...this.transcript.all()].slice(-Engine.HELD_TRANSCRIPT_ITEMS);
     this.transcript = this.newTranscript();
@@ -3039,6 +3059,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         const v = this.attention.delegation(liveId, item, live.nowMs);
         return typeof v === "string" ? v !== "room" : v.then((x) => x !== "room");
       },
+      // …and when the refused words may have been Kevin's unnamed answer to a question of Jarhead's, he hears one cue.
+      onNotAddressed: () => this.cueTheName(),
       // A spoken "stop" is an interrupt: the whole of what is running and being said ends; the session stays.
       onStop: (reason) => void this.interrupt(reason, "said"),
       // …and with ≥ 2 threads live the speech half comes first, on the stop word, while the work cut waits for a name.
@@ -3073,7 +3095,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.delegator = delegator;
     // The exchange this session starts in: a Go, a wake or a resume opens one at the session start (connect() has
     // counted Kevin's press already); a reconnect carries one only if it was open when the server dropped the last.
-    this.attention.reset(this.inExchange());
+    this.attention.reset(this.inExchange(), { acks: live.acknowledgesAppends === true });
 
     // A session that was paused, stopped or replaced still emits for a moment (its
     // closed event, a last frame): nothing from it may touch the transport's state.
@@ -3111,7 +3133,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       // Judged as it arrives: typed, named, inside the exchange, or the room's. Words that name Jarhead are a turn for
       // the idle clock once per utterance (Live splits one breath around the voice's words: "Jar" | reply | "head" is
       // one name): a TV that says the name once and talks on is one turn, not one per fragment.
-      const heard = this.attention.heard(item, delta);
+      const heard = this.attention.heard(item, delta, s);
       if (heard.named && item.id !== this.namedItemId) {
         this.namedItemId = item.id;
         this.named();
@@ -3143,14 +3165,20 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (typeof v === "string") counted(v);
       else void v.then(counted);
     });
-    // An append that asks the voice for words (LiveSession's `ask`): the first voice turn after it is the engine's.
-    live.on("ask", () => {
-      if (current()) this.attention.ask(this.announcing);
+    // An append that asks the voice for words (LiveSession's `ask`): the first voice turn after it is the engine's, with
+    // the append's provenance — an aside (the pre-sleep clause, the cue), the result of work only the window admitted,
+    // or Jarhead's own turn to Kevin.
+    live.on("ask", (_channel, delegationId, eventId, content) => {
+      if (current()) this.attention.ask({ aside: this.announcing || this.cueing, delegationId, eventId, content });
+    });
+    // The server took an append in: the voice's answer to it can begin only now.
+    live.on("appended", (channel, clientEventId) => {
+      if (current() && channel !== "thinking" && clientEventId) this.attention.acked(clientEventId);
     });
     // A Responses backend speaks its own result for the work Kevin asked for: that turn is asked for too.
     live.on("responseEvent", (delegationId, event) => {
       if (!current() || delegationId === null || delegationId !== this.delegator?.active?.liveId) return;
-      if (String(event["type"] ?? "").startsWith("response.output_text")) this.attention.ask();
+      if (String(event["type"] ?? "").startsWith("response.output_text")) this.attention.ask({ delegationId });
     });
     live.on("usage", (seconds, ratio) => {
       if (!current()) return;
@@ -3290,7 +3318,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       const { cancel } = this.cutEverything(`going to sleep (${cause})`, "sleep");
       if (farewell && live) {
         // Live's path: the voice may have said "night." before its delegation landed here — then only the word's tail is waited for.
-        const said = this.transcript.last("jarhead");
+        const said = this.lastSaid();
         const alreadySaid = said !== undefined && t0 - said.at < Engine.FAREWELL_SAID_MS && /\b(night|sleeping)\b/i.test(said.text);
         if (!alreadySaid) live.appendInstructions(null, Engine.farewellLine(this.userName));
         await this.farewell(live, alreadySaid);
@@ -3813,7 +3841,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private async cutWork(source: string, how: "pressed" | "said", reason: string, open: LiveSession | undefined, t0: number): Promise<void> {
     const { running, dropped, jobs, cancel } = this.cutEverything(reason, "stop");
     if (open || running) this.ledger.append({ at: t0, type: "stop", how, ...(running ? { cancelled: running.id } : {}) });
-    open?.appendInstructions(null, `${reason}. Stop speaking now and wait.`);
+    // It asks for silence, not words: no ask (a 6 s grant for the next voice turn would hand it to an answer to the room).
+    open?.appendInstructions(null, `${reason}. Stop speaking now and wait.`, { ask: false });
     this.toast(open || running || jobs ? "stopped" : "nothing running", "info");
     this.recomputePhase();
     await this.bounded(cancel);
@@ -5057,7 +5086,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     for (let i = whole.length - 1; i >= 0 && lines.length < Engine.CONTINUITY_LINES; i--) {
       const item = whole[i];
       const text = item?.text.trim();
-      if (!item || !text) continue;
+      // A line the room-talk gate kept off the speaker was never said to Kevin: not part of the conversation picked up.
+      if (!item || !text || item.unheard) continue;
       const line = `${item.speaker === "kevin" ? this.userName : "Jarhead"}: ${text}`;
       if (chars + line.length > Engine.CONTINUITY_CHARS) {
         // The most recent line always makes it, cut if it must.
@@ -5221,7 +5251,8 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   private echoOfJarhead(phrase: string): boolean {
     if (this.now() - Math.max(this.lastOutputSpeechAt, this.lastAudibleOutputAt) > Engine.ECHO_WINDOW_MS) return false;
-    const said = this.transcript.last("jarhead");
+    // Only words that reached the speaker can come back through the microphone.
+    const said = this.lastSaid();
     if (!said) return false;
     const own = normalizeUtterance(said.text);
     if (!own || !phrase) return false;
@@ -5402,7 +5433,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (this.dictating) this.lease.beginOp("dictation");
       else this.lease.release("dictation", "done");
     });
-    this.live?.appendInstructions(null, `${this.userName} is dictating into a field on the screen: the words are typed as they are spoken. Stay completely silent until ${this.userName} says "stop dictating"; do not delegate the dictated words.`);
+    this.live?.appendInstructions(null, `${this.userName} is dictating into a field on the screen: the words are typed as they are spoken. Stay completely silent until ${this.userName} says "stop dictating"; do not delegate the dictated words.`, { ask: false });
     this.ledger.append({ at: this.now(), type: "dictation", state: "started" } as unknown as LedgerRow);
     this.toast("dictating — say \"stop dictating\" to end", "info");
     this.recomputePhase();
@@ -5895,6 +5926,75 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.lastOutputSpeechAt = this.now();
     if (!clause) this.addressed({ engaged: grant !== "window" && grant !== "exchange" });
     this.recomputePhase();
+  }
+
+  /**
+   * A settled line of Jarhead's on the record: `heard`, a `said` row, the Console's stream and the main thread's pane;
+   * not heard (the room-talk gate kept its turn off the speaker), a `said` row marked `unheard` and nothing more — the
+   * record keeps what the voice said to the room, Kevin's views show what he heard (ADV review, finding 7).
+   */
+  private saidSettled(item: TranscriptItem, heard: boolean): void {
+    const { unheard: _u, ...plain } = item;
+    if (!heard) {
+      this.ledger.append({ at: item.at, type: "said", item: { ...plain, unheard: true } });
+      this.saidUnheard.add(item.id);
+      if (this.saidUnheard.size > 64) this.saidUnheard.delete(this.saidUnheard.values().next().value as string);
+      return;
+    }
+    this.ledger.append({ at: item.at, type: "said", item: plain });
+    this.emit("utterance", plain);
+    this.mainLog.append({ kind: "utterance", item: plain });
+  }
+
+  /**
+   * The gate decided the turn behind these lines of Jarhead's: each is marked on the Transcript (`unheard` when no turn
+   * that said it was heard), and one that settled while undecided is written now. A late name that released a line
+   * already written as unheard writes it again, heard.
+   */
+  private saidDecided(ids: readonly string[]): void {
+    for (const id of ids) {
+      const state = this.attention.saidState(id);
+      if (state === undefined || state === "pending") continue;
+      const heard = state === "heard";
+      this.transcript.mark(id, { unheard: !heard });
+      const held = this.saidPending.get(id);
+      if (held) {
+        this.saidPending.delete(id);
+        this.saidSettled(this.transcript.get(id) ?? held, heard);
+      } else if (heard && this.saidUnheard.delete(id)) {
+        const item = this.transcript.get(id);
+        if (item?.final) this.saidSettled(item, true);
+      }
+    }
+  }
+
+  /**
+   * The room-talk gate refused a delegation that may have been Kevin's unnamed answer to a question of Jarhead's — a yes
+   * to a send past the exchange, a second answer, a late one: he hears once, as an aside (it opens no exchange the
+   * room could use), that the answer needs the name. A refusal with no question waiting stays silent.
+   */
+  private cueTheName(): void {
+    const live = this.live;
+    const kind = live ? this.attention.cue() : undefined;
+    if (!live || !kind) return;
+    const line = kind === "confirm" ? "say jarhead with the yes, or answer in the console." : "say jarhead with your answer.";
+    log.info(`an unnamed answer to Jarhead's ${kind === "confirm" ? "confirmation" : "question"} was refused: the cue "${line}"`);
+    this.cueing = true;
+    try {
+      live.appendInstructions(null, `Say exactly this to ${this.userName} and nothing else: "${line}" Then wait.`);
+    } finally {
+      this.cueing = false;
+    }
+  }
+
+  /** Jarhead's last line Kevin heard (one the room-talk gate kept off the speaker never was): the echo's and the farewell's. */
+  private lastSaid(): TranscriptItem | undefined {
+    const all = this.transcript.all();
+    for (let i = all.length - 1; i >= 0; i--) {
+      const item = all[i]!;
+      if (item.speaker === "jarhead" && !item.unheard) return item;
+    }
+    return undefined;
   }
 
   /** Frames of a reply a late name released (the gate had locked it out a moment before), to the speaker in order. */
@@ -6896,7 +6996,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     let task: string | undefined;
     const requests = new Map<string, string>();
     for (const row of this.ledger.readSession(sessionId)) {
-      if ((row.type === "heard" || row.type === "said") && row.item?.text) items.push(row.item);
+      if ((row.type === "heard" || row.type === "said") && row.item?.text && !row.item.unheard) items.push(row.item);
       else if (row.type === "delegation.created") requests.set(row.delegation.id, row.delegation.request);
       else if (row.type === "delegation.finished" && row.summary) {
         const request = requests.get(row.delegationId);
@@ -6969,7 +7069,8 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** The snapshot's utterances: the last SNAPSHOT_UTTERANCES the Now stream has not cleared. */
   private snapshotTranscript(): readonly TranscriptItem[] {
-    return this.nowVisible(this.wholeTranscript(), (i) => i.at).slice(-Engine.SNAPSHOT_UTTERANCES);
+    // Lines of Jarhead's the room-talk gate kept off the speaker stay on the ledger, not on the Console's stream.
+    return this.nowVisible(this.wholeTranscript().filter((i) => !i.unheard), (i) => i.at).slice(-Engine.SNAPSHOT_UTTERANCES);
   }
 
   /** The snapshot's main-thread delegations: the last MAX_DELEGATIONS, every step of each. */

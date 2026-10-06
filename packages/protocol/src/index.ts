@@ -39,6 +39,11 @@ export interface TranscriptItem {
   readonly final: boolean;
   /** "typed": Kevin typed it in the Console (on the record like a spoken line). */
   readonly source?: "typed";
+  /**
+   * A line of Jarhead's the room-talk gate kept off the speaker (a voice turn nobody asked for: an answer to the room).
+   * On the ledger's `said` row as the record; never on the Console's said rows, in the continuity, or the echo's.
+   */
+  readonly unheard?: true;
 }
 
 // ------------------------------------------------------------ delegations ---

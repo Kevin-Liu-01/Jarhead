@@ -93,10 +93,10 @@ export class FakeLive extends EventEmitter {
     this.usage = seconds;
     this.emit("usage", seconds, undefined);
   }
-  appendInstructions(id: string | null, content: string): string {
+  appendInstructions(id: string | null, content: string, o?: { readonly ask?: boolean }): string {
     this.instructions.push(content);
     // As LiveSession does: an append that asks the voice for words is an ask (the engine's room-talk gate reads it).
-    this.emit("ask", "instructions", id);
+    if (o?.ask !== false) this.emit("ask", "instructions", id, `i_${this.instructions.length}`, content);
     return "i";
   }
   appendThinking(): string {
@@ -104,7 +104,7 @@ export class FakeLive extends EventEmitter {
   }
   appendCommentary(id: string | null, content: string): string {
     this.commentary.push(content);
-    this.emit("ask", "commentary", id);
+    this.emit("ask", "commentary", id, `c_${this.commentary.length}`, content);
     return "c";
   }
   appendAudio(): void {

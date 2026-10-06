@@ -179,6 +179,26 @@ export class Transcript {
     return this.items;
   }
 
+  /** The utterance with this id, while it is kept. */
+  get(id: string): TranscriptItem | undefined {
+    return this.items.find((i) => i.id === id);
+  }
+
+  /**
+   * Mark a line of Jarhead's as kept off the speaker (`unheard: true`) or heard after all (`false`): the engine's
+   * room-talk gate decides a voice turn by its first audible frame, after its words are on the record. The item keeps
+   * the mark as fragments merge into it; emitted as an update (its `final` emission, if any, has gone already).
+   */
+  mark(id: string, o: { readonly unheard: boolean }): void {
+    const at = this.items.findIndex((i) => i.id === id);
+    const item = at < 0 ? undefined : this.items[at];
+    if (!item || Boolean(item.unheard) === o.unheard) return;
+    const { unheard: _u, ...plain } = item;
+    const marked: TranscriptItem = o.unheard ? { ...plain, unheard: true } : plain;
+    this.items[at] = marked;
+    this.emit(marked, "update");
+  }
+
   /** Kevin's utterances since a session time, newest last — the request behind a delegation. */
   since(startMs: number, speaker?: Speaker): readonly TranscriptItem[] {
     return this.items.filter((i) => i.endMs > startMs && (speaker === undefined || i.speaker === speaker));
@@ -200,7 +220,7 @@ export class Transcript {
   render(windowMs: number, uptoMs: number, userName = "Kevin"): string {
     const from = uptoMs - windowMs;
     return this.items
-      .filter((i) => i.endMs >= from)
+      .filter((i) => i.endMs >= from && !i.unheard)
       .map((i) => `${i.speaker === "kevin" ? userName : "Jarhead"}: ${i.text}`)
       .join("\n");
   }

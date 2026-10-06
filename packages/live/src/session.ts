@@ -55,9 +55,11 @@ export interface LiveSessionEvents {
   /**
    * The client asked the voice for words: a `commentary` or `instructions` append left (or was queued) just now. Emitted
    * on send, not on the server's `appended` ack, so whoever gates the voice's turns (the engine's room-talk gate) knows
-   * the ask before the reply can start. A `thinking` append is silent progress and asks for nothing.
+   * the ask before the reply can start; `eventId` is the append's client event id (its `appended` ack carries it) and
+   * `content` what it asked for. A `thinking` append is silent progress and asks for nothing, nor does an instructions
+   * append sent with `{ ask: false }` (one that asks the voice to stop or keep quiet).
    */
-  ask: [channel: "commentary" | "instructions", delegationId: string | null];
+  ask: [channel: "commentary" | "instructions", delegationId: string | null, eventId: string, content: string];
   closed: [reason: string, usageSeconds: number];
   error: [error: Error, clientEventId: string | undefined];
   state: [state: LiveState];
@@ -110,6 +112,12 @@ function defaultFactory(url: string, headers: Record<string, string>): WebSocket
 }
 
 export class LiveSession extends EventEmitter<LiveSessionEvents> {
+  /**
+   * GPT-Live-1 acknowledges every commentary and instructions append (`session.*.appended`, with its `client_event_id`)
+   * 450-650 ms after it is sent, before the voice can answer it (LC-5, LC-7, LC-10): the engine's room-talk gate grants
+   * the append's ask only to words after the ack.
+   */
+  readonly acknowledgesAppends = true;
   private ws: WebSocketLike | undefined;
   private state: LiveState = "idle";
   private resource: SessionResource | undefined;
@@ -320,14 +328,15 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
 
   appendCommentary(delegationId: string | null, content: string): string {
     const id = this.nextEventId("say");
-    this.emit("ask", "commentary", delegationId);
+    this.emit("ask", "commentary", delegationId, id, content);
     this.raw({ type: "session.commentary.append", event_id: id, delegation_id: delegationId, content });
     return id;
   }
 
-  appendInstructions(delegationId: string | null, content: string): string {
+  /** `o.ask: false`: the instruction asks the voice for no words (stop speaking, stay silent), so it is no ask (`ask`). */
+  appendInstructions(delegationId: string | null, content: string, o?: { readonly ask?: boolean }): string {
     const id = this.nextEventId("steer");
-    this.emit("ask", "instructions", delegationId);
+    if (o?.ask !== false) this.emit("ask", "instructions", delegationId, id, content);
     this.raw({ type: "session.instructions.append", event_id: id, delegation_id: delegationId, content });
     return id;
   }

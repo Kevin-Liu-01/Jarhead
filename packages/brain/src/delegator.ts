@@ -137,6 +137,11 @@ export interface DelegatorOptions {
    * breath's end lags the voice): the engine settles it within its bounded wait. Absent: `addressed` on that utterance.
    */
   readonly delegationAddressed?: ((liveId: string, item: TranscriptItem | undefined) => boolean | Promise<boolean>) | undefined;
+  /**
+   * A delegation was refused as not addressed and closed for the voice (its silent thinking append has gone): the
+   * engine's turn to say the one cue it owes, when the words may have been Kevin's unnamed answer to a question.
+   */
+  readonly onNotAddressed?: ((liveId: string) => void) | undefined;
   /** Consecutive commentary lines within this window go to Live as one append (default 600 ms; 0 sends each at once). */
   readonly commentaryCoalesceMs?: number | undefined;
   /** Quiet after an utterance the transcriber closed with a full stop before a prefire is considered (default 180 ms). */
@@ -1022,6 +1027,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         this.closeRecord(aside.id, "cancelled", NOT_ADDRESSED);
         live.appendThinking(target === "responses" ? null : liveId, NOT_ADDRESSED_THINKING);
         log.info(`delegation ${aside.id} (${liveId}): not addressed ("${words.slice(0, 80)}"); refused before the brain`);
+        this.opts.onNotAddressed?.(liveId);
         return;
       }
     }

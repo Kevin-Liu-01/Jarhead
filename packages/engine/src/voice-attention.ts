@@ -10,21 +10,27 @@ import type { TranscriptItem } from "@jarhead/protocol";
  * speaker, off the brain, off the hands, off the idle clock.
  *
  * - **The verdict**, per utterance of Kevin's side as its words arrive: `typed`; `named` (its words say the name, the
- *   voice's mishearings included, or the ear heard the name just before); `window` (it began inside the exchange, on
- *   the session timeline, or on the wall clock as the ear judges it); else `room`. A later fragment may upgrade it to
- *   named, never the other way. Items the Transcript split around the voice's words ("…, Jar" | reply | "head") are one
- *   utterance when the second begins within UTTERANCE_GAP_MS on the timeline and arrives within SPLIT_ARRIVAL_MS.
+ *   voice's mishearings included, or the ear heard the name in the same speech or just before); `window` (it began
+ *   inside the exchange, on the session timeline or on the wall clock as the ear judges it, or it is the first answer
+ *   to Jarhead's own question within ANSWER_WINDOW_MS); else `room`. A later fragment may upgrade it to named; a
+ *   `window` one lapses to the room once its words run on EXCHANGE_WINDOW_MS past the exchange (or the cap closes), so
+ *   a video Kevin asked for, talking on, never stays the exchange's. Items the Transcript split around the voice's
+ *   words ("…, Jar" | reply | "head") are one utterance for the name only.
  * - **The exchange** is `exchangeEndMs` on the session timeline: the session start, named or typed words, a circle,
- *   and Jarhead's own granted speech move it; room talk inside the window, the pre-sleep clause and an answer nobody
- *   asked for do not. It is capped: EXCHANGE_MAX_MS after the last anchor (a name, a typed line, a circle, a Go, a
- *   wake, a resume, a line the engine asked the voice to say), nothing is "inside the exchange" any more, so a TV the
- *   voice keeps answering on its own cannot chain it.
- * - **A voice turn** is the voice's words or sound with no gap of VOICE_TURN_GAP_MS. It is granted when it takes an
- *   engine append's ask, replies to an addressed utterance that ended under EXCHANGE_WINDOW_MS before it, speaks for
- *   addressed work still running with nothing from the room since, or goes on inside the exchange. A turn that looks
- *   unasked stays open to the name until its first audible frame (160-350 ms behind its words in every LC-7 reply);
- *   then it is locked. A locked turn's frames are all dropped, silence too, unless the utterance it answers is named
- *   within LATE_NAME_MS: then its frames from the first audible one (RING_FRAMES kept) go to the speaker after all.
+ *   and Jarhead's own granted speech move it; room talk inside the window, an aside (the pre-sleep clause, the cue)
+ *   and an answer nobody asked for do not. It is capped: EXCHANGE_MAX_MS after the last anchor (a name, a typed line,
+ *   a circle, a Go, a wake, a resume, a line the engine asked for), nothing is "inside the exchange" any more.
+ * - **An ask** is an engine append that wants words (LiveSession's `ask`), kept with its provenance (`AskKind`): the
+ *   result of work the gate admitted only because it began inside the window asks as `window` — heard, never an anchor
+ *   — so a TV whose lines Live delegates cannot renew the cap through their results (ADV-2).
+ * - **A voice turn** is the voice's words or sound with no gap of VOICE_TURN_GAP_MS. One that takes an ask, or begins
+ *   inside the open exchange, is decided at once; any other at its first audible frame (160-350 ms behind its words in
+ *   every LC-7 reply), on what it answers by the session timeline (Kevin's last utterance begun before it): a reply
+ *   to an addressed utterance that ended under EXCHANGE_WINDOW_MS before it, or words for addressed work still running
+ *   with nothing from the room since. A locked turn's frames are all dropped, silence too, unless the
+ *   utterance it answers is named within LATE_NAME_MS: then its frames from the first audible one (RING_FRAMES kept)
+ *   go to the speaker after all. An ask that lands while a dropped or undecided turn streams starts a turn of its own
+ *   at the first sentence end, at words that say what was asked, or after a pause.
  * - **A delegation** is judged on the utterance Live raised it for. One that looks like room talk waits up to
  *   DELEGATION_LATE_MS for a late name before it is refused.
  *
@@ -34,11 +40,28 @@ import type { TranscriptItem } from "@jarhead/protocol";
 export type Verdict = "typed" | "named" | "window" | "room";
 /** Why a voice turn was asked for. */
 export type VoiceGrant = Verdict | "asked" | "work" | "exchange";
+/**
+ * What an append asks of the voice, by where it came from.
+ * - `asked`: a line the engine started (a timer, an automation, a thread's question, the answer to a typed line) or the
+ *   result of work Kevin asked for himself (typed, named): Jarhead turning to Kevin. It anchors the exchange's cap.
+ * - `window`: the result of work the gate admitted only because its words began inside the exchange. Heard, and the
+ *   exchange goes on from it, but it anchors nothing and moves only the idle clock (ADV-2).
+ * - `aside`: heard and counted for nothing, no exchange: the pre-sleep clause, and the cue that an answer needs the name.
+ */
+export type AskKind = "asked" | "window" | "aside";
+/** Whether Kevin heard a line of Jarhead's on the Transcript: "pending" while its turn waits for its first audible frame. */
+export type SaidState = "heard" | "unheard" | "pending";
 
 /** "Mid-exchange": an addressed turn this recent (Engine.EXCHANGE_WINDOW_MS, and the voice's orders' "about eight seconds"). */
 export const EXCHANGE_WINDOW_MS = 8000;
-/** The exchange's cap after its anchor (a name, a typed line, a circle, a Go / wake / resume). */
+/** The exchange's cap after its anchor (a name, a typed line, a circle, a Go / wake / resume, a line the engine asked for). */
 export const EXCHANGE_MAX_MS = 120_000;
+/**
+ * Jarhead asked Kevin a question (a line the engine asked for, with a "?"): his first utterance after it, begun within
+ * this long on the session timeline, is the exchange's without the name — the voice's orders' "except answers to your
+ * question" (ADV-4). One utterance, never a confirmation's yes (a send's, a thread's): that needs the name or the Console.
+ */
+export const ANSWER_WINDOW_MS = 30_000;
 
 /** Words that name Jarhead: the voice's orders' list ("Jarhead", also heard as "jar head", "jarred", "jared"). */
 const NAMES = /\b(jarhead|jar head|jar-head|jarred|jared)\b/i;
@@ -53,10 +76,14 @@ export interface AttentionSeams {
   readonly echo: (text: string) => boolean;
   /** The wall-clock exchange: an addressed turn within EXCHANGE_WINDOW_MS, with the cap open (Engine.inExchange). */
   readonly inExchange: () => boolean;
-  /** Work Kevin asked for is running (the Delegator's active delegation). */
-  readonly working: () => boolean;
-  /** Jarhead's granted words, for the engine's clocks. `clause`: the pre-sleep clause's turn, which counts for nothing. */
-  readonly spoke: (grant: VoiceGrant, clause: boolean) => void;
+  /** Live's id of the delegation Kevin's work runs on (the Delegator's active one), or undefined. */
+  readonly working: () => string | undefined;
+  /** The confirmation waiting on Kevin's yes (a send, a pay, a thread's question), by id; undefined when none (or expired). */
+  readonly confirming?: () => string | undefined;
+  /** Jarhead's granted words, for the engine's clocks. `aside`: the pre-sleep clause's or the cue's turn, which counts for nothing. */
+  readonly spoke: (grant: VoiceGrant, aside: boolean) => void;
+  /** Jarhead's Transcript items whose turn was just decided (`saidState` says how): the engine marks the unheard and settles their record. */
+  readonly decided?: (itemIds: readonly string[]) => void;
   readonly log?: (line: string) => void;
 }
 
@@ -74,7 +101,7 @@ export interface AttentionStats {
   /** Output frames of turns nobody asked for, dropped, and how many of them carried sound. */
   droppedFrames: number;
   droppedAudibleFrames: number;
-  /** The words of those turns (still on the transcript). */
+  /** The words of those turns (still on the transcript, marked unheard). */
   droppedWords: string;
   /** Turns dropped. */
   droppedTurns: number;
@@ -90,7 +117,8 @@ interface KevinItem {
   readonly startMs: number;
   endMs: number;
   text: string;
-  /** Wall clock of its last fragment. */
+  /** Wall clock of its first fragment, and of its last. */
+  readonly firstAt: number;
   lastAt: number;
   readonly typed: boolean;
 }
@@ -103,20 +131,35 @@ interface Utterance {
   lastAt: number;
 }
 
+/** An engine append that wants words, until a voice turn takes it or ASK_GRANT_MS pass. */
+interface Ask {
+  readonly at: number;
+  readonly kind: AskKind;
+  /** What it asked for, for "words that say what was asked". */
+  readonly content: string;
+  /** Its client event ids (asks still waiting merge: the voice may answer any of them), for the server's `appended` ack. */
+  readonly eventIds: ReadonlySet<string>;
+  /** The server acknowledged it: the voice's answer to it can only begin after this (LC-5, LC-7, LC-10: ack +424-675 ms, answer later). */
+  acked: boolean;
+  /** Words of a dropped or undecided turn that arrived after it, for "words that say what was asked". */
+  heard: string;
+}
+
 interface VoiceTurn {
   /** Session timeline: the turn's first words (or the client's estimate at its first sound). */
   readonly startMs: number;
+  /** Wall clock of its first words or sound, and of its latest. */
+  readonly firstAt: number;
   lastAt: number;
-  /** It took an append's ask. */
-  readonly asked: boolean;
-  /** The ask it took was the pre-sleep clause's: heard, never an addressed turn, never the exchange. */
-  readonly clause: boolean;
+  /** The ask it took, by provenance; undefined: none. */
+  readonly ask: AskKind | undefined;
   /** undefined until decided; null: nobody asked. */
   grant: VoiceGrant | null | undefined;
-  /** Kevin's last item when the turn began: what it answers, for a late name. */
-  readonly answers: string | undefined;
-  /** Live's output item its last words went to. */
+  /** Kevin's item it answers, fixed at its lock: his last utterance begun before it on the session timeline. */
+  answers?: string | undefined;
+  /** Live's output item its last words went to, and every item its words went to. */
   itemId?: string;
+  readonly itemIds: Set<string>;
   /** Its last words ended a sentence (. ! ?). */
   sentenceEnded?: boolean;
   /** Where its words end so far (session timeline); undefined while it has only sound. */
@@ -124,6 +167,20 @@ interface VoiceTurn {
   /** Wall clock of its first audible frame, when it was locked. */
   lockedAt?: number;
   words: string;
+}
+
+/** Jarhead's own question: a line the engine asked for, with a "?". */
+interface Question {
+  readonly turn: VoiceTurn;
+  /** Session timeline where its words end; wall clock of its last words. */
+  endMs: number;
+  at: number;
+  /** Kevin's first utterance after it came (the answer window is one utterance). */
+  used: boolean;
+  /** An addressed utterance of Kevin's came after it. */
+  answered: boolean;
+  /** The cue that an answer needs the name was said for it. */
+  cued: boolean;
 }
 
 interface Waiter {
@@ -141,13 +198,25 @@ export class VoiceAttention {
   /**
    * The voice had paused this long (no words, no sound: Live streams a reply's frames every 100 ms) when the engine
    * asked it for words: what it says next answers the ask, a turn of its own, even inside VOICE_TURN_GAP_MS. A reply
-   * still streaming when the ask lands goes on as the turn it was.
+   * still streaming when the ask lands goes on as the turn it was, to its sentence's end.
    */
   static readonly ASK_SPLIT_MS = 250;
+  /**
+   * In a session that acknowledges appends, an ask is the voice's to answer once acknowledged, or this long after it was
+   * sent without an ack (one lost must not lose the line): the acks came 424-675 ms after the send, the answers later.
+   * A reply to the room already on its way when the ask left does not take it (ADV-9b: 200 ms after an ear reflex's).
+   */
+  static readonly ASK_UNACKED_MS = 800;
   /** The ear runs ~1 s ahead of Live's transcript: a Live utterance that starts within this long after the ear heard the name is named. */
   static readonly EAR_NAME_MS = 4000;
   /** The ear's name upgrades the utterance Live is still transcribing when its last fragment is this recent. */
   static readonly EAR_OPEN_MS = 2000;
+  /**
+   * …and only one Live began transcribing after the ear's segment opened, less this: Live's transcript of the same speech
+   * lands ~0.8 s after the ear's first partial, so an item Live was already sending well before Kevin began is someone
+   * else's (ADV-9: a TV line 1.9 s before the ear's segment).
+   */
+  static readonly EAR_SEGMENT_SLACK_MS = 600;
   /** The Transcript's GAP_MS: Kevin's items this close on the session timeline may be one utterance… */
   static readonly UTTERANCE_GAP_MS = 1400;
   /** …when the second's first fragment arrives this soon after the first's last (LC-6 trial 3: 'head' 582 ms after 'Jar'). */
@@ -157,28 +226,48 @@ export class VoiceAttention {
   /** Frames a locked turn keeps for a late name: 0.8 s of Live's 100 ms deltas. */
   static readonly RING_FRAMES = 8;
   /**
+   * A word's sound reaches the client 350-550 ms after its `start_ms` (LC-7: " on it" 440, " hello ke" 459, " night."
+   * 412, " i didn't" 547): when a turn is split at new words, frames that arrive sooner than this after those words'
+   * start on the session timeline are the old turn's sound still streaming, and go as it went (ADV-1).
+   */
+  static readonly SPLIT_SOUND_LAG_MS = 250;
+  /**
    * A delegation whose words look like room talk waits this long for a late name before it is refused: Live's
    * delegation comes 190-727 ms before its reply's first words (LC-7, LC-10), plus LATE_NAME_MS. Only room-looking
    * delegations wait; an addressed one never does.
    */
   static readonly DELEGATION_LATE_MS = 1200;
+  /** An unanswered question of Jarhead's this recent earns one cue when an unnamed answer to it is refused. */
+  static readonly ANSWER_CUE_MS = 120_000;
   static readonly VERDICTS_KEPT = 128;
   private static readonly ITEMS_KEPT = 32;
+  private static readonly SAID_KEPT = 64;
 
   private readonly verdicts = new Map<string, Verdict>();
   private readonly items: KevinItem[] = [];
   private utterance: Utterance | undefined;
   private exchangeEndMs = Number.NEGATIVE_INFINITY;
   private anchorAt = Number.NEGATIVE_INFINITY;
-  private askAt = 0;
-  private askClause = false;
+  private pendingAsk: Ask | undefined;
+  /** The session acknowledges appends (a real LiveSession does, `acknowledgesAppends`; the tests' fakes do not). */
+  private acks = false;
   private earNamedAt = 0;
-  /** The name's count in each ear segment so far: a partial repeats the segment's earlier words, and only a new name counts. */
-  private readonly earNames = new Map<number, number>();
+  /** Each ear segment: when its first partial came, and the name's count in it so far (a partial repeats the segment's earlier words; only a new name counts). */
+  private readonly earSegments = new Map<number, { readonly firstAt: number; names: number }>();
   private turn: VoiceTurn | undefined;
+  /** The turn a split ended, while its sound still streams (`SPLIT_SOUND_LAG_MS`), and the one being split now. */
+  private tail: { readonly turn: VoiceTurn; readonly untilMs: number; readonly untilAt: number } | undefined;
+  private splitOff: VoiceTurn | undefined;
   private ring: Buffer[] = [];
   private readonly waiters = new Set<Waiter>();
   private readonly delegations = new Map<string, Verdict | Promise<Verdict>>();
+  /** The utterance each delegation was judged on, for its results' provenance. */
+  private readonly delegationItems = new Map<string, string | undefined>();
+  private question: Question | undefined;
+  /** The confirmation the cue was said for. */
+  private cuedConfirm: string | undefined;
+  /** Jarhead's Transcript items and the turns that said them: whether Kevin heard them. */
+  private readonly saidBy = new Map<string, VoiceTurn[]>();
   readonly stats: AttentionStats = { droppedFrames: 0, droppedAudibleFrames: 0, droppedWords: "", droppedTurns: 0, releasedFrames: 0, refused: 0 };
 
   constructor(private readonly seams: AttentionSeams) {}
@@ -193,17 +282,35 @@ export class VoiceAttention {
    * A new session: its timeline starts at 0. `open`: the exchange carries into it (a Go, a wake or a resume opens one at
    * the session start; a reconnect only when one was open as the server dropped the last). The day's counts stay.
    */
-  reset(open: boolean): void {
+  reset(open: boolean, o: { readonly acks?: boolean } = {}): void {
+    this.close();
     this.turn = undefined;
+    this.tail = undefined;
+    this.splitOff = undefined;
     this.ring = [];
-    this.askAt = 0;
-    this.askClause = false;
+    this.pendingAsk = undefined;
+    this.acks = o.acks === true;
     this.items.length = 0;
     this.utterance = undefined;
     this.verdicts.clear();
     this.delegations.clear();
+    this.delegationItems.clear();
+    this.question = undefined;
+    this.cuedConfirm = undefined;
+    this.saidBy.clear();
     this.exchangeEndMs = open ? 0 : Number.NEGATIVE_INFINITY;
     for (const w of [...this.waiters]) w.settle(false);
+  }
+
+  /**
+   * The session ended: a voice turn it left undecided never sounded, so its lines are settled as unheard now, while they
+   * are still on the session's Transcript (the engine moves it to the held record next).
+   */
+  close(): void {
+    const left = this.turn;
+    if (!left || left.grant !== undefined) return;
+    left.grant = null;
+    if (left.itemIds.size > 0) this.seams.decided?.([...left.itemIds]);
   }
 
   /** Kevin turned to Jarhead (a name, a typed line, a circle, a Go / wake / resume): the exchange's cap counts from here. */
@@ -221,6 +328,15 @@ export class VoiceAttention {
     return startMs < this.exchangeEndMs + EXCHANGE_WINDOW_MS && this.capOpen();
   }
 
+  /**
+   * A `window` utterance's newest words, begun at `fragmentStartMs`, are still the exchange's: within EXCHANGE_WINDOW_MS
+   * of the exchange's end or of the utterance's own start, whichever is later, with the cap open. Past that it is the
+   * room's — a video Kevin asked for that talks on, a TV that started in the window (ADV-7, ADV-8).
+   */
+  private stillWindow(item: Pick<TranscriptItem, "startMs">, fragmentStartMs: number): boolean {
+    return fragmentStartMs < Math.max(this.exchangeEndMs, item.startMs) + EXCHANGE_WINDOW_MS && this.capOpen();
+  }
+
   /** A circle or a captured window: Kevin pointed at something for Jarhead; the exchange opens from now (`nowMs`). */
   gesture(nowMs: number): void {
     this.anchor();
@@ -229,12 +345,49 @@ export class VoiceAttention {
 
   /**
    * The engine asked the voice for words (a `commentary` or `instructions` append, LiveSession's `ask`; a Responses
-   * backend's result for addressed work). The first voice turn within ASK_GRANT_MS takes it. `clause`: the pre-sleep
-   * clause's ask, whose turn is heard and counts for nothing.
+   * backend's result). The first voice turn within ASK_GRANT_MS takes it — once the server has acknowledged it, when
+   * the session acknowledges appends (ASK_UNACKED_MS at most). Its kind is its provenance: `aside` (the clause, the
+   * cue); for an append on a delegation, `window` when the gate admitted that delegation only as `window`; else `asked`.
    */
-  ask(clause = false): void {
-    this.askAt = this.now();
-    this.askClause = clause;
+  ask(o: { readonly aside?: boolean; readonly delegationId?: string | null; readonly eventId?: string; readonly content?: string } = {}): void {
+    let kind: AskKind = o.aside ? "aside" : this.provenance(o.delegationId);
+    const before = this.liveAsk();
+    // One still waiting merges in (a result in two chunks, a thread's line on its heels): Jarhead turning to Kevin wins.
+    if (before?.kind === "asked" && kind === "window") kind = "asked";
+    const eventIds = new Set(before?.eventIds ?? []);
+    if (o.eventId !== undefined) eventIds.add(o.eventId);
+    this.pendingAsk = { at: this.now(), kind, content: `${before?.content ?? ""} ${o.content ?? ""}`.trim(), eventIds, acked: before?.acked ?? false, heard: before?.heard ?? "" };
+  }
+
+  /** The server acknowledged an append (`session.*.appended`): the voice's answer to it may begin now. */
+  acked(eventId: string): void {
+    if (this.pendingAsk?.eventIds.has(eventId)) this.pendingAsk.acked = true;
+  }
+
+  /** Where the work behind delegation `liveId` came from: Kevin's own (typed, named) or the engine's, or only the window. */
+  private provenance(liveId: string | null | undefined): AskKind {
+    if (!liveId) return "asked";
+    const v = this.delegations.get(liveId);
+    // Not judged here (another session's delegation, a thread outliving it): the engine's own line.
+    if (v === undefined) return "asked";
+    // Still waiting on a late name: nothing ran on it.
+    if (typeof v !== "string") return "window";
+    if (v === "typed" || v === "named") return "asked";
+    const itemId = this.delegationItems.get(liveId);
+    const since = itemId !== undefined ? this.verdicts.get(itemId) : undefined;
+    return since === "named" || since === "typed" ? "asked" : "window";
+  }
+
+  /** The ask still waiting for its turn, or undefined. */
+  private liveAsk(): Ask | undefined {
+    const a = this.pendingAsk;
+    if (a && this.now() - a.at > VoiceAttention.ASK_GRANT_MS) this.pendingAsk = undefined;
+    return this.pendingAsk;
+  }
+
+  /** The voice's words now can answer this ask: the server took it in, or no ack is coming (a fake session, a lost ack). */
+  private takeable(a: Ask): boolean {
+    return !this.acks || a.acked || a.eventIds.size === 0 || this.now() - a.at >= VoiceAttention.ASK_UNACKED_MS;
   }
 
   // ------------------------------------------------------------------ Kevin's side
@@ -246,29 +399,40 @@ export class VoiceAttention {
     this.setVerdict(item.id, "typed");
     this.exchangeEndMs = Math.max(this.exchangeEndMs, item.endMs);
     this.anchor();
+    if (this.question && item.startMs >= this.question.endMs) {
+      this.question.used = true;
+      this.question.answered = true;
+    }
     this.settleWaiters(new Set([item.id]));
   }
 
   /**
-   * A fragment of Kevin's side of Live's transcript landed; `item` is its utterance so far. Judged as it arrives (see
-   * the class comment); named words open the exchange from where they end and anchor its cap, an utterance merely
-   * inside the window does not extend it (a TV talking on would hold it for ever) — Jarhead's answer to it does.
+   * A fragment of Kevin's side of Live's transcript landed; `item` is its utterance so far and `fragmentStartMs` where
+   * the new words begin. Judged as it arrives (see the class comment); named words open the exchange from where they end
+   * and anchor its cap; an utterance merely inside the window does not extend it (a TV talking on would hold it for
+   * ever) — Jarhead's answer to it does — and it lapses to the room once its words run on past the window.
    */
-  heard(item: TranscriptItem, _delta: string): Heard {
+  heard(item: TranscriptItem, _delta: string, fragmentStartMs: number = item.endMs): Heard {
     this.expire();
     const was = this.verdicts.get(item.id);
     this.track(item, false);
     const u = this.utteranceOf(item);
     const named = NAMES.test([...u.items.values()].join(" ")) && !this.seams.echo(item.text);
-    // An item that continues an utterance split around the voice's words is that utterance: its verdict, or better.
-    const joined = [...u.items.keys()].filter((id) => id !== item.id).map((id) => this.verdicts.get(id));
+    // An item that continues an utterance split around the voice's words carries its name ("Jar" | reply | "head"),
+    // nothing else: a window a split item began in is judged again on its own words.
+    const joinedNamed = [...u.items.keys()].some((id) => id !== item.id && this.verdicts.get(id) === "named");
     let verdict: Verdict;
     if (was === undefined) {
       const earNamed = this.earNamedAt > 0 && this.now() - this.earNamedAt < VoiceAttention.EAR_NAME_MS;
-      const inherited = joined.includes("named") ? "named" : joined.includes("window") ? "window" : undefined;
-      verdict = named || earNamed ? "named" : (inherited ?? (this.inWindow(item.startMs) || this.seams.inExchange() ? "window" : "room"));
+      const answer = this.answerTo(item);
+      verdict = named || earNamed || joinedNamed ? "named" : this.inWindow(item.startMs) || this.seams.inExchange() || answer ? "window" : "room";
+      if (answer && verdict === "window" && !this.inWindow(item.startMs)) this.seams.log?.(`attention: an answer to Jarhead's question ${Math.round((item.startMs - (this.question?.endMs ?? 0)) / 1000)} s after it: the exchange's`);
       if (earNamed) this.earNamedAt = 0;
-    } else verdict = named && was !== "typed" ? "named" : was;
+    } else if (named && was !== "typed") verdict = "named";
+    else if (was === "window" && !this.stillWindow(item, fragmentStartMs)) {
+      verdict = "room";
+      this.seams.log?.(`attention: an utterance begun inside the exchange talked on past it: the room's from here ("${item.text.slice(-60)}")`);
+    } else verdict = was;
     let released: Buffer[] = [];
     const upgraded = verdict === "named" && was !== "named";
     if (upgraded) released = this.upgrade(u);
@@ -277,41 +441,69 @@ export class VoiceAttention {
       this.exchangeEndMs = Math.max(this.exchangeEndMs, item.endMs);
       this.anchor();
     }
+    if (verdict !== "room" && this.question && item.startMs >= this.question.endMs - VoiceAttention.UTTERANCE_GAP_MS) this.question.answered = true;
     if (verdict === "room") this.awaitName(item.id);
     else this.settleWaiters(new Set(u.items.keys()));
     // One utterance is one named turn, however many items Live split it into.
-    return { verdict, named: upgraded && !joined.includes("named"), released };
+    return { verdict, named: upgraded && !joinedNamed, released };
+  }
+
+  /**
+   * Kevin's first utterance after Jarhead's own question: it spends the answer window whatever it says, and is the
+   * exchange's when it began within ANSWER_WINDOW_MS of the question, the cap open and no confirmation waiting (a yes to
+   * a send needs the name or the Console).
+   */
+  private answerTo(item: TranscriptItem): boolean {
+    const q = this.question;
+    if (!q || q.used || item.startMs < q.endMs - VoiceAttention.UTTERANCE_GAP_MS) return false;
+    q.used = true;
+    return item.startMs - q.endMs <= ANSWER_WINDOW_MS && this.capOpen() && this.seams.confirming?.() === undefined;
   }
 
   /**
    * The on-device ear heard words of segment `segment`. A new name in them (its partials repeat the segment's earlier
-   * words) names the next Live utterance within EAR_NAME_MS, and the one Live is still transcribing when its last
-   * fragment is under EAR_OPEN_MS old and shares a word with the ear's — the ear runs ~1 s ahead of Live's transcript,
-   * so this is what wins the race when the name comes last. Never an older room line.
+   * words) names the next Live utterance within EAR_NAME_MS, and the one Live is still transcribing when it is the same
+   * speech: Live began sending it after the ear's segment opened (less EAR_SEGMENT_SLACK_MS), its last fragment is
+   * under EAR_OPEN_MS old, and its words are the ear's (`sameSpeech`). The ear runs ~1 s ahead of Live's transcript,
+   * so this is what wins the race when the name comes last. Never an older room line, never one that merely shares
+   * "the" with Kevin's words (ADV-9).
    */
   ear(text: string, segment: number, isFinal: boolean): Heard | undefined {
     const count = (text.match(NAMES_ALL) ?? []).length;
-    const seen = this.earNames.get(segment) ?? 0;
-    if (isFinal) this.earNames.delete(segment);
-    else this.earNames.set(segment, Math.max(seen, count));
-    if (this.earNames.size > 16) this.earNames.delete(this.earNames.keys().next().value as number);
+    let seg = this.earSegments.get(segment);
+    if (!seg) {
+      seg = { firstAt: this.now(), names: 0 };
+      this.earSegments.set(segment, seg);
+      if (this.earSegments.size > 16) this.earSegments.delete(this.earSegments.keys().next().value as number);
+    }
+    const seen = seg.names;
+    if (isFinal) this.earSegments.delete(segment);
+    else seg.names = Math.max(seen, count);
     if (count <= seen || this.seams.echo(text)) return undefined;
     this.earNamedAt = this.now();
     const open = this.items[this.items.length - 1];
-    if (!open || open.typed || this.now() - open.lastAt > VoiceAttention.EAR_OPEN_MS || !sharesWords(text, open.text)) return undefined;
+    if (!open || open.typed || this.now() - open.lastAt > VoiceAttention.EAR_OPEN_MS) return undefined;
+    if (open.firstAt < seg.firstAt - VoiceAttention.EAR_SEGMENT_SLACK_MS || !sameSpeech(text, open.text)) return undefined;
     const was = this.verdicts.get(open.id);
     if (was === "named" || was === "typed") return undefined;
+    // The name is spent on this utterance: the next one is not named by it.
+    this.earNamedAt = 0;
     const u = this.utterance && this.utterance.items.has(open.id) ? this.utterance : { items: new Map([[open.id, open.text]]), endMs: open.endMs, lastAt: open.lastAt };
     const released = this.upgrade(u);
     this.exchangeEndMs = Math.max(this.exchangeEndMs, open.endMs);
     this.anchor();
+    if (this.question && open.startMs >= this.question.endMs - VoiceAttention.UTTERANCE_GAP_MS) this.question.answered = true;
     this.settleWaiters(new Set(u.items.keys()));
     return { verdict: "named", named: true, released };
   }
 
-  /** Whether one of Kevin's utterances was said to Jarhead. One with no verdict is the room's unless typed: closed by default. */
+  /**
+   * Whether one of Kevin's utterances was said to Jarhead. One with no verdict is the room's unless typed: closed by
+   * default; one merely inside the window only while the cap is open.
+   */
   addressed(item: Pick<TranscriptItem, "id" | "source">): boolean {
-    return this.verdictOf(item) !== "room";
+    const v = this.verdictOf(item);
+    return v !== "room" && (v !== "window" || this.capOpen());
   }
 
   /** The verdict an item stands at. */
@@ -325,7 +517,7 @@ export class VoiceAttention {
     return this.items.find((i) => i.id === id)?.typed ? "typed" : "room";
   }
 
-  /** Keep Kevin's item as the gate sees it: Kevin's last item is what a voice turn answers. */
+  /** Keep Kevin's item as the gate sees it: Kevin's last item begun before a voice turn is what that turn answers. */
   private track(item: TranscriptItem, typed: boolean): void {
     const now = this.now();
     const known = this.items.find((i) => i.id === item.id);
@@ -335,7 +527,7 @@ export class VoiceAttention {
       known.lastAt = now;
       return;
     }
-    this.items.push({ id: item.id, startMs: item.startMs, endMs: item.endMs, text: item.text, lastAt: now, typed: typed || item.source === "typed" });
+    this.items.push({ id: item.id, startMs: item.startMs, endMs: item.endMs, text: item.text, firstAt: now, lastAt: now, typed: typed || item.source === "typed" });
     if (this.items.length > VoiceAttention.ITEMS_KEPT) this.items.shift();
   }
 
@@ -378,6 +570,7 @@ export class VoiceAttention {
     turn.grant = "named";
     this.stats.droppedTurns = Math.max(0, this.stats.droppedTurns - 1);
     if (turn.endMs !== undefined) this.speak(turn, turn.endMs);
+    this.seams.decided?.([...turn.itemIds]);
     const out = this.ring;
     this.ring = [];
     this.stats.releasedFrames += out.length;
@@ -398,17 +591,27 @@ export class VoiceAttention {
   /**
    * An output transcript delta (`itemId`: Live's output item on the Transcript). "spoke": granted, the engine counts it
    * as Jarhead's words; "pending": undecided until its first audible frame (its words count then, if granted);
-   * "dropped": a turn nobody asked for — on the record and nothing more.
+   * "dropped": a turn nobody asked for — on the record, marked unheard, and nothing more.
    */
   output(delta: string, startMs: number, endMs: number, itemId: string): "spoke" | "pending" | "dropped" {
     this.expire();
-    const turn = this.turnAt(startMs, itemId);
+    const turn = this.turnAt(startMs, itemId, delta);
     turn.sentenceEnded = SENTENCE_END.test(delta);
     turn.endMs = Math.max(turn.endMs ?? endMs, endMs);
     turn.words += delta;
-    if (turn.grant === undefined) return "pending";
+    const fresh = !turn.itemIds.has(itemId);
+    if (fresh) this.saidIn(turn, itemId);
+    if (turn.grant === undefined) {
+      // Words of a turn the engine did not ask for, after its ask: the ask's own words, if they come, start a turn of their own.
+      const ask = this.liveAsk();
+      if (ask && ask.at >= turn.firstAt) ask.heard += delta;
+      return "pending";
+    }
     if (turn.grant === null) {
       this.stats.droppedWords += delta;
+      const ask = this.liveAsk();
+      if (ask && ask.at >= turn.firstAt) ask.heard += delta;
+      if (fresh) this.seams.decided?.([itemId]);
       return "dropped";
     }
     this.speak(turn, endMs);
@@ -421,6 +624,14 @@ export class VoiceAttention {
    */
   frame(pcm: Buffer, audible: boolean, nowMs: number): boolean {
     this.expire();
+    const tail = this.tail;
+    if (tail && (nowMs >= tail.untilMs || this.now() > tail.untilAt)) this.tail = undefined;
+    else if (tail && tail.turn.grant !== undefined) {
+      if (tail.turn.grant) return true;
+      this.stats.droppedFrames++;
+      if (audible) this.stats.droppedAudibleFrames++;
+      return false;
+    }
     const turn = audible ? this.turnAt(nowMs) : this.openTurn();
     if (turn && turn.grant === undefined && audible) this.lock(turn);
     if (turn?.grant !== null || !turn) return true;
@@ -439,6 +650,25 @@ export class VoiceAttention {
     this.expire();
   }
 
+  /** Whether Kevin heard a line of Jarhead's on the Transcript (undefined: no voice turn said it — the stop's output gate muted it). */
+  saidState(itemId: string): SaidState | undefined {
+    const turns = this.saidBy.get(itemId);
+    if (!turns) return undefined;
+    if (turns.some((t) => t.grant)) return "heard";
+    if (turns.some((t) => t.grant === undefined)) return "pending";
+    return "unheard";
+  }
+
+  private saidIn(turn: VoiceTurn, itemId: string): void {
+    turn.itemIds.add(itemId);
+    const turns = this.saidBy.get(itemId);
+    if (turns) turns.push(turn);
+    else {
+      this.saidBy.set(itemId, [turn]);
+      if (this.saidBy.size > VoiceAttention.SAID_KEPT) this.saidBy.delete(this.saidBy.keys().next().value as string);
+    }
+  }
+
   /** The voice turn now open (its words or sound within VOICE_TURN_GAP_MS), or undefined. */
   private openTurn(): VoiceTurn | undefined {
     const turn = this.turn;
@@ -447,34 +677,32 @@ export class VoiceAttention {
 
   /**
    * The voice turn this output belongs to, touched now: the open one, or a new one. A new turn takes the engine's ask
-   * if one is waiting, and is decided at once when it was asked for; one that looks unasked stays open to the name
-   * until its first audible frame (`lock`) or its end.
+   * if one is waiting (and acknowledged, where the session acknowledges) and is decided at once; any other stays open
+   * to the name and to what Kevin's side says until its first audible frame (`lock`) or its end.
    */
-  private turnAt(startMs: number, itemId?: string): VoiceTurn {
+  private turnAt(startMs: number, itemId?: string, delta?: string): VoiceTurn {
     const now = this.now();
-    const open = this.splitByKevin(this.splitByAsk(this.openTurn()), itemId, startMs);
+    const open = this.splitByKevin(this.splitAside(this.splitByAsk(this.openTurn(), delta), delta), itemId, startMs);
     if (open) {
       open.lastAt = now;
       if (itemId !== undefined) open.itemId = itemId;
-      if (open.grant === undefined) {
-        const grant = this.grantFor(open);
-        if (grant) this.decide(open, grant);
-      }
       return open;
     }
     if (this.turn && this.turn.grant === undefined) this.lock(this.turn);
-    const asked = this.askAt > 0 && now - this.askAt <= VoiceAttention.ASK_GRANT_MS;
-    const clause = asked && this.askClause;
-    if (asked) {
-      this.askAt = 0;
-      this.askClause = false;
-    }
-    const last = this.items[this.items.length - 1];
-    const turn: VoiceTurn = { startMs, lastAt: now, asked, clause, grant: undefined, answers: last?.id, words: "", ...(itemId !== undefined ? { itemId } : {}) };
+    // Split at new words: the old turn's sound still on its way is its own (and no earlier turn's is, any more).
+    this.tail = this.splitOff ? { turn: this.splitOff, untilMs: startMs + VoiceAttention.SPLIT_SOUND_LAG_MS, untilAt: now + VoiceAttention.VOICE_TURN_GAP_MS } : undefined;
+    this.splitOff = undefined;
+    const ask = this.liveAsk();
+    const takes = ask !== undefined && (this.takeable(ask) || (delta !== undefined && saysWhatWasAsked(delta, ask.content)));
+    if (takes) this.pendingAsk = undefined;
+    const turn: VoiceTurn = { startMs, firstAt: now, lastAt: now, ask: takes ? ask.kind : undefined, grant: undefined, itemIds: new Set(), words: "", ...(itemId !== undefined ? { itemId } : {}) };
     this.turn = turn;
     this.ring = [];
-    const grant = this.grantFor(turn);
-    if (grant) this.decide(turn, grant);
+    // Asked for, or inside the open exchange (the room there is the exchange's too): decided at its first words. Any
+    // other waits for its first audible frame, so an utterance whose transcript lands just after the voice's words is
+    // what it answers (ADV-5: "Yes!" from the TV mid-task, its reply's words first in the same millisecond).
+    if (turn.ask) this.decide(turn, turn.ask === "window" ? "window" : "asked");
+    else if (this.inWindow(startMs) || this.seams.inExchange()) this.decide(turn, this.grantFor(turn, true) ?? "exchange");
     return turn;
   }
 
@@ -483,35 +711,75 @@ export class VoiceAttention {
    * landed between them) and they start once that utterance had ended (session timeline). After an utterance said to
    * Jarhead the voice is answering it (Live's barge-in cuts mid-sentence); after the room's, only once the voice had
    * finished a sentence — "going to sleep." and, 0.3 s later, "yeah, sounds right" to the TV is a turn of its own,
-   * while "going" … TV … "to sleep." is the voice carrying on.
+   * while "going" … TV … "to sleep." is the voice carrying on. An utterance begun before the turn is the one it answers.
    */
   private splitByKevin(open: VoiceTurn | undefined, itemId: string | undefined, startMs: number): VoiceTurn | undefined {
     if (!open || itemId === undefined || open.itemId === undefined || open.itemId === itemId) return open;
     const last = this.items[this.items.length - 1];
-    if (!last || last.id === open.answers || startMs < last.endMs) return open;
+    if (!last || last.id === this.answersOf(open)?.id || startMs < last.endMs) return open;
     const addressed = this.verdictOfId(last.id) !== "room";
     if (!addressed && !open.sentenceEnded) return open;
     if (open.grant === undefined) this.lock(open);
     open.lastAt = Number.NEGATIVE_INFINITY;
+    this.splitOff = open;
     return undefined;
   }
 
   /**
-   * The open turn, unless the engine asked for words after the voice had paused it (ASK_SPLIT_MS): an answer to the
-   * room that ended half a second before the pre-sleep clause was asked for must not swallow the clause's words, and
-   * leave the clause's ask to the next answer to the room.
+   * The open turn, unless an ask waits that it did not take and the voice is giving the asked-for words now. A granted
+   * turn goes on, and spends the ask when its words after the server took it in (or that say what was asked) answer
+   * it — a later answer to the room must not take it (LC-10: "looking." runs on into the result's words). A dropped or
+   * undecided turn (an answer to the room) ends where the asked-for words begin: after a pause of ASK_SPLIT_MS (the
+   * pre-sleep clause half a second after a dropped answer), at its first sentence end once the server took the ask in,
+   * or at words that say what was asked (ADV-1: "no, what happened in it" running straight into "your pasta timer is
+   * done."). A reply still streaming mid-sentence goes on as the turn it was.
    */
-  private splitByAsk(open: VoiceTurn | undefined): VoiceTurn | undefined {
-    if (!open || this.askAt === 0 || this.askAt < open.lastAt || this.now() - open.lastAt < VoiceAttention.ASK_SPLIT_MS) return open;
+  private splitByAsk(open: VoiceTurn | undefined, delta: string | undefined): VoiceTurn | undefined {
+    const ask = this.liveAsk();
+    if (!open || !ask || ask.at < open.firstAt) return open;
+    if (open.grant) {
+      if (delta !== undefined && ((this.acks && this.takeable(ask)) || saysWhatWasAsked(delta, ask.content))) this.pendingAsk = undefined;
+      return open;
+    }
+    // The pause is the voice's when the ask landed, not now: a reply to the room whose sound has not begun yet is not paused.
+    const paused = ask.at - open.lastAt >= VoiceAttention.ASK_SPLIT_MS;
+    const boundary = delta !== undefined && open.sentenceEnded === true && this.takeable(ask);
+    const asked = delta !== undefined && saysWhatWasAsked(`${ask.heard} ${delta}`, ask.content);
+    if (!paused && !boundary && !asked) return open;
     if (open.grant === undefined) this.lock(open);
     open.lastAt = Number.NEGATIVE_INFINITY;
+    // After a pause its sound is done; mid-stream, what is still on its way is its own.
+    if (!paused) this.splitOff = open;
     return undefined;
   }
 
-  /** The turn's verdict for good: at its first audible frame, or as it ends unheard. */
+  /**
+   * The open turn, unless it is an aside (the pre-sleep clause, the cue) that has said its sentence: the orders ask for
+   * one clause and nothing more, so the voice's next words are a turn of their own, judged on their own — an answer to
+   * the TV that spoke over the clause's end, 400 ms after its sound, is not the clause (LC-7 dry under load).
+   */
+  private splitAside(open: VoiceTurn | undefined, delta: string | undefined): VoiceTurn | undefined {
+    if (!open || delta === undefined || open.ask !== "aside" || !open.sentenceEnded) return open;
+    open.lastAt = Number.NEGATIVE_INFINITY;
+    this.splitOff = open;
+    return undefined;
+  }
+
+  /** What a turn answers: fixed at its lock, else Kevin's last item begun before it on the session timeline. */
+  private answersOf(turn: VoiceTurn): KevinItem | undefined {
+    if (turn.answers !== undefined) return this.items.find((i) => i.id === turn.answers);
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      const item = this.items[i]!;
+      if (item.startMs < turn.startMs) return item;
+    }
+    return undefined;
+  }
+
+  /** The turn's verdict for good: at its first audible frame, or as it ends unheard. What it answers is read now (ADV-5). */
   private lock(turn: VoiceTurn): void {
     if (turn.grant !== undefined) return;
-    const grant = this.grantFor(turn);
+    turn.answers = this.answersOf(turn)?.id;
+    const grant = this.grantFor(turn, false);
     turn.lockedAt = this.now();
     this.decide(turn, grant);
     if (!grant) {
@@ -524,39 +792,69 @@ export class VoiceAttention {
   private decide(turn: VoiceTurn, grant: VoiceGrant | null): void {
     turn.grant = grant;
     if (grant && turn.endMs !== undefined) this.speak(turn, turn.endMs);
+    if (turn.itemIds.size > 0) this.seams.decided?.([...turn.itemIds]);
   }
 
   /**
-   * Why the engine asked for this voice turn, or null: the reply to an append of its own; the reply to an utterance
-   * said to Jarhead (one merely inside the window only while the cap is open); work Kevin asked for still running with
-   * nothing from the room since (a TV answered mid-task must not open the window to its next command); the voice going
-   * on inside the open exchange. A turn with none of these is the voice answering the room on its own.
+   * Why the engine asked for this voice turn, or null: an append of its own (its kind); the reply to an utterance said
+   * to Jarhead (one merely inside the window only while the cap is open), read on the session timeline at the lock;
+   * work Kevin asked for still running with nothing from the room since (a TV answered mid-task must not open the
+   * window to its next command; work the window admitted is `window`); the voice going on inside the exchange it began
+   * in (`atStart`: judged as it begins — an exchange Kevin opened after the voice began answering the room, his name
+   * through the ear a moment later, does not take that answer in). A turn with none of these is the voice answering
+   * the room on its own.
    */
-  private grantFor(turn: VoiceTurn): VoiceGrant | null {
-    if (turn.asked) return "asked";
-    // What the turn answers: Kevin's last item when it began (a later utterance is a turn of its own, `splitByKevin`).
-    const answered = turn.answers === undefined ? undefined : this.items.find((i) => i.id === turn.answers);
+  private grantFor(turn: VoiceTurn, atStart: boolean): VoiceGrant | null {
+    if (turn.ask) return turn.ask === "window" ? "window" : "asked";
+    const answered = this.answersOf(turn);
     const verdict = answered ? this.verdictOfId(answered.id) : undefined;
-    if (answered && verdict !== "room" && turn.startMs - answered.endMs < EXCHANGE_WINDOW_MS && (verdict !== "window" || this.capOpen())) return verdict ?? null;
-    if (this.seams.working() && verdict !== "room") return "work";
-    if (this.inWindow(turn.startMs) || this.seams.inExchange()) return "exchange";
+    if (answered && verdict && verdict !== "room" && turn.startMs - answered.endMs < EXCHANGE_WINDOW_MS && (verdict !== "window" || this.capOpen())) return verdict;
+    const work = this.seams.working();
+    if (work !== undefined && verdict !== "room") return this.provenance(work) === "asked" ? "work" : "window";
+    if (atStart && (this.inWindow(turn.startMs) || this.seams.inExchange())) return "exchange";
     return null;
   }
 
   /**
-   * Jarhead's own granted words: the exchange goes on from where they end, and the engine counts them — except the
-   * pre-sleep clause's turn, whatever it says after the clause: counted, it would re-arm the idle clock every idle
-   * stretch, and opening the exchange on it would let the room that answers it hold the session (B2). After "going to
-   * sleep" the name, a typed line or Go keeps it awake. A line the engine asked for (a brain's question or result, a
-   * thread's line, a timer) is Jarhead turning to Kevin: it anchors the cap too, so his unnamed answer to it is the
-   * exchange's however long the work took. The voice answering on its own never does: that is the chain the cap bounds.
+   * Jarhead's own granted words: the exchange goes on from where they end, and the engine counts them — except an
+   * aside's turn (the pre-sleep clause, the cue), whatever it says: counted, the clause would re-arm the idle clock
+   * every idle stretch, and opening the exchange on it would let the room that answers it hold the session (B2).
+   * After "going to sleep" the name, a typed line or Go keeps it awake. A line the engine asked for (a brain's question
+   * or result for work Kevin asked for, a thread's line, a timer) is Jarhead turning to Kevin: it anchors the cap too,
+   * so his unnamed answer to it is the exchange's however long the work took, and a "?" in it opens the answer window.
+   * The voice answering on its own never anchors, nor does the result of work the window admitted.
    */
   private speak(turn: VoiceTurn, endMs: number): void {
-    if (!turn.clause) {
+    if (turn.ask !== "aside") {
       this.exchangeEndMs = Math.max(this.exchangeEndMs, endMs);
       if (turn.grant === "asked") this.anchor();
     }
-    this.seams.spoke(turn.grant as VoiceGrant, turn.clause);
+    if (turn.grant === "asked" && turn.ask === "asked" && turn.words.includes("?")) {
+      const q = this.question;
+      if (q?.turn === turn) {
+        q.endMs = Math.max(q.endMs, endMs);
+        q.at = this.now();
+      } else this.question = { turn, endMs, at: this.now(), used: false, answered: false, cued: false };
+    }
+    this.seams.spoke(turn.grant as VoiceGrant, turn.ask === "aside");
+  }
+
+  /**
+   * A delegation was refused as not addressed: the cue Kevin is owed, once, when it may have been his answer to a
+   * question of Jarhead's — "confirm" while a confirmation waits (its yes needs the name or the Console), "answer" while
+   * an unanswered question of Jarhead's is under ANSWER_CUE_MS old — else undefined. The engine says it as an aside.
+   */
+  cue(): "confirm" | "answer" | undefined {
+    const pending = this.seams.confirming?.();
+    if (pending !== undefined) {
+      if (this.cuedConfirm === pending) return undefined;
+      this.cuedConfirm = pending;
+      return "confirm";
+    }
+    const q = this.question;
+    if (!q || q.answered || q.cued || this.now() - q.at > VoiceAttention.ANSWER_CUE_MS) return undefined;
+    q.cued = true;
+    return "answer";
   }
 
   // ------------------------------------------------------------------ delegations
@@ -564,28 +862,35 @@ export class VoiceAttention {
   /**
    * Live delegated: was it for words said to Jarhead? Judged once per delegation (the Delegator asks first; the engine's
    * listener reads the same answer) on `item`, the utterance Live raised it for — the request's last. Addressed:
-   * its verdict at once. Room-looking: a promise that settles at the utterance's name, or "room" once
-   * DELEGATION_LATE_MS pass on the engine's clock (read at every event and tick; a real timer backs it up). No words on
-   * the transcript yet (`nowMs`: the session timeline now): the exchange's, when one is open; else the next utterance
-   * answers it the same way.
+   * its verdict at once — `window` only while the cap is open, as for a reply (ADV-7). Room-looking: a promise that
+   * settles at the utterance's name, or "room" once DELEGATION_LATE_MS pass on the engine's clock (read at every event
+   * and tick; a real timer backs it up). No words on the transcript yet (`nowMs`: the session timeline now): the
+   * exchange's, when one is open; else the next utterance answers it the same way.
    */
   delegation(liveId: string, item: Pick<TranscriptItem, "id" | "source"> | undefined, nowMs?: number): Verdict | Promise<Verdict> {
     const known = this.delegations.get(liveId);
     if (known !== undefined) return known;
     let verdict: Verdict | Promise<Verdict>;
-    if (item && this.addressed(item)) verdict = this.verdictOf(item);
+    const said = item ? this.verdictOf(item) : undefined;
+    this.delegationItems.set(liveId, item?.id);
+    if (said !== undefined && said !== "room" && (said !== "window" || this.capOpen())) verdict = said;
     else if (!item && (this.seams.inExchange() || (nowMs !== undefined && this.inWindow(nowMs)))) verdict = "window";
     else {
-      verdict = this.waitForName(item?.id).then((named) => {
+      verdict = this.waitForName(item?.id).then(({ named, itemId }) => {
         const v: Verdict = named ? (item ? this.verdictOf(item) : this.lastVerdict()) : "room";
         const settled: Verdict = named && v === "room" ? "named" : v;
         if (settled === "room") this.stats.refused++;
         this.delegations.set(liveId, settled);
+        this.delegationItems.set(liveId, item?.id ?? itemId);
         return settled;
       });
     }
     this.delegations.set(liveId, verdict);
-    if (this.delegations.size > 64) this.delegations.delete(this.delegations.keys().next().value as string);
+    if (this.delegations.size > 64) {
+      const oldest = this.delegations.keys().next().value as string;
+      this.delegations.delete(oldest);
+      this.delegationItems.delete(oldest);
+    }
     return verdict;
   }
 
@@ -594,8 +899,8 @@ export class VoiceAttention {
     return last ? this.verdictOfId(last.id) : "room";
   }
 
-  private waitForName(itemId: string | undefined): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
+  private waitForName(itemId: string | undefined): Promise<{ readonly named: boolean; readonly itemId: string | undefined }> {
+    return new Promise((resolve) => {
       let done = false;
       const timer = setTimeout(() => waiter.settle(false), VoiceAttention.DELEGATION_LATE_MS);
       timer.unref?.();
@@ -607,7 +912,7 @@ export class VoiceAttention {
           done = true;
           clearTimeout(timer);
           this.waiters.delete(waiter);
-          resolve(named);
+          resolve({ named, itemId: waiter.itemId });
         },
       };
       this.waiters.add(waiter);
@@ -616,7 +921,10 @@ export class VoiceAttention {
 
   /** Waiters on these items (or on the next utterance) settle: the words were said to Jarhead. */
   private settleWaiters(ids: ReadonlySet<string>): void {
-    for (const w of [...this.waiters]) if (w.itemId === undefined || ids.has(w.itemId)) w.settle(true);
+    for (const w of [...this.waiters]) {
+      if (w.itemId === undefined) w.itemId = ids.values().next().value;
+      if (w.itemId !== undefined && ids.has(w.itemId)) w.settle(true);
+    }
   }
 
   /** A room-looking utterance landed: a delegation waiting for the next one waits on this one's name now. */
@@ -632,16 +940,54 @@ export class VoiceAttention {
   }
 }
 
-/** Whether the ear's words and Live's share a word of three letters or more (the name aside): the same speech, ~1 s apart. */
-function sharesWords(ear: string, live: string): boolean {
-  const words = (s: string): string[] =>
-    s
-      .toLowerCase()
-      .replace(NAMES_ALL, " ")
-      .split(/[^a-z0-9']+/)
-      .filter((w) => w.length >= 3);
-  const own = words(live);
+/** Words too common to say two utterances are the same speech, or that the voice is saying what an append asked for. */
+const STOPWORDS = new Set(
+  "the and for you your are was were what what's whats that that's this with have has had not but can can't could would should will won't just now then there their they them from into about its it's our out all any some how who why when where which did does doing done been being get got let let's yes yeah okay too very really also here she him her his one two say said once tell told wait more nothing only short sentence word words line name thing things know like".split(" "),
+);
+
+/** Lowercase words of 3 letters or more, the name aside. */
+function wordsOf(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(NAMES_ALL, " ")
+    .split(/[^a-z0-9']+/)
+    .filter((w) => w.length >= 3);
+}
+
+/** All lowercase words, the name aside. */
+function allWordsOf(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(NAMES_ALL, " ")
+    .split(/[^a-z0-9']+/)
+    .filter((w) => w.length > 0);
+}
+
+/**
+ * Whether the ear's words and Live's open item are the same speech, ~1 s apart: Live's item shares a word that says
+ * something with the ear's words before the name (not "the"), or its tail is where the ear's words before the name end
+ * (Live lags: "what's the" against "what's the time jarhead"), or it is the name itself being split ("…, Jar").
+ */
+function sameSpeech(ear: string, live: string): boolean {
+  const own = allWordsOf(live);
   if (own.length === 0) return true;
-  const theirs = new Set(words(ear));
-  return own.some((w) => theirs.has(w));
+  const tail = own[own.length - 1]!;
+  if (tail === "jar") return true;
+  let lastName = -1;
+  for (const m of ear.matchAll(NAMES_ALL)) lastName = m.index ?? lastName;
+  const before = allWordsOf(lastName >= 0 ? ear.slice(0, lastName) : ear);
+  const theirs = new Set(before.filter((w) => w.length >= 3 && !STOPWORDS.has(w)));
+  if (own.some((w) => w.length >= 3 && !STOPWORDS.has(w) && theirs.has(w))) return true;
+  return before.slice(-2).includes(tail);
+}
+
+/**
+ * Whether the voice's words say what an append asked for: two words that say something in common with it (one when it
+ * has only one) — "your pasta timer is done." for "Your pasta timer is done. Say so once."
+ */
+function saysWhatWasAsked(said: string, asked: string): boolean {
+  const wanted = new Set(wordsOf(asked).filter((w) => !STOPWORDS.has(w)));
+  if (wanted.size === 0) return false;
+  const shared = new Set(wordsOf(said).filter((w) => wanted.has(w)));
+  return shared.size >= Math.min(2, wanted.size);
 }
