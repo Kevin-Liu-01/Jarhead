@@ -859,7 +859,6 @@ export class Engine extends EventEmitter<EngineEvents> {
       settings: () => this.settings,
       updateSettings: (patch) => this.updateSettings(patch),
       hands: this.pool.focus,
-      reader: this.pool.background,
       redact: (s) => this.runner.redactor.redact(s),
       emit: (e) => this.emit("event", e),
       problem: (kind, text, remedy) => this.problemOf(kind, text, remedy),
