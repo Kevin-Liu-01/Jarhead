@@ -62,6 +62,9 @@ jobs:
       # The global hotkeys type nothing on the US layout (UCKeyTranslate). The one allowance, ⌥⇧Space,
       # is recorded in HotkeyCheckMain.swift's typesAllowed. hotkeys.off keeps ⌥⎋ Stop. Nothing is registered.
       - run: bash apps/mac/Scripts/hotkey-check.sh
+      # The sounds: the one gate, the cues, the wire hold and the echo rule through a recorder, then every
+      # file in apps/mac/Resources/Sounds opened and decoded. Nothing is played.
+      - run: bash apps/mac/Scripts/earcon-check.sh
 
   release:
     name: release build + sign (ad-hoc)
@@ -79,6 +82,8 @@ jobs:
       # Icon, release build, stage, ad-hoc sign, strict verify — and stop: JARHEAD_BUILD_ONLY=1
       # never installs, so nothing under /Applications is touched on the runner.
       - run: JARHEAD_BUILD_ONLY=1 JARHEAD_SIGN_IDENTITY=- pnpm build:mac
+      # The staged bundle carries every sound the app can ask for, and each decodes (read, never played).
+      - run: bash apps/mac/Scripts/earcon-check.sh --bundle build/stage/Jarhead.app
 
   # The floor install.sh enforces: Swift 6.0 (the oldest Xcode 16) on macOS 14. The app's SwiftUI uses the
   # macOS 15 SDK (back-deployed to 14), so Xcode 15 never built it. The helper and the app must build here.

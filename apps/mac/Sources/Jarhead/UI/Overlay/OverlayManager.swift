@@ -210,6 +210,9 @@ public final class OverlayManager {
                             path: path.map { Point2(x: r($0.x), y: r($0.y)) }))
         // The mark is on the socket: an Ask that waited for it sends its question now, in order.
         state.markCommitted.send(())
+        // Asleep or paused, the mark waits for the next session: a quiet receipt. Awake, the ink is the
+        // feedback (Kevin is usually talking while he circles; a sound would reach his open mic).
+        if state.phase == .asleep || state.phase == .paused { state.markKeptHandler() }
     }
 
     func markModeDidEnd(_ ctl: MarkModeController) {

@@ -54,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var connectedSeen = false
     /// The previous run's crash report, when fresh (CrashGuard.install), until it is shown.
     private var crashNotice: CrashGuard.Notice?
+    /// The palette's problem sound: new kinds only, not in the first 15 s, once per kind per 10 min.
+    private var problemGate = EarconCues.ProblemGate(launchedAt: CFAbsoluteTimeGetCurrent())
+    /// A phase edge's sound that waits (the night tuck); any later edge cancels it.
+    private var pendingCue: DispatchWorkItem?
 
     /// `CFBundleShortVersionString`, or "dev" for a `swift build` binary.
     static let appVersion: String = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
@@ -106,6 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let socketPath = AppDelegate.socketPath()
+
+        // The palette (Audio/Earcons.swift, docs/AUDIO.md § The sounds): the files, prepared now; the one gate
+        // reads the phase this delegate last saw (no sound while the session's microphone runs).
+        installEarcons()
 
         // The wake word gate: on-device listening while asleep, authentication, then `wake`.
         wake = WakeGate(state: state)
@@ -178,21 +186,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // A ring's press, from the island, the banner, the menu or ⌃⌥S: what a crash report should know.
                 CrashGuard.remember("automation → snooze \(id) \(minutes) min")
                 self.client.send(cmd)
+                // The ring fades over 120 ms; the snooze sound only when this row's ring sounded (inside its linger).
+                if Earcons.shared.fadeRings(for: id) { Earcons.shared.play(.snooze) }
             case .automationDone(let id):
                 CrashGuard.remember("automation → done \(id)")
                 self.client.send(cmd)
+                // Done: the ring stops, and that silence is the answer.
+                Earcons.shared.fadeRings(for: id)
             default:
                 self.client.send(cmd)
             }
         }
         // The signals the app observes for the daemon's watchers ride the socket as `system.signal` — data, never a command.
         state.signalHandler = { [weak self] signal in self?.client.sendSignal(signal) }
-        // A fire while asleep: the earcon and the fixed line through the gate's speaker (never while a session is
-        // open — the awake path speaks through Live), and the banner with Snooze · Done.
+        // A fire while asleep: the ring and the fixed line through the gate's speaker, and the banner with Snooze ·
+        // Done. Never while the session's microphone runs — connecting included: the executor's `live()` is false
+        // while the handshake runs, and the mic's PCM is already queued for the opening session.
         client.onLocalSay = { [weak self] msg in
-            guard let self, !self.state.inSession else { return }
-            self.state.localSpeaker.earcon(msg.sound ?? "Pop")
-            if let text = msg.text, !text.isEmpty { self.state.localSpeaker.speak(String(text.prefix(160))) }
+            guard let self, !AppState.voiceAudioRuns(in: self.phaseSeen) else { return }
+            let text = String((msg.text ?? "").prefix(160))
+            if let sound = msg.sound {
+                Earcons.shared.ring(sound, automationId: msg.automationId)
+            } else if !text.isEmpty {
+                // A line with no sound of its own gets the cue first: a tap on the shoulder, not a voice from nowhere.
+                Earcons.shared.play(.cue)
+            }
+            // The line waits for the sound's tail (`LocalSpeaker.speak` sets the pre-utterance delay).
+            if !text.isEmpty { self.state.localSpeaker.speak(text) }
         }
         client.onNotify = { [weak self] msg in self?.notifications.post(msg) }
         // The Ledger tab's list with every day's totals (LM-6); nil when nothing answered, and the Console asks again.
@@ -321,10 +341,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 CrashGuard.remember("phase → \(phase.rawValue)")
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    let from = self.phaseSeen
                     self.phaseSeen = phase
+                    // The edge's sound: `awake` before the graph starts (the wire is held while it sounds),
+                    // `pause` / `sleep` / `problem` after the graph has stopped.
+                    let cue = EarconCues.edge(from: from, to: phase, tuck: OrbPanelController.sleepTuckDelay)
+                    self.pendingCue?.cancel()
+                    self.pendingCue = nil
+                    if let cue, cue.earcon == .awake { self.playCue(cue, phase: phase) }
                     self.updateAudioActivity()
+                    if let cue, cue.earcon != .awake { self.playCue(cue, phase: phase) }
                 }
             }
+            .store(in: &cancellables)
+        // A needs-Kevin problem raised outside a session: the problem sound (EarconCues.ProblemGate).
+        state.$snapshot
+            .filter { $0 != .empty }
+            .map(\.problems)
+            .removeDuplicates()
+            .sink { [weak self] (problems: [Problem]) in MainActor.assumeIsolated { self?.problemsChanged(problems) } }
+            .store(in: &cancellables)
+        // Settings › Audio › Sounds and Volume → the gate (Kevin's choice, else macOS's interface-sounds switch).
+        state.$snapshot
+            .map(\.settings.audioSettings)
+            .removeDuplicates()
+            .sink { (a: AudioSettings) in MainActor.assumeIsolated { Earcons.shared.configure(interface: a.soundsOn, volume: a.volume) } }
             .store(in: &cancellables)
         state.$connected
             .removeDuplicates()
@@ -652,6 +693,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: NotchDock.audioNotification, object: nil, userInfo: info)
     }
 
+    // MARK: - earcons (the palette)
+
+    /// The files (the bundle's `Resources/Sounds`; a `swift build` binary reads the checkout's), the gate's
+    /// phase, the mark's receipt, and a line in the app log per decision.
+    private func installEarcons() {
+        let earcons = Earcons.shared
+        // A headless test launch makes no sound (the same switch that keeps the microphone off).
+        let directory = ProcessInfo.processInfo.environment["JARHEAD_NO_AUDIO"] == "1" ? nil
+            : Earcons.bundleDirectory() ?? RepoLocator.repoRoot()?.appendingPathComponent("apps/mac/Resources/Sounds", isDirectory: true)
+        let loaded = earcons.load(directory: directory)
+        appLog("earcons: \(loaded.count) of \(Earcon.allCases.count) loaded from \(directory?.path ?? "nowhere (JARHEAD_NO_AUDIO=1 or no Sounds folder)")")
+        earcons.voiceRuns = { [weak self] in
+            guard let self else { return false }
+            return AppState.voiceAudioRuns(in: self.phaseSeen)
+        }
+        earcons.onDecision = { e, decision in appLog("earcon: \(e.rawValue) \(decision)") }
+        // A mark kept while asleep or paused (OverlayManager.commitMark): the receipt that it waits for the next session.
+        state.markKeptHandler = { Earcons.shared.play(.mark) }
+    }
+
+    /// Play an edge's sound now, or after its delay if the phase is still the one it belongs to.
+    private func playCue(_ cue: EarconCues.Cue, phase: Phase) {
+        guard cue.delay > 0 else {
+            Earcons.shared.play(cue.earcon)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.phaseSeen == phase else { return }
+                Earcons.shared.play(cue.earcon)
+            }
+        }
+        pendingCue = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + cue.delay, execute: work)
+    }
+
+    /// `snapshot.problems` as published: a new needs-Kevin kind sounds once, outside a session and quiet hours.
+    private func problemsChanged(_ problems: [Problem]) {
+        let quietHours = EarconCues.inQuiet(state.snapshot.settings.automationSettings.quietHours, at: Date())
+        let quiet = quietHours || AppState.voiceAudioRuns(in: phaseSeen)
+        let kinds = problemGate.admit(problems, now: CFAbsoluteTimeGetCurrent(), quiet: quiet)
+        guard !kinds.isEmpty else { return }
+        appLog("earcon: problem for \(kinds.joined(separator: ", "))")
+        Earcons.shared.play(.problem)
+    }
+
     // MARK: - audio activity
 
     /// The mic and speaker run while a session is open or opening (anything but asleep,
@@ -712,6 +799,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         appLog("quit: terminating in phase \(state.phase.rawValue)")
+        // Shutdown is silent: nothing new starts, and whatever sounds stops.
+        Earcons.shared.silence()
         // The one-Jarhead claim goes first: a launch during this teardown waits for us to exit
         // instead of handing off to an app that is going away.
         SingleInstance.giveUpClaim()
@@ -793,11 +882,14 @@ private extension AudioStateInfo {
     /// `AudioStateReadback` → the frame's value: bundle ids become process names here (`NSRunningApplication`), the duck level
     /// a plain number, the held seconds milliseconds; nil `sharedWith` stays nil (the HAL could not say — never `[]`).
     init(_ r: AudioStateReadback) {
+        // Spelled out before the call: CI's older Swift gives up on long initializer expressions.
+        let guardHeldMs = Int((r.heldSeconds * 1000).rounded())
+        let earconHeldMs = Int((r.earconHeldSeconds * 1000).rounded())
         self.init(running: r.running, voiceProcessing: r.voiceProcessing, duckLevel: r.duckLevel.map { Int($0) },
                   advancedDucking: r.advancedDucking, agc: r.agc, bypassed: r.bypassed, rung: r.rung, wiring: r.wiring,
                   hears: r.hears.map(AudioDeviceInfo.init), speaks: r.speaks.map(AudioDeviceInfo.init), tapFormat: r.tapFormat,
                   recording: r.recording, fallback: r.fallback, guardOn: r.guardOn, guardTailMs: r.guardTailMs,
-                  guardHeldMs: Int((r.heldSeconds * 1000).rounded()), gated: r.gated, chunks: r.chunks, breakthroughs: r.breakthroughs,
+                  guardHeldMs: guardHeldMs, earconHeldMs: earconHeldMs, gated: r.gated, chunks: r.chunks, breakthroughs: r.breakthroughs,
                   sharedWith: r.sharedWith?.map(MicRouteInfo.processName), inputMuted: r.inputMuted, aggregatePresent: r.aggregatePresent,
                   playout: r.playout.map(AudioPlayoutInfo.init), duck: r.duck.map(AudioDuckInfo.init), output: r.output.map(AudioOutputInfo.init))
     }

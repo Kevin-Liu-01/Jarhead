@@ -53,6 +53,14 @@ struct EchoGuardModel: Equatable {
     /// The most the learning is put off: a longer delay would eat the two-second lesson.
     static let maxLearnDelay = 0.60
 
+    /// The tail for an output: `baseTail` + its presentation latency (+ `bluetoothTail`), clamped to
+    /// `baseTail…maxTail`. The engine sizes the guard with it; the `awake` earcon's wire hold uses the same figure.
+    static func tail(latency: Double, bluetooth: Bool) -> Double {
+        let l = latency.isFinite ? max(0, latency) : 0
+        let t = baseTail + l + (bluetooth ? bluetoothTail : 0)
+        return min(maxTail, max(baseTail, t))
+    }
+
     struct Stats: Equatable {
         var holds = 0
         var breakthroughs = 0

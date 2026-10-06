@@ -536,18 +536,48 @@ public struct WakeSettings: Codable, Equatable {
     public var json: [String: Any] { ["enabled": enabled, "phrases": phrases, "auth": auth.rawValue] }
 }
 
-/// design12: the audio graph's one user decision (`Settings.audio`). Nested like `wake`, merged
-/// field-wise at load by the engine, so a daemon before the block sends none and `audioSettings`
-/// fills the default in.
+/// design12: the audio block (`Settings.audio`). Nested like `wake`, merged field-wise at load by the
+/// engine, so a daemon before the block sends none and `audioSettings` fills the default in.
 public struct AudioSettings: Codable, Equatable {
     /// Recording a demo: no voice-processing unit, the ranked mic, the software echo guard.
     public var recording: Bool
+    /// Settings › Audio › Sounds: the interface sounds (heard, awake, pause, sleep, snooze, opened, mark, cue,
+    /// problem). nil = never set: macOS's "Play user interface sound effects" decides (read, never written).
+    /// Rings (chime, timer, alarm) sound either way.
+    public var sounds: Bool?
+    /// Settings › Audio › Volume, 0…1, times the system output volume; nil = `defaultSoundVolume`.
+    public var soundVolume: Double?
 
-    public init(recording: Bool) { self.recording = recording }
+    public init(recording: Bool, sounds: Bool? = nil, soundVolume: Double? = nil) {
+        self.recording = recording; self.sounds = sounds; self.soundVolume = soundVolume
+    }
 
     public static let standard = AudioSettings(recording: false)
+    public static let defaultSoundVolume = 0.7
 
-    public var json: [String: Any] { ["recording": recording] }
+    /// The interface sounds as they stand: Kevin's choice, else the system's.
+    public var soundsOn: Bool { sounds ?? AudioSettings.systemInterfaceSounds() }
+    /// The volume as it stands, clamped to 0…1.
+    public var volume: Double {
+        guard let v = soundVolume, v.isFinite else { return AudioSettings.defaultSoundVolume }
+        return min(1, max(0, v))
+    }
+
+    /// macOS's "Play user interface sound effects" (System Settings › Sound), read only: the key is absent
+    /// until Kevin turns it off, so absent is on.
+    public static func systemInterfaceSounds() -> Bool {
+        let key = "com.apple.sound.uiaudio.enabled"
+        if let v = UserDefaults(suiteName: "com.apple.systemsound")?.object(forKey: key) as? NSNumber { return v.boolValue }
+        if let v = UserDefaults.standard.object(forKey: key) as? NSNumber { return v.boolValue }
+        return true
+    }
+
+    public var json: [String: Any] {
+        var o: [String: Any] = ["recording": recording]
+        if let sounds { o["sounds"] = sounds }
+        if let soundVolume, soundVolume.isFinite { o["soundVolume"] = min(1, max(0, soundVolume)) }
+        return o
+    }
 }
 
 public struct Settings: Codable, Equatable {
@@ -1327,6 +1357,8 @@ public struct AudioStateInfo: Codable, Equatable {
     public var guardOn: Bool
     public var guardTailMs: Int
     public var guardHeldMs: Int?
+    /// Milliseconds of wire the `awake` earcon held since the graph was asked to start; nil from a build before it.
+    public var earconHeldMs: Int?
     public var gated: Int
     public var chunks: Int
     public var breakthroughs: Int
@@ -1343,13 +1375,13 @@ public struct AudioStateInfo: Codable, Equatable {
     public init(running: Bool = false, voiceProcessing: Bool = false, duckLevel: Int? = nil, advancedDucking: Bool? = nil, agc: Bool? = nil,
                 bypassed: Bool? = nil, rung: Int = 0, wiring: String = "", hears: AudioDeviceInfo? = nil, speaks: AudioDeviceInfo? = nil,
                 tapFormat: String = "", recording: Bool = false, fallback: Bool = false, guardOn: Bool = false, guardTailMs: Int = 0,
-                guardHeldMs: Int? = nil, gated: Int = 0, chunks: Int = 0, breakthroughs: Int = 0, sharedWith: [String]? = nil,
+                guardHeldMs: Int? = nil, earconHeldMs: Int? = nil, gated: Int = 0, chunks: Int = 0, breakthroughs: Int = 0, sharedWith: [String]? = nil,
                 inputMuted: Bool = false, aggregatePresent: Bool = false, since: Double? = nil,
                 playout: AudioPlayoutInfo? = nil, duck: AudioDuckInfo? = nil, output: AudioOutputInfo? = nil) {
         self.running = running; self.voiceProcessing = voiceProcessing; self.duckLevel = duckLevel; self.advancedDucking = advancedDucking
         self.agc = agc; self.bypassed = bypassed; self.rung = rung; self.wiring = wiring; self.hears = hears; self.speaks = speaks
         self.tapFormat = tapFormat; self.recording = recording; self.fallback = fallback; self.guardOn = guardOn; self.guardTailMs = guardTailMs
-        self.guardHeldMs = guardHeldMs; self.gated = gated; self.chunks = chunks; self.breakthroughs = breakthroughs; self.sharedWith = sharedWith
+        self.guardHeldMs = guardHeldMs; self.earconHeldMs = earconHeldMs; self.gated = gated; self.chunks = chunks; self.breakthroughs = breakthroughs; self.sharedWith = sharedWith
         self.inputMuted = inputMuted; self.aggregatePresent = aggregatePresent; self.since = since
         self.playout = playout; self.duck = duck; self.output = output
     }
@@ -1369,6 +1401,7 @@ public struct AudioStateInfo: Codable, Equatable {
         if let hears { o["hears"] = hears.json }
         if let speaks { o["speaks"] = speaks.json }
         if let guardHeldMs { o["guardHeldMs"] = guardHeldMs }
+        if let earconHeldMs { o["earconHeldMs"] = earconHeldMs }
         if let sharedWith { o["sharedWith"] = sharedWith }
         if let since { o["since"] = since }
         if let playout { o["playout"] = playout.json }

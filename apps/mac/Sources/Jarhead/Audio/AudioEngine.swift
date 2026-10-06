@@ -138,6 +138,8 @@ final class AudioEngine {
             self.wanted = true
             self.retryAttempt = 0
             self.telemetry.resetDropped()
+            // The `earcon held` figure counts from here: `awake` holds the first wire chunks of this graph.
+            EarconWire.shared.resetCounters()
             self.startLocked()
         }
     }
@@ -160,6 +162,7 @@ final class AudioEngine {
             // and the echo guard's audible window ends with it.
             BargeInDuck.shared.noteFlush()
             EchoGuard.shared.noteFlush()
+            VoiceOutputClock.shared.noteFlush()
             var token: Int?
             // The player and the mixer raise (not throw) when the engine has just stopped itself
             // under them; the engine is about to be restarted anyway, so log and move on.
@@ -346,17 +349,19 @@ final class AudioEngine {
         }
     }
 
-    /// What the speaker is about to say, for the barge-in duck and the echo guard: the
-    /// pre-roll as a silent stretch, then the chunk. GPT-Live-1 streams silence between
-    /// sentences too, so audibility (not arrival) is what arms them. On `queue`.
+    /// What the speaker is about to say, for the barge-in duck, the echo guard and the earcons'
+    /// drain rule (`VoiceOutputClock`): the pre-roll as a silent stretch, then the chunk. GPT-Live-1
+    /// streams silence between sentences too, so audibility (not arrival) is what arms them. On `queue`.
     private func noteSpeaker(_ chunk: SpeakerScheduler.Scheduled) {
         telemetry.noteScheduled(chunk, model: speaker.model, gain: BargeInDuck.shared.gainNow)
         if chunk.prerollSeconds > 0 {
             BargeInDuck.shared.noteOutput(rms: 0, seconds: chunk.prerollSeconds)
             EchoGuard.shared.noteOutput(rms: 0, seconds: chunk.prerollSeconds)
+            VoiceOutputClock.shared.noteOutput(rms: 0, seconds: chunk.prerollSeconds)
         }
         BargeInDuck.shared.noteOutput(rms: chunk.rms, seconds: chunk.seconds)
         EchoGuard.shared.noteOutput(rms: chunk.rms, seconds: chunk.seconds)
+        VoiceOutputClock.shared.noteOutput(rms: chunk.rms, seconds: chunk.seconds)
     }
 
     // MARK: - engine setup (all on `queue`)
@@ -564,11 +569,9 @@ final class AudioEngine {
         return latency.isFinite ? max(0, latency) : 0
     }
 
-    /// `baseTail + the output's presentation latency (+ the Bluetooth allowance)`, clamped.
+    /// `baseTail + the output's presentation latency (+ the Bluetooth allowance)`, clamped (`EchoGuardModel.tail`).
     private func guardTail(latency: Double, speaks: AudioDeviceFacts?) -> Double {
-        var tail = EchoGuardModel.baseTail + latency
-        if speaks?.isBluetooth == true { tail += EchoGuardModel.bluetoothTail }
-        return min(EchoGuardModel.maxTail, max(EchoGuardModel.baseTail, tail))
+        EchoGuardModel.tail(latency: latency, bluetooth: speaks?.isBluetooth == true)
     }
 
     /// How long after a hold begins the guard starts learning: the output's latency plus the
@@ -668,6 +671,8 @@ final class AudioEngine {
             if self.engine.isRunning { self.engine.stop() }
             self.speaker.cancelFlush()
         }
+        // The backlog went with the player: nothing of the voice is audible any more (the earcons' drain rule).
+        VoiceOutputClock.shared.noteFlush()
         if running { logPlayout() }
         releaseVoiceProcessing()
         running = false
@@ -757,12 +762,15 @@ final class AudioEngine {
         onMicBuffer?(mono, when)
         // The echo guard (plain graph only): `.hold` while Jarhead is audible plus the tail.
         let verdict = EchoGuard.shared.judge(mono: dst, frames: frames, sampleRate: rate)
+        // The `awake` earcon (both policies): it plays at the edge, outside the unit's echo reference, so the
+        // chunks captured before it and the guard's tail have passed are held the same way (`EarconWire`).
+        let earconHeld = EarconWire.shared.judgeChunk(at: CFAbsoluteTimeGetCurrent(), seconds: Double(frames) / rate)
 
         guard let out = convertToWire(mono, format: monoFormat, frames: frames, channels: channels) else { return }
         guard out.frameLength > 0, let ch = out.int16ChannelData?[0] else { return }
         // Held: zero-filled, not dropped — the wire keeps its 100 ms cadence and Live's
         // timeline does not jump. What reaches the wire is what the Input meter shows.
-        if verdict == .hold { memset(ch, 0, Int(out.frameLength) * 2) }
+        if verdict == .hold || earconHeld { memset(ch, 0, Int(out.frameLength) * 2) }
         let bytes = Data(bytes: ch, count: Int(out.frameLength) * 2)
         queue.async { self.accumulate(bytes) }
     }

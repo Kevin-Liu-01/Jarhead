@@ -4228,7 +4228,8 @@ extension PreviewDelegate {
         let text = ConsoleDisclosureSummary.text
         expect("disclosure: Audio recording", text(ConsoleDisclosureSummary.audio(voice: "Cedar", accent: "British", recording: true)), "Cedar · British · [recording]")
         expect("audio: the head badge is a resting word", "\(ConsoleBadge.toneKind(.word(SettingsWords.recordingBadge)).rawValue) \(SettingsWords.recordingBadge)", "rest recording")
-        expect("audio: row keys", [SettingsWords.hears, SettingsWords.speaks, SettingsWords.recordingRow].joined(separator: " / "), "Hears / Speaks / Recording")
+        expect("audio: row keys", [SettingsWords.hears, SettingsWords.speaks, SettingsWords.recordingRow, SettingsWords.soundsRow, SettingsWords.volumeRow].joined(separator: " / "),
+               "Hears / Speaks / Recording / Sounds / Volume")
         expect("audio: state words", [SettingsWords.echoCancelled, SettingsWords.echoGuarded, SettingsWords.echoNone, SettingsWords.fullQuality, SettingsWords.narrowed].joined(separator: " / "),
                "echo cancelled / echo guarded / no echo cancellation / full quality / narrowed")
         expect("audio: kHz figures", [48_000.0, 24_000.0, 16_000.0, 44_100.0].map(SettingsWords.kHz).joined(separator: " / "), "48 kHz / 24 kHz / 16 kHz / 44 kHz")
@@ -4286,8 +4287,8 @@ extension PreviewDelegate {
         let text = ConsoleDisclosureSummary.text
         expect("rail: the eight fold ids", SettingsWords.folds.joined(separator: ","),
                "settings.audio,settings.brain,settings.leaves,settings.session,settings.automations,settings.memory,settings.retention,settings.wake")
-        let hints = [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint, SettingsWords.recordingHint]
-        expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device / shares the mic")
+        let hints = [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint, SettingsWords.recordingHint, SettingsWords.soundsHint]
+        expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device / shares the mic / alarms always ring")
         // The room beside a 60 pt toggle and its 10 pt gap in the 182 pt control column; ConsoleToggle pins lineLimit(1).
         let sans11 = NSFont.systemFont(ofSize: 11)
         let widest = hints.map { ($0 as NSString).size(withAttributes: [.font: sans11]).width }.max() ?? 0
