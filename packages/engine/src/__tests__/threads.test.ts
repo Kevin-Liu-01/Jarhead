@@ -206,7 +206,7 @@ test("two threads finishing within the coalescing window are one spoken append; 
   }
 });
 
-test("background lane: type, click, open_url, clipboard_write, an activating AppleScript and `open`/`osascript` shells are refused with the lane line and no helper op; open -g is not the lane's business; thread_* and self_* are not a spawned thread's; the eyes' shot goes to the reading helper", async () => {
+test("background lane: type, click, open_url, clipboard_write, an activating AppleScript and `open`/`osascript` shells are refused with the lane line and no helper op; open -g is not the lane's business; thread_* and self_* are not a spawned thread's; the eyes' shot, asked of the reading helper, is taken by the acting helper's process (the one that captures)", async () => {
   // The table, before the engine: the shell head and the AppleScript verbs.
   assert.equal(needsFocus("run_shell", { command: "open -g Spotify" }), false);
   assert.equal(needsFocus("run_shell", { command: "open -j x" }), false);
@@ -275,8 +275,9 @@ test("background lane: type, click, open_url, clipboard_write, an activating App
     }
     assert.equal(handsBg.named("frontmost").length, 1, "the one read went to the reading helper");
     assert.equal(hands.named("frontmost").length, 0);
-    assert.equal(handsBg.named("screenshot").length, 1, "the eyes' shot went to the reading helper");
-    assert.equal(hands.named("screenshot").length, 0, "never the acting one");
+    // Only the acting helper's process captures (CAPTURE_OPS): two capturing helpers from one executable path wedge each other while the screen is locked.
+    assert.equal(hands.named("screenshot").length, 1, "the eyes' shot, asked of the reading helper, was taken by the acting helper's process");
+    assert.equal(handsBg.named("screenshot").length, 0, "the reading helper never captures");
     // The refusals are on the thread's own record as error steps; the parent's timeline has none of them.
     const id = threadsOf(w)[0]!.id;
     const errors = engine.threads.turnsOf(id)[0]!.steps.filter((s) => s.kind === "error");

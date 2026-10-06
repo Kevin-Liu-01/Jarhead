@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HandsPool, SplitHands, ACTING_OPS, READ_OPS, defaultRoute } from "../pool.ts";
 import { FakeHands, fakeHandsSpawn } from "../fake.ts";
-import type { NativeHands } from "../native.ts";
+import { CAPTURE_OPS, type NativeHands } from "../native.ts";
 
 /**
  * SplitHands: one NativeHands over the two helpers. Reads go to the reading helper,
@@ -28,7 +28,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 test("routing table: reads → background, acts and the frame-setting screenshot → focus, unknown → focus, overrides win", () => {
   const split = new SplitHands({ focus: new FakeHands(), background: new FakeHands() });
-  for (const op of ["zoom", "cursor", "frontmost", "windows", "focused_text", "element_at", "find_element", "ax_tree", "browser_url", "browser_tabs", "displays"]) {
+  for (const op of ["cursor", "frontmost", "windows", "focused_text", "element_at", "find_element", "ax_tree", "browser_url", "browser_tabs", "displays"]) {
     assert.ok(READ_OPS.has(op), `${op} is a read`);
     assert.equal(split.routeOf(op), "background", op);
   }
@@ -38,12 +38,12 @@ test("routing table: reads → background, acts and the frame-setting screenshot
   }
   // The screenshot sets the frame the next click is aimed at: it must see the act before it, so it shares the acting queue.
   assert.equal(split.routeOf("screenshot"), "focus");
-  // `zoom` on the READING helper after a `screenshot` on the acting one is safe only because the helper's
-  // opZoom captures the live display region fresh (packages/hands/native/Screen.swift `opZoom`: activeDisplays()
-  // + a new CaptureSpec) and keeps no per-process last frame. A future "crop the last frame" optimisation in
-  // the helper would silently hand the model a crop of a frame the reading process never took: keep this
-  // pin with that change, or move zoom to "focus" then.
-  assert.equal(split.routeOf("zoom"), "background");
+  // `zoom` captures, and only the acting helper captures (CAPTURE_OPS): two capturing helpers from one executable
+  // path wedge each other while the screen is locked. It shares the screenshot's queue, so a future "crop the
+  // last frame" zoom in the helper would crop a frame its own process took.
+  assert.ok(!READ_OPS.has("zoom"), "zoom is not a read");
+  assert.ok(CAPTURE_OPS.has("zoom") && CAPTURE_OPS.has("screenshot"), "the two capture ops");
+  assert.equal(split.routeOf("zoom"), "focus");
   // user_idle excludes only the posts of the process asked; the acting helper is the one whose posts are Jarhead's.
   assert.equal(split.routeOf("user_idle"), "focus");
   for (const op of ["hello", "permissions", "something_new"]) assert.equal(defaultRoute(op), "focus", `${op}: unknown or identity → the acting helper`);

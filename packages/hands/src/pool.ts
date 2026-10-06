@@ -3,8 +3,8 @@ import { NativeHandsProcess, type NativeHands, type NativeHandsProcessOptions } 
 /**
  * Two helper processes from one binary: `focus` acts (every op that posts an event,
  * activates an app or touches the pasteboard — the main brain, dictation, screen-lane
- * threads) and `background` reads (the engine's AX warm tick and ear hints, the wake
- * shot, background threads' probes). The helper is serial, so a thread's 30 s
+ * threads) and `background` reads (the engine's AX warm tick and ear hints, background
+ * threads' probes). The helper is serial, so a thread's 30 s
  * `open_app` or a long `type` on one process never stalls the gate probes and the
  * 500 ms tree walk on the other.
  *
@@ -13,6 +13,20 @@ import { NativeHandsProcess, type NativeHands, type NativeHandsProcessOptions } 
  * (`NativeHandsProcess` does that for every spawn). The two coexist on nothing but the
  * pointer, the keyboard and the pasteboard — the lease and the lane rules keep the
  * acting ops on `focus`.
+ *
+ * Only `focus` captures. A `screenshot` or `zoom` asked of `background` (a background
+ * thread's look, a thread's eyes) is taken by `focus` (CAPTURE_OPS): two capturing
+ * processes from one executable path livelock replayd while the screen is locked and
+ * wedge the second one's serial queue.
+ *
+ * What one capturing process costs (none of it touches "your hands win": a capture never
+ * posts, and the busy guard, the type watch, the lease and `cancelAll` are unchanged):
+ * - a reading-side capture waits behind the acting queue. A main-lane `open_app` (up to
+ *   30 s) or a `type` longer than 6 s times out a background thread's shot; that timeout
+ *   fails `capture_failed`, so its screenshot falls back to `screencapture`;
+ * - a thread's eyes shot adds about 100 to 300 ms to the acting queue (during dictation, say);
+ * - the cold wake shot (0.4 to 1.6 s) sits on the acting queue at wake, so a spoken click
+ *   right after a wake waits behind it.
  */
 export interface HandsPoolOptions extends NativeHandsProcessOptions {
   /** Per-helper overrides (a test hands each helper its own fake). */
@@ -26,7 +40,8 @@ export class HandsPool {
   constructor(opts: HandsPoolOptions) {
     const { background, ...shared } = opts;
     this.focus = new NativeHandsProcess(shared);
-    this.background = new NativeHandsProcess({ ...shared, ...(background ?? {}) });
+    // One ScreenCaptureKit process: the reading helper's captures are the acting helper's.
+    this.background = new NativeHandsProcess({ ...shared, ...(background ?? {}), captures: this.focus });
   }
 
   /** Both helpers, acting one first. */
@@ -93,11 +108,12 @@ export const ACTING_OPS: ReadonlySet<string> = new Set(["click", "move", "drag",
  * (up to 30 s) on the acting one. `screenshot` is NOT here: it sets the frame the next
  * coordinate click is aimed at, so it must see the act it follows — on the acting
  * helper's queue that ordering is free; on the other process it could capture before a
- * queued `type` lands. `zoom` reads the last frame and goes to the reading helper.
+ * queued `type` lands. `zoom` is not here either: it captures, and only the acting
+ * helper captures (CAPTURE_OPS; HandsPool forwards a capture asked of the reading one).
  * `user_idle` stays with the acting helper too: its `foreignMs` excludes only the posts
  * of the process asked, and the acting helper is the one whose posts are Jarhead's.
  */
-export const READ_OPS: ReadonlySet<string> = new Set(["zoom", "cursor", "frontmost", "windows", "focused_text", "element_at", "find_element", "ax_tree", "browser_url", "browser_tabs", "displays"]);
+export const READ_OPS: ReadonlySet<string> = new Set(["cursor", "frontmost", "windows", "focused_text", "element_at", "find_element", "ax_tree", "browser_url", "browser_tabs", "displays"]);
 
 /** What every helper op is routed to by default; unknown ops go to `focus` (an op nobody classified may act). */
 export function defaultRoute(op: string): HandsRoute {
@@ -120,9 +136,9 @@ export interface HandsPair {
  * helper immediately before the post and in the gate, exactly as before, so a probe
  * answered by the other process changes no decision — only how long it took.
  *
- * `routes` overrides the table per op (a test, or an engine that wants screenshots
- * on the reading helper for an A/B). A cut / restart / stop reaches both helpers
- * through the pool when the pair is one.
+ * `routes` overrides the table per op (a test, or an A/B). Over a HandsPool a capture
+ * routed to `background` is still taken by `focus` (CAPTURE_OPS). A cut / restart /
+ * stop reaches both helpers through the pool when the pair is one.
  */
 export class SplitHands implements NativeHands {
   private readonly routes: ReadonlyMap<string, HandsRoute>;
