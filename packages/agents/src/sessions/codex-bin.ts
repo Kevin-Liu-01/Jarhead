@@ -22,6 +22,14 @@ import { isRecord, str } from "./store.ts";
 
 export type CliTool = "codex" | "claude" | "gemini" | "opencode" | "cursor-agent" | "amp";
 
+/**
+ * Where a desktop app keeps the Codex CLI, newest layout first. ChatGPT.app since the end of
+ * September 2026: `codex-cli/bin/codex`, a launcher that execs `codex-cli/CodexCLI.app/Contents/
+ * MacOS/codex`; before that, `Resources/codex`. The brain's own lookup (brain/src/codex.ts
+ * CODEX_IN_BUNDLE) lists the same three.
+ */
+export const CODEX_IN_BUNDLE = ["Contents/Resources/codex-cli/bin/codex", "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex", "Contents/Resources/codex"] as const;
+
 export interface FoundCli {
   readonly tool: CliTool;
   readonly path: string;
@@ -61,8 +69,7 @@ export async function cliCandidates(tool: CliTool, opts: FindCliOptions = {}): P
   if (override) out.push({ path: expandTilde(override, home), origin: overrideVar(tool) });
   for (const dir of (env["PATH"] ?? "").split(delimiter)) if (dir) out.push({ path: join(dir, tool), origin: "PATH" });
   if (tool === "codex") {
-    out.push({ path: join(apps, "ChatGPT.app", "Contents", "Resources", "codex"), origin: "ChatGPT.app" });
-    out.push({ path: join(apps, "Codex.app", "Contents", "Resources", "codex"), origin: "Codex.app" });
+    for (const app of ["ChatGPT.app", "Codex.app"]) for (const inside of CODEX_IN_BUNDLE) out.push({ path: join(apps, app, inside), origin: app });
     out.push({ path: join(home, ".codex", "bin", "codex"), origin: "~/.codex/bin" });
   }
   if (tool === "claude") {

@@ -160,6 +160,10 @@ test("findCli: JARHEAD_CODEX_BIN, then PATH, then ChatGPT.app, Codex.app, ~/.cod
     assert.deepEqual(await findCli("codex", opts), { tool: "codex", path: codexApp, origin: "Codex.app" });
     const chatgpt = install(join(apps, "ChatGPT.app", "Contents", "Resources", "codex"));
     assert.deepEqual(await findCli("codex", opts), { tool: "codex", path: chatgpt, origin: "ChatGPT.app" }, "the copy Codex Desktop ships beats a stand-alone Codex.app");
+    const binary = install(join(apps, "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"));
+    assert.deepEqual(await findCli("codex", opts), { tool: "codex", path: binary, origin: "ChatGPT.app" }, "ChatGPT.app's layout since the end of September 2026 beats the old Resources/codex");
+    const launcher = install(join(apps, "ChatGPT.app", "Contents", "Resources", "codex-cli", "bin", "codex"));
+    assert.deepEqual(await findCli("codex", opts), { tool: "codex", path: launcher, origin: "ChatGPT.app" }, "and its launcher beats the binary it execs");
     const onPath = install(join(pathDir, "codex"));
     assert.deepEqual(await findCli("codex", opts), { tool: "codex", path: onPath, origin: "PATH" });
     const override = install(join(home, "somewhere", "codex"));

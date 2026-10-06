@@ -84,9 +84,16 @@ function labelFor(p: string, fallback: string): string {
   return fallback;
 }
 
+/**
+ * Where a desktop app keeps the CLI, newest layout first. ChatGPT.app since the end of September
+ * 2026: `codex-cli/bin/codex`, a launcher that execs `codex-cli/CodexCLI.app/Contents/MacOS/codex`;
+ * before that, `Resources/codex`. The agents' lookup (agents/src/sessions/codex-bin.ts) lists the same three.
+ */
+export const CODEX_IN_BUNDLE = ["Contents/Resources/codex-cli/bin/codex", "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex", "Contents/Resources/codex"] as const;
+
 /** The desktop apps that bundle the CLI, system-wide and per-user. */
 export function codexBundleCandidates(home: string): string[] {
-  return ["/Applications", join(home, "Applications")].flatMap((apps) => [join(apps, "ChatGPT.app/Contents/Resources/codex"), join(apps, "Codex.app/Contents/Resources/codex")]);
+  return ["/Applications", join(home, "Applications")].flatMap((apps) => ["ChatGPT.app", "Codex.app"].flatMap((app) => CODEX_IN_BUNDLE.map((inside) => join(apps, app, inside))));
 }
 
 export interface FindCodexOptions {

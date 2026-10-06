@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonServer, type EngineLike } from "@jarhead/daemon";
 import type { ToolResult } from "@jarhead/hands";
@@ -201,12 +201,25 @@ test("codex: the finder walks JARHEAD_CODEX_BIN, PATH, then the app bundles; aut
   mkdirSync(bundled, { recursive: true });
   writeFileSync(join(bundled, "codex"), "#!/bin/sh\necho codex-cli 9.9.9\n");
   chmodSync(join(bundled, "codex"), 0o755);
-  assert.deepEqual(codexBundleCandidates("/Users/k").slice(0, 2), ["/Applications/ChatGPT.app/Contents/Resources/codex", "/Applications/Codex.app/Contents/Resources/codex"]);
+  assert.deepEqual(codexBundleCandidates("/Users/k").slice(0, 4), [
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+  ], "ChatGPT.app's launcher first, then its binary, then the layout before September 2026");
   const found = findCodexBinary(undefined, { env: { PATH: "/nowhere", HOME: home }, bundles: codexBundleCandidates(home).filter((p) => p.startsWith(home)) });
   assert.equal(found?.path, join(bundled, "codex"));
   assert.equal(found?.source, "bundle");
   assert.equal(found?.label, "ChatGPT.app");
   assert.equal(findCodexBinary(undefined, { env: { PATH: "/nowhere", HOME: join(dir, "empty") }, bundles: [] }), undefined);
+  // ChatGPT.app's layout since the end of September 2026: the launcher under codex-cli/bin, the binary in CodexCLI.app.
+  const now = join(dir, "now");
+  const launcher = join(now, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "bin", "codex");
+  mkdirSync(dirname(launcher), { recursive: true });
+  writeFileSync(launcher, "#!/bin/sh\necho codex-cli 0.160.0\n");
+  chmodSync(launcher, 0o755);
+  const current = findCodexBinary(undefined, { env: { PATH: "/nowhere", HOME: now }, bundles: codexBundleCandidates(now).filter((p) => p.startsWith(now)) });
+  assert.deepEqual(current, { path: launcher, source: "bundle", label: "ChatGPT.app" }, "the current ChatGPT.app is found by its launcher");
 
   assert.equal(codexSignedIn(fakeCodexHome(join(dir, "a"))), true);
   assert.equal(codexSignedIn(fakeCodexHome(join(dir, "b"), { signedIn: false })), false);
