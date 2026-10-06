@@ -4,7 +4,7 @@ import { Ledger, readConfig, setLogLevel } from "@jarhead/core";
 import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
-import { DaemonClient, type ClientMessage } from "@jarhead/daemon";
+import { DaemonClient, type ClientMessage, type DaemonMessage } from "@jarhead/daemon";
 import { runHygiene, type DockAudit, type HygieneReport } from "@jarhead/install";
 import { type AgentInfo, type AudioSettings, type AudioState, type LiveAudio, type BrainKind, type Delegation, type Effort, type EngineCommand, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SetupStatus, type SleepCause, type Snapshot, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
 import { MEMORY_ID, agentsByStatus, agoWords, audioStatusLines, memoryLine, playbackInputs, readAudioProfiler, render, runChecks, summarizePermissions } from "./doctor.ts";
@@ -31,8 +31,8 @@ jarhead — voice-first computer use for your Mac
                                       Nothing is deleted; today, the open session's day and any day of a pinned or open conversation stay, and the answer says why
   pnpm jarhead ledger restore <day>   move a day back from the Trash
   pnpm jarhead ledger sweep           run the retention sweep now (Settings ledgerRetentionDays / shotsRetentionDays, 0 = never; the daemon logs what it would move first)
-  pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, newest first (50 by default, 200 at most).
-                                      One page: the newest 32 MB of live day files, months of use. The Console's search reads on, page by page
+  pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, over every live day, newest first (50 by default, 200 at most).
+                                      The daemon reads 32 MB of day files a request; the search asks again from where the last page stopped
   pnpm jarhead ledger --speed [--days N]   where the time went over the last N days (1): acting steps followed by a screenshot, results carrying the now: line,
                                       tool round trips by class (read-only target p95 ≤ 80 ms), generation gaps by what came before, first action, threads
   pnpm jarhead reflex-miss [--days N]  the short commands you said that the grammar did not catch, grouped by head word (7 days) — the grammar grows from these
@@ -364,26 +364,53 @@ interface Hit {
   text: string;
 }
 
-/** `ledger.search` over the socket; one line per hit, newest first. */
+/**
+ * `ledger.search` over the socket, page by page (the daemon reads a bounded slice of day files per request and says
+ * where it stopped, `older`), until `limit` hits or nothing older is left; one line per hit, newest first. An older
+ * page that does not answer keeps the hits so far, and the last line names the days left unread.
+ */
 async function search(query: string, limit: number): Promise<void> {
   const client = await daemon();
-  const id = `cli_${process.pid}_${Date.now()}`;
-  let hits: Hit[];
-  try {
-    hits = await new Promise<Hit[]>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("the daemon did not answer the search within 5 s")), 5000);
-      client.on("message", (m) => {
+  const hits: Hit[] = [];
+  let pages = 0;
+  const page = (before: string | undefined): Promise<{ hits: Hit[]; older?: string }> =>
+    new Promise((resolve, reject) => {
+      const id = `cli_${process.pid}_${Date.now()}_${++pages}`;
+      const answer = (m: DaemonMessage): void => {
         if (m.type !== "ledger.hits" || m.id !== id) return;
         clearTimeout(timer);
-        resolve(m.hits as Hit[]);
-      });
-      client.sendJson({ type: "ledger.search", id, query, limit });
+        client.off("message", answer);
+        resolve({ hits: m.hits as Hit[], ...(m.older !== undefined ? { older: m.older } : {}) });
+      };
+      const timer = setTimeout(() => {
+        client.off("message", answer);
+        reject(new Error("the daemon did not answer the search within 5 s"));
+      }, 5000);
+      client.on("message", answer);
+      client.sendJson({ type: "ledger.search", id, query, limit: limit - hits.length, ...(before !== undefined ? { before } : {}) });
     });
+  /** The `before` of an older page that did not answer: the days before it went unread. */
+  let unread: string | undefined;
+  try {
+    let before: string | undefined;
+    do {
+      let p: { hits: Hit[]; older?: string };
+      try {
+        p = await page(before);
+      } catch (e) {
+        if (before === undefined) throw e;
+        unread = before;
+        break;
+      }
+      hits.push(...p.hits);
+      before = p.older;
+    } while (before !== undefined && hits.length < limit);
   } finally {
     client.close();
   }
+  const gap = unread !== undefined ? `  Days before ${unread} were not searched. The daemon did not answer in 5 s.\n` : "";
   if (hits.length === 0) {
-    console.log(`\n  nothing for "${query}"\n`);
+    console.log(`\n  nothing for "${query}"\n${gap}`);
     return;
   }
   console.log("");
@@ -394,7 +421,7 @@ async function search(query: string, limit: number): Promise<void> {
     const mark = h.state === "trashed" || h.state === "archived" ? ` (${h.state})` : "";
     console.log(`  ${when}  ${h.kind.padEnd(7)} ${h.sessionId.padEnd(16)} ${h.text.length > 120 ? `${h.text.slice(0, 119)}…` : h.text}${mark}`);
   }
-  console.log(`\n  ${hits.length} hit${hits.length === 1 ? "" : "s"}${hits.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""}\n`);
+  console.log(`\n  ${hits.length} hit${hits.length === 1 ? "" : "s"}${hits.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""}\n${gap}`);
 }
 
 /** Every MemoryKind / MemoryState, checked against the protocol's unions so a new one cannot go unlisted here. */

@@ -868,12 +868,15 @@ public struct LedgerDayTotals: Codable, Equatable {
 }
 
 /// LM-6: the whole `ledger.days` answer as the Ledger tab reads it: the day list, newest first, and each day's totals
-/// by day (none from a daemon before them, where a day's figures wait until it is read).
+/// by day (none from a daemon before them, where a day's figures wait until it is read). `partial`: the daemon answered
+/// within its budget before it had read every day's totals, so `totals` leaves out the days still being read, and the
+/// Console asks again (ConsoleSession.askDays).
 public struct LedgerDays: Equatable {
     public var days: [String]
     public var totals: [String: LedgerDayTotals]
-    public init(days: [String], totals: [String: LedgerDayTotals] = [:]) {
-        self.days = days; self.totals = totals
+    public var partial: Bool
+    public init(days: [String], totals: [String: LedgerDayTotals] = [:], partial: Bool = false) {
+        self.days = days; self.totals = totals; self.partial = partial
     }
 
     /// The daemon's answer, installed by the daemon client when it starts (EngineClient.start). AppState's

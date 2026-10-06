@@ -42,9 +42,19 @@ final class EngineClient: @unchecked Sendable {
     /// The daemon said `hello` on this connection: it is serving. `connected` means this. On `net`.
     private var isConnected = false
     /// Commands sent while the daemon is (re)connecting. Stop, wake, pause must not
-    /// vanish because a reconnect was in flight; they are delivered on the daemon's hello,
-    /// newest last, dropped after 5 s or beyond 20 entries. On `net`.
-    private var outbox: [(at: Date, json: [String: Any])] = []
+    /// vanish because a reconnect was in flight; they are delivered once the daemon's first
+    /// snapshot after its hello is judged (`releaseOutbox`), oldest first, dropped when they
+    /// were 5 s old at the hello or beyond 20 entries. `opens`: the command would open a paid
+    /// session (`opensSession`); `typed`: it is a typed line (its toast says "Not sent"). On `net`.
+    private var outbox: [(at: Date, json: [String: Any], opens: Bool, typed: Bool)] = []
+    /// The hello came and this connection's first snapshot is not judged yet (APP-3): commands
+    /// keep queueing behind the outbox, so nothing queued through an outage reaches a daemon
+    /// before the app knows it can read it. A Go pressed while a daemon respawns from new source
+    /// would otherwise open a paid session on a daemon whose snapshots this build cannot decode.
+    /// Ended by the first snapshot, decoded or not, or after `outboxSnapshotWait`. On `net`.
+    private var outboxHeld = false
+    /// When this connection's hello came: a queued command's 5 s are counted to it, not to the snapshot after it. On `net`.
+    private var helloAt: Date?
 
     /// Speaker frames and flush requests land here. Set before `start()`.
     var audio: AudioEngine?
@@ -164,6 +174,11 @@ final class EngineClient: @unchecked Sendable {
     /// The toast when a command that would open a session is refused for the skew.
     static let skewRefusedText = "Not started. The app and the daemon are from different builds."
     static let skewNotSentText = "Not sent. The app and the daemon are from different builds."
+    /// How long after a hello the outbox waits for the daemon's first snapshot (server.ts sends one right after its
+    /// hello). None by then: what was queued goes, except what would open a session, which is refused with these.
+    static let outboxSnapshotWait: TimeInterval = 3
+    static let notJudgedRefusedText = "Not started. The daemon has not sent its state yet."
+    static let notJudgedNotSentText = "Not sent. The daemon has not sent its state yet."
 
     /// This connection's hello named another contract, or none. Set at every hello. On `net`.
     private var helloSkew = false
@@ -204,6 +219,8 @@ final class EngineClient: @unchecked Sendable {
         net.async {
             self.running = false
             self.connectionEpoch += 1
+            self.outboxHeld = false
+            self.helloAt = nil
             self.stopPings()
             self.silentSince = nil
             self.resumeCandidate = false
@@ -253,16 +270,16 @@ final class EngineClient: @unchecked Sendable {
         conn.start(queue: net)
     }
 
-    /// On `net`: the daemon's hello on this connection. Only now is the app connected: the
-    /// outbox goes out, `connected` flips, the outage (and its `daemon` row) ends, and the
-    /// app re-sends what a fresh daemon must know.
+    /// On `net`: the daemon's hello on this connection. Only now is the app connected:
+    /// `connected` flips, the outage (and its `daemon` row) ends, the outbox waits for the
+    /// first snapshot (`holdOutbox`), and the app re-sends what a fresh daemon must know.
     private func helloReceived() {
         guard transportReady, !isConnected else { return }
         reconnectDelay = 0.3
         isConnected = true
         disconnectedAt = nil
         problemArmedFor = nil
-        flushOutbox()
+        holdOutbox()
         publishConnected(true)
         // The window for one `go` if the daemon comes back asleep after a session was open.
         if resumeCandidate { resumeDeadline = Date().addingTimeInterval(EngineClient.autoResumeWindow) }
@@ -277,6 +294,9 @@ final class EngineClient: @unchecked Sendable {
         connection = nil
         connectionEpoch += 1
         transportReady = false
+        // Whatever the hold kept stays in the outbox for the next hello.
+        outboxHeld = false
+        helloAt = nil
         stopPings()
         // The pid lives exactly as long as the connection that hello'd it.
         daemonPid = nil
@@ -435,7 +455,7 @@ final class EngineClient: @unchecked Sendable {
         }
         log("auto-resume: the daemon came back asleep after a session was open; sending go once")
         resumeGoSentAt = Date()
-        rawSend(json: ["type": "command", "command": EngineCommand.go.json])
+        rawSend(json: ["type": "command", "command": EngineCommand.go.json], opens: true)
     }
 
     private func scheduleReconnect() {
@@ -509,7 +529,7 @@ final class EngineClient: @unchecked Sendable {
             default:
                 break
             }
-            self.rawSend(json: ["type": "command", "command": command.json])
+            self.rawSend(json: ["type": "command", "command": command.json], opens: EngineClient.opensSession(command), typed: EngineClient.isTypedLine(command))
         }
     }
 
@@ -587,26 +607,64 @@ final class EngineClient: @unchecked Sendable {
         }
     }
 
-    /// Must run on `net`.
-    /// On `net`. Delivers what was queued while disconnected, oldest first.
-    private func flushOutbox() {
-        let now = Date()
-        let due = outbox.filter { now.timeIntervalSince($0.at) < 5 }
-        outbox.removeAll()
-        for item in due { rawSend(json: item.json) }
-        if !due.isEmpty { log("delivered \(due.count) queued command(s) after reconnect") }
+    /// On `net`, at the hello: the outbox waits for this connection's first snapshot (`releaseOutbox`), or
+    /// `outboxSnapshotWait`, whichever comes first.
+    private func holdOutbox() {
+        helloAt = Date()
+        outboxHeld = true
+        let epoch = connectionEpoch
+        net.asyncAfter(deadline: .now() + EngineClient.outboxSnapshotWait) { [weak self] in
+            guard let self, self.connectionEpoch == epoch, self.outboxHeld else { return }
+            self.log("no snapshot \(Int(EngineClient.outboxSnapshotWait)) s after the hello; the outbox goes, nothing that opens a session")
+            self.releaseOutbox(judged: false)
+        }
     }
 
-    /// On `net`. To a daemon that has said hello; a command sent before that waits in the outbox.
-    private func rawSend(json: [String: Any]) {
-        guard connection != nil, isConnected else {
-            if json["type"] as? String == "command" {
-                outbox.append((Date(), json))
-                if outbox.count > 20 { outbox.removeFirst(outbox.count - 20) }
-                log("daemon not connected; queued command \((json["command"] as? [String: Any])?["type"] as? String ?? "?")")
+    /// On `net`: this connection's first snapshot was judged (`judged`: decoded, or not, which raised the skew first),
+    /// or none came in time. The hold ends, and the outbox goes.
+    private func releaseOutbox(judged: Bool) {
+        guard outboxHeld else { return }
+        outboxHeld = false
+        flushOutbox(judged: judged)
+    }
+
+    /// On `net`. Delivers what was queued while disconnected or held, oldest first. A command that would open a session
+    /// goes only when the first snapshot was judged and the builds match: skewed, or with no snapshot yet, it is refused
+    /// with a toast, the way `send` refuses one (APP-3). A Go from before a reconnect waits for the daemon's state.
+    private func flushOutbox(judged: Bool) {
+        let cutoff = helloAt ?? Date()
+        let due = outbox.filter { cutoff.timeIntervalSince($0.at) < 5 }
+        outbox.removeAll()
+        var delivered = 0
+        var toasts: [String] = []
+        for item in due {
+            if item.opens && (skewed || !judged) {
+                let type = (item.json["command"] as? [String: Any])?["type"] as? String ?? "?"
+                log("refused queued \(type): \(skewed ? "the app and the daemon are from different builds (app.version)" : "no snapshot from the daemon yet")")
+                let words = skewed ? (item.typed ? EngineClient.skewNotSentText : EngineClient.skewRefusedText)
+                    : (item.typed ? EngineClient.notJudgedNotSentText : EngineClient.notJudgedRefusedText)
+                if !toasts.contains(words) { toasts.append(words) }
+                continue
             }
+            write(json: item.json)
+            delivered += 1
+        }
+        if delivered > 0 { log("delivered \(delivered) queued command(s) after reconnect") }
+        for words in toasts { onMain { $0.toast(words, tone: .warn) } }
+    }
+
+    /// On `net`. To a daemon that has said hello; a command sent before that, or while the outbox is held for the first
+    /// snapshot, waits in the outbox. Any other frame goes at once, or nowhere while disconnected.
+    private func rawSend(json: [String: Any], opens: Bool = false, typed: Bool = false) {
+        let isCommand = json["type"] as? String == "command"
+        if isCommand && (connection == nil || !isConnected || outboxHeld) {
+            outbox.append((Date(), json, opens, typed))
+            if outbox.count > 20 { outbox.removeFirst(outbox.count - 20) }
+            let type = (json["command"] as? [String: Any])?["type"] as? String ?? "?"
+            log(isConnected ? "queued command \(type) until the daemon's first snapshot" : "daemon not connected; queued command \(type)")
             return
         }
+        guard connection != nil, isConnected else { return }
         write(json: json)
     }
 
@@ -640,7 +698,8 @@ final class EngineClient: @unchecked Sendable {
                   let t = try? jarheadJSONDecoder.decode(LedgerDayTotals.self, from: data) else { continue }
             totals[t.day] = t
         }
-        return LedgerDays(days: days, totals: totals)
+        // `partial`: the daemon answered within its budget with the days it had read; asking again finds more.
+        return LedgerDays(days: days, totals: totals, partial: (obj["partial"] as? Bool) ?? false)
     }
 
     func ledgerRows(day: String) async -> [LedgerRow] {
@@ -955,9 +1014,12 @@ final class EngineClient: @unchecked Sendable {
     /// (APP-3): an app that cannot read the daemon is not connected in any way Kevin can see.
     private func snapshotUndecodable() {
         log("undecodable snapshot")
-        guard !undecodableSkew else { return }
-        undecodableSkew = true
-        noteSkew(because: "a snapshot this build cannot decode")
+        if !undecodableSkew {
+            undecodableSkew = true
+            noteSkew(because: "a snapshot this build cannot decode")
+        }
+        // Judged: the skew is up, so the outbox's Go is refused, never handed to this daemon.
+        releaseOutbox(judged: true)
     }
 
     /// On `net`, at every hello: the daemon's PROTOCOL_VERSION against this build's.
@@ -1030,6 +1092,8 @@ final class EngineClient: @unchecked Sendable {
                 log("app.version: the daemon's snapshots decode again")
             }
         }
+        // Judged: the outbox goes (its Go only when the hello matched), before the auto-resume's own Go.
+        releaseOutbox(judged: true)
         noteSnapshotForResume(snap)
         queueSnapshot(sanitized(snap))
     }

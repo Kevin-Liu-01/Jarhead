@@ -105,10 +105,12 @@ test("search older: ledger.hits carries older; Swift's LedgerSearchPage holds th
   assert.ok(Array.isArray(hits["hits"]) && (hits["hits"] as unknown[]).length > 0);
 });
 
-test("LM-6: Swift's LedgerDays holds the day list and the totals by day", () => {
+test("LM-6: Swift's LedgerDays holds the day list, the totals by day, and whether the daemon answered before it read them all (`partial`)", () => {
   const days = swiftVars("LedgerDays");
   assert.equal(days.get("days"), "[String]");
   assert.equal(days.get("totals"), "[String: LedgerDayTotals]");
+  assert.equal(days.get("partial"), "Bool");
+  assert.match(CLIENT, /partial: \(obj\["partial"\] as\? Bool\) \?\? false/, "EngineClient reads the wire's `partial`, false when absent");
 });
 
 test("APP-3, the app's half: EngineClient's hello carries ProtocolVersion.current, and its app.version row is the fixture's sample word for word", () => {

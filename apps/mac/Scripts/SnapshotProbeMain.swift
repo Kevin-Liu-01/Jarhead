@@ -99,7 +99,8 @@ final class FakeDaemon: @unchecked Sendable {
         Thread.detachNewThread { [self] in acceptLoop() }
     }
 
-    /// One client at a time; a new one replaces the old. Pings are answered, hello is said.
+    /// One client at a time; a new one replaces the old. Pings are answered, hello is said, naming this build's protocol
+    /// (APP-3): the probe measures the publish path of an app and a daemon of one build, with no `app.version` row.
     private func acceptLoop() {
         while true {
             let c = accept(listenFD, nil, nil)
@@ -108,7 +109,7 @@ final class FakeDaemon: @unchecked Sendable {
             if fd >= 0 { close(fd) }
             fd = c
             writeLock.unlock()
-            send(json: #"{"type":"hello","version":"probe","pid":\#(getpid()),"stateDir":"/tmp/jh-snapshot-probe"}"#)
+            send(json: #"{"type":"hello","version":"probe","pid":\#(getpid()),"stateDir":"/tmp/jh-snapshot-probe","protocol":\#(ProtocolVersion.current)}"#)
             ready.signal()
             Thread.detachNewThread { [self] in readLoop(c) }
         }

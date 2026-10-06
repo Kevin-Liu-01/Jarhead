@@ -89,6 +89,12 @@ final class ConsoleSession: ObservableObject {
     /// LM-6: every day's totals from the `ledger.days` answer (`LedgerDays`), by day: the Ledger rail's day rows and
     /// month heads show these for every day, read or not. Refreshed with the list and after each pick.
     @Published private(set) var ledgerTotals: [String: LedgerDayTotals] = [:]
+    /// A `ledger.days` ask that got no answer in time (a loaded Mac, a reconnect), or a `partial` one (the daemon
+    /// still reading some days' totals), is asked again this long after, up to `daysRetries` times in a row; what the
+    /// rail shows stays meanwhile (`askDays`).
+    static let daysRetryAfterMs: UInt64 = 2_000
+    static let daysRetries = 5
+    private var daysRetryTask: Task<Void, Never>?
 
     @Published var lightbox: ConsoleLightboxItem?
 
@@ -127,11 +133,15 @@ final class ConsoleSession: ObservableObject {
         case daemon
         /// This build never installed `AppState.ledgerSearchHandler` (the app's wiring, not the daemon).
         case app
+        /// The newest pages landed, and an older one did not answer in time: the hits shown stand, the days before
+        /// went unread (`landOlder`).
+        case older
 
         var line: String {
             switch self {
             case .daemon: return "Titles only. The daemon did not answer the search; it may predate it."
             case .app: return "Titles only. Full search is not wired in this build."
+            case .older: return "Older days were not searched. The daemon did not answer in time."
             }
         }
     }
@@ -333,11 +343,12 @@ final class ConsoleSession: ObservableObject {
         }
     }
 
-    /// An older page landed (nil: it did not answer, and the hits so far stand): its hits after the ones shown, the
-    /// search done when nothing older is left or the box has its hits.
+    /// An older page landed (nil: it did not answer; the hits so far stand, and the gap line says the older days went
+    /// unread): its hits after the ones shown, the search done when nothing older is left or the box has its hits.
     private func landOlder(_ q: String, _ page: LedgerSearchPage?) {
         let shown = searchHits ?? []
         guard let page else {
+            searchGap = .older
             searching = false
             return
         }
@@ -425,11 +436,9 @@ final class ConsoleSession: ObservableObject {
         if ledgerDays != nil && !force { return }
         ledgerLoading = true
         ledgerError = nil
-        if let fetch = LedgerDays.fetch {
-            // The list with every day's totals beside it (LM-6); nil is no answer, an empty list as before.
-            let answer = await fetch()
-            ledgerDays = answer?.days ?? []
-            if let answer { ledgerTotals = answer.totals }
+        if LedgerDays.fetch != nil {
+            // The list with every day's totals beside it (LM-6), asked again while it does not come or comes partial.
+            await askDays(retriesLeft: ConsoleSession.daysRetries)
         } else {
             ledgerDays = await state.ledgerDays()
         }
@@ -437,11 +446,35 @@ final class ConsoleSession: ObservableObject {
     }
 
     /// The totals again (a pick: the day being written moves, and a close or a carried decision can land on an
-    /// older one). The list comes with them; nothing changes when nothing answers.
+    /// older one). The list comes with them; nothing changes when nothing answers, and it is asked again (`askDays`).
     func refreshTotals() async {
-        guard let fetch = LedgerDays.fetch, let answer = await fetch() else { return }
-        if ledgerDays != answer.days { ledgerDays = answer.days }
-        if ledgerTotals != answer.totals { ledgerTotals = answer.totals }
+        await askDays(retriesLeft: ConsoleSession.daysRetries)
+    }
+
+    /// One `ledger.days` ask (LM-6). An answer sets the list and the totals; a `partial` one keeps what a day showed
+    /// until its total comes. No answer keeps the list on screen (still "Loading…" before the first). Either way it is
+    /// asked again `daysRetryAfterMs` later, `retriesLeft` more times; after the last, a list never answered is empty, as
+    /// before. A newer ask cancels the waiting one.
+    func askDays(retriesLeft: Int) async {
+        guard let fetch = LedgerDays.fetch else { return }
+        daysRetryTask?.cancel()
+        daysRetryTask = nil
+        let answer = await fetch()
+        if let answer {
+            if ledgerDays != answer.days { ledgerDays = answer.days }
+            let totals = answer.partial ? ledgerTotals.merging(answer.totals) { _, new in new } : answer.totals
+            if ledgerTotals != totals { ledgerTotals = totals }
+            if !answer.partial { return }
+        } else if retriesLeft <= 0 {
+            if ledgerDays == nil { ledgerDays = [] }
+        }
+        guard retriesLeft > 0 else { return }
+        daysRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: ConsoleSession.daysRetryAfterMs * 1_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.daysRetryTask = nil
+            await self.askDays(retriesLeft: retriesLeft - 1)
+        }
     }
 
     func pick(day: String, from state: AppState) async {

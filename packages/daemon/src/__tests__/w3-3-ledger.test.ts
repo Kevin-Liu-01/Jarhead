@@ -4,14 +4,18 @@
 //   else its last session.usage row. Never both. The totals follow an append.
 // - Search older: `ledger.search` answers one page (Ledger.searchPage), `older` names where the page stopped, and a
 //   request with that `before` reads on from there. A ledger with no searchPage (a fake) still answers in one read.
+// - The W3-3 review: `ledger.days` answers its list without waiting on a slow totals read (the totals read so far and
+//   `partial`, within its budget), the read goes on so the next ask is whole, and the daemon reads every day's
+//   totals ahead once after it starts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Ledger } from "@jarhead/core";
 import { SESSION_LOST_REASON, type LedgerDayTotals, type LedgerRow } from "@jarhead/protocol";
-import { DaemonServer, DayTotals, type EngineLike } from "../server.ts";
+import { DaemonServer, DayTotals, type DaemonServerOptions, type EngineLike } from "../server.ts";
 import { DaemonClient } from "../client.ts";
 import type { DaemonMessage } from "../wire.ts";
 
@@ -50,9 +54,9 @@ async function until(check: () => boolean, what: string, ms = 5000): Promise<voi
   }
 }
 
-async function withServer(engine: EngineLike, run: (ask: (message: Record<string, unknown>) => Promise<DaemonMessage>) => Promise<void>, searchPageBytes?: number): Promise<void> {
+async function withServer(engine: EngineLike, run: (ask: (message: Record<string, unknown>) => Promise<DaemonMessage>) => Promise<void>, options: DaemonServerOptions = {}): Promise<void> {
   const path = join(mkdtempSync(join(tmpdir(), "jh-w33-sock-")), "d.sock");
-  const server = new DaemonServer(engine, path, searchPageBytes !== undefined ? { searchPageBytes } : {});
+  const server = new DaemonServer(engine, path, options);
   await server.listen();
   const client = new DaemonClient(path);
   const got: DaemonMessage[] = [];
@@ -168,7 +172,7 @@ test("search older: one page per request; `older` names where the byte bound sto
     assert.equal(older(p3), undefined, "nothing older is unread");
     const odd = await ask({ type: "ledger.search", query: "needle", before: "../../etc" });
     assert.deepEqual(texts(odd), ["the needle on the tenth"], "a `before` that is not a day is ignored: the newest page");
-  }, 1);
+  }, { searchPageBytes: 1 });
   // The ledger's own bound (32 MB): one page reads the whole small history, newest first, and says nothing is older.
   await withServer(engineOver(ledger, stateDir), async (ask) => {
     const all = (await ask({ type: "ledger.search", query: "needle", limit: 2 })) as Extract<DaemonMessage, { type: "ledger.hits" }>;
@@ -199,4 +203,58 @@ test("search older: a ledger without searchPage (a fake) answers from search() i
     const days = (await ask({ type: "ledger.days" })) as Extract<DaemonMessage, { type: "ledger.days" }>;
     assert.equal(days.totals, undefined, "a ledger with no folder sends the list alone");
   });
+});
+
+test("LM-6, the W3-3 review: a slow totals read never holds the day list; the answer within the budget carries the newest days' exact totals and `partial`; the read goes on and the next ask is whole", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "jh-w33-slow-"));
+  const ledger = history(stateDir);
+  // The oldest day file reads only when the test lets it: a cold year on a loaded Mac, in one file.
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const reads: string[] = [];
+  const readDayFile = async (path: string): Promise<string> => {
+    reads.push(path.slice(-16, -6));
+    if (path.endsWith("2026-09-08.jsonl")) await gate;
+    return readFile(path, "utf8");
+  };
+  await withServer(engineOver(ledger, stateDir), async (ask) => {
+    const t0 = Date.now();
+    const first = (await ask({ type: "ledger.days" })) as Extract<DaemonMessage, { type: "ledger.days" }>;
+    const ms = Date.now() - t0;
+    console.log(`[measure] ledger.days with a read that never ends: answered in ${ms} ms (budget 100 ms)`);
+    assert.deepEqual(first.days, ["2026-09-10", "2026-09-09", "2026-09-08"], "the whole list, at once");
+    assert.equal(first.partial, true, "it says the totals are not all read");
+    assert.deepEqual(first.totals, [
+      { day: "2026-09-10", sessions: 0, billedSeconds: 97 },
+      { day: "2026-09-09", sessions: 2, billedSeconds: 170 },
+    ] satisfies LedgerDayTotals[], "the newest days, read first, are already exact: a close is never in an older file than its usage rows");
+    assert.deepEqual(reads, ["2026-09-10", "2026-09-09", "2026-09-08"], "newest first, and the slow one still reading");
+
+    // The read goes on in the daemon: once the file is let go, an ask finds every day.
+    release();
+    let whole: Extract<DaemonMessage, { type: "ledger.days" }> | undefined;
+    for (let i = 0; i < 50 && (whole === undefined || whole.partial !== undefined); i++) {
+      whole = (await ask({ type: "ledger.days" })) as Extract<DaemonMessage, { type: "ledger.days" }>;
+      if (whole.partial !== undefined) await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(whole?.partial, undefined, "once the read is done the answer is whole");
+    assert.deepEqual(whole?.totals?.map((t) => [t.day, t.billedSeconds]), [["2026-09-10", 97], ["2026-09-09", 170], ["2026-09-08", 100]]);
+  }, { totalsBudgetMs: 100, totalsWarmMs: Number.POSITIVE_INFINITY, readDayFile });
+});
+
+test("LM-6, the W3-3 review: the daemon reads every day's totals ahead once after it starts, so the first ask finds them and reads nothing again", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "jh-w33-warm-"));
+  const ledger = history(stateDir);
+  const reads: string[] = [];
+  const readDayFile = async (path: string): Promise<string> => {
+    reads.push(path.slice(-16, -6));
+    return readFile(path, "utf8");
+  };
+  await withServer(engineOver(ledger, stateDir), async (ask) => {
+    await until(() => reads.length === 3, "the read ahead of the three day files");
+    const answer = (await ask({ type: "ledger.days" })) as Extract<DaemonMessage, { type: "ledger.days" }>;
+    assert.equal(answer.partial, undefined);
+    assert.deepEqual(answer.totals?.map((t) => t.billedSeconds), [97, 170, 100]);
+    assert.equal(reads.length, 3, "the ask found every file unchanged since the read ahead");
+  }, { totalsWarmMs: 0, readDayFile });
 });

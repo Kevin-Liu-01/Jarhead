@@ -85,8 +85,13 @@ export type DaemonMessage =
   | { readonly type: "audio"; readonly control: "flush" }
   /** Rows of a day, a session or a whole chain; `truncated` when a chain read kept only its newest CHAIN_ROWS_MAX rows. */
   | { readonly type: "ledger.rows"; readonly id: string; readonly rows: unknown[]; readonly truncated?: boolean }
-  /** The day list, newest first; `totals` (LM-6) carries each day's sessions and billed seconds, absent from a daemon before the field. */
-  | { readonly type: "ledger.days"; readonly id: string; readonly days: string[]; readonly totals?: readonly LedgerDayTotals[] }
+  /**
+   * The day list, newest first; `totals` (LM-6) carries each day's sessions and billed seconds, absent from a daemon
+   * before the field. `partial`: the daemon answered before it had read every day's totals (server.ts
+   * LEDGER_DAYS_BUDGET_MS), so `totals` leaves out the days it has not read yet; the read goes on, and asking again
+   * finds more.
+   */
+  | { readonly type: "ledger.days"; readonly id: string; readonly days: string[]; readonly totals?: readonly LedgerDayTotals[]; readonly partial?: true }
   /** Memory items (MemoryItem[]) for `memory.list` / `memory.search`; never a vector. */
   | { readonly type: "memory.items"; readonly id: string; readonly items: unknown[] }
   /** Jarhead's own sessions (JarheadSessionSummary[]), newest first. */
@@ -133,8 +138,11 @@ export type DaemonMessage =
 export type ClientMessage =
   /**
    * `protocol` is the sender's PROTOCOL_VERSION (APP-3; `ProtocolVersion.current` in Swift, sent from EngineClient's
-   * hello), absent from a build before the field. Optional for good: a CLI client may send none. The app judges the
-   * skew from the daemon's hello and from a snapshot it cannot decode; the daemon reads this one as data only.
+   * hello; DaemonClient sends this checkout's), absent from a build before the field. Optional for good: a CLI client
+   * may send none. The app's hello (`audio: true`) with another number, or with none, is a skew: while that app is
+   * attached the daemon lays `app.version` over its snapshots and refuses that app's session-opening commands with a
+   * toast (server.ts `opensSession`). The app judges the same skew from the daemon's hello and from a snapshot it
+   * cannot decode.
    */
   | { readonly type: "hello"; readonly pid: number; readonly version?: string; readonly audio?: boolean; readonly protocol?: number }
   | { readonly type: "command"; readonly command: unknown }

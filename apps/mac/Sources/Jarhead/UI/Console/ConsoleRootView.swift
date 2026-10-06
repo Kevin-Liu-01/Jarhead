@@ -58,7 +58,7 @@ struct ConsoleRootView: View {
                 // viewer): its id is the pane's identity, so switching threads closes one stream
                 // and opens the next. "main" is Now seen as a thread, over its own seq-paged feed.
                 ThreadPane(thread: thread, store: state.threadStores[thread.id], phase: snap.phase,
-                           connected: state.connected, typedWakes: snap.settings.typedWakes)
+                           connected: state.connected, typedWakes: snap.settings.typedWakes, skewed: ComposerHold.skewed(snap.problems))
                     .equatable()
                     .id(thread.id)
                     .transition(.identity)
@@ -67,7 +67,8 @@ struct ConsoleRootView: View {
                            hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
                            ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading,
                            clearedAt: state.nowClearedAt, connected: state.connected,
-                           threads: threads.filter { $0.id != "main" }, typedWakes: snap.settings.typedWakes)
+                           threads: threads.filter { $0.id != "main" }, typedWakes: snap.settings.typedWakes,
+                           skewed: ComposerHold.skewed(snap.problems))
                     .equatable()
                     .transition(.identity)
             }
