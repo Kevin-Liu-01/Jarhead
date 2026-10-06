@@ -726,6 +726,8 @@ function requestToolNames(tools: readonly unknown[]): string[] {
 function rail4Problems(tools: readonly unknown[]): string[] {
   const names = requestToolNames(tools);
   const problems = names.filter((n) => CODEX_OWN_TOOLS.has(n)).map((n) => `Codex's own ${n} is offered to the model`);
+  // W3-4: the hosted search (a `web_search` tool type, no name) runs on OpenAI's side, past classifyUrl and the redactor.
+  for (const t of tools) if (/^web_search/.test(String((t as { type?: unknown } | null)?.type ?? ""))) problems.push(`Codex's own hosted ${String((t as { type: unknown }).type)} is offered to the model`);
   if (!JSON.stringify(tools).includes(`mcp__${CODEX_MCP_SERVER}__`)) problems.push(`no mcp__${CODEX_MCP_SERVER}__ tool reaches the model (tools: ${names.join(", ") || "none"})`);
   return problems;
 }

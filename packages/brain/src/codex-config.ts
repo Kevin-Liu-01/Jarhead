@@ -204,8 +204,19 @@ export function codexPromptTrimArgs(): string[] {
  */
 export const CODEX_BUILTINS_OFF = ["shell_tool", "view_image", "apps"] as const;
 
+/**
+ * Codex's own hosted web search, off (W3-4 review fix). 0.159.2 has a top-level `web_search` key ("disabled",
+ * "cached", "indexed", "live"; the deprecated `features.web_search_*` flags read false). When it is on, the Responses
+ * `web_search` tool runs on OpenAI's side, past classifyUrl and the redactor, as the Responses brain's hosted search
+ * did before W3-4 removed it. Its default cannot be read without a turn (`codex features list` does not show it and
+ * `codex debug prompt-input` renders no tools), so it is switched off by name: `-c web_search="disabled"` parses on
+ * 0.159.2 (an unknown value fails: "unknown variant"). The jarhead MCP server's own web_search, through the runner,
+ * is the search every brain has.
+ */
+export const CODEX_WEB_SEARCH_OFF = 'web_search="disabled"';
+
 export function codexBuiltinsOffArgs(): string[] {
-  return CODEX_BUILTINS_OFF.flatMap((feature) => ["-c", `features.${feature}=false`]);
+  return [...CODEX_BUILTINS_OFF.flatMap((feature) => ["-c", `features.${feature}=false`]), "-c", CODEX_WEB_SEARCH_OFF];
 }
 
 /**

@@ -720,6 +720,17 @@ export interface LocalBrainOptions {
 /** Discovery older than this is redone at start(). */
 const STATUS_FRESH_MS = 60_000;
 
+/**
+ * The transport with the local orders as its system message: the standing orders for the table this brain sends
+ * (brainSystemPrompt leaves out what names self_*, agents_* or a group fitTools dropped), where the compatible loop
+ * puts the orders for the whole table. Every other message goes as it came.
+ */
+function withOrders(wire: ChatTransport, orders: string): ChatTransport {
+  return {
+    complete: (req, signal, deadline, sink) => wire.complete({ ...req, messages: req.messages.map((m) => (m.role === "system" ? { role: "system", content: orders } : m)) }, signal, deadline, sink),
+  };
+}
+
 /** LM Studio runs these families' own tool templates; anything else gets its "default" prompt-injected mode. */
 function lmStudioNativeTools(id: string): boolean {
   return /qwen2\.5|qwen3|llama-?3\.[12]|mistral|ministral/i.test(id);
@@ -803,12 +814,12 @@ export class LocalBrain implements Brain {
     const model = this.model!;
     const threads = this.opts.threads();
     const wanted = toolSpecsFor(this.opts.userName ?? "Kevin", LOCAL_TOOLS.filter((t) => threads || !t.name.startsWith("thread_")));
-    const fitted = fitTools({ ctx: this.numCtx, systemBytes: brainSystemPrompt(this.opts.userName).length, tools: wanted });
+    const fitted = fitTools({ ctx: this.numCtx, systemBytes: brainSystemPrompt(this.opts.userName, wanted).length, tools: wanted });
     this.tools = fitted.tools;
     this.dropped = fitted.dropped;
     this.innerThreads = threads;
     const hasVision = model.capabilities.includes("vision");
-    const transport: ChatTransport =
+    const wire: ChatTransport =
       status.flavor === "ollama"
         ? new OllamaChatTransport({
             baseUrl: status.baseUrl,
@@ -823,6 +834,7 @@ export class LocalBrain implements Brain {
             timeouts: this.opts.timeouts,
           })
         : new OpenAIChatTransport({ baseUrl: status.baseUrl, headers: () => headersFor(this.opts.apiKey), fetch: this.fetchImpl, requestTimeoutMs: 180_000 });
+    const transport = withOrders(wire, brainSystemPrompt(this.opts.userName, this.tools));
     if (this.inner) await this.inner.stop();
     this.inner = new OpenAICompatibleBrain({
       runner: this.opts.runner,

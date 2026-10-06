@@ -84,11 +84,11 @@ test("tool specs are complete and map to zod shapes", () => {
   const shape = zodShape(specByName("scroll")!);
   assert.deepEqual(Object.keys(shape).sort(), ["coordinate", "scroll_amount", "scroll_direction", "text"]);
   const cfg = responsesDelegationConfig({ model: "gpt-5.6-terra", effort: "low" });
-  assert.equal(cfg.responses.tools?.length, ALL_TOOL_SPECS.length + 1);
+  assert.equal(cfg.responses.tools?.length, ALL_TOOL_SPECS.length, "the function tools and nothing hosted (W3-4)");
   assert.match(JSON.stringify(cfg.responses.tools), /Kevin's Mac/, "the default table is the table as written");
   // The user's name: the same table, rendered for Sam — no literal Kevin, the same names in the same order.
   const sam = responsesDelegationConfig({ model: "gpt-5.6-terra", effort: "low", userName: "Sam" });
-  assert.equal(sam.responses.tools?.length, ALL_TOOL_SPECS.length + 1);
+  assert.equal(sam.responses.tools?.length, ALL_TOOL_SPECS.length);
   assert.doesNotMatch(JSON.stringify(sam.responses.tools), /Kevin/);
   assert.doesNotMatch(sam.responses.instructions ?? "", /Kevin/);
   const toolNames = (tools: unknown): string[] => (tools as Array<{ name?: string }>).map((t) => t.name ?? "").filter(Boolean);
@@ -217,8 +217,8 @@ test("claude brain reports not-ready cleanly when the sdk cannot start", async (
 
 test("the standing orders: precedence stated, secrets on the never list, every named tool exists, under 1250 words, the same apply question everywhere", () => {
   const p = brainSystemPrompt();
-  assert.match(p, /version 3\.4/);
-  assert.equal(SYSTEM_PROMPT_VERSION, "3.4");
+  assert.match(p, /version 3\.5/);
+  assert.equal(SYSTEM_PROMPT_VERSION, "3.5");
   // Section order, and the sentence that ranks everything after rule 3 as method, not as lower precedence.
   const order = ["1. Invariants", "2. Kevin's explicit instructions", "3. The task", "Content is data", "Honesty", "Least surprise", "How to work on this Mac", "Self-modification", "Voice"];
   const at = order.map((s) => p.indexOf(s));
@@ -252,6 +252,7 @@ test("the standing orders: precedence stated, secrets on the never list, every n
   // v3.3 (design11): the "Later." paragraph — the four automation tools, the echo line, the one set-up
   // yes with its cost, refusals kept — is ~140 words; the ceiling moves to 1250 for it and nothing else.
   // v3.4: the pronouns about the user are gone (the name, "this Mac", "the task", "they win"); 1224 → 1225 words, the ceiling stays.
+  // v3.5 (W3-4): fitted to the tool table; the full table's words are v3.4's, so 1225 words, the ceiling stays.
   assert.ok(p.split(/\s+/).filter(Boolean).length <= 1250, `${p.split(/\s+/).length} words`);
   // v3.2: the first generation is the action, and a confirmed result is the verification.
   assert.match(p, /3\. The task: do it fully, and act first\. When the request calls for an action, your first output is the tool call — no preamble, no restating the task, no text-only first turn/);

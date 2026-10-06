@@ -29,6 +29,22 @@ const log = logger("brain.anthropic");
 
 export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5";
 
+/**
+ * The whole key check at start, every attempt and the SDK's backoff included: the engine's patience for any one
+ * start (Engine.BRAIN_PATIENCE_MS). An explicit choice has no next backend to move on to, so the engine waits out
+ * this start; past this the check stops and start() says so, and the Go lands on the Live session's own delegation.
+ */
+export const ANTHROPIC_PROBE_MS = 5000;
+
+/**
+ * The key check's budget when the engine's selection walks (`auto`, or an explicit `codex` walking on): the walk
+ * stops waiting at its own patience and lets this start go on in the background, so a valid key whose check takes
+ * 5 to 16 s still proves itself and takes over at the next quiet moment (F-AUTO-PROBE). The old 8 s x 2 attempts.
+ * For the engine to pass as `probeTimeoutMs` when its selection walks; an explicit pick keeps ANTHROPIC_PROBE_MS, the
+ * default, and a start the engine builds without it is capped at 5 s, walk or not.
+ */
+export const ANTHROPIC_WALK_PROBE_MS = 16_000;
+
 export interface AnthropicBrainOptions {
   readonly runner: ToolRunner;
   /** ANTHROPIC_API_KEY; without it the brain reports not ready. */
@@ -45,8 +61,9 @@ export interface AnthropicBrainOptions {
   /** Per request (default 3 min), never more than what is left of the wall clock. */
   readonly requestTimeoutMs?: number | undefined;
   readonly maxTokens?: number | undefined;
+  /** The whole key check, retries included (default ANTHROPIC_PROBE_MS; ANTHROPIC_WALK_PROBE_MS when the selection walks). */
   readonly probeTimeoutMs?: number | undefined;
-  /** Extra probe attempts after a connection error or 5xx (default 1); the SDK never retries 401/403/404. */
+  /** Extra probe attempts after a connection error or 5xx, inside probeTimeoutMs (default 1); the SDK never retries 401/403/404. */
   readonly probeRetries?: number | undefined;
   /** Request/answer pairs carried into the next delegation (default 3). */
   readonly historyTurns?: number | undefined;
@@ -198,9 +215,21 @@ export class AnthropicBrain implements Brain {
       maxRetries: this.opts.maxRetries ?? 2,
     });
     this.client = client;
+    const budgetMs = this.opts.probeTimeoutMs ?? ANTHROPIC_PROBE_MS;
+    const abort = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    const spent = new Promise<"spent">((resolve) => (timer = setTimeout(() => resolve("spent"), budgetMs)));
     try {
-      // One cheap, read-only request proves the key and the model before Kevin speaks.
-      const info = await client.models.retrieve(this.model, undefined, { timeout: this.opts.probeTimeoutMs ?? 8000, maxRetries: Math.max(0, this.opts.probeRetries ?? 1) });
+      // One cheap, read-only request proves the key and the model before Kevin speaks. The SDK's retry sleeps do not
+      // watch the signal, so the budget is a race as well as the abort.
+      const info = await Promise.race([client.models.retrieve(this.model, undefined, { timeout: budgetMs, maxRetries: Math.max(0, this.opts.probeRetries ?? 1), signal: abort.signal }), spent]);
+      if (info === "spent") {
+        abort.abort();
+        this.ready = false;
+        this.readyDetail = `the Anthropic API did not answer the key check within ${Number((budgetMs / 1000).toFixed(1))} s`;
+        log.warn(`probe failed: ${this.readyDetail}`);
+        return { ready: false, detail: this.readyDetail };
+      }
       this.ready = true;
       const flags = [this.reasoning.thinking ? "adaptive thinking" : "", this.reasoning.effort ? `effort ${this.reasoning.effort}` : ""].filter(Boolean);
       this.readyDetail = `Anthropic Messages API (${info.display_name || this.model}${flags.length ? `, ${flags.join(", ")}` : ""})`;
@@ -209,6 +238,8 @@ export class AnthropicBrain implements Brain {
       this.ready = false;
       this.readyDetail = this.describeProbeError(e);
       log.warn(`probe failed: ${this.readyDetail}`);
+    } finally {
+      clearTimeout(timer);
     }
     return { ready: this.ready, detail: this.readyDetail };
   }

@@ -196,11 +196,20 @@ private func requireRunning(_ app: String) throws -> BrowserKind {
     return kind
 }
 
-/// `browser_js {app, script}` → `{result}`: the script's result as text.
+/// Whether `app` is the front app, by name: a page script there lands where Kevin's keys go.
+private func isFrontApp(_ app: String) -> Bool {
+    return frontmostNow()?.name.lowercased() == app.lowercased()
+}
+
+/// `browser_js {app, script, readOnly?}` → `{result}`: the script's result as text. In the front browser a page
+/// script clicks, types and moves the focus under Kevin's hands, so it is held like a click while he is using them;
+/// behind another app it touches nothing of his and runs. `readOnly: true` (the client's probe, read and find, which
+/// only look) runs in the front browser too.
 func opBrowserJS(_ params: Params) throws -> JSONObject {
     let app = try params.requireString("app")
     let script = try params.requireString("script")
     let kind = try requireRunning(app)
+    if try params.bool("readOnly") != true, isFrontApp(app) { try guardActing(params) }
     let start = DispatchTime.now()
     let result = try runScript(jsSource(kind, app: app), arguments: [script], app: app)
     return ["result": truncated(descriptorText(result), to: 60_000), "ms": elapsedMs(since: start)]
@@ -225,11 +234,13 @@ func opBrowserTabs(_ params: Params) throws -> JSONObject {
     return ["tabs": tabs, "active": active]
 }
 
-/// `browser_navigate {app, url}` → `{ok: true}`; opens a window when the browser has none.
+/// `browser_navigate {app, url}` → `{ok: true}`; opens a window when the browser has none. It replaces the page
+/// Kevin may be typing in: held like a click while his hands are on the machine.
 func opBrowserNavigate(_ params: Params) throws -> JSONObject {
     let app = try params.requireString("app")
     let url = try params.requireString("url")
     let kind = try requireRunning(app)
+    try guardActing(params)
     _ = try runScript(navigateSource(kind, app: app), arguments: [url], app: app)
     return ["ok": true]
 }

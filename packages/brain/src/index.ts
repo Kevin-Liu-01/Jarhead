@@ -14,7 +14,7 @@ export { ResponsesBrain, responsesDelegationConfig, progressLine } from "./respo
 export { ClaudeBrain, zodShape } from "./claude.ts";
 export { Delegator, STOP_NAME_WAIT_MS, NAMED_STOP_FRAGMENT_ECHO_MS } from "./delegator.ts";
 export type { DelegatorOptions, DelegatorThreads, ThreadFloor, DelegationTimingsExtra } from "./delegator.ts";
-export { AnthropicBrain, anthropicReasoning, claudeGeneration, delegationPrompt, historyPrompt, memoryPromptLabel, MEMORY_PROMPT_LABEL, resolveAnthropicModel, toAnthropicTool } from "./anthropic.ts";
+export { ANTHROPIC_PROBE_MS, ANTHROPIC_WALK_PROBE_MS, AnthropicBrain, anthropicReasoning, claudeGeneration, delegationPrompt, historyPrompt, memoryPromptLabel, MEMORY_PROMPT_LABEL, resolveAnthropicModel, toAnthropicTool } from "./anthropic.ts";
 export { OpenAICompatibleBrain, OpenAIChatTransport, detectCapabilities, isLoopbackHost, isPrivateHost, normalizeBaseUrl, resolveCompatibleApiKey, stripReasoning, toChatTool } from "./compatible.ts";
 export type { ChatTransport, ChatTransportRequest, ChatTurn, RawToolCall } from "./compatible.ts";
 export {

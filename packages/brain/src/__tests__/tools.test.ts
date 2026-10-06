@@ -192,7 +192,10 @@ test("run_shell: anything non-destructive runs with secrets scrubbed, output is 
   const echoed = await runner.run("run_shell", { command: `echo sk-must-not-leak; echo ${Buffer.from("sk-must-not-leak").toString("base64")}; echo sk-abcdefghijklmnopqrstuvwxyz0123456789` });
   assert.equal(resultText(echoed.result), "[redacted secret]\n[redacted secret]\n[redacted secret]");
 
-  const install = await runner.run("run_shell", { command: "npm install --dry-run >/dev/null 2>&1; echo would-run", cwd: tmpdir() });
+  // npm writes a debug log under its cache (~/.npm/_logs) on every run and checks the registry for a newer npm: a home
+  // and a cache of the test's own keep the real ones untouched, and the update check stays off.
+  const npmHome = mkdtempSync(join(tmpdir(), "jh-npm-"));
+  const install = await runner.run("run_shell", { command: `HOME=${npmHome} npm_config_cache=${npmHome}/cache npm_config_update_notifier=false npm install --dry-run --offline >/dev/null 2>&1; echo would-run`, cwd: npmHome });
   assert.match(resultText(install.result), /would-run/, "the allowlist is gone: installs run");
 
   const big = await runner.run("run_shell", { command: "seq 1 20000" });
