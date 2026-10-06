@@ -11,7 +11,12 @@
  * (final.usageSeconds as snapshot.usageToday). A judge that reads a field the report does not keep stops there and
  * prints "not re-judgeable: <field>". What it judged before that is printed as usual.
  *
- * The exit code is 0 when every hard assertion passed, 1 when one failed, 2 when a report could not be re-judged.
+ * A run that never reached its end (cut at the cap or the ceiling), or that recorded an error of its own, fails here as
+ * it failed then, whatever its assertions say: the run's own rule (runCheck) is that it ran, with no error, and every
+ * hard assertion passed. Only an error the judge raised is set aside, since this checkout's judge runs again.
+ *
+ * The exit code is 0 when every hard assertion passed in a run that reached its end, 1 when one did not, 2 when a path
+ * is not a report or a report could not be re-judged.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -38,7 +43,11 @@ export interface Rejudged {
   readonly notKept?: string;
   /** What the judge was given that the report only approximates. */
   readonly notes: readonly string[];
-  /** Every hard assertion passed, and the judge ran to its end. */
+  /** Why the run fails whatever its judge says: it never reached its end, or it recorded an error of its own. */
+  readonly unfinished?: string;
+  /** The run's own error, its first line, when the judge did not raise it. */
+  readonly runError?: string;
+  /** The run reached its end with no error of its own, every hard assertion passed, and the judge ran to its end. */
   readonly pass: boolean;
 }
 
@@ -106,6 +115,7 @@ export function rejudge(r: SavedReport): Rejudged {
   // A live run is judged at scale 1 always; a dry one's scale is kept from when it was.
   const scale = r.scale ?? (r.mode === "live" ? 1 : undefined);
   const idleMs = r.idleMs ?? (scale === undefined ? undefined : idleMsFor(r.check, r.mode, scale));
+  // Left off when the report has no figure, so a judge that reads it stops with "not re-judgeable", never on undefined.
   const usageToday = r.final.usageSeconds === undefined ? undefined : (kept({ seconds: r.final.usageSeconds }, "snapshot.usageToday") as UsageToday);
   const hands = (calls: readonly SavedCall[], field: string): Judge["acting"] => ({
     calls: calls.map((c) => kept({ op: c.op, at: c.t + wall0, ...(c.params ? { params: c.params } : {}) }, `${field}[]`) as Judge["acting"]["calls"][number]),
@@ -116,7 +126,7 @@ export function rejudge(r: SavedReport): Rejudged {
     {
       rec: recorderOf(r, wall0),
       ledger: r.ledger,
-      snapshot: kept({ usageToday, ...(r.delegations ? { delegations: r.delegations } : {}) }, "snapshot") as Judge["snapshot"],
+      snapshot: kept({ ...(usageToday ? { usageToday } : {}), ...(r.delegations ? { delegations: r.delegations } : {}) }, "snapshot") as Judge["snapshot"],
       brain: r.brain,
       acting: hands(r.hands.acting, "hands.acting"),
       reading: hands(r.hands.reading, "hands.reading"),
@@ -139,8 +149,20 @@ export function rejudge(r: SavedReport): Rejudged {
     if (!(e instanceof NotKept)) throw e;
     notKept = e.field;
   }
+  // runCheck's rule: ran && !error && the hard assertions. An error that starts "judge:" is the old judge's alone.
+  const runError = r.error !== undefined && !r.error.startsWith("judge:") ? r.error.split("\n")[0] : undefined;
+  const unfinished = !r.ran ? `never reached its end${r.capHit ? " (cut at the cap)" : r.ceilingHit ? " (cut at the ceiling)" : ""}` : runError !== undefined ? "recorded an error" : undefined;
   const hard = assertions.filter((a) => !a.soft);
-  return { check: r.check, assertions, metrics, ...(notKept !== undefined ? { notKept } : {}), notes, pass: notKept === undefined && hard.length > 0 && hard.every((a) => a.pass) };
+  return {
+    check: r.check,
+    assertions,
+    metrics,
+    ...(notKept !== undefined ? { notKept } : {}),
+    notes,
+    ...(unfinished !== undefined ? { unfinished } : {}),
+    ...(runError !== undefined ? { runError } : {}),
+    pass: unfinished === undefined && notKept === undefined && hard.length > 0 && hard.every((a) => a.pass),
+  };
 }
 
 /** The reports a path names: a report file, or every report in a folder (a day's), in name order. */
@@ -159,7 +181,23 @@ export function main(argv: readonly string[], print: (line: string) => void = (l
     return 2;
   }
   let code = 0;
-  for (const file of argv.flatMap(reportFiles)) {
+  const files: string[] = [];
+  for (const path of argv) {
+    let found: string[];
+    try {
+      found = reportFiles(path);
+    } catch (e) {
+      print(`${path}: not a report (${(e as NodeJS.ErrnoException).code === "ENOENT" ? "no such file" : (e as Error).message})`);
+      code = 2;
+      continue;
+    }
+    if (found.length === 0) {
+      print(`${path}: no reports in it`);
+      code = 2;
+    }
+    files.push(...found);
+  }
+  for (const file of files) {
     let r: SavedReport;
     try {
       r = JSON.parse(readFileSync(file, "utf8")) as SavedReport;
@@ -178,13 +216,14 @@ export function main(argv: readonly string[], print: (line: string) => void = (l
       continue;
     }
     const out = rejudge(r);
-    print(`${basename(file)}: ${r.check} ${r.name}, ${r.mode}, ${r.head}, ${r.startedAt}${r.ran ? "" : `, did not run to its end${r.capHit ? " (cut at the cap)" : r.ceilingHit ? " (cut at the ceiling)" : ""}`}`);
+    print(`${basename(file)}: ${r.check} ${r.name}, ${r.mode}, ${r.head}, ${r.startedAt}${out.unfinished ? `, ${out.unfinished}` : ""}`);
+    if (out.runError) print(`  error: ${out.runError}`);
     for (const note of out.notes) print(`  note: ${note}`);
     for (const a of out.assertions) print(`  ${a.pass ? "pass" : "FAIL"}${a.soft ? " (soft)" : ""}  ${a.name}: ${JSON.stringify(a.value)}${a.expect ? `  [${a.expect}]` : ""}`);
     if (out.notKept) print(`  not re-judgeable: ${out.notKept}`);
     for (const [name, value] of Object.entries(out.metrics)) print(`  metric ${name} = ${JSON.stringify(value)}`);
     const hard = out.assertions.filter((a) => !a.soft);
-    print(`  ${r.check}: ${out.notKept ? "not re-judgeable" : out.pass ? "pass" : "FAIL"} (${hard.filter((a) => a.pass).length}/${hard.length} hard; the run itself said ${r.pass ? "pass" : "FAIL"})`);
+    print(`  ${r.check}: ${out.notKept ? "not re-judgeable" : out.pass ? "pass" : "FAIL"} (${hard.filter((a) => a.pass).length}/${hard.length} hard${out.unfinished ? `; the run ${out.unfinished}` : ""}; the run itself said ${r.pass ? "pass" : "FAIL"})`);
     if (out.notKept) code = 2;
     else if (!out.pass && code === 0) code = 1;
   }

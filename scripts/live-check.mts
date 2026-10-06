@@ -78,11 +78,8 @@ export const AUDIBLE_RMS = 0.01;
 const OUTPUT_GATE_MS = Engine.OUTPUT_GATE_MS;
 /** The voice's farewell cap (Engine.FAREWELL_CAP_MS); LC-4's close must land inside it, counted from the word's first sound. */
 const FAREWELL_CAP_MS = Engine.FAREWELL_CAP_MS;
-/**
- * How long the farewell word may take to begin once it is asked for (Engine.FAREWELL_START_MS, 3 s). Read by name, so
- * the dry checks still run, and fail as they should, against an engine from before it (c7d4e63 has none).
- */
-const FAREWELL_START_MS = (Engine as unknown as { readonly FAREWELL_START_MS?: number }).FAREWELL_START_MS ?? 3000;
+/** How long the farewell word may take to begin once it is asked for (Engine.FAREWELL_START_MS, 3 s). */
+const FAREWELL_START_MS = Engine.FAREWELL_START_MS;
 /** The model the spoken lines are synthesized with, and its voice. */
 export const TTS_MODEL = "gpt-4o-mini-tts";
 const TTS_VOICE = "alloy";
@@ -422,25 +419,41 @@ export interface ServerFrame {
 }
 
 /**
- * A frame the engine handed to the speaker (here a record, never played): when, whether it was sound, its length, and
- * its RMS (keptRms). Reports written before the RMS was kept have `audible` only.
+ * A frame the engine handed to the speaker (here a record, never played): when, whether it was sound, its length, its
+ * RMS (keptRms), and whether the engine hears it as sound (engineAudibleAt). Reports written before the RMS was kept
+ * have `audible` only, and those written before the engine's verdict was kept have no `engineAudible`.
  */
 export interface SinkFrame {
   readonly t: number;
   readonly audible: boolean;
   readonly ms: number;
   readonly rms?: number;
+  readonly engineAudible?: boolean;
 }
 
 /** A frame's RMS as the reports keep it: rms16's share of full scale, to 4 decimals. */
 const keptRms = (rms: number): number => Math.round(rms * 10_000) / 10_000;
 
 /**
- * Whether the engine itself hears a sink frame as sound: its own level, Engine.AUDIBLE_OUTPUT_LEVEL on rms x 3 (about
- * 0.0067 of full scale), below the harness's AUDIBLE_RMS. A frame kept without its RMS falls back to `audible`.
+ * Whether the engine hears a frame of this RMS (rms16's, unrounded) as sound: its own level, as engine.ts reckons it
+ * (min(1, rms x 3) >= Engine.AUDIBLE_OUTPUT_LEVEL, about 0.0067 of full scale), below the harness's AUDIBLE_RMS. Taken
+ * when the frame is recorded: the kept RMS is rounded, and a frame just under the level can round up to it.
+ */
+const engineAudibleAt = (rms: number): boolean => Math.min(1, rms * 3) >= Engine.AUDIBLE_OUTPUT_LEVEL;
+
+/** The record of a frame the engine handed to the speaker at `t` (check ms). */
+export function sinkFrame(t: number, pcm: Buffer): SinkFrame {
+  const rms = rms16(pcm);
+  return { t, audible: rms >= AUDIBLE_RMS, ms: pcmMs(pcm), rms: keptRms(rms), engineAudible: engineAudibleAt(rms) };
+}
+
+/**
+ * Whether the engine itself hears a sink frame as sound: the verdict kept with the frame, else its kept RMS at the
+ * engine's level (reports from before the verdict was kept), else `audible` (from before the RMS was kept).
  */
 export function engineHears(f: SinkFrame): boolean {
-  return f.rms === undefined ? f.audible : f.rms * 3 >= Engine.AUDIBLE_OUTPUT_LEVEL;
+  if (f.engineAudible !== undefined) return f.engineAudible;
+  return f.rms === undefined ? f.audible : engineAudibleAt(f.rms);
 }
 
 /** Milliseconds of PCM16 mono audio at the session's rate. */
@@ -1447,15 +1460,18 @@ const LC6_LINES = ["Jarhead, tell me a long story about the sea.", "Stop, Jarhea
 const LC10_LINE = "Jarhead, what's on my screen?";
 
 /**
- * LC-7's room: talk nobody addresses to Jarhead, in this order, one line every 15 s once the opening exchange's window
- * has shut. Three lines are commands the reflex grammar takes (a video's "hit the like button", a colleague's "press
- * enter"): the ear must leave them to Live and Live must let them be (B5, RX-23).
+ * LC-7's room: talk nobody addresses to Jarhead, in this order, once the opening exchange's window has shut. Each line
+ * starts 15 s after the last one ends. Three lines are commands the reflex grammar takes (a video's "hit the like
+ * button", a colleague's "press enter"): the ear must leave them to Live and Live must let them be (B5, RX-23).
  * - The first line is a command, so the room's first words are judged cold.
  * - The goodnight comes before the idle limit. A farewell to someone else is not a dismissal.
  * - Two commands are adjacent. A delegation's request starts where Live's last one ended, so a second command Live
  *   delegated would reach the Delegator bare, where its one-step reflex runs on the hands.
- * Before the 60 s sleep live hears the first command, the goodnight and the first of the pair, and the second when the
- * pre-sleep clause leaves room for it.
+ * Live, the room opens 9 s after the opening answer, and a line starts about 18 s after the last one did (its own
+ * length, then 15 s). So lines start about 9, 27, 45 and 63 s after that answer. The clause comes at 55 s and the sleep
+ * at 60 s. Before the sleep live hears the first command, the goodnight and "Press enter.". "Hit the like button."
+ * waits for the window the clause reopens, so it is spoken only as the asleep line. The adjacent pair is exercised dry
+ * only.
  */
 export const ROOM_TALK = [
   "Scroll down a bit.",
@@ -2489,10 +2505,7 @@ export async function runCheck(opts: RunOptions): Promise<Report> {
       automations: { home: stateRoot },
     });
     brain.engine = engine;
-    engine.on("audio", (pcm: Buffer) => {
-      const rms = rms16(pcm);
-      rec.sink.push({ t: rec.t(), audible: rms >= AUDIBLE_RMS, ms: pcmMs(pcm), rms: keptRms(rms) });
-    });
+    engine.on("audio", (pcm: Buffer) => void rec.sink.push(sinkFrame(rec.t(), pcm)));
     engine.on("reflex", (label, ms, prefired) => void rec.reflexes.push({ t: rec.t(), label, ms, prefired }));
     engine.on("reflex.fired", (row) => void rec.reflexRows.push({ t: rec.t(), action: row.action, source: row.source, ok: row.ok }));
     let lastPhase = "";
