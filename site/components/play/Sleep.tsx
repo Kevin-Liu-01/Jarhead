@@ -47,7 +47,7 @@ const PHASE: Record<S, Phase> = { asleep: "asleep", saying: "speaking", ringing:
 /**
  * Sleep: it sleeps at $0 with its alarm armed, the plate gone to ink, the island asleep with the alarm in its foot. When the
  * plate first comes into view the night runs on the plate's clock from 12:37 to 07:10 and the alarm rings while it sleeps: the row
- * lights, the island rings, the blob looks up, Snooze 10 or Done (Done leaves it asleep: no session, nothing billed).
+ * lights, the island rings, the blob looks up, Snooze 10 or Done (Done leaves it asleep: no session, the voice bills nothing).
  * Say "night." and it says it back, closes the session and the night runs again. The still is the night: asleep at $0,
  * 12:37, the alarm armed.
  */

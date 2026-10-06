@@ -9,7 +9,7 @@ import { Plate } from "./Plate";
 
 const RATE = row(COSTS.figures, 0); // $0.05 per minute of open session
 const HOUR = row(COSTS.figures, 1); // $3 an hour of talking
-const ZERO = row(COSTS.figures, 2); // $0 asleep
+const ZERO = row(COSTS.figures, 2); // $0 the voice, asleep
 /** The section's h2 (Section renders it as `${id}-h`) names the Listening and Asleep group; its first line, "Five cents a minute.", names the slider. */
 const HEAD = `${COSTS.id}-h`;
 const HEAD_1 = `${HEAD}-1`;
@@ -31,8 +31,8 @@ if (reading(START) !== ISLAND.footMeter) throw new Error("Costs: the reading no 
 /**
  * Costs: drag the minutes of an open session (or use the arrow keys) and the cost follows at five cents a minute, up to
  * three dollars at the hour; the island's own foot at the top reads the same. Put it to sleep and the figure is $0 and
- * the slider rests: asleep costs nothing. The blob talks while it is listening and sleeps when it is asleep. The still is
- * the island's own reading, 7.2 min and $0.36.
+ * the slider rests: the voice costs nothing asleep. The blob talks while it is listening and sleeps when it is asleep.
+ * The still is the island's own reading, 7.2 min and $0.36.
  */
 export function Costs(): ReactElement {
   const [min, setMin] = useState(START);

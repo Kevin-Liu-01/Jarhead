@@ -53,9 +53,9 @@ function counting(r: Row, t: number): string {
 /**
  * Numbers: the latencies race in real time on one honest linear scale. When the plate comes into view a clock starts at
  * zero and every bar grows at the speed of time: the reflex's three are done before the eye arrives, the voice replies in a
- * second, the model takes its 4.4 and 8.9 seconds. A running count rides each bar's head; the deck figure and its n light
+ * second, the model takes its 4.5 and 9.0 seconds. A running count rides each bar's head; the deck figure and its n light
  * at the row's end when the bar lands, every figure on one right edge with its n in a column of its own. The scale is the
- * visitor's and sits at the axis end it sets: 8.9 s shows all six to size, 457 ms zooms into the reflex rows so they
+ * visitor's and sits at the axis end it sets: 9.0 s shows all six to size, 457 ms zooms into the reflex rows so they
  * visibly race and the slower rows run off the edge. The clock runs only while the plate is on screen and
  * writes each bar's progress to a CSS property (a scaleX), so nothing re-renders per frame; Replay runs it again. The
  * still is the finished race at the full scale.
