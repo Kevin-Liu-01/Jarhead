@@ -74,6 +74,9 @@ test("the orders stay within the word budget (≤ 1450 words with the always-on 
   // for in § Voice; the ceiling moves to 1450 for them and nothing else (the brain's moved to 1250 the same day).
   // LC-7 (2026-10-06) bounds the exchange in # Attention inside it: 44 words, 1406 → 1450, so the next clause needs
   // a cut or a reasoned move (language.test.ts carries the same ceiling).
+  // C1 (2026-10-06) adds the late-confirmation rule to # Attention (30 words: delegate the unnamed yes, say only the
+  // engine's line) and pays with 31 the orders said twice (c1-confirm-yes.test.ts pins each kept once; "Never talk
+  // over" stays): 1450 → 1449, and the ceiling stays.
   assert.ok(n <= 1450, `${n} words`);
   assert.ok(n >= 900, `${n} words — a section went missing`);
   assert.ok(!/[*`]/.test(live), "no markdown in a spoken prompt");
