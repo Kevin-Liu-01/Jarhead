@@ -29,9 +29,10 @@ export const CHAIN_ROWS_MAX = 20_000;
 /**
  * How many bytes of day files one page of `searchPage` reads, newest first. A year of heavy use
  * is ~100 MB; a page past this bound stops and says where it stopped (`older`), and the next page
- * goes on from there. `search()` is not paged: until the wire carries `before` and `older`, the
- * daemon's `ledger.search` reads every live day (a rare word over a synthetic year: ~130 ms CPU,
- * nothing kept).
+ * goes on from there. The daemon's `ledger.search` answers one page per request (`before` in,
+ * `older` out), and the Console and `jarhead ledger search` ask again from `older` until they have
+ * their hits. `search()` is not paged: it reads every live day in one call (a rare word over a
+ * synthetic year: ~130 ms CPU, nothing kept).
  */
 export const SEARCH_PAGE_BYTES = 32 * 1024 * 1024;
 
@@ -705,10 +706,10 @@ export class Ledger {
    * Case-insensitive substring search over what was heard and said and over the
    * delegations' requests and summaries, across the LIVE day files only (the trash
    * is not read), newest first. `limit` defaults to 50 and never exceeds 200. Every
-   * live day is read until `limit` hits are found: the daemon's `ledger.search` sends
-   * no `before` and gets no `older` yet, so a byte bound here would hide every older
-   * hit from the Console and the CLI with no word that it stopped. The prefilter keeps
-   * the cost to the reads; `searchPage` is the bounded page for when the wire carries one.
+   * live day is read until `limit` hits are found, in one call. The daemon's
+   * `ledger.search` uses `searchPage` instead, one bounded page per request, and says
+   * where it stopped (`older`); this unbounded read is for a caller with no wire
+   * between it and the files. The prefilter keeps the cost to the reads.
    */
   search(query: string, limit: number = SEARCH_DEFAULT_LIMIT): LedgerSearchHit[] {
     return this.searchPage(query, { limit, maxBytes: Number.POSITIVE_INFINITY }).hits;
