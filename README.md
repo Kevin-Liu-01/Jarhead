@@ -640,7 +640,7 @@ Working rules for anyone, or anything, editing this repo: [`AGENTS.md`](AGENTS.m
 - [`docs/LATENCY.md`](docs/LATENCY.md): the before and after numbers and the field side by side.
 - [`docs/DEMO.md`](docs/DEMO.md): a ninety-second single take.
 - [`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md): alarms, timers, reminders, routines, watchers: what fires with the agent asleep, what asks once, what is refused, the CLI and the doctor group.
-- [`docs/AUDIO.md`](docs/AUDIO.md): Jarhead and everyone else's sound: what the echo-cancellation unit is told and when it is released, the Recording switch, the ten-second check, the probes and what this Mac said.
+- [`docs/AUDIO.md`](docs/AUDIO.md): Jarhead and everyone else's sound: what the echo-cancellation unit is told and when it is released, the Recording switch, the ten-second check, the probes and what this Mac said, and Jarhead's own twelve sounds and when each plays.
 - [`apps/mac/README.md`](apps/mac/README.md): the native app: packaging, TCC, wake word, audio, wire protocol.
 - [`packages/hands/native/README.md`](packages/hands/native/README.md): the helper's protocol, ops, numbers.
 - [`AGENTS.md`](AGENTS.md): rules for agents editing this repo.

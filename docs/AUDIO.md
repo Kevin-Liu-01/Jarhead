@@ -180,3 +180,78 @@ with 283 KB snapshots, speaker frames and flushes.
 What only a real session shows: whether the cushion leaves 0 underruns on a given Mac, how
 often the duck fires unconfirmed, and the residual echo's p99. `status` and `doctor` print all
 three after a session; the probes prove the code paths, not those figures.
+
+## 10. The sounds
+
+Every Jarhead sound is a soft felt mallet on a small crystal glass over a warm rosewood bar,
+every note from D major pentatonic around D5 (D E F♯ A B), so two of them never clash. A rising
+figure means he is with you, a falling one that he has let go, a low B-minor fall that something
+needs you. Interface sounds sit at −30 to −24 LUFS; the rings that must cross a room at −20 to −16.
+**Inside an open conversation his voice is the only sound.**
+
+| sound | when | file | LUFS |
+|---|---|---|---|
+| `heard` | the wake word, before Touch ID or the passphrase (the gate's `Pop`) | a glass droplet on A6 | −28 |
+| `awake` | granted, or any Go / resume from asleep or paused (the gate's `Glass`, the edge into `connecting`) | D5 rising to A5, 90 ms apart, rosewood under the first | −25 |
+| `pause` | the phase lands on `paused` (the session closed) | A5 stepping down to E5, left hanging | −27 |
+| `sleep` | a session (or connecting) goes to `asleep`: Stop, "goodnight", the dock, idle; with the tuck, 0.55 s after | A5, F♯5, D5 slowing, then a damped wooden tock | −27 |
+| `chime` | an automation's chime (`local.say` `Glass`, and any unknown name) | one glass bell on A5 | −20 |
+| `timer` | a timer is up (`Ping`, the engine's default for an `in` row) | two glass dings on A6 | −19 |
+| `alarm` | an alarm, and every 30 s while it rings (`Hero`) | a marimba run up to a ringing D6 | −16 |
+| `snooze` | Snooze on a ring that sounded (the island, the banner, the menu, ⌃⌥S) | A5 settling onto D5, hushed | −26 |
+| `opened` | an automation opened an app, a page or a file (`Pop`) | a glass tink on D6 | −28 |
+| `mark` | a mark kept while asleep or paused | one soft rosewood tap | −30 |
+| `cue` | before a spoken local line that has no sound of its own (a say-only automation, a wake-brain line) | a felt mallet on F♯ | −28 |
+| `problem` | a wake that could not open (connecting → error), or a needs-Kevin problem outside a session | B4 falling to F♯4 on muted wood | −24 |
+
+**Silent on purpose:** the session opening and reconnects, everything inside a session (task and
+thread edges, confirmations, a mark while awake: the voice and the ink say them), Touch ID refused
+or cancelled (the gate already says "No." or "Never mind."), mute and Recording toggles, Done on a
+ring (the silence is the answer), an alarm nobody answered, pause decaying to sleep, notify-only
+automations (Kevin chose a banner), missed or skipped automations and every `automation.*`
+problem, rings in quiet hours, and quitting.
+
+**The one gate** (`Earcons`, `Audio/Earcons.swift`). A sound plays only while the session's
+microphone is off (`AppState.voiceAudioRuns` false: asleep, paused, error), because a sound played
+beside the voice is not in the echo canceller's reference: the mic hears it at full level and
+Live can take it for a turn. If the voice still has audible output queued (the farewell "night."),
+the sound waits for it plus 150 ms and is dropped past 2 s. One at a time: alarm > timer > chime >
+problem > awake · sleep · pause > snooze > heard > cue > opened > mark; a lower sound within 250 ms
+of a higher one is dropped, and the same sound twice within 1.5 s plays once. Snooze and Done fade
+a sounding ring over 120 ms. The alarm's repeats start 4 dB down and rise 1 dB a ring to full.
+`local.say` arriving while connecting is now refused like any other in-session moment (it used to
+check `inSession`, which leaves `connecting` out, while the mic's PCM was already queued for Live).
+
+**The one exception, `awake`.** It plays at the edge into `connecting`, before the graph starts.
+`AudioEngine.handleMic` zero-fills the wire (cadence kept, the ear still hears the raw buffer, in
+both aec and Recording) until the sound's end plus the output latency plus the echo guard's own
+tail (0.30 s + latency, +0.20 s on Bluetooth, at most 0.80 s): about the first 0.75 s after the
+grant on the built-in speakers. `pnpm jarhead status` reads it back as `awake held 0.7 s` on the
+counters line. The wake listener ignores words until 0.35 s after the last sound
+(`LocalSpeaker.isQuiet`), and a spoken line ("Touch ID?", an automation's line after its cue)
+starts 50 ms before its sound ends, never under it.
+
+**The player.** One `AVAudioPlayer` per sound, prepared at launch, on the system default output at
+the system volume × Settings' volume. Never the voice's engine, its player node, the duck or the
+guard; never `NSSound`; never a second `AVAudioEngine`; it never reads or sets the system volume.
+
+**Settings › Audio.** `Sounds [On | Off] alarms always ring` and `Volume` (0–100 %, default 70 %),
+stored as `settings.audio.sounds` and `settings.audio.soundVolume`, written only by `set-settings`.
+Off silences the interface sounds; the chime, the timer and the alarm still ring, and the alarm
+never plays under 40 %. Until Kevin flips Sounds it follows macOS's "Play user interface sound
+effects" (read, never written). Recording mode changes nothing here.
+
+**The files** are `apps/mac/Resources/Sounds/<name>.caf` (mono, 48 kHz, 16-bit, 768 KB for all
+twelve); `scripts/build-mac.ts` stages them into `Contents/Resources/Sounds` before signing, and a
+`swift build` binary reads the checkout's. Eight are ElevenLabs takes (text-to-sound, prompt
+influence 0.7) picked by spectrogram and measurement; `awake`, `pause`, `sleep` and `problem`
+were built offline from two of those takes (the chime's A5 glass and one marimba note from the
+alarm, varispeeded onto the palette's notes at its gaps), because no take produced the figures.
+Each is trimmed to an onset within 5 ms, faded, normalised to its LUFS with a −3 dBTP ceiling
+(−2 for the alarm) and converted with `afconvert -f caff -d LEI16@48000`. To swap one, drop a
+mono 48 kHz CAF with the same name and set its length in `Earcon.seconds`.
+
+`apps/mac/Scripts/earcon-check.sh` (in CI with the other headless checks) pins all of it with a
+recorder in place of the player (the names, the gate, the dedupe and priorities, the ramp, the
+drain, the wire hold, the echo rule, which edges and problems sound), then opens and decodes every
+file (`--bundle build/stage/Jarhead.app` checks a built bundle's copy). Nothing in it plays a sound.

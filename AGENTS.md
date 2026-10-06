@@ -183,6 +183,7 @@ apps/mac/Scripts/audio-probe.sh [--json|--test] # AUDIO_PROBE_MODE=aec|recording
 apps/mac/Scripts/recorder-probe.sh · duck-leak-probe.sh   # V3 recorders beside the graph · V2 other apps' level under the unit — both PLAY SOUND, only with AUDIO_PROBE_PLAY=1; never while Jarhead.app is awake
 apps/mac/Scripts/playout-probe.sh [--stall [--legacy]] · snapshot-probe.sh   # the playout cushion rendered offline (--stall: the play queue beside the real AudioStateReader) · the app's receive path against a fake daemon; no device, no window, no sound
 apps/mac/Scripts/wake-gate-check.sh · sweep-check.sh · hotkey-check.sh · w3-3-check.sh · single-instance-check.sh   # headless: the wake gate (WG-12) · Ask for everything parks (APP-7) · every hotkey types nothing (D3) · version skew and the Ledger tab (W3-3) · one Jarhead per state dir
+apps/mac/Scripts/earcon-check.sh [--bundle build/stage/Jarhead.app]   # headless and silent: the palette's gate, cues, wire hold and echo rule through a recorder, then every sound file opened and decoded (never played)
 packages/hands/native/harness/hands-win/check.sh · run-blocking/check.sh   # Kevin's hands win, decided with no event posted · the 5 s capture bound; both run under pnpm test
 node --import tsx scripts/live-check.mts list | <LC-n|name> --dry-run | <LC-n|name> --i-accept-spend --cap-usd 1.00   # the paid GPT-Live-1 checks LC-1..LC-10, each run on Kevin's yes; one $1.00 cap per day across checks, kept in <stateDir>/live-check/spend.ndjson (live.lock: one live check at a time); reports in build/live-check/<day>/; scripts/rejudge.mts <report.json> judges a saved report again for free
 pnpm build:banner · pnpm build:media   # docs/media/banner.png (the app's orb on its ink field, 2560×800 so one 8 px cell is 4 CSS px; no longer shown by the README, whose top banners and hero GIFs are the site's: site/scripts/make-cards.sh); media = icon + banner; both wear the blob's `^ ^` (scripts/dither.ts FACE)
@@ -268,6 +269,18 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   daemon keeps that client one pending snapshot (the newest) and writes it on drain; speaker
   frames and every other frame keep their order. `EngineClient` decodes snapshots off `net`, one
   decode running and one payload (the newest) waiting, so a speaker frame never waits on a decode.
+- **The sounds** (`Audio/Earcons.swift`, `App/EarconCues.swift`; docs/AUDIO.md §10): twelve CAFs in
+  `apps/mac/Resources/Sounds` (staged by build-mac before signing), one `AVAudioPlayer` each on the
+  default output, never the voice's engine, never `NSSound`. The one gate is `Earcons.play`: nothing while
+  `AppState.voiceAudioRuns` (connecting included; `onLocalSay` checks that, not `inSession`), a wait for the
+  voice's playout to drain (`VoiceOutputClock`, dropped past 2 s), one at a time by priority, the same sound
+  once per 1.5 s. `awake` is the one session-edge sound: it plays before `updateAudioActivity()` starts the
+  graph and `handleMic` zero-fills the wire until `EarconWire.holdUntil` (status: `awake held`). WakeGate
+  still names `Pop`/`Glass`; `LocalSpeaker.earcon` maps them (`Earcon.gate`), and `local.say` names map by
+  `Earcon.ring` (the engine's default for a timer is `Ping`). `settings.audio.sounds` (absent = macOS's
+  interface-sounds switch) and `soundVolume` (0.7) go through `audioSettingsOf`, which keeps only typed
+  fields; rings sound with Sounds off. New moments go in `EarconCues` with a check line, never inside a
+  session.
 - **Rails**: `Wake/WakeGate.swift` is never touched; the wake listener gets exactly one property set
   on its own input AU (`kAudioOutputUnitProperty_CurrentDevice` → the ranked mic, `hears <name>
   (ranked)`); the barge-in duck stays detached on the plain path (it would duck Jarhead against
