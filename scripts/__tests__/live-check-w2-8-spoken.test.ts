@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ROOM_COMMANDS } from "../live-check.mts";
+import { Engine } from "@jarhead/engine";
+import { ROOM_COMMANDS, ROOM_TALK } from "../live-check.mts";
 import { allPass, assertions, dryRun } from "./live-check-w2-8-dry.ts";
 
 /**
@@ -22,9 +23,13 @@ test("LC-6 spoken-stop: the story sounds, the gate is set at the stop fragment, 
   assert.equal(assertions(r, /after the gate lapses, at most an acknowledgement/).pass, true);
 });
 
-test("LC-7 room-talk: commands nobody addressed run no reflex; no reply, no delegation, no goodnight sleep; the clause, then sleep at the idle limit", async () => {
+test("LC-7 room-talk: after one typed exchange, commands nobody addressed run no reflex; no reply, no delegation, no goodnight sleep; the clause, then sleep at the idle limit after the exchange", async () => {
   const r = await dryRun("LC-7");
   allPass(r);
+  const firstRoom = r.marks.find((m) => m.name === "room");
+  assert.equal(firstRoom?.data?.["line"], ROOM_TALK[0], "the room opens with a command");
+  assert.ok(r.wire.outText.some((d) => d.t < (firstRoom?.t ?? 0)), "the opening exchange was answered before the room");
+  assert.ok((firstRoom?.t ?? 0) - Number(r.metrics["lastAddressedBeforeRoomT"]) > Engine.EXCHANGE_WINDOW_MS, "the room starts once the exchange window has shut");
   const sleep = r.ledger.filter((row) => row.type === "sleep");
   assert.deepEqual(sleep.map((row) => (row.type === "sleep" ? row.cause : "")), ["idle"]);
   assert.ok(r.speech.some((s) => /goodnight/i.test(s.text)), "the room said goodnight");
