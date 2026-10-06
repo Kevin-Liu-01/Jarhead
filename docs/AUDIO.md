@@ -2,7 +2,7 @@
 
 Jarhead hears through Apple's voice-processing unit (echo cancellation) while a session is
 open, so he can talk next to speakers without hearing himself. That unit has side effects on
-every other app — it ducks their sound, and on a Bluetooth headset it holds the headset's
+every other app: it ducks their sound, and on a Bluetooth headset it holds the headset's
 microphone, which drops the headset to the hands-free codec. This pass (design12) tells the
 unit what to do, releases it the moment Jarhead stops, keeps the wake listener off your
 headset while he sleeps, and adds one switch for the case the unit cannot serve: recording.
@@ -12,9 +12,9 @@ Nothing here opens, keeps or closes a session; nothing is paid.
 
 | when | before | now |
 |---|---|---|
-| **asleep** (wake word on) | the listener opened the *system default* mic — your AirPods — so the headset ran hands-free all day | the listener's own input unit is pointed at the **ranked** mic (the MacBook's when it is there); the AirPods stay on full-quality AAC while Jarhead waits for his name. One property on the listener's engine; the gate is untouched |
+| **asleep** (wake word on) | the listener opened the *system default* mic (your AirPods), so the headset ran hands-free all day | the listener's own input unit is pointed at the **ranked** mic (the MacBook's when it is there); the AirPods stay on full-quality AAC while Jarhead waits for his name. One property on the listener's engine; the gate is untouched |
 | **awake** | the unit ran at Apple's defaults: other apps ducked at the default level for as long as the session was open, and the unit lingered after sleep | the moment echo cancellation is switched on the unit is told **duck other apps at the least macOS allows (`min`), and only while a voice is present (`advanced`)**; AGC on and bypass off are set explicitly and printed. The unit is **released at every stop**: nothing ducks after he sleeps. With the wake word on, the one microphone held asleep is the wake listener's, on the ranked mic (the row above) |
-| **awake, refused unit** (−10875 on every rung) | the plain graph ran unguarded — a latent self-talk loop | the plain graph runs with the **software echo guard** armed (§2); the state says `fallback` and the doctor warns |
+| **awake, refused unit** (−10875 on every rung) | the plain graph ran unguarded: a latent self-talk loop | the plain graph runs with the **software echo guard** armed (§2); the state says `fallback` and the doctor warns |
 | **mute** | the graph stayed up, the orange dot too | plus this process's input is zeroed at the HAL (`setInputMuted`), so the dot is honest; the graph still stays up so unmute is instant |
 
 The ducking level is a constant, not a knob: there is no "off" on macOS, and a knob whose effect
@@ -30,12 +30,12 @@ status menu row is always titled `Recording`; the checkmark is the state. Its to
 
 | Recording | the graph | other apps | a recorder (QuickTime, OBS, Screen Studio's mic track) | echo |
 |---|---|---|---|---|
-| **off** (default) | the unit on, following the system default input | ducked at the OS floor while a voice is present — not zero | a second client beside a voice-processing unit; on AirPods, the hands-free mic | Apple's |
-| **on** | no Apple unit anywhere; the plain graph on the ranked microphone (pinned on rungs 1–2; rung 3 hears the system default when the pin is refused — `ranked mic refused; hearing the system default`) | untouched | an ordinary client of the same microphone, full level | the **software echo guard**: Jarhead holds the wire (chunks zero-filled, cadence kept) while he is audible plus a tail (300–800 ms, longer on Bluetooth); a word said clearly over him (+12 dB for 120 ms, after two seconds of held speech) opens it |
+| **off** (default) | the unit on, following the system default input | ducked at the OS floor while a voice is present (not to zero) | a second client beside a voice-processing unit; on AirPods, the hands-free mic | Apple's |
+| **on** | no Apple unit anywhere; the plain graph on the ranked microphone (pinned on rungs 1–2; rung 3 hears the system default when the pin is refused: `ranked mic refused; hearing the system default`) | untouched | an ordinary client of the same microphone, full level | the **software echo guard**: Jarhead holds the wire (chunks zero-filled, cadence kept) while he is audible plus a tail (300–800 ms, longer on Bluetooth); a word said clearly over him (+12 dB for 120 ms, after two seconds of held speech) opens it |
 
 What Recording costs, said plainly: the first ~120 ms of your word over Jarhead are lost, and
 break-in by voice is off for the first two seconds of each hold while the guard learns the echo
-floor. On speakers the echo is loud and +12 dB over it is a shout — Recording is a demo mode,
+floor. On speakers the echo is loud and +12 dB over it is a shout. Recording is a demo mode,
 and the hint says so. A safety fuse: three consecutive turns in which everything Live heard was
 Jarhead's own last sentence send `mute` and toast `heard himself · muted — Recording off?`.
 
@@ -43,7 +43,7 @@ Jarhead's own last sentence send `mute` and toast `heard himself · muted — Re
 
 1. Play Music on the AirPods. **Asleep**, it must stay full quality (before this pass it was narrowed).
 2. Say his name. It dips a little while he answers and comes back between sentences.
-3. `pnpm jarhead status`: the `speaks` line shows `48000 Hz` when the headset is fine and `16000 Hz` when it is narrowed (the Hears hint says why: the unit follows the default input — make the MacBook mic the default in System Settings › Sound, or turn Recording on).
+3. `pnpm jarhead status`: the `speaks` line shows `48000 Hz` when the headset is fine and `16000 Hz` when it is narrowed (the Hears hint says why: the unit follows the default input; make the MacBook mic the default in System Settings › Sound, or turn Recording on).
 4. For a demo: Recording on (⌃⌥R), QuickTime › New Audio Recording, talk over him. QuickTime's meter must move as much as when he is quiet, and Music is untouched.
 
 What cannot be verified without ears: whether `min` is loud *enough*, whether the guard's held
@@ -53,11 +53,11 @@ is read back by the probes below.
 ## 4. What the surfaces say
 
 Settings › Audio, after Mic: **Hears** (device · `48 kHz · echo cancelled` | `echo guarded` |
-`no echo cancellation` — on the plain path the device is the microphone the graph settled on, never
-the engine's own aggregate), **Speaks** (device · `48 kHz · full quality` | `16 kHz · narrowed` — the
+`no echo cancellation`; on the plain path the device is the microphone the graph settled on, never
+the engine's own aggregate), **Speaks** (device · `48 kHz · full quality` | `16 kHz · narrowed`, the
 hands-free tell as a figure), **Recording** `[On | Off] shares the mic`, then the hints
 (`No Apple unit. Jarhead holds the wire while he speaks; a word over him opens it.` while on;
-`Shared with QuickTime Player.` — two names, then `+ n` — when another process reads the mic; while
+`Shared with QuickTime Player.` (two names, then `+ n`) when another process reads the mic; while
 echo cancellation follows a headset, `Using <headset>. Echo cancellation follows the system default;
 make <ranked mic> the default in Sound settings to use it.`). The island's mute box dims to 0.48
 while the guard holds; a 2 × 2 dot marks Recording; the tucked island shows a `record.circle` chip
@@ -73,7 +73,7 @@ All under `apps/mac/Scripts/`. None calls `pnpm jarhead probe` or `bench`; none 
 daemon; none opens a session. Anything that plays sound needs `AUDIO_PROBE_PLAY=1` and otherwise
 prints what it would do; `recorder-probe.sh` and `duck-leak-probe.sh` then exit 0, while
 `audio-probe.sh --test` still runs the mode's V1 checks before its `{"dryRun":true}` line and its
-exit carries them (0 every check ok · 1 a FAIL · 3 refused) — the doctor reads the JSON either way.
+exit carries them (0 every check ok · 1 a FAIL · 3 refused). The doctor reads the JSON either way.
 
 | probe | TCC | what it does | what it prints |
 |---|---|---|---|
@@ -91,8 +91,8 @@ one-line check that Recording's graph comes up guarded on the ranked microphone.
 The voice-processing unit has **one** device property for input and output; pointed at an
 input-only microphone it fails outright, so with echo cancellation on the graph follows the
 **system default input**. When that is the AirPods, the headset's microphone is held while a
-session is open and every app's sound narrows to 16 kHz — the `Speaks · 16 kHz · narrowed`
-figure and the doctor's `hears` warning. Three ways out, in order of cost:
+session is open and every app's sound narrows to 16 kHz (the `Speaks · 16 kHz · narrowed`
+figure and the doctor's `hears` warning). Three ways out, in order of cost:
 
 1. Make **MacBook Pro Microphone** the default input in System Settings › Sound (the AirPods stay the output; the unit follows the built-in mic; full quality everywhere).
 2. Turn **Recording** on: no unit, the ranked (built-in) mic, the guard; the AirPods leave hands-free.
@@ -102,9 +102,9 @@ Asleep is fixed already: the listener no longer opens the headset mic.
 
 ## 7. What this Mac said on 2026-09-16 (built-in mic + speakers, no AirPods)
 
-- `aec`: rung 1 (automatic wiring) refused −10875, rung 2 (input-rate) came up; `duck 10 advanced true, agc true, bypass false · raw 2108 duck 10 advanced true`; `isVoiceProcessingEnabled false` and the unit's `VPAUAggregateAudioDevice-0x…` gone 2 s after stop — `checks: 9 ok, 0 FAIL`.
+- `aec`: rung 1 (automatic wiring) refused −10875, rung 2 (input-rate) came up; `duck 10 advanced true, agc true, bypass false · raw 2108 duck 10 advanced true`; `isVoiceProcessingEnabled false` and the unit's `VPAUAggregateAudioDevice-0x…` gone 2 s after stop: `checks: 9 ok, 0 FAIL`.
 - `CADefaultDeviceAggregate-<pid>-0` is **AVAudioEngine's own** default-device aggregate (default input ≠ default output), created at the first plain attempt with no unit anywhere and alive as long as the engine object is; the unit's aggregate is the `VPAUAggregateAudioDevice-0x…` one. Anything that keys "the unit is released" on the `CADefaultDeviceAggregate` prefix will read a false positive.
-- `recording`: on this Mac the plain graph's `kAudioOutputUnitProperty_CurrentDevice` set on the input node's AU (the input-only built-in mic) knocked the output side out — `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` false, −10875 on every wiring — so the Recording ladder never came up (`checks: 2 ok, 1 FAIL`). Fixed in the integration pass: the set is skipped when the ranked mic already is the default, and otherwise it is a rung that can fail (`StartAttempt.pinDevice`; the ladder is ranked/hardware › ranked/automatic › default/hardware). Now rung 1 (hardware) comes up with `hears MacBook Pro Microphone 48000 Hz ×1 built-in · echo guarded`, `guard on, tail 301 ms`, no `VPAUAggregateAudioDevice` — `checks: 10 ok, 0 FAIL`; `aec` on the same run: rung 2, the unit's aggregate gone after stop — `checks: 10 ok, 0 FAIL`.
+- `recording`: on this Mac the plain graph's `kAudioOutputUnitProperty_CurrentDevice` set on the input node's AU (the input-only built-in mic) knocked the output side out (`IsFormatSampleRateAndChannelCountValid(outputHWFormat)` false, −10875 on every wiring), so the Recording ladder never came up (`checks: 2 ok, 1 FAIL`). Fixed in the integration pass: the set is skipped when the ranked mic already is the default, and otherwise it is a rung that can fail (`StartAttempt.pinDevice`; the ladder is ranked/hardware › ranked/automatic › default/hardware). Now rung 1 (hardware) comes up with `hears MacBook Pro Microphone 48000 Hz ×1 built-in · echo guarded`, `guard on, tail 301 ms`, no `VPAUAggregateAudioDevice` (`checks: 10 ok, 0 FAIL`); `aec` on the same run: rung 2, the unit's aggregate gone after stop (`checks: 10 ok, 0 FAIL`).
 - A terminal that coding agents run in inherits a microphone grant from its responsible process, so `AUDIO_PROBE_DIRECT=1` runs every silent mode without a TCC prompt.
 
 ## 8. What the Console prints, and what to do
@@ -112,8 +112,8 @@ Asleep is fixed already: the listener no longer opens the headset mic.
 | line | do |
 |---|---|
 | `Speaks · 16 kHz · narrowed` | the headset mic is held (Jarhead's unit or another app): make the MacBook mic the default in Sound settings, or turn Recording on |
-| `Using AirPods Pro. Echo cancellation follows the system default; make MacBook Pro Microphone the default in Sound settings to use it.` | the one case the hint exists for — do that |
-| `Shared with QuickTime Player.` | fine while Recording is on; under echo cancellation the recorder sits beside the unit — turn Recording on for the take |
+| `Using AirPods Pro. Echo cancellation follows the system default; make MacBook Pro Microphone the default in Sound settings to use it.` | the one case the hint exists for. Do that |
+| `Shared with QuickTime Player.` | fine while Recording is on; under echo cancellation the recorder sits beside the unit; turn Recording on for the take |
 | `Hears · no echo cancellation` | the unit refused every rung on this device pair; Jarhead runs guarded; the doctor's `voice processing` row fails and says which pair |
 | `heard himself · muted — Recording off?` | the fuse fired: Live heard Jarhead's own sentence three turns running; unmute, and turn Recording off unless you are recording |
 | the `[recording]` badge, the dot, the chip | a forgotten switch; ⌃⌥R turns it off. It is never cleared for you |

@@ -1,4 +1,4 @@
-# jarhead — agent index
+# jarhead: agent index
 
 Voice-first computer-use assistant for Kevin's Mac, built on GPT-Live-1
 delegation: the voice owns the conversation, a brain of Kevin's choosing owns what
@@ -6,7 +6,7 @@ happens, a Swift helper owns the Mac.
 
 ## Boot
 
-1. Read `docs/REDESIGN.md` — architecture, the four planes, hard rules.
+1. Read `docs/REDESIGN.md`: architecture, the four planes, hard rules.
 2. `pnpm run doctor` and read what it says before touching anything live.
 3. `pnpm run check` must be green before and after your change. Wall-clock
    ceilings in tests carry `RUNNER_SLACK` (×3 under `GITHUB_ACTIONS`, ×1 on a
@@ -56,7 +56,7 @@ happens, a Swift helper owns the Mac.
   `working` (a live owner process, a turn-bearing write within 30 s, no closing
   marker) · `idle` (a live owner otherwise) · `blocked` (an open permission
   question) · `done` (archived, or a run that finished and closed) · `ended` (no
-  live process, however old — a session with no process is over) · `unknown`
+  live process, however old; a session with no process is over) · `unknown`
   (the process evidence itself was missing: a degraded `ps`/`lsof`; never "old")
   · `offline` (a run handle closed). `AgentInfo.hint` says why a row reads as it
   does; `detail` carries no relative time (clients format it from `updatedAt`, so
@@ -66,18 +66,18 @@ happens, a Swift helper owns the Mac.
   `AGENT_STATUSES satisfies Record<AgentStatus, 0>` pin), the Sessions rail. A
   tool call with no result when its session ended reads `interrupted`, no pulse.
   `send()` to an `ended` Codex session still resumes it.
-- **Delete; history is git.** Superseded code is removed outright — no alias
+- **Delete; history is git.** Superseded code is removed outright: no alias
   shims, no deprecated fields, no fixtures of retired shapes. The one compatibility
   kept is files under `~/.jarhead` written before 2026-09-13: ledger day files hold
   `worker` rows, `step.worker`, session rows without `language`, `pause` / `resume`
-  rows without a session, `"?"` closes and per-session utterance ids — every reader
-  skips or tolerates them; and `settings.json` says `workers` (read as `threads`) and
+  rows without a session, `"?"` closes and per-session utterance ids (every reader
+  skips or tolerates them); and `settings.json` says `workers` (read as `threads`) and
   may carry `replayFinish` (dropped).
 - **Gated by policy, not by absence.** The brain can read, write, run, fetch and
   script anything on this Mac; `packages/core/src/policy.ts` decides per call
   (`classifyAction` / `classifyPath` / `classifyAppleScript` / `classifyUrl`):
   run, confirm (the `ConfirmationState` handshake), or refuse (the never list
-  and the secret stores — `~/.jarhead/env`, `~/.ssh`, keychains, cookies,
+  and the secret stores: `~/.jarhead/env`, `~/.ssh`, keychains, cookies,
   `.env*`). Add a gate there with a table-driven case in `policy.test.ts`; never
   special-case a tool in the runner. The shell gate is lexical and fails closed:
   strip wrappers (`command`, `exec`, `env`, `sudo`, `then`), read inner shells
@@ -88,7 +88,7 @@ happens, a Swift helper owns the Mac.
   appears. Egress (a network client carrying a file, `$(…)`, a body or a pipe)
   and environment dumps (`env`, `set`, `ps -E`, `launchctl getenv`, or a one-liner
   that reads `process.env` or `os.environ` whole) confirm.
-- **Local brain: read, chat, embed — never pull.** The daemon's requests to a
+- **Local brain: read, chat, embed, never pull.** The daemon's requests to a
   local model server (Ollama, LM Studio, llama.cpp) are exactly: `GET /api/version`,
   `GET /api/tags`, `POST /api/show`, `GET /api/ps`, `GET /v1/models`,
   `POST /api/chat`, `POST /api/generate` (body has `keep_alive` and no `prompt`),
@@ -99,7 +99,7 @@ happens, a Swift helper owns the Mac.
   command; Kevin runs it (`ProblemRemedy.copy` is text a surface offers to copy,
   never something it executes). The brain itself meets the same gate: in
   `classifyAction`'s destructive-shell table `ollama (pull|rm|create|push|cp|run|launch)` and
-  `lms (get|import|rm)` are `confirm` — the model must pass the confirmation
+  `lms (get|import|rm)` are `confirm`: the model must pass the confirmation
   handshake before it fetches or deletes weights. `auto` never resolves to `local`;
   Kevin picks it. Everything Ollama-side is pinned by fake-server tests, since no
   Ollama is installed on this Mac; see `docs/LOCAL.md`.
@@ -123,8 +123,8 @@ happens, a Swift helper owns the Mac.
   index.ts and any new core module, brain.ts, instructions.ts,
   `apps/mac/.../Wake`, selfedit.ts, runner.ts, shell.ts, files.ts, brain's
   index.ts, the automations executor `packages/engine/src/automations/executor.ts`
-  — the one place that acts with nobody there, so it never asks, never wakes,
-  never deletes — and the notification category
+  (the one place that acts with nobody there, so it never asks, never wakes,
+  never deletes), and the notification category
   `apps/mac/.../System/Notifications.swift`, whose two buttons are the island's
   Snooze · Done and never a yes) or, for mostly-ordinary files, changed lines (the
   handshake in toolset.ts, build-mac signing, `permission()` in claude.ts, the
@@ -136,8 +136,8 @@ happens, a Swift helper owns the Mac.
   pass moved it from 1100, the name pass reworded the orders without pronouns, and v3.5
   fits the orders to each brain's tool table, 1225 words for the full table; the voice's
   orders sit at their 1450-word ceiling, `instructions.test.ts`) and tool names.
-  The memory pass touched one rail by one optional field — `BrainTask.memory?:
-  string` in `brain.ts`, no prompt text, no version bump — because Kevin asked for
+  The memory pass touched one rail by one optional field (`BrainTask.memory?:
+  string` in `brain.ts`, no prompt text, no version bump) because Kevin asked for
   the memory module by name; `# Language` lives in the engine-assembled
   `packages/live/src/language.ts`, not in `instructions.ts`, so no other rail moved.
 - **Secrets never enter a child, and never leave a result.** `scrubbedEnv` /
@@ -171,7 +171,7 @@ pnpm jarhead status | say "…" | probe "…" | agents | hands | live | doctor |
 pnpm jarhead ledger --speed [--days N] | reflex-miss [--days N]   # where the time went (acting→screenshot share, now: lines, round trips by class, generation gaps; a negative interval is left out and counted); the short commands the grammar missed
 pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] | search "…" | forget <id> | restore <id> | add "…" [--kind k] | run   # over the daemon; forget is a state, nothing is deleted
 pnpm jarhead automations [list] [--state s] | add "<when> <chime|say|notify|open> <what>" | snooze|done|skip|pause|resume|run|trash|restore <id|name> | rename <id|name> "<name>"   # over the daemon; add arms the free kinds only (no flag is a yes); trash is Move to Trash, nothing is deleted
-pnpm jarhead recipes [list] | add <name> "<cmd>" [--cwd D] [--timeout N] | trash <name> | restore <name>   # the approved shell recipes; add prints the shell gate's word first (run · asks · refused · fronts); trash is Move to Trash (trashedAt), restore undoes it — nothing is deleted
+pnpm jarhead recipes [list] | add <name> "<cmd>" [--cwd D] [--timeout N] | trash <name> | restore <name>   # the approved shell recipes; add prints the shell gate's word first (run · asks · refused · fronts); trash is Move to Trash (trashedAt), restore undoes it; nothing is deleted
 pnpm jarhead bench [--fake-hands] [--no-duck] # the tool path and the ear's 250 ms path (+ read during a type, acting call incl. observation, status reflex, targeted stop); exit 1 when p95 to dispatch > 250 ms with the real helper; spends nothing (no OpenAI request); --no-duck skips the Swift duck probe
 pnpm jarhead bench --brain [--runs N] [--effort low] [--observe off] [--compare F] [--no-reflex] [--json --out F] # the five representative commands on the real brain (Codex: Kevin's ChatGPT plan, no dollars; canned hands, no real actions); refuses when Codex is not signed in unless --allow-api-spend
 pnpm build:hands              # Swift helper → build/jarhead-hands
@@ -180,9 +180,9 @@ apps/mac/Scripts/onboarding-preview.sh [step] [out.png]    # Setup window with f
 scripts/make-readme-shots.sh [--only console|orb|onboarding] [--skip-build] [--audit]   # every README screenshot into docs/media, then an audit of README.md's image links
 apps/mac/Scripts/duck-probe.sh              # the echo guard's machine + the start ladder (V4 check lines, no TCC), then the barge-in duck rounds
 apps/mac/Scripts/audio-probe.sh [--json|--test] # AUDIO_PROBE_MODE=aec|recording|asleep|private: the graph's state read back, no session (its own .app for the mic grant; AUDIO_PROBE_DIRECT=1 borrows the terminal's); --test plays a chime ONLY with AUDIO_PROBE_PLAY=1
-apps/mac/Scripts/recorder-probe.sh · duck-leak-probe.sh   # V3 recorders beside the graph · V2 other apps' level under the unit — both PLAY SOUND, only with AUDIO_PROBE_PLAY=1; never while Jarhead.app is awake
+apps/mac/Scripts/recorder-probe.sh · duck-leak-probe.sh   # V3 recorders beside the graph · V2 other apps' level under the unit; both PLAY SOUND, only with AUDIO_PROBE_PLAY=1, never while Jarhead.app is awake
 apps/mac/Scripts/playout-probe.sh [--stall [--legacy]] · snapshot-probe.sh   # the playout cushion rendered offline (--stall: the play queue beside the real AudioStateReader) · the app's receive path against a fake daemon; no device, no window, no sound
-apps/mac/Scripts/wake-gate-check.sh · sweep-check.sh · hotkey-check.sh · w3-3-check.sh · single-instance-check.sh   # headless: the wake gate (WG-12) · Ask for everything parks (APP-7) · every hotkey types nothing (D3) · version skew and the Ledger tab (W3-3) · one Jarhead per state dir
+apps/mac/Scripts/wake-gate-check.sh · sweep-check.sh · hotkey-check.sh · w3-3-check.sh · single-instance-check.sh   # headless: the wake gate (WG-12) · Ask for everything parks (APP-7) · every hotkey but Go / Pause types nothing (D3, D8) · version skew and the Ledger tab (W3-3) · one Jarhead per state dir
 packages/hands/native/harness/hands-win/check.sh · run-blocking/check.sh   # Kevin's hands win, decided with no event posted · the 5 s capture bound; both run under pnpm test
 node --import tsx scripts/live-check.mts list | <LC-n|name> --dry-run | <LC-n|name> --i-accept-spend --cap-usd 1.00   # the paid GPT-Live-1 checks LC-1..LC-10, each run on Kevin's yes; one $1.00 cap per day across checks, kept in <stateDir>/live-check/spend.ndjson (live.lock: one live check at a time); reports in build/live-check/<day>/; scripts/rejudge.mts <report.json> judges a saved report again for free
 pnpm build:banner · pnpm build:media   # docs/media/banner.png (the app's orb on its ink field, 2560×800 so one 8 px cell is 4 CSS px; no longer shown by the README, whose top banners and hero GIFs are the site's: site/scripts/make-cards.sh); media = icon + banner; both wear the blob's `^ ^` (scripts/dither.ts FACE)
@@ -194,7 +194,7 @@ to his microphone and bills per second.
 
 ## Audio
 
-The audio graph (`apps/mac/Sources/Jarhead/Audio/`) is read back, never assumed — every claim ends
+The audio graph (`apps/mac/Sources/Jarhead/Audio/`) is read back, never assumed: every claim ends
 in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the record.
 
 - **One setting**: `settings.audio.recording` (default off), nested like `wake`, merged at load,
@@ -215,11 +215,11 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   | aec | 3 | on | hardware | |
   | aec | 4 | off | hardware | the fallback, ranked mic pinned (`pinDevice`): guard armed, `fallback` in the frame, the doctor fails `voice processing` |
   | aec | 5 | off | hardware | the fallback on the system default mic (the pin refused) |
-  | recording | 1 | off | hardware | ranked mic pinned; guard on — the one that comes up here |
+  | recording | 1 | off | hardware | ranked mic pinned; guard on; the one that comes up here |
   | recording | 2 | off | automatic | ranked mic pinned |
   | recording | 3 | off | hardware | no device set: the system default mic, `ranked mic refused; hearing the system default` |
 
-  (`PrivateRoute.enabled` would add two `private` rungs at the top; it is `false` — probe-only.)
+  (`PrivateRoute.enabled` would add two `private` rungs at the top; it is `false`, probe-only.)
   `StartAttempt.pinDevice` is the plain path's `kAudioOutputUnitProperty_CurrentDevice` set, and it
   is skipped outright when the ranked mic already *is* the system default: on a Mac whose default
   input ≠ default output the engine's I/O is one unit on its own aggregate and the set knocks the
@@ -233,7 +233,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   the `shares the mic` hint, `recordingOn` while on, `sharedWith(_:)` when another process reads the
   mic; the head's `[recording]` badge is `ConsoleDisclosureWords.recording`), the island (`RecordingWords`
   in `UI/HelpCopy.swift`: the mute box at 0.48 while the guard holds, the 2 × 2 dot, the `record.circle`
-  chip while tucked — fed by the `jarhead.dock.audio` notice (`NotchDock.audioNotification`, userInfo
+  chip while tucked, fed by the `jarhead.dock.audio` notice (`NotchDock.audioNotification`, userInfo
   `recording` · `guardHeld` · `shared`); no new zone, no gesture), the status menu row + ⌃⌥R
   (`HelpCopy.recordingRow`: `Recording` · `Hand back the mic, guard the echo — apps keep their sound` ·
   `Hotkeys.Action.toggleRecording = 9`; the title never flips, the checkmark is the state), `pnpm
@@ -317,7 +317,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   `-10875` on the built-in mic + speakers when mainMixer→output is wired at the
   hardware output format or left automatic; wiring it at the *input* sample rate
   works. With voice processing on, the input node reports 2–9 channels; convert
-  channel 0 to mono yourself — an AVAudioConverter from N channels to 1 without
+  channel 0 to mono yourself: an AVAudioConverter from N channels to 1 without
   a channel map produces silence. `apps/mac/.../Audio/AudioEngine.swift` tries
   the wirings in order and logs "mic diag" every 5 s.
 - Every test launch of Jarhead.app or `jarheadd` must carry `JARHEAD_AUTO_WAKE=0`
@@ -345,7 +345,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
 - TCC answers are per *process*: a fresh process is the only reliable way to
   read a grant the user just changed (`jarhead-hands --permissions`), and a
   resident helper must be restarted to *use* it. A System Settings row created
-  by an ad-hoc build survives re-signing but is bound to the old cdhash — it
+  by an ad-hoc build survives re-signing but is bound to the old cdhash: it
   shows "on" and does nothing; the user must remove it and re-request.
 - `@Published` sinks fire in `willSet`: inside a Combine sink, reading the
   property you subscribed to still returns the *old* value. Keep the payload
@@ -400,7 +400,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   stop the engine drops incoming output audio and ignores output-transcript
   deltas for the phase (`outputGateUntil`, 2.5 s or until Kevin's next input
   delta), flushes the speaker, fails the helper's pending request
-  (`cancelPending` — a gate whose probe was cancelled refuses the action), stops
+  (`cancelPending`; a gate whose probe was cancelled refuses the action), stops
   this task's background jobs, and finishes the delegation *before* awaiting the
   brain's cancel (a brain that settles on the abort signal would otherwise finish
   it first and lose the reason).
@@ -419,12 +419,12 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   replace Kevin's table (his servers start alongside); `-c mcp_servers.<name>.
   enabled=false` per server does switch them off, with the name **unquoted**
   (`mcp_servers."x".enabled=false` fails with "invalid transport"). The built-in
-  plugin runtime `codex_apps` (Kevin's ChatGPT connectors — Drive, Sites, agents;
+  plugin runtime `codex_apps` (Kevin's ChatGPT connectors: Drive, Sites, agents;
   134 tools, deletes and shares among them) is not a server but a *feature*:
   `--disable apps` (= `-c features.apps=false`) switches it off, and Jarhead's
   argv always passes it (`codex features list` shows `apps stable true`). His
   `notify` hook loads too; `-c notify=[]` silences it. Verify with
-  `mcpServerStatus/list` after `initialize` — no thread, no turn, no billing.
+  `mcpServerStatus/list` after `initialize`: no thread, no turn, no billing.
 - A thread's **first** `turn/start` answers only after ~2 s (the MCP servers
   start before the reply); an interrupt that arrives before the turn id is known
   must be remembered and sent once it is, or the server-side turn runs on after
@@ -449,7 +449,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   delegation record of its own on the ledger and is adopted by transcript item,
   never by text alone.
 - Mark snapping: pick the **largest** frame that holds the centroid and is mostly
-  inside the stroke, not the smallest — `element_at` at a circled dialog's centroid
+  inside the stroke, not the smallest: `element_at` at a circled dialog's centroid
   is a label inside it, which always fits.
 - An ordered tool batch (one call acts) stops at the first `needs_confirmation`,
   refusal or error; with `disable_parallel_tool_use: false` a model may send
@@ -459,11 +459,11 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   pins `lastDelegationEndMs`, so the next request repeats old words (the
   stop-aftermath test's second request once carried the first utterance's words
   and looked like an engine bug). Space utterances and advance `nowMs` per
-  delegation — `delegate()` / `nextUtterance()` from
+  delegation; `delegate()` / `nextUtterance()` from
   `packages/engine/src/__tests__/world.ts` do both.
 - A test that asserts *before* it cancels its pending helper requests leaves
   their 8 s timers alive; node:test then reports the late timeouts as
-  "asynchronous activity after the test ended" — the symptom of the early
+  "asynchronous activity after the test ended", the symptom of the early
   assertion failure, not a client bug.
 - **The 250 ms path is a second source, not a faster model** (REDESIGN §12).
   Speech → Live → delegation → brain → first tool is 1.5–4 s and stays so; the
@@ -471,8 +471,8 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   engine matches them against the fixed reflex grammar (`packages/brain/src/
   reflex.ts`, shared with the Delegator) and acts through the gated hands. A
   partial fires only when it is a final, ends terminally (punctuation, "please",
-  "now"), or has been stable — 120 ms for the reversible `prefire` kinds (scroll,
-  page, screenshot, circle), 450 ms for everything else: the recogniser lands
+  "now"), or has been stable: 120 ms for the reversible `prefire` kinds (scroll,
+  page, screenshot, circle), 450 ms for everything else. The recogniser lands
   words in ticks, so "copy" of "copy this file…" or "type hello" of "type hello
   world" sits unchanged for a tick, and only a scroll may fire on a prefix. Finals
   cannot carry the fast path: the app's recogniser adds no punctuation and finals
@@ -481,7 +481,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   `type` whose words differ is undone with ⌘Z (and Kevin is told either way).
 - The ear must **consume, never forget**: after Stop/Pause (`quiesce`), while the
   voice speaks, a task runs or the mic is muted, the segment is kept with its words
-  consumed — the recogniser keeps sending partials and a final for the same
+  consumed: the recogniser keeps sending partials and a final for the same
   segment, and a forgotten segment comes back whole with the stopped command at
   its front. A revision that shortens the text never resets the consumed count.
 - Reconciliation has a **peek** and a **reconcile**: the Delegator's prefire
@@ -496,12 +496,12 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   comparison alone cannot tell "Don't Save" from "Save".
 - A reflex the policy would ask about is **dropped**, never asked: the runner
   had already recorded a `needs-confirmation`, so the engine clears that pending
-  question (`confirmations.clear()` when the id matches) — a later "yes" must not
+  question (`confirmations.clear()` when the id matches): a later "yes" must not
   arm a question nobody relayed. The model path asks properly.
 - `AXUIElementCopyMultipleAttributeValues` is the walk: one IPC per element for
   role/title/description/value/position/size/children instead of seven. Per-node
   cost is app-bound (Chrome ~0.4 ms, Notes ~2.5 ms, Finder's desktop ~4 ms), so
-  a walk needs a **time budget**, not only a node cap — Finder's desktop ran 10 s
+  a walk needs a **time budget**, not only a node cap: Finder's desktop ran 10 s
   to a 2500-node cap. Breadth-first means a cut still keeps the toolbar. Chromium
   exposes web content only after `AXManualAccessibility` is set on the app
   element (no resizing side effects, unlike `AXEnhancedUserInterface`), and the
@@ -514,10 +514,10 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   JavaScript as the `run` handler's argument through `executeAppleEvent` (a
   `kAEOpenApplication` event with a list direct object), 5 ms on repeat instead
   of a 30–60 ms process per call. Apple events must go from the main thread
-  (`onMain`). Check `NSRunningApplication` first — an event to a non-running app
+  (`onMain`). Check `NSRunningApplication` first: an event to a non-running app
   launches it. Per-tab `repeat with t in tabs` is one event per property per tab
   (1.5 s for 80 tabs); `title of every tab of w` is one. Chrome's refusal reads
-  "Executing JavaScript through AppleScript is turned off" — map it to
+  "Executing JavaScript through AppleScript is turned off"; map it to
   `permission_denied` with the menu path, and remember it per app for a minute so
   Kevin flipping the item is noticed.
 - `assert.deepEqual(x, [])` narrows `x` to `never[]` under `@types/node`'s
@@ -531,13 +531,13 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   timer climb after pressing Stop). The transport (REDESIGN §13) therefore closes
   the session on pause (the conversation is held in the engine: transcript,
   marks, brain, hands; a resume opens a new session with a `# Continuity` section)
-  and on stop (asleep synchronously); only a spoken "stop" — the `interrupt`
-  command — keeps it. A graceful `close()` unanswered for 1 s is `terminate()`d,
-  and `tick()`'s watchdog ends any session that outlived a stop — never one that
+  and on stop (asleep synchronously); only a spoken "stop" (the `interrupt`
+  command) keeps it. A graceful `close()` unanswered for 1 s is `terminate()`d,
+  and `tick()`'s watchdog ends any session that outlived a stop, but never one that
   is `connecting`: a resume's opening session is still "paused" until
   `session.started`, and a rule without that guard closed every resume whose
   handshake spanned the tick. Session-timeline ms restart with every session, so
-  the engine keeps one `Transcript` per session — a Delegator's `since(0)` over a
+  the engine keeps one `Transcript` per session: a Delegator's `since(0)` over a
   shared one would replay every earlier utterance as the resumed session's first
   request.
 - The app runs the daemon from the working tree (`tsx packages/daemon/src/main.ts`)
@@ -552,7 +552,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   not work" was a 21:15 daemon still running the pre-review engine at 22:19.
 - A SwiftUI view being removed keeps the `.transition` it had when it last
   rendered, so a direction-dependent slide (forward/back) must not put the
-  direction in the removal half — `ConsoleMotion.slide` uses a plain fade for
+  direction in the removal half: `ConsoleMotion.slide` uses a plain fade for
   removal and only the insertion picks a side.
 - Never animate a feed's layout under the sticky-scroll probe: a transition or
   `.animation(value:)` that grows the VStack moves the pinned bottom every frame.
@@ -561,7 +561,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   `switch` scenario proves the distance stays 0.
 - A window's alpha and its ordering are separate window-server calls: order a
   panel out before restoring its alpha/scale, and set a small transparent
-  presentation before ordering it in — otherwise one composite can show the
+  presentation before ordering it in. Otherwise one composite can show the
   whole body for a frame (`finishTuckSlip` / `dropOut` in OrbPanelController).
 - `NSImage.draw(in:from:operation:fraction:)` replaces the CGContext alpha set by
   `cg.setAlpha` instead of multiplying it; pass the product as `fraction:`.
@@ -582,7 +582,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
 - Codex app-server `thread/tokenUsage/updated`: `.total` is the thread's CUMULATIVE
   bill (it grows by the whole prompt every generation); `.last` is the current
   context. Judging a rollover on `.total` threw the warm thread away after most
-  multi-tool delegations (measured 6 of 18) — always compare `.last` to the window.
+  multi-tool delegations (measured 6 of 18). Always compare `.last` to the window.
 - `codex debug prompt-input` renders the model-visible developer blocks with no
   model call; `codex debug models` carries the base instructions template. On
   0.154 only `skills.include_instructions=false` removes the skills catalog
@@ -617,7 +617,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   time (55 ms median on the 2026-09-11 ledger, n = 120, not reproduced since; 16 ms
   for `frontmost_app` with the real helper in the bench at 4727241, n = 3,
   2026-10-06).
-- AVFoundation raises ObjC exceptions Swift cannot catch — `installTap` "Failed to
+- AVFoundation raises ObjC exceptions Swift cannot catch: `installTap` "Failed to
   create tap due to format mismatch" after an input-device change (the format read
   from the node is stale until the engine is reset and prepared) aborted the app 5×
   on 2026-09-11. Every installTap / connect / reset / prepare / format read goes
@@ -638,12 +638,12 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   relaunched app re-attaches to the warm Codex thread. Read the crash file first.
 - **Narration is gated in one place.** The voice's `# Narration` rule (one clause
   per state change, never per click, never a tool's name) is mirrored in the
-  Delegator's relay — `Delegator.narrationVerdict` — so no brain has to be trusted
+  Delegator's relay (`Delegator.narrationVerdict`), so no brain has to be trusted
   with it: a brain line naming one of `ALL_TOOL_SPECS` or reading as one click
   ("Clicking Save.") after something was voiced stays on the Console's timeline
   and never reaches Live. Jarhead's own lines (`say`: the summary, a reflex's
-  landing, a failure, the first-tool line) are never gated — they are the answer.
-  `speak_progress` goes through the brain's channel and is gated like any line —
+  landing, a failure, the first-tool line) are never gated: they are the answer.
+  `speak_progress` goes through the brain's channel and is gated like any line,
   except a line that asks Kevin something (a question, "say yes"), and every line
   once a `confirm` step is pending: the runner's question quotes the command
   (`run "python edit_file.py"`), so it names a tool, and Kevin has to hear it or
@@ -653,7 +653,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   re-arms itself every idle period and the session never sleeps while it bills.
   `Delegator.announceSleep` speaks once per idle stretch (Kevin's next words or
   the next task start a new one) and returns whether it did; the engine arms one
-  deadline off `true` and sleeps at it unless `sleepAnnounced` has cleared —
+  deadline off `true` and sleeps at it unless `sleepAnnounced` has cleared,
   never by re-reading `lastAddressedAt`. The clause's own voice turn counts for
   nothing and opens no exchange (the room-talk gate below).
 - **GPT-Live-1 answers the room; the ask is the engine's** (LC-7, 2026-10-06).
@@ -712,9 +712,11 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   from every app, and ⌥⇧ + a letter types a character on most layouts (Ô, Â, Ç,
   Í and ‰ for those five letters on the US layout), so those characters never
   reached a field. `hotkey-check.sh` asks UCKeyTranslate that every registered
-  combo types nothing; ⌥⇧Space (Go / Pause) is the one allowance, since it types a
-  no-break space (D8, open). ⌥⎋ Stop and ⌥⇧Return stay. `defaults write com.kevinliu.jarhead hotkeys.off -bool YES`
-  turns every hotkey off but ⌥⎋ Stop. ⌃⌥ is VoiceOver's modifier and Rectangle's
+  combo types nothing. Go / Pause stays ⌥⇧Space (D8, decided): on the US layout it
+  takes the no-break space (U+00A0) while Jarhead runs, the one hotkey allowed to
+  (`HotkeyCheckMain.swift`'s `typesAllowed`). ⌥⎋ Stop and ⌥⇧Return stay.
+  `defaults write com.kevinliu.jarhead hotkeys.off -bool YES` turns every hotkey off
+  but ⌥⎋ Stop. ⌃⌥ is VoiceOver's modifier and Rectangle's
   defaults hold ⌃⌥C and ⌃⌥J. If `RegisterEventHotKey` refuses a combo, the failure
   is only logged (`Hotkeys.swift`); whether another app's registration makes it
   refuse is untested.
@@ -739,17 +741,17 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   missed with the why `zone-moved`.
 - **Carried history is a budget, not a transcript.** After a Codex rollover the
   fresh thread hears `renderCarry`: Kevin's words verbatim (never cut, even over
-  budget), the spoken answers, and each tool result as one line — verbatim under
+  budget), the spoken answers, and each tool result as one line: verbatim under
   200 chars *and* 200 bytes, else `[tool result, 3.1 KB]`. Size is the whole MCP
   result as the model saw it (a 1×1 PNG "screenshot" is 280 bytes: images count),
   the text kept in memory is capped at 1 200 chars, the block at ~2 KB with the
   oldest exchanges dropped whole first, the newest answer cut last. When the
-  newest exchange alone is over budget its results all become placeholders —
+  newest exchange alone is over budget its results all become placeholders,
   each naming its true size (`carriedResultLine(r, true)`), never a size inflated
   to force the swap: what the model is told about a result must be true.
 - **A rollover's measure belongs to a turn.** `thread/tokenUsage/updated` carries a
   `turnId`; the server sends one per model request and one can land after
-  `turn/completed` — or after the fresh thread's start reset `usage`. Judging it
+  `turn/completed`, or after the fresh thread's start reset `usage`. Judging it
   again would open a third thread for one oversized tool output. `needsFreshThread()`
   stays the pure measure (the tests read it); `rolloverDue()` is the trigger and
   refuses the turn that already rolled the thread over (`rolledOverForTurn`).
@@ -762,7 +764,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   face slides left by half of it to keep the pair centred under the notch.
 - **The island's working state is fed, not derived.** `NotchDock.setWorking(since:)`
   takes the snapshot's running delegation (`timings.delegatedAt / 1000`, nil when
-  none); the phase is not a proxy — `acting` is also dictation, and a summary being
+  none); the phase is not a proxy: `acting` is also dictation, and a summary being
   spoken is `speaking` while the task is already done. The harness has no snapshot
   feed, so `ORB_NOTCH_WORKING=1` makes the state follow the phase there only.
 - **Six builders, one worktree, one `swift build`.** SwiftPM fails with "input file
@@ -773,7 +775,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
 - Cleanup never deletes: conversations get tombstone rows (`conversation.*`) in
   TODAY's ledger file, the bytes stay where they were written, whole day files
   MOVE to `~/.jarhead/trash` by rename(2) (`ledger.moved`), and every Console
-  verb is Move to Trash / Archive / Restore / Rename / Pin — never "Delete".
+  verb is Move to Trash / Archive / Restore / Rename / Pin, never "Delete".
   The Trash is emptied by Kevin in Finder, nowhere else. Before a day moves, the
   decisions still in force on it (a pin, a Move to Trash, a name, a hide, a cleared
   Now) are carried into today's file as `carried: true` rows that keep their
@@ -795,7 +797,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   the same chain's resume; key presses are never grantable; System Settings /
   Keychain Access keep every yes per action; destructive verbs (send, pay, delete,
   post, purchase) ask every time. A presence hold ("Not now") registers no
-  pending confirmation — a bare "yes" after it lands nothing.
+  pending confirmation, so a bare "yes" after it lands nothing.
 - `presenceAt` must be stamped by KEVIN's input only (wake word, ear utterance,
   Live input transcript, typed line, dictation), never by Jarhead's speech, the
   model's actions or Live's delegation (RAIL-14), or the brain satisfies its own
@@ -806,7 +808,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   the system default); the picker says so.
 - A class field initializer runs before the constructor body: `private transcript
   = this.newTranscript()` saw `this.now` undefined, so the first transcript used
-  Date.now while later ones used the injected clock — pass clocks lazily.
+  Date.now while later ones used the injected clock. Pass clocks lazily.
 - The hands helper is serial, so a cancel line queues behind the op it means to
   stop; the out-of-band stop is a signal whose default action is ignore (SIGURG).
 - **One Jarhead, installed in place.** The Dock's pinned tile is a bookmark keyed
@@ -817,8 +819,8 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   READS the Dock (`pnpm jarhead dock --fix` repairs it). The second cause of a
   second tile is a helper inside the bundle: LaunchServices reads the enclosing
   app's Info.plist (`LSUIElement` false) for `jarhead-hands`, so a helper that
-  never sets its own activation policy checks in as a second Foreground "Jarhead"
-  — one running tile per helper, parked in `recent-apps` when it exits, back
+  never sets its own activation policy checks in as a second Foreground "Jarhead":
+  one running tile per helper, parked in `recent-apps` when it exits, back
   within seconds of any `killall Dock`. `packages/hands/native/main.swift` sets
   `LSBackgroundOnly` in the main bundle's in-memory Info dictionary before anything
   checks the process in (`.prohibited` after `NSApplication.shared` was too late:
@@ -832,7 +834,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   reads `lsappinfo list` and names a Foreground helper (`running.helperTiles`) instead of promising `dock --fix`
   repairs it; `smoke.mjs` asserts the spawned helper's type is never Foreground.
   Verify after a rebuild and relaunch, read-only: `lsappinfo info $(pgrep -f
-  jarhead-hands)` shows no ASN or a non-Foreground type. The rollback is git — `git
+  jarhead-hands)` shows no ASN or a non-Foreground type. The rollback is git: `git
   checkout <previous> && pnpm build:mac`; `JARHEAD_INSTALL_SNAPSHOT=1` opts into a
   `Jarhead.app.zip` archive of the installed bundle under `build/previous/` and the
   printed `ditto -x -k … && rsync …` line. The rsync flags and what each forbids
@@ -849,7 +851,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   20 s cap made the LaunchServices half of the one-Jarhead pass silently do nothing
   exactly when a build was slow, and the reason was dropped. Every lsregister call
   now gets 120 s (`LSREGISTER_TIMEOUT_MS`), a failed dump carries its stderr into
-  the line, and a build dumps once — the `-u` exit codes are the report; only
+  the line, and a build dumps once (the `-u` exit codes are the report); only
   `dock --fix` re-dumps to prove the records went.
 - **Threads are not agents.** Agents (`agents_*`, the Console's Sessions rail) are
   Kevin's coding sessions on this Mac. Threads (`thread_start` / `thread_wait` /
@@ -882,9 +884,9 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   (`packages/memory`, its own package so no core file becomes a rail) keeps an
   append-only `<stateDir>/memory/memory.jsonl` of one-sentence items about Kevin
   ("Kevin prefers …", kinds preference · fact · episode · procedure · contact ·
-  place), extracted from CLOSED conversations only — the quiet tick, `!live &&
+  place), extracted from CLOSED conversations only (the quiet tick, `!live &&
   !connecting && !pauseInfo`, ≥ 4 new Kevin lines since the watermark, one run
-  per closed conversation — by a mini-class Responses model on Kevin's OpenAI key
+  per closed conversation) by a mini-class Responses model on Kevin's OpenAI key
   (dollars, never the ChatGPT plan; never Codex), by regex rules with no key, or,
   with a local brain, by the brain model over Chat Completions JSON mode and a
   local embedding model when one is pulled (memory follows `Settings.brain`, not
@@ -902,8 +904,8 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   (D5). Memory off means no extraction, no injection and no embedding call: search
   then ranks by words only. No vector ever enters a snapshot. Two injection points,
   both outside the standing orders (25 words of headroom at v3.5): the brain gets
-  `BrainTask.memory` — the ONE field this pass added to the rail `brain.ts`
-  (Kevin asked for the memory module directly) — rendered by `promptParts`
+  `BrainTask.memory`, the ONE field this pass added to the rail `brain.ts`
+  (Kevin asked for the memory module directly), rendered by `promptParts`
   (`anthropic.ts`, the one render site every brain kind uses) as `What you know
   about Kevin (durable memory; use it, do not repeat it back, do not say you
   remembered):` after `Recent conversation`, ≤ `BRAIN_MEMORY_TOKENS` 250, never
@@ -915,23 +917,23 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   `MEMORY_RECALL_MS` 250 (a cold lookup is aborted, the task carries no block; the
   query embedding is cached as Kevin's final lines land, so it is usually a hit).
   **Blind spot:** with the `openai-responses` brain Live runs the backend itself
-  (`responses.ts`), so the per-delegation block never reaches it — only the voice
-  block applies. **Honest cost:** the budgets CAP what memory costs — ≤ 250
+  (`responses.ts`), so the per-delegation block never reaches it; only the voice
+  block applies. **Honest cost:** the budgets CAP what memory costs: ≤ 250
   tokens per delegation on the brain (≈ 20k a day at 81 delegations, on the
-  Codex plan), ≤ 120 per session start on the voice ($0: Live bills per second) —
-  nothing existing shrinks; the saving is Kevin never re-explaining himself and
+  Codex plan), ≤ 120 per session start on the voice ($0: Live bills per second).
+  Nothing existing shrinks; the saving is Kevin never re-explaining himself and
   never having a transcript dumped into a prompt. Surfaces: `Settings.memory`
   (default on), Console Settings › Memory and the Memory rail, the Now rail's
   "used this turn" (`lastUsedIds`), `jarhead memory list|search|forget|restore|
   add|run`, `jarhead doctor`'s `memory` group (counts from the daemon; the
-  `extractor` row names the id the engine WILL run — `JARHEAD_MEMORY_MODEL`, else
-  the module's `DEFAULT_MEMORY_MODEL` — checked against the keys row's one free
+  `extractor` row names the id the engine WILL run (`JARHEAD_MEMORY_MODEL`, else
+  the module's `DEFAULT_MEMORY_MODEL`), checked against the keys row's one free
   `GET /v1/models`, the key's best `*-mini` named only as the thing to pin; nothing
   records a pick on its own; never a session), the spoken "remember that …" /
   "forget that" reflexes in the engine
   hook (no brain, no tool: `remember`/`recall` stay per-session notes).
-- **The desk.** The engine's root `ConfirmationState` stays; every toolset — the
-  main lane too — gets `desk.lane(id, name)`. A question posts to the root when the
+- **The desk.** The engine's root `ConfirmationState` stays; every toolset (the
+  main lane too) gets `desk.lane(id, name)`. A question posts to the root when the
   floor is free, otherwise it queues ("Queued behind <Floor>'s question … stop and
   wait (thread_wait), do not retry"); `consume` is true only for the floor's lane;
   `promote()` re-asks the next queued question on the root and SPEAKS it with its
@@ -1010,46 +1012,46 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
 
 - The helper's `busy` decisions live in `packages/hands/native/HandsWin.swift`, by time (the newest event of a kind is someone else's when it is not within 30 ms of the helper's own last post of that kind) and by count (whatever the session counted beyond the helper's own posts); `Input.swift` feeds them the session's readings and notes every post, because only the posting process knows every event it posted. `mouseMoved` is not counted, `ownDriver` (dictation) holds nothing, `mouse_up` skips busy but not `expectFront`. `user_idle.foreignMs` is therefore per helper process; the lease reads it from the acting helper.
 - `type` with a pre-post `expectFront` mismatch is an error `focus_moved` like a click's; a mid-text switch is a cancelled result with reason `focus_moved` and the characters landed.
-- In the lease nothing decided before an `await` stands after it (the thread gate and the re-front are helper round trips; the lease re-judges after each). In the desk a root question that vanished takes its queue with it — only `consume` and `drop(laneId)` promote.
-- Dither is the classic 8×8 Bayer matrix in point-sized cells (`Dither.cellPoints` 1.5 pt on the island, the meters and the blob's halo, 2 pt in `DitheredGradient` and the Dock icon), five bands (four on the Console ground); the pattern has to be big enough to see, so never a device-pixel cell. The icon samples geometry per pixel and the threshold per cell so the silhouette stays crisp. Regenerate with `pnpm build:media` (= `build:icon` + `build:banner`) after any change to `scripts/dither.ts`, `icon-render.ts`, `make-icon.ts` or `make-banner.ts` (docs/media/icon-sizes.png, docs/media/banner.png and apps/mac/Resources/preview-icon-sizes.png are tracked; the icon must stay byte-identical across a pure refactor — `git status --porcelain docs/media apps/mac/Resources` after `pnpm build:icon`). The face (`FACE` in dither.ts, Kevin's `^ ^`) is a cell mask: one pattern from 64 to 1024, hand bitmaps at 32 and 16, pinned exactly by `scripts/__tests__/icon.test.ts`; `pnpm build:mac` rebuilds the icns whenever those scripts are newer than build/Jarhead.icns.
+- In the lease nothing decided before an `await` stands after it (the thread gate and the re-front are helper round trips; the lease re-judges after each). In the desk a root question that vanished takes its queue with it; only `consume` and `drop(laneId)` promote.
+- Dither is the classic 8×8 Bayer matrix in point-sized cells (`Dither.cellPoints` 1.5 pt on the island, the meters and the blob's halo, 2 pt in `DitheredGradient` and the Dock icon), five bands (four on the Console ground); the pattern has to be big enough to see, so never a device-pixel cell. The icon samples geometry per pixel and the threshold per cell so the silhouette stays crisp. Regenerate with `pnpm build:media` (= `build:icon` + `build:banner`) after any change to `scripts/dither.ts`, `icon-render.ts`, `make-icon.ts` or `make-banner.ts` (docs/media/icon-sizes.png, docs/media/banner.png and apps/mac/Resources/preview-icon-sizes.png are tracked; the icon must stay byte-identical across a pure refactor: `git status --porcelain docs/media apps/mac/Resources` after `pnpm build:icon`). The face (`FACE` in dither.ts, Kevin's `^ ^`) is a cell mask: one pattern from 64 to 1024, hand bitmaps at 32 and 16, pinned exactly by `scripts/__tests__/icon.test.ts`; `pnpm build:mac` rebuilds the icns whenever those scripts are newer than build/Jarhead.icns.
 - **Dither everywhere** (Kevin: "use the dither theme across ascii loading states, the app background and more"). `Dither.Cache` is budgeted by BYTES (48 MB, count 32 as a second cap) with a pending queue capped at 4, so a resize drag drops its stalest sizes instead of rendering every frame's; it records the key in flight, so many views asking for one key (every JarheadMark in the rail) render it once, and `DitheredGradient` / `DitheredShadow` ignore a render landing for a key they no longer want (the queue pops newest first, so under a resize an older size can land last). The Console ground renders at scale 1 and is magnified by nearest (the same pixels as a 2× render with 4 px cells, a quarter of the work), at sizes rounded up to 64 pt (`sizeStep`) and pinned bottom-trailing, so the key changes only across a 64 pt boundary and the whisper corner stays in the window's corner; the last image holds while the next renders. Alpha-only CGImages have no Swift initializer with the nil colour space they need, so coverage images (the shadow, the bar's edge) are premultiplied RGBA.
-- **Prewarm the tiles.** `Motion.wipe` reads `Dither.Tiles.shared.hasWipe` and falls back to a fade, so a harness must `Dither.prewarm(scale:)` first thing (ConsolePreviewMain, OnboardingPreviewMain, OrbPreviewApp do); the app must too, in `AppDelegate.applicationDidFinishLaunching` after `installDockIcon()` — `NotchInk.prewarm()` only runs when the notch dock is built, so on a Mac without a notch nothing else would. Failing both, the first wipe or meter that asks (`Tiles.ensure(scale:)`) starts the build for its scale and takes its fallback once. `Dither.Tiles` is an ObservableObject — a static view that asked before the tiles landed (a meter) must observe it or it keeps the fallback. The onboarding harness compiles Console files, so `Scripts/onboarding-preview.sh` lists `UI/Dither.swift` beside `UI/Motion.swift`.
-- **Curtain, not mask, for a pane switch.** Pane, rail-tab and feed↔ledger switches are `Motion.curtain(color)`: the arriving pane renders plain (`.transition(.identity)`, no mask, no zIndex) and a `DitherCurtain` of ground-coloured inverted Bayer tiles sits over it and disappears rank by rank over `Motion.base` (7–11 ms a frame; the switch's own turn 11–68 ms where a mask cost 300–500 ms — measured 2026-09-12 with the -O harness traced per frame: a pane's first masked frame costs the main thread 0.3–0.5 s because RenderBox rasterises the masked pane through CoreGraphics, then frames come every 45–150 ms, longer than the 0.24 s wipe, so at real speed a masked pane switch is a freeze and a cut). `Motion.wipe` (the mask) stays for small things: thumbnails, marks, the ground image landing. A wipe's two halves must share one curve (insertion and removal both `easeOut` over `base`, the removal on the inverted tiles) or the ground shows through between them. `DitherCurtain` must not be `Animatable` (a first cut was double-interpolated); `Reveal` is the Animatable modifier the transition drives. The switch itself is made in `Motion.wipeAnimation` (the root ZStack's `.animation(_, value: paneKey)`, which overrides the call site's transaction for the pane change, plus `ConsoleSession.openJarhead`, the rail's agent toggle and the harness's actions): the transaction's animation is what keeps a leaving pane alive when its own half does not animate — a shorter spring dropped the stream whole before the arriving cells had covered it. The conversation panes carry `.zIndex(1)` so stepping in wipes the conversation in over the stream and stepping out wipes it away over the stream arriving beneath. Both hosting windows set `hosting.sizingOptions = []` (their `minSize` is set by hand; `NSHostingView.minSize` re-ran a full layout pass per switch). The residual 100–270 ms frame per switch is the arriving pane's own construction (SwiftUI layout/CoreText), not the transition.
-- **Harness knobs for the dither.** Console scenarios `loading` (the glyphs; `PREVIEW_SLOW_THUMBS=1` holds thumbnails so skeletons show), `wipe` (mid-wipe pictures + `probe` under the mask; it stretches the wipe to 2 s through `PREVIEW_WIPE_SECONDS` → `Motion.wipeSecondsOverride`, nil in the app, so there are frames to catch) and `timing` (main-thread turns per switch); actions `check-dither` (the Bayer/tile/glyph/bar/rounding pins in run.log — the package has no test target), `probe-ground` (the ground's colours from the window's own pixels), `snap:<name>` (the window's own pixels written in-process at the scheduled instant — `shot:` spawns screencapture and lands 0.1–0.3 s late) and `snap-wipe:<name>` (arms `Motion.wipeMidHook`: a pane's arriving `DitherWipe` fires it on its first frame at 0.4 of the ranks and the snap follows 0.25 s later — the only way to a reproducible mid-wipe frame, since the wipe's frames saturate the main thread and starve timers). Orb harness: an `ORB_EXPAND` or `ORB_OVERLAY` run takes no `phase-*` shots (they would overwrite the collapsed blob's halo pictures with the capsule), so shoot `preview-blob-phase-*.png` with the phases command on its own. Harness pictures are gitignored (`preview-*.png`); the one tracked picture under `apps/mac/Resources` is `preview-icon-sizes.png`, and the README's copies live in `docs/media` (`scripts/make-readme-shots.sh`).
+- **Prewarm the tiles.** `Motion.wipe` reads `Dither.Tiles.shared.hasWipe` and falls back to a fade, so a harness must `Dither.prewarm(scale:)` first thing (ConsolePreviewMain, OnboardingPreviewMain, OrbPreviewApp do); the app must too, in `AppDelegate.applicationDidFinishLaunching` after `installDockIcon()`, because `NotchInk.prewarm()` only runs when the notch dock is built, so on a Mac without a notch nothing else would. Failing both, the first wipe or meter that asks (`Tiles.ensure(scale:)`) starts the build for its scale and takes its fallback once. `Dither.Tiles` is an ObservableObject: a static view that asked before the tiles landed (a meter) must observe it or it keeps the fallback. The onboarding harness compiles Console files, so `Scripts/onboarding-preview.sh` lists `UI/Dither.swift` beside `UI/Motion.swift`.
+- **Curtain, not mask, for a pane switch.** Pane, rail-tab and feed↔ledger switches are `Motion.curtain(color)`: the arriving pane renders plain (`.transition(.identity)`, no mask, no zIndex) and a `DitherCurtain` of ground-coloured inverted Bayer tiles sits over it and disappears rank by rank over `Motion.base` (7–11 ms a frame; the switch's own turn 11–68 ms where a mask cost 300–500 ms, measured 2026-09-12 with the -O harness traced per frame: a pane's first masked frame costs the main thread 0.3–0.5 s because RenderBox rasterises the masked pane through CoreGraphics, then frames come every 45–150 ms, longer than the 0.24 s wipe, so at real speed a masked pane switch is a freeze and a cut). `Motion.wipe` (the mask) stays for small things: thumbnails, marks, the ground image landing. A wipe's two halves must share one curve (insertion and removal both `easeOut` over `base`, the removal on the inverted tiles) or the ground shows through between them. `DitherCurtain` must not be `Animatable` (a first cut was double-interpolated); `Reveal` is the Animatable modifier the transition drives. The switch itself is made in `Motion.wipeAnimation` (the root ZStack's `.animation(_, value: paneKey)`, which overrides the call site's transaction for the pane change, plus `ConsoleSession.openJarhead`, the rail's agent toggle and the harness's actions): the transaction's animation is what keeps a leaving pane alive when its own half does not animate; a shorter spring dropped the stream whole before the arriving cells had covered it. The conversation panes carry `.zIndex(1)` so stepping in wipes the conversation in over the stream and stepping out wipes it away over the stream arriving beneath. Both hosting windows set `hosting.sizingOptions = []` (their `minSize` is set by hand; `NSHostingView.minSize` re-ran a full layout pass per switch). The residual 100–270 ms frame per switch is the arriving pane's own construction (SwiftUI layout/CoreText), not the transition.
+- **Harness knobs for the dither.** Console scenarios `loading` (the glyphs; `PREVIEW_SLOW_THUMBS=1` holds thumbnails so skeletons show), `wipe` (mid-wipe pictures + `probe` under the mask; it stretches the wipe to 2 s through `PREVIEW_WIPE_SECONDS` → `Motion.wipeSecondsOverride`, nil in the app, so there are frames to catch) and `timing` (main-thread turns per switch); actions `check-dither` (the Bayer/tile/glyph/bar/rounding pins in run.log; the package has no test target), `probe-ground` (the ground's colours from the window's own pixels), `snap:<name>` (the window's own pixels written in-process at the scheduled instant; `shot:` spawns screencapture and lands 0.1–0.3 s late) and `snap-wipe:<name>` (arms `Motion.wipeMidHook`: a pane's arriving `DitherWipe` fires it on its first frame at 0.4 of the ranks and the snap follows 0.25 s later: the only way to a reproducible mid-wipe frame, since the wipe's frames saturate the main thread and starve timers). Orb harness: an `ORB_EXPAND` or `ORB_OVERLAY` run takes no `phase-*` shots (they would overwrite the collapsed blob's halo pictures with the capsule), so shoot `preview-blob-phase-*.png` with the phases command on its own. Harness pictures are gitignored (`preview-*.png`); the one tracked picture under `apps/mac/Resources` is `preview-icon-sizes.png`, and the README's copies live in `docs/media` (`scripts/make-readme-shots.sh`).
 
 ## Learnings (2026-09-13, threads / satellites / speed / messages / face pass)
 
-- **The icon's orb was half a pixel off the squircle.** The squircle measured `x − (size − 1) / 2` (a pixel's centre minus the canvas centre — right) while the orb measured `x + 0.5 − (size − 1) / 2`, half a pixel up-left; nothing symmetric can be drawn on a disc that does not mirror across the canvas centre. Fixed to `x + 0.5 − size / 2` in the face commit (bytes change at every size anyway); the pure-refactor commit before it is byte-identical by the `git status --porcelain` gate. `checkIcon` counts asymmetric face pixels (0 at all seven sizes) so it cannot regress silently.
-- **A face on a cell grid is one pattern, not seven.** cell = size / 64 keeps the orb at 32.5 cells from 64 to 1024, so the mask is computed on 64 cells and every larger size is that mask in bigger cells (pinned: mask(N)[y][x] === mask(64)[⌊y·64/N⌋][⌊x·64/N⌋]). The Chebyshev dilation that makes the one-cell ink box also fills the chevron's cavity — a designer's hand-drawn pattern will omit those cells; pin what the algorithm renders and look at the strip. Two sizes need hand bitmaps: at 32 the design's ±4.5 px eyes put the ring at 0.87 R, outside the circle's 0.82 bound — ±3.5 px is both inside and the nearer rounding of the blob's spread.
-- **Never `git stash` in a shared worktree.** Seven builders edit one checkout at once; a stash reverts EVERYONE's uncommitted work for the seconds it is out, and a pop refuses when anyone touched a stashed file meanwhile (it did: B6 edited ConsoleRootView.swift in that window; the file was restored from the stash and the newer hunk re-applied by hand). To check a test against the untouched tree, read `git show HEAD:<file>` into the scratchpad and run it there. And `patch` leaves `<file>.orig` beside a file it rewrote — in a shared checkout that is litter a `git add -A` would commit into someone else's directory; run it with `--no-backup-if-mismatch` or move the backup to the scratchpad at once.
+- **The icon's orb was half a pixel off the squircle.** The squircle measured `x − (size − 1) / 2` (a pixel's centre minus the canvas centre: right) while the orb measured `x + 0.5 − (size − 1) / 2`, half a pixel up-left; nothing symmetric can be drawn on a disc that does not mirror across the canvas centre. Fixed to `x + 0.5 − size / 2` in the face commit (bytes change at every size anyway); the pure-refactor commit before it is byte-identical by the `git status --porcelain` gate. `checkIcon` counts asymmetric face pixels (0 at all seven sizes) so it cannot regress silently.
+- **A face on a cell grid is one pattern, not seven.** cell = size / 64 keeps the orb at 32.5 cells from 64 to 1024, so the mask is computed on 64 cells and every larger size is that mask in bigger cells (pinned: mask(N)[y][x] === mask(64)[⌊y·64/N⌋][⌊x·64/N⌋]). The Chebyshev dilation that makes the one-cell ink box also fills the chevron's cavity, and a designer's hand-drawn pattern will omit those cells; pin what the algorithm renders and look at the strip. Two sizes need hand bitmaps: at 32 the design's ±4.5 px eyes put the ring at 0.87 R, outside the circle's 0.82 bound; ±3.5 px is both inside and the nearer rounding of the blob's spread.
+- **Never `git stash` in a shared worktree.** Seven builders edit one checkout at once; a stash reverts EVERYONE's uncommitted work for the seconds it is out, and a pop refuses when anyone touched a stashed file meanwhile (it did: B6 edited ConsoleRootView.swift in that window; the file was restored from the stash and the newer hunk re-applied by hand). To check a test against the untouched tree, read `git show HEAD:<file>` into the scratchpad and run it there. And `patch` leaves `<file>.orig` beside a file it rewrote. In a shared checkout that is litter a `git add -A` would commit into someone else's directory; run it with `--no-backup-if-mismatch` or move the backup to the scratchpad at once.
 - **A bench row that is a tally is not a latency.** `bench` files every sample with a `unit` (`ms`, or `count` for "brain generations spent"); a count row prints `(count, not ms)` in the table and `unit: "count"` in `--json`, so a `1` in the median column is never read as 1 ms. `bench.test.ts` runs the fake-hands bench once and asserts the row SET, because a row that silently skips (a regex that stopped matching the helper's answer) only shows as a missing line nobody reads.
-- **A gate the composer can trust is computed from the listing's own snapshot, synchronously.** `AgentInfo.send` reads what `statusFor` and `canContinue` read (archived, live owners minus our own pids, degraded detection, the Codex CLI's `usable()` — taken WITH the process snapshot so a listing costs no extra await — and a cached `statSync` of the session's folder); the reason is a short phrase the composer shows verbatim ("open in a terminal", "Codex not signed in", "folder is gone"). `SendResult.mode` (`queue | resume | answer`) says how an accepted line travelled; the wire's `AgentInfo.send.mode` vocabulary is `queue | resume` only, so a pending permission shows as `resume` with `pendingPermission` carrying the question.
-- **Typed lines are transcript items, emitted once.** `Transcript.pushTyped` closes any open utterance first (its `final` is what writes the `heard` row) and emits the typed item as a single `final` — an item born final never "starts", and a second emission would write the ledger row twice.
+- **A gate the composer can trust is computed from the listing's own snapshot, synchronously.** `AgentInfo.send` reads what `statusFor` and `canContinue` read (archived, live owners minus our own pids, degraded detection, the Codex CLI's `usable()` (taken WITH the process snapshot so a listing costs no extra await), and a cached `statSync` of the session's folder); the reason is a short phrase the composer shows verbatim ("open in a terminal", "Codex not signed in", "folder is gone"). `SendResult.mode` (`queue | resume | answer`) says how an accepted line travelled; the wire's `AgentInfo.send.mode` vocabulary is `queue | resume` only, so a pending permission shows as `resume` with `pendingPermission` carrying the question.
+- **Typed lines are transcript items, emitted once.** `Transcript.pushTyped` closes any open utterance first (its `final` is what writes the `heard` row) and emits the typed item as a single `final`: an item born final never "starts", and a second emission would write the ledger row twice.
 
-## Learnings (2026-09-14, automations pass — CLI, doctor, docs)
+## Learnings (2026-09-14, automations pass: CLI, doctor, docs)
 
-- **A CLI verb is never a yes.** `jarhead automations add` arms `chime · say · notify · open` only, and refuses `run`, `press`, `file` and `wake` by name with where the yes is heard (voice, or the Console's two-press idiom); there is no flag that stands in for a spoken yes, and the acceptance grep pins that the string `--yes` never appears under `packages/cli/src` — write the doc comment around it ("no flag stands in for a yes"), not with it. The draft still goes through `classifyAutomation` in the engine; the CLI's parser (`parseClockAutomation`) only splits `<when> <verb> <what>` and hands the when-phrase to core's `parseWhen`, so the voice's tool, the Console's form and the CLI parse one grammar.
-- **`parseWhen` is the one `when` grammar; nothing else parses a clock phrase.** `AutomationDraft.whenPhrase` carries the words themselves (with `when` optional beside it): the Console's Add… form sends the phrase and the engine parses it with core's `parseWhen` at `automation.set`, refusing with `parseWhen`'s error text as a toast (never a question, never a Swift parser — a live preview in the form may call nothing). The CLI's `add` hands its when-words to the same `parseWhen` before opening a socket, so a bad phrase is refused with the same words offline. Add a phrase to the ladder in `core/src/schedule.ts` and every surface has it.
+- **A CLI verb is never a yes.** `jarhead automations add` arms `chime · say · notify · open` only, and refuses `run`, `press`, `file` and `wake` by name with where the yes is heard (voice, or the Console's two-press idiom); there is no flag that stands in for a spoken yes, and the acceptance grep pins that the string `--yes` never appears under `packages/cli/src`, so write the doc comment around it ("no flag stands in for a yes"), not with it. The draft still goes through `classifyAutomation` in the engine; the CLI's parser (`parseClockAutomation`) only splits `<when> <verb> <what>` and hands the when-phrase to core's `parseWhen`, so the voice's tool, the Console's form and the CLI parse one grammar.
+- **`parseWhen` is the one `when` grammar; nothing else parses a clock phrase.** `AutomationDraft.whenPhrase` carries the words themselves (with `when` optional beside it): the Console's Add… form sends the phrase and the engine parses it with core's `parseWhen` at `automation.set`, refusing with `parseWhen`'s error text as a toast (never a question, never a Swift parser; a live preview in the form may call nothing). The CLI's `add` hands its when-words to the same `parseWhen` before opening a socket, so a bad phrase is refused with the same words offline. Add a phrase to the ladder in `core/src/schedule.ts` and every surface has it.
 - **A recipe is never deleted either.** `recipe.trash` stamps `ShellRecipe.trashedAt` (the row stays in `settings.json` and the snapshot's `recipes`, hidden from pickers, refused as a `run-recipe` target), `recipe.restore` clears it; the ledger has `recipe.trashed` and `recipe.restored`. `jarhead recipes` and the Console fold trashed recipes under Trash with Restore; `jarhead recipes restore <name>` is the verb.
 - **`jarhead automations add` prints only the row it created.** The landed predicate (`landedAutomation`) wants the CLI's row, armed or snoozed, with `createdAt` at or after a stamp taken before the send. A `done` or `failed` row of the same name gives its name up when the new one arms (it is renamed with its day, "pasta · 5 Oct"), and neither it nor a trashed one in the snapshot's tail is ever printed as the armed one; only a live row keeps a name. A `warn` toast after the send ends the wait, so a refusal does not run out the 5 s.
 - **`pmset` is text.** The doctor READS `pmset -g sched` (no root) to see whether a wake is already scheduled and prints `sudo pmset repeat wakeorpoweron MTWRF 07:05:00` (five minutes early, pmset's weekday letters M T W R F S U) as the row's `fix` for Kevin to copy. The pure `automationChecks(input)` takes the read as a string, so the test's child_process spy proves the group spawns nothing; `pmset` appears in the repo's TypeScript only in `cli/src/doctor.ts`.
-- **A row that acts unattended is counted by kind, not by state alone.** `automationKind` derives alarm · timer · reminder · routine · watcher from `when` and the first action — a chime at `in` is a timer, not an alarm, so it does not ring through quiet hours (`quiet: "respect"`); only `at`/`every` + chime is an alarm (`override`). The CLI's `add` sets the clause from the derived kind, never from the verb.
-- **The snapshot's `automations` is the live rows, then the Trash's newest eight** (`AUTOMATIONS_TRASHED_MAX`, `state: "trashed"`, for the Console's Trash fold; every rail and the CLI's `all` filter by state). An older trashed row is unlisted, so `resolveAutomation` lets any `auto_…` (newId: base-36 time + six chars, so ≥ 6 chars after the prefix) pass through for Restore; a name resolves live rows before a lingering `done` one, case-insensitively, and an unknown name throws naming what IS set — the `threads-cli` resolver's rules, reused rather than re-derived.
+- **A row that acts unattended is counted by kind, not by state alone.** `automationKind` derives alarm · timer · reminder · routine · watcher from `when` and the first action: a chime at `in` is a timer, not an alarm, so it does not ring through quiet hours (`quiet: "respect"`); only `at`/`every` + chime is an alarm (`override`). The CLI's `add` sets the clause from the derived kind, never from the verb.
+- **The snapshot's `automations` is the live rows, then the Trash's newest eight** (`AUTOMATIONS_TRASHED_MAX`, `state: "trashed"`, for the Console's Trash fold; every rail and the CLI's `all` filter by state). An older trashed row is unlisted, so `resolveAutomation` lets any `auto_…` (newId: base-36 time + six chars, so ≥ 6 chars after the prefix) pass through for Restore; a name resolves live rows before a lingering `done` one, case-insensitively, and an unknown name throws naming what IS set. These are the `threads-cli` resolver's rules, reused rather than re-derived.
 - **`packages/cli` had no `test` script** (core and protocol got theirs in the contract pass); `pnpm -C packages/cli test` runs `node --import tsx --test 'src/**/*.test.ts'` now. There is still no `pnpm lint` script in the repo: the check line to trust is `pnpm typecheck` + the package tests.
 
 ## Learnings (2026-09-14, Console component kit)
 
-- **The kit is the only way to draw a control in the Console or Setup.** Tooltips are `.consoleHelp(_:key:id:)` (tier 1 line + keycap, tier 2 `ConsoleTipCard`, tier 3 preview) — never `.help(` (`rg '\.help\(' UI/Console UI/Onboarding` must match nothing). Dropdowns are `ConsoleMenuField` opening a `ConsoleMenuPopup` on the float layer (groups, a filter strip past eight rows, the badge column, ↑↓ ⏎ Esc and type-ahead, a foot that says the highlighted row's whole sentence) — never `Menu { Picker }`, never `NSMenu` except the five right-click `.contextMenu`s and the ⋯ overflow, which render one `[ConsoleVerb]` array. Toggles are `ConsoleToggle` (`On | Off` on the segments idiom, no blue switch); fields `ConsoleField` / `ConsoleFilterField` / `ConsoleSecretRow`; rows `ConsoleRow` under `ConsoleGroupHead`, folded by `ConsoleDisclosure(.section | .group, summary:)`, walked by `ConsoleListKeys`; badges `ConsoleBadge.Word` (only `tight · missing · asks · off` amber and `too big · failed` red).
-- **Floats never open a window.** One `ConsoleFloatLayer` per root (`ConsoleRootView.chromeA`, `OnboardingRootView`) draws every tip and menu from `consoleFloat(_:kind:edge:on:dismiss:content:)` — publishers APPEND to the anchor preference (`transformAnchorPreference`), so a tip on a menu field or a verb's tip inside a carded row composes with the floats under it, and of several tips only the innermost draws; a trigger publishes its frame (tracked by `onGeometryChange`) so a popup follows its field under a rail scroll; a `.focusable` popup takes the arrow keys through the responder chain. `ConsoleTheme.swift` is frozen; new tokens go through a kit file.
+- **The kit is the only way to draw a control in the Console or Setup.** Tooltips are `.consoleHelp(_:key:id:)` (tier 1 line + keycap, tier 2 `ConsoleTipCard`, tier 3 preview), never `.help(` (`rg '\.help\(' UI/Console UI/Onboarding` must match nothing). Dropdowns are `ConsoleMenuField` opening a `ConsoleMenuPopup` on the float layer (groups, a filter strip past eight rows, the badge column, ↑↓ ⏎ Esc and type-ahead, a foot that says the highlighted row's whole sentence), never `Menu { Picker }`, never `NSMenu` except the five right-click `.contextMenu`s and the ⋯ overflow, which render one `[ConsoleVerb]` array. Toggles are `ConsoleToggle` (`On | Off` on the segments idiom, no blue switch); fields `ConsoleField` / `ConsoleFilterField` / `ConsoleSecretRow`; rows `ConsoleRow` under `ConsoleGroupHead`, folded by `ConsoleDisclosure(.section | .group, summary:)`, walked by `ConsoleListKeys`; badges `ConsoleBadge.Word` (only `tight · missing · asks · off` amber and `too big · failed` red).
+- **Floats never open a window.** One `ConsoleFloatLayer` per root (`ConsoleRootView.chromeA`, `OnboardingRootView`) draws every tip and menu from `consoleFloat(_:kind:edge:on:dismiss:content:)`. Publishers APPEND to the anchor preference (`transformAnchorPreference`), so a tip on a menu field or a verb's tip inside a carded row composes with the floats under it, and of several tips only the innermost draws; a trigger publishes its frame (tracked by `onGeometryChange`) so a popup follows its field under a rail scroll; a `.focusable` popup takes the arrow keys through the responder chain. `ConsoleTheme.swift` is frozen; new tokens go through a kit file.
 - **Small structs, tokens only, words on an enum.** CI's older Swift: SwiftUI bodies under ~40 lines, no `??` chains of interpolating closures; every literal string on a `…Words` enum that `check-kit` pins; flat raised surfaces with one 0.22 hairline and radius 6, no shadow, no dither on a control; the accent only as the primary fill, the one key ring and the 2 pt selection bar; figures mono, words sans; Return is never a yes.
-- **The harness is the eye.** `apps/mac/Scripts/console-preview.sh <scenario>` with `keyDown:down+return`, `click:(x,y)` / `click:<id>` / `click:<id>:cold` (the centre of a tracked control, `ConsoleClickTargets.frames`; cold = activation handed to Finder and the app polled inactive — a bare `NSApp.deactivate()` never flips `isActive` — the window not key, the precondition its own `check:` line; the first click must act), `probe-press` / `check-press:<verb+verb>` (the `press:` · `menu-pick:` · `menu:` trail, `ConsolePress.report`), `check-composer-free`, `focus:<id>` (plain `.focusable()` on the kit's triggers and fields — `.activate` interactions would make them focusable only with Keyboard navigation on; the ring lights only when `ConsoleKeyRing.byKeyboard` says the focus did not arrive on a mouse event, pinned by `check-kit`), `menuOpen:<id>`, `tipOpen:<id>`, `fold:<id>:<open|closed>`, `chip:<kind>`, `probe-floats`, and `check-kit@0.3` in every kit scenario; shoot dark and `PREVIEW_APPEARANCE=light`, once with `PREVIEW_REDUCE_MOTION=1`. Kit files live flat in `UI/Console/` (the harness globs `UI/Console/*.swift`); `UI/HelpCopy.swift` is AppKit-free and sits on `onboarding-preview.sh`'s swiftc line. The stream: scenario `resumed` with `check-stream` (entry ids unique, caret on the newest utterance, AX row texts == transcript) and the `republish` knob. The design13 pass's scenarios, each shot dark, light and `PREVIEW_REDUCE_MOTION=1`: `resumed · buttons · menu-click-through · tip-click · cold-click · composer-stop · voice-chip`; its knobs `click:<id>` / `click:<id>:cold` / `probe-press` / `check-press:<none|verb+verb>` / `check-composer-free` / `phase:<raw>` / `probe-voice` / `check-stream` / `republish` / `append`; the builder sections below say what each pins. The island's eye is `apps/mac/Scripts/orb-preview.sh --notch-checks [name…]` (design13 recipes `click-open · click-folded · click-dead-time · stop-dim · stop-dim-asleep`; knobs `ORB_NOTCH_CLICK="what@t;…"`, `ORB_NOTCH_STOP_DIM_AT=t`).
+- **The harness is the eye.** `apps/mac/Scripts/console-preview.sh <scenario>` with `keyDown:down+return`, `click:(x,y)` / `click:<id>` / `click:<id>:cold` (the centre of a tracked control, `ConsoleClickTargets.frames`; cold = activation handed to Finder and the app polled inactive (a bare `NSApp.deactivate()` never flips `isActive`), the window not key, the precondition its own `check:` line; the first click must act), `probe-press` / `check-press:<verb+verb>` (the `press:` · `menu-pick:` · `menu:` trail, `ConsolePress.report`), `check-composer-free`, `focus:<id>` (plain `.focusable()` on the kit's triggers and fields; `.activate` interactions would make them focusable only with Keyboard navigation on; the ring lights only when `ConsoleKeyRing.byKeyboard` says the focus did not arrive on a mouse event, pinned by `check-kit`), `menuOpen:<id>`, `tipOpen:<id>`, `fold:<id>:<open|closed>`, `chip:<kind>`, `probe-floats`, and `check-kit@0.3` in every kit scenario; shoot dark and `PREVIEW_APPEARANCE=light`, once with `PREVIEW_REDUCE_MOTION=1`. Kit files live flat in `UI/Console/` (the harness globs `UI/Console/*.swift`); `UI/HelpCopy.swift` is AppKit-free and sits on `onboarding-preview.sh`'s swiftc line. The stream: scenario `resumed` with `check-stream` (entry ids unique, caret on the newest utterance, AX row texts == transcript) and the `republish` knob. The design13 pass's scenarios, each shot dark, light and `PREVIEW_REDUCE_MOTION=1`: `resumed · buttons · menu-click-through · tip-click · cold-click · composer-stop · voice-chip`; its knobs `click:<id>` / `click:<id>:cold` / `probe-press` / `check-press:<none|verb+verb>` / `check-composer-free` / `phase:<raw>` / `probe-voice` / `check-stream` / `republish` / `append`; the builder sections below say what each pins. The island's eye is `apps/mac/Scripts/orb-preview.sh --notch-checks [name…]` (design13 recipes `click-open · click-folded · click-dead-time · stop-dim · stop-dim-asleep`; knobs `ORB_NOTCH_CLICK="what@t;…"`, `ORB_NOTCH_STOP_DIM_AT=t`).
 
-## Learnings (2026-09-16, audio pass — design12, builder D)
+## Learnings (2026-09-16, audio pass: design12, builder D)
 
 - `CADefaultDeviceAggregate-<pid>-n` is **AVAudioEngine's own** default-device aggregate (it appears
   when default input ≠ default output, at the first plain start attempt, with no voice-processing
   unit anywhere, and lives as long as the engine object). The unit's aggregate is
-  `VPAUAggregateAudioDevice-0x…` — that is the one that must be gone after stop, and is. A "released
+  `VPAUAggregateAudioDevice-0x…`: that is the one that must be gone after stop, and is. A "released
   at sleep" rule keyed on the `CADefaultDeviceAggregate` prefix reads a false positive while the app
   merely exists.
 - On a Mac whose default input and output are different devices, AVAudioEngine's I/O is one unit on
@@ -1058,10 +1060,10 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   false → −10875 on every wiring). The plain path must not set the property when the ranked mic
   already is the default (the wake listener already skips it then); when it differs, the set is a
   rung that can fail, not a given. Done in the integration pass: `StartAttempt.pinDevice`, the
-  Recording ladder `ranked/hardware › ranked/automatic › default/hardware` — `recording` went from
+  Recording ladder `ranked/hardware › ranked/automatic › default/hardware`; `recording` went from
   `2 ok, 1 FAIL` to `10 ok, 0 FAIL` on this Mac.
 - A bare tool in Kevin's agent terminal inherits the microphone grant of the terminal's responsible
-  process — `AVCaptureDevice.authorizationStatus(for: .audio)` is `authorized` there — so a silent
+  process (`AVCaptureDevice.authorizationStatus(for: .audio)` is `authorized` there), so a silent
   probe can run headless without a TCC prompt (`AUDIO_PROBE_DIRECT=1`); the `.app` wrap is for Kevin's
   own runs and the doctor, and is signed with the local identity so its grant survives rebuilds.
 - `EchoGuardModel` at `now = 0` exactly is inside `audibleUntil 0 + tail`: a fresh model's timeline in
@@ -1069,30 +1071,30 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   open→held transition slice is not counted in `heldSeconds`; 200 held slices read 1.99 s.
 - `zsh` treats `echo ====X` as a command lookup (`=cmd` expansion): never start an echo argument with `=`.
 
-## Learnings (2026-09-17, Console UX pass — design13, builder B)
+## Learnings (2026-09-17, Console UX pass: design13, builder B)
 
-- **A float never takes a click.** `ConsoleFloatLayer.catches(kind:)` is `false` for `.tip` and `.menu` (pure, pinned by `check-kit`: `floats: a tip/menu never consumes a click`) and nothing under a float is hit-testable — the window-wide `Color.clear … onTapGesture(dismiss)` catcher is gone. A menu closes on the mouse-DOWN outside it from `ConsoleFloatMonitor.observe` (one local `NSEvent` monitor while anything is open; it returns the event unchanged, so the control under the pointer acts on the same click): `outside` = not `inside` (the rect the layer placed, `ConsoleFloatSlot.placed[id]`) and not `onField` (`ConsoleClickTargets.frames[id] ?? float.frame`, the field's tracked frame). A down on the field itself is left to the field's Button, whose `ConsoleMenuField.toggle()` closes an open menu once (a dismiss there too would close on the down and reopen on the up); a tip goes on any down, wheel or key-down. Every test is a rect-contains in the root's top-left space, never a clock. Effect: with a menu open, a click on Stop stops, a click on another field closes this one and opens that, a click on the open field closes it.
+- **A float never takes a click.** `ConsoleFloatLayer.catches(kind:)` is `false` for `.tip` and `.menu` (pure, pinned by `check-kit`: `floats: a tip/menu never consumes a click`) and nothing under a float is hit-testable: the window-wide `Color.clear … onTapGesture(dismiss)` catcher is gone. A menu closes on the mouse-DOWN outside it from `ConsoleFloatMonitor.observe` (one local `NSEvent` monitor while anything is open; it returns the event unchanged, so the control under the pointer acts on the same click): `outside` = not `inside` (the rect the layer placed, `ConsoleFloatSlot.placed[id]`) and not `onField` (`ConsoleClickTargets.frames[id] ?? float.frame`, the field's tracked frame). A down on the field itself is left to the field's Button, whose `ConsoleMenuField.toggle()` closes an open menu once (a dismiss there too would close on the down and reopen on the up); a tip goes on any down, wheel or key-down. Every test is a rect-contains in the root's top-left space, never a clock. Effect: with a menu open, a click on Stop stops, a click on another field closes this one and opens that, a click on the open field closes it.
 - **The first click on an inactive window acts.** `ConsoleHostingView<Content>` (`ConsoleWindowController.swift`, `acceptsFirstMouse → true`) roots the Console and Setup windows; a bare `NSHostingView` leaves that to a default nothing pins.
 - **The key ring is the keyboard's alone.** `ConsoleKeyRing` (`ConsoleTip.swift`) notes through a local monitor whether the last input was a mouse; `byKeyboard` gates the accent ring on the kit's fields and tip triggers (`keyboard = focused && ConsoleKeyRing.byKeyboard`), which stay plain `.focusable()` so they answer with Keyboard navigation off. The harness's `keyDown:` calls `ConsoleKeyRing.note` itself, since `window.sendEvent` passes no local monitor.
-- Harness: `ConsoleClickTargets.frames[id]` is written by the kit's `frame(in: .global)` trackers (every tip trigger and menu field with an id — Go and Stop among them); `ConsolePress.report` prints `press: <verb>` (ConsoleActions.send / .stop and the transport), `menu-pick: <id> <value>` and `menu: opened|closed <id>` as they happen. Knobs `click:<id>`, `click:<id>:cold`, `probe-press`, `check-press:<none|verb+verb>`, `check-composer-free`; scenarios `menu-click-through` (Model open → one click on Voice closes it and opens Voice, one on Stop presses it, one on the open field closes it), `tip-click` (Stop's pinned tip and one `press: stop` on the same click), `cold-click` (Finder asked forward, the app polled inactive — its own `check:` line — then one click on Go → `press: go`). A popup's `placed` entry goes on `onDisappear`, so every probe waits 0.6 s after its click; `menu-outside` keeps "the composer has not taken focus" only for a click on ground (`check-composer-free`).
+- Harness: `ConsoleClickTargets.frames[id]` is written by the kit's `frame(in: .global)` trackers (every tip trigger and menu field with an id, Go and Stop among them); `ConsolePress.report` prints `press: <verb>` (ConsoleActions.send / .stop and the transport), `menu-pick: <id> <value>` and `menu: opened|closed <id>` as they happen. Knobs `click:<id>`, `click:<id>:cold`, `probe-press`, `check-press:<none|verb+verb>`, `check-composer-free`; scenarios `menu-click-through` (Model open → one click on Voice closes it and opens Voice, one on Stop presses it, one on the open field closes it), `tip-click` (Stop's pinned tip and one `press: stop` on the same click), `cold-click` (Finder asked forward, the app polled inactive with its own `check:` line, then one click on Go → `press: go`). A popup's `placed` entry goes on `onDisappear`, so every probe waits 0.6 s after its click; `menu-outside` keeps "the composer has not taken focus" only for a click on ground (`check-composer-free`).
 
-## Learnings (2026-09-17, Console UX pass — design13, builder C)
+## Learnings (2026-09-17, Console UX pass: design13, builder C)
 
-- **The island takes the click the first time — the gating stays.** `NotchPanel.ignoresMouseEvents` still flips on the pointer's approach (the clear panel's alpha pass-through was never trusted; without the gate `hitTest → nil` would eat the click instead of passing it to the menu bar), but `NotchPanel.sendEvent` hands every `.leftMouseDown`'s screen point to `onMouseDown` → `pointer(at:fromEvent: true)` BEFORE `super.sendEvent`, so a click that beats the asynchronous mouse-moved monitors finds `hovered` and the mode current — synchronous, a rect test; `fromEvent` also lets a posted click through `ORB_NOTCH_NO_POINTER`. `NotchView.hitTest` tests `inkRect` = `islandOpenRect` while `mode == .island` (the layout is fixed from the first frame; the spring only reveals it) and `acceptsFirstMouse` is true. `mouseDown` records `downWhileOpening`; `mouseUp` always `flashPress`es the box (the press is felt), then `pressIsDead` drops only the route (the consent boxes' 500 ms), `downWhileOpening` parks it as `pendingPress`, fired once by `firePendingPress` when `springsSettled` if the pointer is still inside the open rect; a mode change clears it.
+- **The island takes the click the first time, and the gating stays.** `NotchPanel.ignoresMouseEvents` still flips on the pointer's approach (the clear panel's alpha pass-through was never trusted; without the gate `hitTest → nil` would eat the click instead of passing it to the menu bar), but `NotchPanel.sendEvent` hands every `.leftMouseDown`'s screen point to `onMouseDown` → `pointer(at:fromEvent: true)` BEFORE `super.sendEvent`, so a click that beats the asynchronous mouse-moved monitors finds `hovered` and the mode current (synchronous, a rect test); `fromEvent` also lets a posted click through `ORB_NOTCH_NO_POINTER`. `NotchView.hitTest` tests `inkRect` = `islandOpenRect` while `mode == .island` (the layout is fixed from the first frame; the spring only reveals it) and `acceptsFirstMouse` is true. `mouseDown` records `downWhileOpening`; `mouseUp` always `flashPress`es the box (the press is felt), then `pressIsDead` drops only the route (the consent boxes' 500 ms), `downWhileOpening` parks it as `pendingPress`, fired once by `firePendingPress` when `springsSettled` if the pointer is still inside the open rect; a mode change clears it.
 - **Stop asleep is spent, not gone.** `NotchPanel.stopDim(_:)` → 0.45 while `.asleep`, 1 in every other phase (pure, pinned); the box stays a button. The Window box wears `rectangle.inset.filled`.
 - Harness (`orb-preview.sh`): `ORB_NOTCH_CLICK="what@t;…"` posts a real down / up through `NotchPanel.sendEvent` at the control's centre in the open layout (clamped into the folded ink while folded), no pointer approach first, and earns its `check:` lines 0.7 s later (`notch-click <what>: the panel accepts the mouse at the down`; folded → 0 routes at the up and one once the springs settle; open → one route at the up; inside the dead-time → the box flashes, 0 routes); `ORB_NOTCH_STOP_DIM_AT=t` reads the drawn Stop dim and pins `stopDim`. Both knobs parse `what@t;…` through `parsePressList` (shared with `ORB_NOTCH_PRESS`). Recipes under `--notch-checks`: `click-open · click-folded · click-dead-time · stop-dim · stop-dim-asleep`. A check line interpolates one ternary at most (`bit()`, lets first) for CI's older Swift.
 
-## Learnings (2026-09-17, Console UX pass — design13, builder E)
+## Learnings (2026-09-17, Console UX pass: design13, builder E)
 
-- **A control is a tile plus a hairline.** Every ghost button, menu field, text field, segments box and stepper rests on `ConsoleFill.rest(on:)` — `lift` on `ground`, `liftRaised` (the one new tone, declared in `UI/Console/ConsoleFill.swift`, never in the frozen `ConsoleTheme.swift`) on a `raised` surface — read from `\.consoleSurface` (popups, cards and a hovered/selected `ConsoleRow`'s controls set `.raised`). `ConsoleButtonStyle` lives in `UI/Console/ConsoleButton.swift` with five kinds (`.spent` = a deed done: `lift` + `hairRow` + fg3, still enabled, never red); disabled keeps a ghost's tile and dims the label alone, a primary/danger dims whole. `ConsoleButtonFace` draws from values alone, so the harness can force every state. Glyph names live on `ConsoleGlyph` (a verb goes filled, chrome inside a box or a line beside a word stays on the keep-list); `check-kit` pins the rule (`checkKitButtons`) and that every name is an SF Symbol. Harness: `console-preview.sh buttons` is the kinds × states sheet (`ConsoleButtonSheet`, swapped into the Console window; `focus:buttons.field2` rings the second field) — shoot dark, light and `PREVIEW_REDUCE_MOTION=1`.
+- **A control is a tile plus a hairline.** Every ghost button, menu field, text field, segments box and stepper rests on `ConsoleFill.rest(on:)`: `lift` on `ground`, `liftRaised` (the one new tone, declared in `UI/Console/ConsoleFill.swift`, never in the frozen `ConsoleTheme.swift`) on a `raised` surface, read from `\.consoleSurface` (popups, cards and a hovered/selected `ConsoleRow`'s controls set `.raised`). `ConsoleButtonStyle` lives in `UI/Console/ConsoleButton.swift` with five kinds (`.spent` = a deed done: `lift` + `hairRow` + fg3, still enabled, never red); disabled keeps a ghost's tile and dims the label alone, a primary/danger dims whole. `ConsoleButtonFace` draws from values alone, so the harness can force every state. Glyph names live on `ConsoleGlyph` (a verb goes filled, chrome inside a box or a line beside a word stays on the keep-list); `check-kit` pins the rule (`checkKitButtons`) and that every name is an SF Symbol. Harness: `console-preview.sh buttons` is the kinds × states sheet (`ConsoleButtonSheet`, swapped into the Console window; `focus:buttons.field2` rings the second field). Shoot dark, light and `PREVIEW_REDUCE_MOTION=1`.
 
-## Learnings (2026-09-17, Console UX pass — design13, builder F)
+## Learnings (2026-09-17, Console UX pass: design13, builder F)
 
-- **A control whose deed is done stays grey and says so.** The composer's Stop is `.spent` while `phase == .asleep && !stopHot` — `lift` + `hairRow` + fg3, the word **Stopped**, still enabled (a Stop must land: the daemon may hold something the app does not show) — and its kind, word and flash are pure functions on `ComposerBar` (`stopKind(phase:hot:flashing:)`, `stopWord(phase:hot:)`, `stopFlashes(phaseAtPress:)`; asleep → no red, the press just dips) pinned by `check-kit` (`checkKitStop`). The button keeps one width through the word change (a hidden `Stopped` under the visible word), the kind crossfades on `Motion.snappy`, the tip flips to `HelpCopy.stopSpent` ("Stopped — nothing running ⌘."). `AppState.transportStop` skips its own "Stopped" toast when the snapshot already says asleep (the engine's "nothing running" is the one voice then); the status/Dock menu's Stop row reads `Stopped` in `secondaryLabelColor` while asleep (`StatusItem.stopTitle(for:)`, `StatusWords`). Send wears `ConsoleGlyph.send`. The composer's buttons are four small `private var`s in `ComposerBar` with a marked slot between Mute and the field for the voice chip. Harness: scenario `composer-stop` (session snap → `click:stream.stop` → `phase:asleep` → the spent snap → a second click snapped 0.15 s later, grey → `check-press:stop+stop`) and the knob `phase:<raw>` (the engine's answer as the daemon would publish it; asleep drops the session) — shoot dark, light and `PREVIEW_REDUCE_MOTION=1`.
+- **A control whose deed is done stays grey and says so.** The composer's Stop is `.spent` while `phase == .asleep && !stopHot`: `lift` + `hairRow` + fg3, the word **Stopped**, still enabled (a Stop must land: the daemon may hold something the app does not show). Its kind, word and flash are pure functions on `ComposerBar` (`stopKind(phase:hot:flashing:)`, `stopWord(phase:hot:)`, `stopFlashes(phaseAtPress:)`; asleep → no red, the press just dips) pinned by `check-kit` (`checkKitStop`). The button keeps one width through the word change (a hidden `Stopped` under the visible word), the kind crossfades on `Motion.snappy`, the tip flips to `HelpCopy.stopSpent` ("Stopped — nothing running ⌘."). `AppState.transportStop` skips its own "Stopped" toast when the snapshot already says asleep (the engine's "nothing running" is the one voice then); the status/Dock menu's Stop row reads `Stopped` in `secondaryLabelColor` while asleep (`StatusItem.stopTitle(for:)`, `StatusWords`). Send wears `ConsoleGlyph.send`. The composer's buttons are four small `private var`s in `ComposerBar` with a marked slot between Mute and the field for the voice chip. Harness: scenario `composer-stop` (session snap → `click:stream.stop` → `phase:asleep` → the spent snap → a second click snapped 0.15 s later, grey → `check-press:stop+stop`) and the knob `phase:<raw>` (the engine's answer as the daemon would publish it; asleep drops the session). Shoot dark, light and `PREVIEW_REDUCE_MOTION=1`.
 
-## Learnings (2026-09-17, Console UX pass — design13, builder G)
+## Learnings (2026-09-17, Console UX pass: design13, builder G)
 
-- **One voice menu, two doors; a pick is free, the restart is one press.** The composer's `🇬🇧 Ballad ⌄` chip (`UI/Console/VoiceChip.swift`, id `stream.voice`, between Mute and the field) and Settings › Audio's Voice field are the same `ConsoleMenuField` over `ConsoleTheme.voices` with the same popup: the new `head` slot carries the Accent segments (`🇺🇸 US | 🇬🇧 UK | None`, `.toggle` cells of 50 on the popup's `raised` surface), `speaking` marks the open session's voice (`VoiceWords.detail(_:speaking:)`), the `foot` says what a pick does in THIS phase (`VoiceSwitchWords.foot(name:phase:busy:)`), and the `trigger` slot draws the chip's face (`hugs: true` sizes the field to it). Every pick — click, ⏎, the status menu — is `set-settings` and nothing else; the one paid restart is **Switch now** (`EngineCommand.voiceReopen`, the engine's `reopenVoice(how: "voice change")`), a primary 32 that rises in beside the chip only while awake and a pick waits (`VoiceSwitch.waits` — the session must have said its voice), disabled with `HelpCopy.switchVoiceBusy` while a delegation or a live thread runs (`VoiceSwitch.busy`). The design's ⌘⏎ pick-and-switch was dropped on purpose: Return is never a paid yes, modified or not. Asleep or paused nothing waits and no verb shows.
-- **The flag is the Accent's, never a voice's.** `AccentWords.flag(_:)` / `title(_:short:)` (ConsoleMenuModel.swift): short in the 296 rail and the popup head, long in Setup (`🇺🇸 American | 🇬🇧 British | None`) and the fold summary (`Ballad · 🇬🇧 British`); the field title leads with it (`🇬🇧 Ballad  default`, `VoiceSwitchWords.chip`). `ConsoleTheme.accents` is untouched. Settings' line under Accent is `SettingsPanel.switchLine(settings:session:phase:busy:)` → `.rest` (the shortened `ConsoleTheme.languageHint`) or `.waits(enabled:)` (`[Switch now] one restart · Ballad until you switch`). The stream reads a `session.started` row resumed from another on a new voice or accent as one mono row (`ConsoleFormat.voiceSwitchLine`, `voice → Marin 🇬🇧 · one restart · 0.7 s` when the row carries `ms`); the same pair keeps "Session started · resumed from". The status menu's `Voice ▸` row (`VoiceMenuModel.rows`, drawn by `StatusItem.voiceMenu`) is native NSMenu — right outside the Console.
+- **One voice menu, two doors; a pick is free, the restart is one press.** The composer's `🇬🇧 Ballad ⌄` chip (`UI/Console/VoiceChip.swift`, id `stream.voice`, between Mute and the field) and Settings › Audio's Voice field are the same `ConsoleMenuField` over `ConsoleTheme.voices` with the same popup: the new `head` slot carries the Accent segments (`🇺🇸 US | 🇬🇧 UK | None`, `.toggle` cells of 50 on the popup's `raised` surface), `speaking` marks the open session's voice (`VoiceWords.detail(_:speaking:)`), the `foot` says what a pick does in THIS phase (`VoiceSwitchWords.foot(name:phase:busy:)`), and the `trigger` slot draws the chip's face (`hugs: true` sizes the field to it). Every pick (click, ⏎, the status menu) is `set-settings` and nothing else; the one paid restart is **Switch now** (`EngineCommand.voiceReopen`, the engine's `reopenVoice(how: "voice change")`), a primary 32 that rises in beside the chip only while awake and a pick waits (`VoiceSwitch.waits`: the session must have said its voice), disabled with `HelpCopy.switchVoiceBusy` while a delegation or a live thread runs (`VoiceSwitch.busy`). The design's ⌘⏎ pick-and-switch was dropped on purpose: Return is never a paid yes, modified or not. Asleep or paused nothing waits and no verb shows.
+- **The flag is the Accent's, never a voice's.** `AccentWords.flag(_:)` / `title(_:short:)` (ConsoleMenuModel.swift): short in the 296 rail and the popup head, long in Setup (`🇺🇸 American | 🇬🇧 British | None`) and the fold summary (`Ballad · 🇬🇧 British`); the field title leads with it (`🇬🇧 Ballad  default`, `VoiceSwitchWords.chip`). `ConsoleTheme.accents` is untouched. Settings' line under Accent is `SettingsPanel.switchLine(settings:session:phase:busy:)` → `.rest` (the shortened `ConsoleTheme.languageHint`) or `.waits(enabled:)` (`[Switch now] one restart · Ballad until you switch`). The stream reads a `session.started` row resumed from another on a new voice or accent as one mono row (`ConsoleFormat.voiceSwitchLine`, `voice → Marin 🇬🇧 · one restart · 0.7 s` when the row carries `ms`); the same pair keeps "Session started · resumed from". The status menu's `Voice ▸` row (`VoiceMenuModel.rows`, drawn by `StatusItem.voiceMenu`) is native NSMenu, right outside the Console.
 - **The chip is the one leaf that reads AppState.** `VoiceChipSlot` observes `AppState` because the composer's inputs come through `StreamPane`/`ComposerBar` (builder F's file, one line allowed); it slices to `VoiceChipInputs` and the chip is `.equatable()`, so a 20 Hz level tick redraws nothing under it. A follow-up hands the inputs down from `ConsoleRootView` and removes the observer.
 - Harness: scenario `voice-chip` (the `resumed` fixture awake on Ballad: `menuOpen:stream.voice` → the popup above the composer, `keyDown:down+down+return` → `menu-pick: stream.voice marin` and `press: setSettings` only, `probe-voice` prints the chip's inputs (`waits=true line=waits(enabled: true)`), `click:stream.switch` → `check-press:setSettings+voiceReopen`, then `keyDown:tab` into the head keeps the popup and `keyDown:left` moves the accent); `settings-audio` is shot awake on Ballad with Cedar saved so the switch line shows; the harness echoes a voice/accent patch into the snapshot as the daemon would; `check-kit` gains `checkKitVoices` (flags, titles, the chip word, the five foot sentences, the switch line, the summary, the switch row, the status submenu titles). Shoot dark, light and `PREVIEW_REDUCE_MOTION=1`.

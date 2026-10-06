@@ -512,10 +512,12 @@ The state directory is `~/.jarhead`:
 | `⌃⌥R` | Recording on / off (Settings › Audio) |
 
 The letters take ⌃⌥, which types no character (`apps/mac/Scripts/hotkey-check.sh` checks every combo on the US
-layout, in CI). `⌥⇧Space` types a no-break space on the US layout, so while Jarhead runs no field gets
-one from that combo. ⌃⌥ is also VoiceOver's modifier, and a combo another app registered first stays that app's
+layout, in CI). ⌃⌥ is also VoiceOver's modifier, and a combo another app registered first stays that app's
 (the failure is only logged). `defaults write com.kevinliu.jarhead hotkeys.off -bool YES` turns every global hotkey
 off at the next launch except `⌥⎋` Stop.
+
+`⌥⇧Space` stays go / pause. On the US layout it takes the no-break space (U+00A0) while Jarhead runs, the one
+hotkey allowed to (`apps/mac/Scripts/HotkeyCheckMain.swift`).
 
 In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead://pause`,
 `jarhead://stop`.

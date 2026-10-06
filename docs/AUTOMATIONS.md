@@ -1,14 +1,14 @@
 # Automations
 
 Jarhead can set things up while you are talking to it and carry them out later with the agent
-asleep: alarms, timers, reminders, routines at a time, watchers on a signal. One object — an
-**automation**: `when <trigger> then <actions>` — armed by voice while Jarhead is awake, echoed
+asleep: alarms, timers, reminders, routines at a time, watchers on a signal. One object, an
+**automation** (`when <trigger> then <actions>`), is armed by voice while Jarhead is awake, echoed
 back as one line, fired by the daemon from its 1 s tick with **no Live session, no brain turn,
 nothing billed**. What it can do asleep is the run tier and nothing else: a chime and one line
 on the notch island with Snooze · Done, a banner with the same two buttons, a fixed line through
 the Mac's own speaker, an app or https page opened, a file moved into a folder, a shell recipe
-you approved once, one key in one named app. The one thing that costs anything — `wake-brain`,
-one capped headless brain turn, never the voice — is opted into per row with the cost said out
+you approved once, one key in one named app. The one thing that costs anything (`wake-brain`,
+one capped headless brain turn, never the voice) is opted into per row with the cost said out
 loud before your yes. Nothing asks at fire time; anything that would have to ask is refused at
 set-up. Rows are never deleted.
 
@@ -80,7 +80,7 @@ kind change closes the mis-press); folded, a bell chip comes first and the lip p
 up, Kevin · Snooze ⌃⌥S`; tucked, a running timer shows `pasta · 4:12` under the lip. The banner
 is a `UNNotificationCategory("jarhead.automation")` with Snooze · Done (Open · Done when the
 press carries a target); its buttons land the same row as the island's presses. The chime is an
-earcon through the app's `LocalSpeaker` — the wake gate's own instance, so the wake listener
+earcon through the app's `LocalSpeaker`, the wake gate's own instance, so the wake listener
 never hears "It's seven ten" as the word. A ring stays up ten minutes; an alarm then self-snoozes
 once and the second linger ends it (`unanswered`); anything else counts as Done. `⌃⌥S` snoozes
 from anywhere while something rings; the status menu shows `Next · 07:10 Wake up, Kevin` and,
@@ -90,26 +90,26 @@ rings, with Open · Done (§2).
 
 ## 4. What asks once, and what is refused
 
-The policy judges a row **at set-up, once, awake** — `classifyAutomation` in
+The policy judges a row **at set-up, once, awake**: `classifyAutomation` in
 `packages/core/src/policy.ts`, beside the four classifiers. At fire nobody is asked, so anything
 that would be confirm-tier at fire is refused now, not asked now.
 
 | action | armed silently when | asks once (the ordinary handshake) | refused |
 |---|---|---|---|
-| chime / say / notify | a fixed line of 1–160 chars naming no secret | — | empty; a briefing (> 160: "use wake-brain"); names a secret |
-| open | an ordinary app; an https URL the URL gate rates run; a readable path | — | a hands-off app; non-https; a payment or credential host; a secret path |
-| file | a `folder.file` / `download.done` trigger; `into` inside `~`, never `~/.jarhead`, never a secret store | — | anything else |
-| run-recipe | — | the recipe exists (or its command comes with the row) and the shell gate says **run** on its own; no `open`/`osascript`; `mv`/`cp` carry `-n` | the gate says confirm ("would need a yes when it runs; nobody is there then — notify instead") or refuse |
-| press | — | an ordinary app, a key or chord: "`⌘S` will be pressed in Cursor unattended, only while it is in front and no password field has focus" | a hands-off app; a malformed key |
-| wake-brain | — | Brain minutes > 0, a prompt ≤ 400 chars, from the main conversation: **the cost line** is the question | Brain minutes 0; empty prompt; a spawned thread arming it |
+| chime / say / notify | a fixed line of 1–160 chars naming no secret | never | empty; a briefing (> 160: "use wake-brain"); names a secret |
+| open | an ordinary app; an https URL the URL gate rates run; a readable path | never | a hands-off app; non-https; a payment or credential host; a secret path |
+| file | a `folder.file` / `download.done` trigger; `into` inside `~`, never `~/.jarhead`, never a secret store | never | anything else |
+| run-recipe | never | the recipe exists (or its command comes with the row) and the shell gate says **run** on its own; no `open`/`osascript`; `mv`/`cp` carry `-n` | the gate says confirm ("would need a yes when it runs; nobody is there then — notify instead") or refuse |
+| press | never | an ordinary app, a key or chord: "`⌘S` will be pressed in Cursor unattended, only while it is in front and no password field has focus" | a hands-off app; a malformed key |
+| wake-brain | never | Brain minutes > 0, a prompt ≤ 400 chars, from the main conversation: **the cost line** is the question | Brain minutes 0; empty prompt; a spawned thread arming it |
 
 A kind switched off in Settings › Automations › While asleep is refused, naming the chip and the
 nearest safe kind ("run-recipe is not allowed while Jarhead is asleep (Settings › Automations ›
 While asleep); a notify or a chime is"). Run-recipe, press and wake-brain are off by default.
 A send, type, click, pay, delete, post, a LaunchAgent or crontab write, a keychain read, a
-Shortcut, a Live session: refused with the nearest safe version — "when Slack quits, send my
-hours" becomes a notify. The yes for a recipe, a press or a brain wake is spent on that one row:
-the transcript reads `grant · none — the yes is spent on this one row; nothing widens`.
+Shortcut, a Live session: refused with the nearest safe version ("when Slack quits, send my
+hours" becomes a notify). The yes for a recipe, a press or a brain wake is spent on that one row:
+the ledger gets no `grant` row, and nothing widens.
 
 ## 5. The cost line
 
@@ -143,13 +143,13 @@ occurrence is sooner, in which case that fire is skipped and counted. Alarms def
 The daemon is the app's child: a clean quit stops it at once, and after a crash it waits 90 s
 for the relaunched app. **Nothing fires while Jarhead is quit.** Nothing here is a launchd
 agent, a login item the brain installed, or a
-`pmset` the daemon ran. When Jarhead comes back — or the Mac wakes; a tick gap over 5 s is the
-signal — `resync` decides each due row:
+`pmset` the daemon ran. When Jarhead comes back, or the Mac wakes (a tick gap over 5 s is the
+signal), `resync` decides each due row:
 
 | kind | within its grace | later |
 |---|---|---|
 | alarm (15 min) · timer (10) · reminder (60) | fires now, the head reads `· 12 min late` | `missed` row, the `automation.missed` problem with **Run now**, a repeater rolls on, a one-shot goes `failed: missed` |
-| routine | never late — a 01:00 backup at 09:14 is a surprise, not a routine | skipped and counted (`missed 1`), the next occurrence armed |
+| routine | never late: a 01:00 backup at 09:14 is a surprise, not a routine | skipped and counted (`missed 1`), the next occurrence armed |
 | watcher | n/a | the folder listing is re-baselined; files that landed while down are counted on the row (`N new files not handled`), never replayed |
 
 A routine deferred by quiet hours fires when they end; if Jarhead or the Mac was away then, it
@@ -162,7 +162,7 @@ The one mitigation you press is **Open at login** (Settings › Automations): th
 itself with `SMAppService` on your press, so Jarhead and its daemon come back when you log in.
 Waking a closed lid needs root: `pnpm jarhead doctor` prints the exact `pmset` line for you to
 copy and never runs it. `Run now` is refused unless you are there (a session open, or presence
-recent) — it fires so you hear it.
+recent). It fires so you hear it.
 
 ## 8. CLI
 
@@ -177,7 +177,7 @@ pnpm jarhead automations add "<words>"      the clock ladder, parsed by core's p
     parseWhen refuses, by name: a bare four or five at night (it could be either), a range ("9 to 5"),
     a count ("every 2 nights"), and monthly phrases (not yet: say the date)
 pnpm jarhead automations snooze <id|name> [--minutes 10] · done · skip · pause · resume · rename <id|name> "<name>"
-pnpm jarhead automations run <id|name>      fires it now so you hear it — refused unless you are there
+pnpm jarhead automations run <id|name>      fires it now so you hear it; the daemon refuses unless you are there
 pnpm jarhead automations trash <id|name> · restore <id>      Move to Trash / Restore. Nothing is deleted
 pnpm jarhead recipes [list] · add <name> "<command>" [--cwd DIR] [--timeout 120] · trash <name> · restore <name>
     add prints the shell gate's verdict first; a confirm-tier command saves with `asks` and is never armable
@@ -196,18 +196,18 @@ id passes through even when unlisted, so Restore can name a trashed row.
 of a when-phrase, wherever the row comes from: the voice's tool hands it the phrase, the Console's
 Add… form sends the phrase itself as `AutomationDraft.whenPhrase` (its `when` may be left out
 then) and the engine parses it at `automation.set`, refusing with `parseWhen`'s own error text as
-a toast — never a question, never a second grammar in Swift. The CLI's `add` splits `<when>
+a toast: never a question, never a second grammar in Swift. The CLI's `add` splits `<when>
 <verb> <what>` and hands the when-words to the same `parseWhen` before it opens a socket, so a
 malformed phrase is refused with the same words and no daemon round trip. Nothing else parses a
 clock phrase.
 
-**Recipes are never deleted.** `recipe.trash` stamps the recipe's `trashedAt` — the row stays in
+**Recipes are never deleted.** `recipe.trash` stamps the recipe's `trashedAt`. The row stays in
 `settings.json` and in the snapshot, hidden from every picker and refused as a `run-recipe`
 target; `recipe.restore` clears it. The ledger carries `recipe.trashed` and `recipe.restored`
 rows; the Console's Recipes list and `jarhead recipes` fold trashed recipes under **Trash** with
 **Restore** on each.
 
-## 9. doctor — group `automations`
+## 9. doctor: group `automations`
 
 ```
 automations   enabled          ok    6 set · 5 armed · next 07:10 Wake up, Kevin (in 6 h)
@@ -242,6 +242,6 @@ month that a tighter policy now rates confirm will fail at fire and is never arm
   `~/.jarhead/trash/automations/`.
 - Run `pmset`, `launchctl` or a login-item registration from the daemon. `Open at login` is the
   app registering itself on your press; the `pmset` line is text the doctor prints for you.
-- Watch the clipboard, the network, or chain one automation off another — `clipboard.match`,
+- Watch the clipboard, the network, or chain one automation off another. `clipboard.match`,
   `network.changed` and `automation.fired` are reserved words, refused by name until a later pass
   earns them their own TCC story.
