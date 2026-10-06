@@ -712,14 +712,15 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   from every app, and ⌥⇧ + a letter types a character on most layouts (Ô, Â, Ç,
   Í and ‰ for those five letters on the US layout), so those characters never
   reached a field. `hotkey-check.sh` asks UCKeyTranslate that every registered
-  combo types nothing. Go / Pause stays ⌥⇧Space (D8, decided): on the US layout it
-  takes the no-break space (U+00A0) while Jarhead runs, the one hotkey allowed to
-  (`HotkeyCheckMain.swift`'s `typesAllowed`). ⌥⎋ Stop and ⌥⇧Return stay.
+  combo types nothing. Go / Pause stays ⌥⇧Space (D8, decided 2026-10-06 under the
+  launch's standing approval). On the US layout it types U+00A0, so that combo never
+  reaches a field while Jarhead runs (⌥Space still types one). It is the one entry in
+  `HotkeyCheckMain.swift`'s `typesAllowed`. ⌥⎋ Stop and ⌥⇧Return stay.
   `defaults write com.kevinliu.jarhead hotkeys.off -bool YES` turns every hotkey off
-  but ⌥⎋ Stop. ⌃⌥ is VoiceOver's modifier and Rectangle's
-  defaults hold ⌃⌥C and ⌃⌥J. If `RegisterEventHotKey` refuses a combo, the failure
-  is only logged (`Hotkeys.swift`); whether another app's registration makes it
-  refuse is untested.
+  but ⌥⎋ Stop. ⌃⌥ is VoiceOver's modifier and Rectangle's defaults hold ⌃⌥C and
+  ⌃⌥J. If `RegisterEventHotKey` refuses a combo, the failure is only logged
+  (`Hotkeys.swift`); whether another app's registration makes it refuse is
+  untested.
 - **Version skew is a problem, not a silence** (APP-3, W3-3). Both hellos carry
   `PROTOCOL_VERSION`. An app and a daemon from different builds show `app.version`
   on every client ("The app and the daemon are from different builds. Restart the

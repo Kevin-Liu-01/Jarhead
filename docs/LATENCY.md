@@ -207,7 +207,7 @@ by `tokenUsage.last` rising 21.8k → 39.0k over the 10 turns: one thread).
 |---|---:|---:|---:|---:|---:|---:|---|
 | wiki-search | 2 | 3.9 / 11.6 | 3.9 / 11.6 | 3.9 / 11.6 | 9.9 / 16.1 | 3 | left_click×2 browser_type×2 |
 | open-safari | 2 | 4.5 / 8.5 | 4.5 / 8.5 | 4.5 / 8.5 | 9.9 / 12.1 | 2 | open_app×2 |
-| whats-on-screen | 2 | 3.8 / 4.4 | – | – | 3.8 / 4.4 | 1 | (answered from the eyes' shot) |
+| whats-on-screen | 2 | 3.8 / 4.4 | none | none | 3.8 / 4.4 | 1 | (answered from the eyes' shot) |
 | click-search-type | 2 | 3.1 / 3.9 | 3.1 / 3.9 | 3.1 / 3.9 | 8.3 / 9.0 | 3 | left_click×2 browser_type×2 |
 | scroll-down | 2 | 4.1 / 8.0 | 4.1 / 8.0 | 4.1 / 8.0 | 11.4 / 14.5 | 3 | scroll×2 screenshot×2 |
 | **all** | 10 | **4.1 / 11.6** | **4.1 / 11.6** | **4.1 / 11.6** | **9.9 / 16.1** | 3 | 2 |

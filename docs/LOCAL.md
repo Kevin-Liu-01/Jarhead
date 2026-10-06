@@ -2,8 +2,8 @@
 
 Jarhead's brain can be a model on this Mac: Ollama (127.0.0.1:11434), LM Studio (:1234) or
 llama.cpp (:8080). The voice stays GPT-Live-1 on the OpenAI key, billed per second as today;
-the brain and memory move here. Jarhead never installs, pulls, starts or deletes anything —
-when a step is yours, the row prints the command with a Copy button and you run it.
+the brain and memory move here. Jarhead never installs, pulls, starts or deletes anything.
+When a step is yours, the row prints the command with a Copy button and you run it.
 
 ## 1. Install Ollama
 
@@ -18,8 +18,8 @@ when a step is yours, the row prints the command with a Copy button and you run 
 ## 2. Pull a model that can call tools
 
 Jarhead needs `tools` among the capabilities `ollama show` reports; a chat-only model is greyed in
-the picker and refused as the brain. The suggestion by RAM — what `suggestedPull` prints and what
-the empty-list row offers to copy:
+the picker and refused as the brain. The suggestion by RAM (what `suggestedPull` prints and what
+the empty-list row offers to copy):
 
 | this Mac's RAM | pull | size |
 |---|---|---|
@@ -27,10 +27,10 @@ the empty-list row offers to copy:
 | ≤ 16 GB | `ollama pull qwen3.5:9b` | 6.6 GB |
 | ≤ 32 GB | `ollama pull qwen3.5:27b` | 17 GB |
 | ≤ 64 GB | `ollama pull qwen3.5:35b` | 24 GB |
-| > 64 GB | `ollama pull qwen3.5:27b` — the fast default; the doctor names `gemma4:31b` and `gpt-oss:120b` as alternatives | 17 GB |
+| > 64 GB | `ollama pull qwen3.5:27b` (the fast default; the doctor names `gemma4:31b` and `gpt-oss:120b` as alternatives) | 17 GB |
 
 For memory matching on the Mac as well: `ollama pull embeddinggemma` (~300 MB). Without an
-embedding model, memory matches by keywords — still nothing leaves for memory.
+embedding model, memory matches by keywords, and still nothing leaves for memory.
 
 `pnpm jarhead models` lists what is pulled: id · size · trained context · tools / vision /
 thinking / embedding · fit against this Mac's RAM · which the brain and memory use. Cloud tags
@@ -63,16 +63,16 @@ Memory follows the *setting*, not the running brain: if the local server is down
 falls back to OpenAI, the brain row turns cloud and says so; item text and closed conversations
 still never go to OpenAI while `brain` is `local`.
 
-## 5. The context trap — why 64k, and why the native route
+## 5. The context trap: why 64k, and why the native route
 
 Jarhead's system prompt and tool table are ~11k tokens before the task begins. Ollama's default
-window depends on the Mac's memory — 4k under 24 GB, 32k to 48 GB, 256k above — so a 4k default
+window depends on the Mac's memory (4k under 24 GB, 32k to 48 GB, 256k above), so a 4k default
 silently drops the front of every prompt, and a 256k default on a 128 GB Mac builds a KV cache of
 tens of gigabytes for a 27B model. Ollama's OpenAI-compatibility page says it plainly: "The OpenAI
 API does not have a way of setting the context size for a model." That is why Jarhead talks to
 Ollama over the native `POST /api/chat` and sends `options.num_ctx` on every request: the model's
-trained maximum clamped to 65 536 (`LOCAL_NUM_CTX_MAX` — Codex's own guidance for agentic use is
-at least 64k; more only grows the cache), `num_predict` 4 096 so a looping model stops,
+trained maximum clamped to 65 536 (`LOCAL_NUM_CTX_MAX`, since Codex's own guidance for agentic use is
+at least 64k and more only grows the cache), `num_predict` 4 096 so a looping model stops,
 `truncate: false` so an overflow is a sentence rather than a silent cut, and `think` from
 Settings › Effort for thinking models. Below 16k (`LOCAL_NUM_CTX_MIN`) the brain runs but the
 Console says to pick a larger model, and tool groups are dropped in a fixed order (draw → browser →
@@ -83,7 +83,7 @@ their windows when the model loads (§8, §9); Jarhead cannot change those per r
 
 Ollama unloads a model five minutes after the last request by default. Jarhead sends
 `keep_alive: 30m` on every turn, preloads at wake (`POST /api/generate {model, keep_alive}` with no
-prompt — the documented preload) and unloads at sleep (`keep_alive: 0`), so a 17 GB model does not
+prompt, the documented preload) and unloads at sleep (`keep_alive: 0`), so a 17 GB model does not
 sit in memory while Jarhead is in the notch. The first turn after a cold load pays `load_duration`:
 Jarhead waits up to 180 s for the first chunk cold, 45 s warm, and 60 s between chunks.
 
@@ -102,11 +102,11 @@ Start the server (the Developer tab, or `lms server start`); Jarhead finds it on
 use: Qwen, Llama 3.x, Mistral…); one without it 400s on the first turn and the Console says
 `cannot call tools; pick a model with the tools badge`. If the server wants a token, put
 `JARHEAD_BRAIN_API_KEY=…` in `~/.jarhead/env` (Settings › Keys writes it); `OPENAI_API_KEY` is never
-sent to a local server. Sizes and fit read `unknown` — LM Studio does not report bytes.
+sent to a local server. Sizes and fit read `unknown`: LM Studio does not report bytes.
 
 ## 9. llama.cpp
 
-`llama-server -m model.gguf --jinja -c 65536` — `--jinja` for tool calling, `-c` for the window
+`llama-server -m model.gguf --jinja -c 65536`: `--jinja` for tool calling, `-c` for the window
 (fixed at launch), `--mmproj` for vision. Found on :8080 through `GET /health`; one model per
 process, so the picker has one entry.
 
@@ -123,7 +123,7 @@ process, so the picker has one entry.
 | `Local brain: qwen3.5:4b's window is 8k tokens; Jarhead's tools alone are ~11k. Pick a larger model.` | informational; a larger model |
 | `Local brain on 10.0.0.5:11434: leaves this Mac for your network` | informational; you pinned a LAN root |
 | `Local brain unavailable (…); using the OpenAI backend instead — until it is back, the brain's work goes to OpenAI too. Memory stays local.` | the loud fallback; fix the server and it heals within 60 s |
-| `the local model went quiet for 60 s` | spoken by the delegator; the server stalled — check `~/.ollama/logs/server.log` |
+| `the local model went quiet for 60 s` | spoken by the delegator; the server stalled, so check `~/.ollama/logs/server.log` |
 | `the request did not fit qwen3.5:27b's 65536 context; say it in fewer steps` | spoken by the delegator; a smaller ask, or a model with a larger trained window |
 
 Nothing in this file is run by Jarhead. `ollama pull|rm|create|push|cp|run|launch` and `lms get|import|rm` are

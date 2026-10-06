@@ -44,7 +44,7 @@ Every top-level band shares one 1280px rail with a 1px `--line` border on both s
 Phone header (`phone.png`): mark 28 + wordmark left; toggle 42×42 at x 267–308 and an icon-only GitHub button
 46×42 at 317–362 on the right; nav hidden; hatch still 22 (y 68–89).
 
-### 1.1 Hero — `hero.png`, `v-hero.png`, `phone.png`, `view-0.png` (scrolled)
+### 1.1 Hero: `hero.png`, `v-hero.png`, `phone.png`, `view-0.png` (scrolled)
 
 `page.tsx:30-51`. `section.section.relative.grid.items-center.gap-12.lg:grid-cols-2.lg:gap-16`; a `.dither` dot field
 behind (8px dot grid at .14 opacity, masked to an ellipse centred at 70% 50%, `globals.css:90`).
@@ -60,7 +60,7 @@ behind (8px dot grid at .14 opacity, masked to an ellipse centred at 70% 50%, `g
 | section height | y 90 → ≈848 (129.6 + ~500 content + 129.6) then the hatch |
 | entrance | `.rise` stagger: h1, lede (+.08s), buttons and scene (+.16s), note (+.24s) |
 
-### 1.2 How it works — `view-1.png`, `v-view-1.png`
+### 1.2 How it works: `view-1.png`, `v-view-1.png`
 
 `page.tsx:55-59` + `RunFlow.tsx`. h2 two lines, lede, then the numbered triptych `mt-12` (48) below the lede.
 
@@ -73,7 +73,7 @@ behind (8px dot grid at .14 opacity, masked to an ellipse centred at 70% 50%, `g
 | connector | a `.wire` + `.signal` dash sliding left→right (96×24 viewBox), 12px medium muted centred label: "Primary mail no rule placed", "answers past your thresholds" (`RunFlow.tsx:67-77`); on phone the wire turns vertical (24×56) |
 | hatch after | rows 863–884 (22) |
 
-### 1.3 Search — `view-2.png`, `v-view-2.png`, top of `view-3.png`
+### 1.3 Search: `view-2.png`, `v-view-2.png`, top of `view-3.png`
 
 `page.tsx:63-67` + `SearchDiagram.tsx`. h2 "Ask in plain words. / Get a Gmail query.", lede, then one full-width
 **figure**: `figure.card.card--surface.m-0.overflow-hidden.p-0` (surface bg #141414 dark / #f1f1f1 light), 1134 wide,
@@ -86,7 +86,7 @@ muted label "COMPILE") → three `.chip.chip--accent` (24 tall; 163/149/142 wide
 semibold from / 13px muted subject, mono date, 48px `.meter` + mono score) → a footer strip: `.chip` "3 results,
 reranked" left, four `.btn.btn-sm` (32 tall) right.
 
-### 1.4 What to trash — `view-3.png`, `view-4.png`, `v-view-3/4.png`
+### 1.4 What to trash: `view-3.png`, `view-4.png`, `v-view-3/4.png`
 
 `page.tsx:71-75` + `TrashDiagram.tsx`. h2 "Decide once, / sender by sender.", lede "Jev scores every sender. You click.
 It becomes a standing rule.", the same figure frame: header row (`.eyebrow` "Sender scan" left, "Reclaimable **382**
@@ -95,7 +95,7 @@ then a 6px `.meter` with "214 msgs" / "0% read" in 12.5 mono), footer strip: `.b
 `.btn.btn-sm` "Undo", `.chip` "becomes a standing rule" pushed right. The one verdict that acts ("Trash after 30
 days") is the inverted chip; "Keep, records" sits on surface; "Protect, human" is the plain chip.
 
-### 1.5 Policy — `view-4.png`, `view-5.png`, `v-view-4/5.png`
+### 1.5 Policy: `view-4.png`, `view-5.png`, `v-view-4/5.png`
 
 `page.tsx:79-90`. h2 "Thirteen labels. / Nothing custom." with **no lede before the grid**; a 3-column grid of
 `.card.flex.items-center.justify-between.py-5` (gap 12, cards 370×74; label 19px bold live / 21px `.display` in the
@@ -103,7 +103,7 @@ working tree, glyph rows 91–108; chip at the right, 24 tall, "protected" 95 wi
 inbox"). Then the lede **after** the grid (`mt-5`, rows 420–469): the never-line
 "Never sends. Never unsubscribes. Never deletes for good. Never trashes work, people, or money."
 
-### 1.6 Five typed questions — `view-5.png` (bottom), `view-6.png`
+### 1.6 Five typed questions: `view-5.png` (bottom), `view-6.png`
 
 `page.tsx:94-100` + `JudgmentCard.tsx`. `section.grid.items-center.gap-12.lg:grid-cols-2`: left column h2 (wraps to
 four lines at 64px in a 543 column: "Five typed / questions. / One judgment / per email.") and lede "Metadata only.
@@ -112,7 +112,7 @@ header row (16px Stamp icon + bold "One judgment", `.chip--accent` "metadata onl
 mono keys → "Category (Choice)" block with three meters → "Four Nouls" block with meters that carry a 2px threshold
 tick → footer strip of chips and "**1,212** tokens, $0.0001".
 
-### 1.7 Cost — `view-7.png`
+### 1.7 Cost: `view-7.png`
 
 `page.tsx:104-118`. h2 "Rules are free. / Judgments cost cents." (rows 108–156 / 177–237), no lede, three
 `.card.py-8` (367 wide, gap 16, **150 tall**): figure `clamp(40px,5vw,64px)` live → 64px bold leading-none (glyph rows
@@ -120,14 +120,14 @@ tick → footer strip of chips and "**1,212** tokens, $0.0001".
 for every rule, every day", "$0.05 / per 1,000 emails judged" (computed: 1000 × 1300 tokens × $0.042/M,
 `triage.ts:11,88`), "$0.25 / cap per run, yours to change" (`schema.ts:84`).
 
-### 1.8 Trust — `view-7.png` (bottom), `view-8.png`
+### 1.8 Trust: `view-7.png` (bottom), `view-8.png`
 
 `page.tsx:122-131`. h2 "Your mail stays / in Google.", 2×2 grid of `.card.py-7` (559 wide, gap 16; one-line cards
 ≈85 tall, two-line ≈115) with 26px bold sentences (`clamp(18px,2vw,26px)` live; 28px `.display` in the working tree;
 glyph rows 177–201 / 215–228), then the lede caveat after the grid: "Unverified with Google for now: the owner and up to
 100 people can connect."
 
-### 1.9 Closing band + footer — `view-8.png` (bottom), `view-9.png`
+### 1.9 Closing band + footer: `view-8.png` (bottom), `view-9.png`
 
 `ClosingBand.tsx`. A hatch (rows 469–490), then a section whose tokens are swapped so it is the page inverted
 (dark theme: `#f4f4f4` plate with `#0a0a0a` text; light theme: ink plate with paper text). In `view-9.png` the band
@@ -146,7 +146,7 @@ nothing is ever sent or permanently deleted", right "judgments by TypeSafe Jev �
 All in `src/app/globals.css` unless noted. HEAD (live) line numbers = working tree − 1 for lines 61–71 and − 2 from
 `.frame` onward (the working tree inserted `--font-display` at 60 and an `h1` rule at 72).
 
-### Colors — `globals.css:4-41`
+### Colors: `globals.css:4-41`
 ```
 :root  --page #ffffff  --ink #0a0a0a  --muted #6a6a6a  --line #d6d6d6  --surface #f1f1f1  --panel #ffffff
        --inverse #ffffff  --action-hover #2a2a2a  --accent/--accent-deep/--warn/--danger = #0a0a0a
@@ -159,15 +159,15 @@ No hue anywhere: "accent", "warn", "danger" are all ink; emphasis is weight, fil
 Theme is `html[data-theme]`, set before paint by the inline script at `layout.tsx:31,44`, persisted as
 `localStorage['mailroom-theme']`.
 
-### Spacing — `globals.css:20-21,76-77,88-89`
-- `--section-space: clamp(72px, 9vw, 136px)` — 129.6 at 1440, 126 at 1400, 72 on the phone.
-- `--gutter: clamp(24px, 5vw, 72px)` — 72 at 1440, 24 on the phone.
+### Spacing: `globals.css:20-21,76-77,88-89`
+- `--section-space: clamp(72px, 9vw, 136px)`: 129.6 at 1440, 126 at 1400, 72 on the phone.
+- `--gutter: clamp(24px, 5vw, 72px)`: 72 at 1440, 24 on the phone.
 - `.frame { width: min(calc(100% - 48px), 1280px); margin-inline: auto; border-inline: 1px solid var(--line); }`
-  and `@media (max-width: 720px) { .frame { width: calc(100% - 20px); } }` — **the rail**.
+  and `@media (max-width: 720px) { .frame { width: calc(100% - 20px); } }`. This is **the rail**.
 - `.section { padding: var(--section-space) var(--gutter); }` and `.section + .section { border-top: 1px solid var(--line); }`.
 - `html { scroll-padding-top: 96px }` (`:64`) so anchor jumps clear the 68px header + hatch.
 
-### The hatch band with corner crosses — `globals.css:78-87`, `Section.tsx:5-14`
+### The hatch band with corner crosses: `globals.css:78-87`, `Section.tsx:5-14`
 ```
 .hatch { position: relative; height: 22px; border-block: 1px solid var(--line);
   background: repeating-linear-gradient(45deg, transparent 0 6px, color-mix(in srgb, var(--ink) 9%, transparent) 6px 7px); }
@@ -182,12 +182,12 @@ Theme is `html[data-theme]`, set before paint by the inline script at `layout.ts
 is centred on the intersection of a rail and a hatch hairline. The header/footer hatches (`layout.tsx:68,70`) have no
 crosses; only the seams between sections do.
 
-### The card — `globals.css:108-110`
+### The card: `globals.css:108-110`
 `.card { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 24px; }`,
 `.card--surface` (surface bg, used as the figure frame), `.card--ink` (inverted). Page usages: `py-5` (label grid),
 `py-7` (trust), `py-8` (cost), `p-0 overflow-hidden` (figures).
 
-### The numbered card — `RunFlow.tsx:79-95`
+### The numbered card: `RunFlow.tsx:79-95`
 ```
 <div class="card relative flex flex-col">
   <span class="mono absolute left-4 top-3 text-[11px] font-semibold text-muted">01</span>
@@ -198,24 +198,24 @@ crosses; only the seams between sections do.
 ```
 Grid: `sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)]`, `Connector` between (`:69-77`).
 
-### The pill badge — `globals.css:111-114`
+### The pill badge: `globals.css:111-114`
 `.chip { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border:1px solid var(--line);
 border-radius:999px; font-size:11.5px; font-weight:700; letter-spacing:.02em; color:var(--muted);
 background:var(--panel); white-space:nowrap; }` → 24 tall. `.chip--accent` inverts (page on ink),
 `.chip--warn` ink border, `.chip--danger` hatched fill. Icons inside are 12–13px lucide.
 
-### Buttons — `globals.css:94-102`
+### Buttons: `globals.css:94-102`
 `.btn, .btn-primary, .btn-danger { min-height:42px; padding:8px 14px; gap:8px; border:1px solid var(--ink);
 border-radius:4px; font-size:13.5px; font-weight:700; letter-spacing:.01em; … }`;
 hover `box-shadow: 3px 3px 0 var(--ink); transform: translate(-1px,-1px)` (120ms); `.btn-primary` ink fill;
 `.btn-danger` hatched; `.btn-sm` 32 tall / 12.5px. `.input:focus` uses the same hard shadow (`:105`).
 
-### Nav — `layout.tsx:45-67`
+### Nav: `layout.tsx:45-67`
 `header.frame.sticky.top-0.z-50.flex.min-h-[68px].flex-wrap.items-center.justify-between.gap-3.border-b.border-line.bg-page.px-4.py-2.sm:px-6`;
 brand link (`BrandMark 28` + `Wordmark`), `nav.hidden.md:flex.gap-6.text-[12px].font-bold.uppercase.tracking-[.14em].text-muted`
 with four anchors, right cluster `ThemeToggle` + `a.btn` GitHub (+ Dashboard / Sign out when signed in).
 
-### Theme toggle — `ThemeToggle.tsx:12-28`
+### Theme toggle: `ThemeToggle.tsx:12-28`
 A `.btn` forced to `width: 42, padding: 0`; an 18px SVG: a 7.5-radius circle stroke 1.6 with a half-disc path that
 flips side by theme (`M10 2.5a7.5 7.5 0 0 0 0 15z` dark / `…0 0 1 0 15z` light). `useSyncExternalStore` on a custom
 window event; writes `documentElement.dataset.theme` and localStorage. `aria-label` "Switch to paper" / "Switch to ink".
@@ -292,9 +292,9 @@ right column (`lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,1fr)]`, `items-end`).
 
 ## 4. Illustration system
 
-### Construction — `src/components/landing/iso.tsx`
+### Construction: `src/components/landing/iso.tsx`
 - Points live in (u, v, z): `iso(u, v, z) = [(u − v)·COS, (u + v)·SIN − z]` with `COS = .866`, `SIN = .5`
-  (`:8-14`) — true 30° isometric, u runs down-right on screen, v down-left, z up. `plane(u, v, z)` (`:19-22`) is an
+  (`:8-14`), true 30° isometric: u runs down-right on screen, v down-left, z up. `plane(u, v, z)` (`:19-22`) is an
   SVG `matrix()` that maps local x/y onto the horizontal plane so text and flaps can be drawn "on" a face.
 - `IsoBox` (`:76-89`) draws a box as its three visible faces (left = +v face, right = +u face, top), each a
   `<polygon>` with `strokeWidth 1`, `vectorEffect: non-scaling-stroke`, `strokeLinejoin: round`; optional drop shadow
@@ -316,7 +316,7 @@ right column (`lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,1fr)]`, `items-end`).
   a signal wire; a stack of four envelopes; wires from staggered sorter ports along the ground and up into each mouth;
   `FlyingLetter`s on `<animateMotion>`. Live (HEAD): the same vocabulary, the bins stacked "down the screen along (1,1)"
   as closed boxes with hatched/dotted lids and labels to their left (what `hero.png` shows).
-- `RunFlow.tsx:6-58`: three 200×140 tiles — three stacked sieve trays (`RulesTile`), the sorter at `size .64` with two
+- `RunFlow.tsx:6-58` holds three 200×140 tiles: three stacked sieve trays (`RulesTile`), the sorter at `size .64` with two
   output ports (`JudgeTile`), a slab with a perforated receipt and an undo arrow (`ReceiptTile`). Icons inside tiles are
   hand-drawn paths, not lucide.
 
@@ -324,7 +324,7 @@ right column (`lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,1fr)]`, `items-end`).
 - The hero drawing is bare in the grid's right column over the `.dither` field: no card, no frame.
 - The triptych tiles sit **inside** `.card` at the top, full width, above the title (`RunFlow.tsx:87`).
 - The other three "diagrams" are not drawings at all: `SearchDiagram`, `TrashDiagram`, `JudgmentCard` are HTML
-  **figures** — `.card.card--surface.p-0.overflow-hidden` with `bg-panel` rows, chips, meters, `.btn-sm` strips and
+  **figures**, each a `.card.card--surface.p-0.overflow-hidden` with `bg-panel` rows, chips, meters, `.btn-sm` strips and
   vertical `Wire`s as step connectors. The product is shown as the product, framed and labelled.
 
 ### For Jarhead: draw, or frame the dither?
@@ -336,13 +336,13 @@ right column (`lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,1fr)]`, `items-end`).
   line work is drawn, use `iso.tsx`'s rules: 1px non-scaling strokes, `color-mix` fills of the `--jh-*` tokens, hatch
   and dot patterns for emphasis, one signal dash per wire, uppercase mono stencils.
 - The **blob** and the **Console** should not be redrawn as line work. The blob is organic, dithered material with a
-  blue ramp — a 1px isometric outline throws away what it is; the Console is a real window whose information is the
+  blue ramp, and a 1px isometric outline throws away what it is. The Console is a real window whose information is the
   point. Keep the dither stills and the Console captures and place them inside Mailroom's **figure frame** (section
   2 "The card" + 1.3): surface card, `p-0`, an inner panel, a chip row on top ("metadata only" → "on-device", "$0"),
   a `.btn-sm` strip below, a vertical wire with an 11.5px caps label between stages. That gives the captures the same
   frame grammar as the drawings without pretending they are drawings.
 - Triptych tiles (200×140) are the one place small new drawings pay off: a lid with the notch lit (Wake), a hex packet
-  leaving a mouth (Say), a cursor and a key (Hands) — three tiles, `iso.tsx` construction.
+  leaving a mouth (Say), a cursor and a key (Hands). Three tiles, `iso.tsx` construction.
 
 ---
 
@@ -363,16 +363,16 @@ Shapes:
 - **Footer**: facts joined by " · ", lowercase, no sentence.
 
 Ten strings, verbatim:
-1. `Your Gmail, / sorted.` — h1 (`page.tsx:34-36`)
-2. `Rules first. Jev second. / Receipt last.` — h2 (`page.tsx:56`)
-3. `Ask in plain words. / Get a Gmail query.` — h2 (`page.tsx:64`)
-4. `Decide once, / sender by sender.` — h2 (`page.tsx:72`)
-5. `Thirteen labels. / Nothing custom.` — h2 (`page.tsx:80`)
-6. `Rules you can read. Typed AI judgments for pennies. A straight answer to what to trash.` — hero lede, 86 chars (`page.tsx:38`)
-7. `Every run previews first and can be undone.` — the note under the buttons (`page.tsx:46`)
-8. `Never sends. Never unsubscribes. Never deletes for good. Never trashes work, people, or money.` — the never-line (`page.tsx:89`)
-9. `Filters label mail on arrival. A daily pass ages out the noise.` — card caption, 63 chars (`RunFlow.tsx:63`)
-10. `Nothing changes until you press Apply. Every change after that has a receipt and an undo.` — closing lede (`ClosingBand.tsx:30`)
+1. `Your Gmail, / sorted.` (h1, `page.tsx:34-36`)
+2. `Rules first. Jev second. / Receipt last.` (h2, `page.tsx:56`)
+3. `Ask in plain words. / Get a Gmail query.` (h2, `page.tsx:64`)
+4. `Decide once, / sender by sender.` (h2, `page.tsx:72`)
+5. `Thirteen labels. / Nothing custom.` (h2, `page.tsx:80`)
+6. `Rules you can read. Typed AI judgments for pennies. A straight answer to what to trash.` (hero lede, 86 chars, `page.tsx:38`)
+7. `Every run previews first and can be undone.` (the note under the buttons, `page.tsx:46`)
+8. `Never sends. Never unsubscribes. Never deletes for good. Never trashes work, people, or money.` (the never-line, `page.tsx:89`)
+9. `Filters label mail on arrival. A daily pass ages out the noise.` (card caption, 63 chars, `RunFlow.tsx:63`)
+10. `Nothing changes until you press Apply. Every change after that has a receipt and an undo.` (closing lede, `ClosingBand.tsx:30`)
 
 Also worth holding: `Metadata only. Probabilities, not prose. Judged once, cached forever.` (lede), `Bodies never leave
 Google.` / `Disconnect deletes everything.` (trust cards), `$0 · for every rule, every day` (stat), `becomes a standing
@@ -452,7 +452,7 @@ Jarhead's site already has a rail (`.jh-rail` 1170 with an outer pair at ±11, `
 
 Fonts (reference only, not for Jarhead per section 6):
 - `src/app/fonts/BerkeleyMono-Regular.woff2`, `src/app/fonts/BerkeleyMono-Bold.woff2`,
-  `src/app/fonts/BerkeleyMono-Regular.ttf`, `src/app/fonts/BerkeleyMono-Bold.ttf` — no license file in the directory.
+  `src/app/fonts/BerkeleyMono-Regular.ttf`, `src/app/fonts/BerkeleyMono-Bold.ttf`; no license file in the directory.
 - Font wiring: `src/app/layout.tsx:11-20`; token mapping `src/app/globals.css:58-60`.
 
 CSS blocks (`src/app/globals.css`, working tree lines; HEAD = −2 from `.frame` onward):
@@ -464,11 +464,11 @@ CSS blocks (`src/app/globals.css`, working tree lines; HEAD = −2 from `.frame`
 Components (`src/components/…`):
 - `landing/Section.tsx:5-14` `ReticleSpacer` (hatch + crosses); `:16-30` `SectionHeading` (eyebrow + two-line h2 + right lead)
 - `landing/RunFlow.tsx:60-95` numbered triptych + `Connector`; `:6-58` the three tiles
-- `landing/iso.tsx` whole file — isometric helpers, tones, patterns, `IsoBox`, `Port`, `Hex`, `Wire`, `Envelope`, `Stamp`
+- `landing/iso.tsx` whole file: isometric helpers, tones, patterns, `IsoBox`, `Port`, `Hex`, `Wire`, `Envelope`, `Stamp`
 - `landing/HeroScene.tsx` whole file (working tree; `git show HEAD:src/components/landing/HeroScene.tsx` for the live one)
-- `landing/SearchDiagram.tsx`, `landing/TrashDiagram.tsx`, `landing/JudgmentCard.tsx` — the three figure frames
+- `landing/SearchDiagram.tsx`, `landing/TrashDiagram.tsx`, `landing/JudgmentCard.tsx`: the three figure frames
 - `landing/ClosingBand.tsx:6-18` token-swap inversion, `:20-37` the band
-- `landing/Brand.tsx` (untracked) — Simple Icons marks in currentColor
+- `landing/Brand.tsx` (untracked): Simple Icons marks in currentColor
 - `ThemeToggle.tsx:12-28` half-disc toggle; `BrandMark.tsx:5-21` mark + wordmark with cursor; `SignInButton.tsx`
 - Page and shell: `src/app/page.tsx:17-18` (h2/lede class strings), `:30-51` hero, `:55-135` sections;
   `src/app/layout.tsx:31` theme-init script, `:45-67` header, `:68-74` hatches + footer

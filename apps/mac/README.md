@@ -78,11 +78,12 @@ Go resumes it with that context.
 The letters are ⌃⌥ (decision D3): a registered combo is taken from every app, and ⌥⇧ with a
 letter typed a character (with C, a Ç on the US layout). `Scripts/hotkey-check.sh` asks
 UCKeyTranslate what each combo types on the US layout and fails on any character, except
-⌥⇧Space. Go / Pause stays there (decision D8): on the US layout it takes the no-break space
-(U+00A0) while Jarhead runs, the one entry in `HotkeyCheckMain.swift`'s `typesAllowed`. A
-combo another app registered first fails to register, and that is only logged. `defaults write com.kevinliu.jarhead hotkeys.off -bool YES`
-turns every global hotkey off at the next launch except ⌥⎋ Stop; the menus keep working, and
-so does the spoken "stop".
+⌥⇧Space, the one entry in `HotkeyCheckMain.swift`'s `typesAllowed`. Go / Pause stays there
+(decision D8). On the US layout it types a no-break space (U+00A0), so that combo never
+reaches a field while Jarhead runs; ⌥Space still types one. A combo another app registered
+first fails to register, and that is only logged.
+`defaults write com.kevinliu.jarhead hotkeys.off -bool YES` turns every global hotkey off at
+the next launch except ⌥⎋ Stop; the menus keep working, and so does the spoken "stop".
 
 In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead://pause`,
 `jarhead://stop` (the three transport verbs), plus `jarhead://orb` (summon the blob) and

@@ -516,8 +516,9 @@ layout, in CI). ⌃⌥ is also VoiceOver's modifier, and a combo another app reg
 (the failure is only logged). `defaults write com.kevinliu.jarhead hotkeys.off -bool YES` turns every global hotkey
 off at the next launch except `⌥⎋` Stop.
 
-`⌥⇧Space` stays go / pause. On the US layout it takes the no-break space (U+00A0) while Jarhead runs, the one
-hotkey allowed to (`apps/mac/Scripts/HotkeyCheckMain.swift`).
+`⌥⇧Space` is go / pause. On the US layout it is the one hotkey that types a character, a no-break space
+(U+00A0). While Jarhead runs that combo never reaches a field; `⌥Space` still types one.
+`apps/mac/Scripts/HotkeyCheckMain.swift` allows this one combo.
 
 In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead://pause`,
 `jarhead://stop`.
