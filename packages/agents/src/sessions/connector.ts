@@ -116,6 +116,9 @@ export interface SessionsConnectorOptions {
 /** lstart has one-second resolution; allow that much slack when matching a process to a file. */
 const START_SLACK_MS = 5_000;
 
+/** The longest delay setTimeout keeps (2^31 − 1 ms, ~24.8 days). Node fires a longer one after 1 ms, with a TimeoutOverflowWarning. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /**
  * Processes that own this session, most exact signal first:
  *
@@ -365,6 +368,7 @@ export class SessionsConnector implements AgentConnector {
         dropApiKey,
         nameOf: sessionName,
         userName: () => this.userName,
+        now: this.now,
       }),
       codex: new CodexRunner({
         ...discovery,
@@ -999,7 +1003,7 @@ export class SessionsConnector implements AgentConnector {
         await new Promise<void>((resolve) => {
           const { runChanges, askChanges, leases } = this;
           let recheck: ReturnType<typeof setTimeout> | undefined;
-          const timer = setTimeout(() => done(), timeoutMs);
+          const timer = setTimeout(() => done(), Math.min(Math.max(0, timeoutMs), MAX_TIMER_MS));
           const done = (): void => {
             clearTimeout(timer);
             if (recheck) clearTimeout(recheck);
@@ -1012,10 +1016,13 @@ export class SessionsConnector implements AgentConnector {
               done();
               return;
             }
-            // The stall bounds are clocks, not events: look again when the nearest one runs out.
+            // The stall bounds are clocks, not events: look again when the nearest one runs out. No run has more than
+            // its whole bound left, whatever the clocks say: a run stamped weeks ahead of this clock asked for a 33-day
+            // timer, which Node fires after 1 ms, so the check spun every millisecond until the run settled (BL-13).
             const bound = run.statusDetail === "finishing" ? leases.finishingMaxMs : leases.runStallMs;
+            const left = Math.min(bound, bound - (this.now() - run.lastActivityAt));
             if (recheck) clearTimeout(recheck);
-            recheck = setTimeout(check, Math.max(1, bound - (this.now() - run.lastActivityAt) + 1));
+            recheck = setTimeout(check, Math.min(Math.max(1, left + 1), MAX_TIMER_MS));
             recheck.unref?.();
           };
           runChanges.on(key, check);

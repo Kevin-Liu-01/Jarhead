@@ -1193,11 +1193,20 @@ test("waitSettled(): without a driver, an owned session waits for its file to go
     assert.equal(info.id, id);
     assert.equal(info.status, "idle", "alive; its last turn was written in 2026, long before the real now");
 
+    // Best of up to eight passes on one connector. A path that waited would sit out the 40 ms quiet window on every
+    // pass, so one pass under 30 ms proves it never waits, as the single pass did on a quiet Mac. A busy Mac only
+    // slows the reads each pass makes: at a load average of 190 the first, cold pass took 300-400 ms and later ones
+    // 1-70 ms.
     const c = connector(h, { now: Date.now });
-    const t1 = Date.now();
-    const ended = await c.waitSettled(id, 5_000);
-    assert.ok(Date.now() - t1 < 30 * RUNNER_SLACK, `nothing can write a file nobody owns: settled without the quiet wait, under ${30 * RUNNER_SLACK} ms (${Date.now() - t1} ms)`);
-    assert.equal(ended.status, "ended");
+    const passes: number[] = [];
+    while (passes.length < 8 && Math.min(...passes) >= 30 * RUNNER_SLACK) {
+      const t1 = performance.now();
+      const ended = await c.waitSettled(id, 5_000);
+      passes.push(Math.round(performance.now() - t1));
+      assert.equal(ended.status, "ended", "a session nobody owns is settled as ended, every pass");
+    }
+    console.log(`[measure] waitSettled with no owner: passes ${passes.join(", ")} ms`);
+    assert.ok(Math.min(...passes) < 30 * RUNNER_SLACK, `nothing can write a file nobody owns: settled without the quiet wait, under ${30 * RUNNER_SLACK} ms at best (passes ${passes.join(", ")} ms)`);
   } finally {
     h.cleanup();
   }

@@ -28,6 +28,8 @@ export interface ClaudeCodeRunnerOptions {
   readonly nameOf?: (s: DiscoveredSession) => string;
   /** The user's name as the refusals say it (the engine's effective name; "Kevin" when none is wired). */
   readonly userName?: (() => string) | undefined;
+  /** The connector's clock: a run's last activity is read on it, as the connector's stall checks are (BL-13). Default Date.now. */
+  readonly now?: () => number;
 }
 
 export class ClaudeCodeRunner implements SessionRunner {
@@ -112,6 +114,7 @@ export class ClaudeCodeRunner implements SessionRunner {
       permissionMode: this.opts.permissionMode ?? "acceptEdits",
       env: claudeEnv(this.opts.env ?? process.env, { dropApiKey: this.opts.dropApiKey ?? true }),
       includePartialMessages: false,
+      ...(this.opts.now ? { now: this.opts.now } : {}),
       ...(opts.canUseTool ? { canUseTool: (toolName: string, input: Record<string, unknown>): Promise<PermissionDecision> => opts.canUseTool!(toolName, input, session) } : {}),
     });
     const handle = new ClaudeRunHandle(session, () => this.userName);

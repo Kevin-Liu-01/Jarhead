@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
+import * as nodeModule from "node:module";
 import { logger } from "@jarhead/core";
 import type { AgentStatus } from "@jarhead/protocol";
 import { AsyncQueue } from "./queue.ts";
@@ -85,6 +87,11 @@ export interface ClaudeSessionOptions {
   readonly persistSession?: boolean;
   /** Working with no SDK message for this long reads `unknown`. Default `TURN_STALL_MS`. */
   readonly turnStallMs?: number;
+  /**
+   * The clock `startedAt` and `lastActivityAt` are read on. Default Date.now. The sessions connector passes its own,
+   * so a run's last activity and the connector's stall checks share one clock (BL-13).
+   */
+  readonly now?: () => number;
 }
 
 export interface ToolUseEvent {
@@ -120,8 +127,9 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
   lastAssistantText = "";
   private currentText = "";
   private pendingPermission: { toolName: string; resolve: (d: PermissionDecision) => void } | undefined;
-  readonly startedAt = Date.now();
-  lastActivityAt = Date.now();
+  private readonly now: () => number;
+  readonly startedAt: number;
+  lastActivityAt: number;
   costUsd = 0;
   private stallTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -137,6 +145,9 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
 
   constructor(private readonly opts: ClaudeSessionOptions) {
     super();
+    this.now = opts.now ?? Date.now;
+    this.startedAt = this.now();
+    this.lastActivityAt = this.startedAt;
   }
 
   /** The turn the CLI is working on (the oldest send with no result yet), if any. */
@@ -192,7 +203,7 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
   }
 
   private setStatus(status: AgentStatus, detail?: string): void {
-    this.lastActivityAt = Date.now();
+    this.lastActivityAt = this.now();
     if (this.status === status && this.statusDetail === detail) {
       this.watchStall();
       return;
@@ -258,7 +269,7 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
   }
 
   private handle(msg: SdkMessage): void {
-    this.lastActivityAt = Date.now();
+    this.lastActivityAt = this.now();
     this.watchStall();
     if (msg.type === "system" && msg.subtype === "init") {
       this.sessionId = msg.session_id;
@@ -366,10 +377,47 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
   }
 }
 
-/** Load the real SDK. Kept separate so tests never touch it. */
-export async function loadSdk(): Promise<SdkLike> {
-  const mod = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as SdkLike;
-  return mod;
+let sdkLoad: Promise<SdkLike> | undefined;
+
+/**
+ * Load the real SDK, once per process. Kept separate so tests never touch it.
+ *
+ * The daemon runs under tsx, whose load hook rewrites every ES module that holds an `import(`, source map included. The
+ * SDK's entry is a 1.5 MB bundle that needs no transform, and tsx's copy of it cost ~200 MB of RSS and three times the
+ * CPU of the file as it is, all of it on the event loop (PERF-12). So the entry is handed to Node as it is on disk, by a
+ * load hook of ours: registered after tsx's, it is asked first, and it is gone again once the import settles. A failed
+ * load is not remembered.
+ */
+export function loadSdk(): Promise<SdkLike> {
+  sdkLoad ??= importAsOnDisk("@anthropic-ai/claude-agent-sdk").catch((e: unknown) => {
+    sdkLoad = undefined;
+    throw e;
+  });
+  return sdkLoad;
+}
+
+/**
+ * Import the ES module `specifier` names from its bytes on disk, past every other loader in this process.
+ *
+ * module.registerHooks is still marked active development. Where it is missing or refuses the hook, the module loads
+ * through the plain import and every loader in the process: it costs the memory again, never the SDK.
+ */
+async function importAsOnDisk(specifier: string): Promise<SdkLike> {
+  const url = import.meta.resolve(specifier);
+  let hooks: nodeModule.ModuleHooks | undefined;
+  try {
+    if (typeof nodeModule.registerHooks !== "function") throw new Error("node:module has no registerHooks");
+    hooks = nodeModule.registerHooks({
+      load: (u, context, next) => (u === url ? { format: "module", source: readFileSync(new URL(u)), shortCircuit: true } : next(u, context)),
+    });
+  } catch (e) {
+    log.warn(`the Agent SDK loads through every loader, at the full memory cost: ${(e as Error).message}`);
+  }
+  try {
+    return (await import(url)) as SdkLike;
+  } finally {
+    hooks?.deregister();
+  }
 }
 
 /**
