@@ -75,14 +75,14 @@ test("ear: a final fires at once; \"click send\" is dropped by the policy with n
     engine.on("reflex.fired", (row) => rows.push(row));
 
     engine.ear("click send", true, 1, 1);
-    await settle();
+    await until(() => rows.length === 1);
     assert.equal(hands.named("click").length, 0, "Send looks irreversible: dropped for the model path to ask");
     assert.equal(engine.confirmations.pending, undefined, "no question left armed");
     assert.equal(rows[0]?.ok, false);
     assert.match(rows[0]?.dropped ?? "", /irreversible/);
 
     engine.ear("click save", true, 2, 2);
-    await settle();
+    await until(() => rows.length === 2);
     assert.equal(handsBg.named("find_element").length, 1, "the look went to the reading helper (SplitHands)");
     assert.equal(hands.named("find_element").length, 0, "never the acting one");
     assert.equal(hands.named("click").length, 1, "the one Save button was clicked at its centre, on the acting helper");
@@ -92,7 +92,7 @@ test("ear: a final fires at once; \"click send\" is dropped by the policy with n
 
     hands.labels = ["Save", "Save", "Cancel"];
     engine.ear("click save", true, 3, 3);
-    await settle();
+    await until(() => rows.length === 3);
     assert.equal(hands.named("click").length, 1, "two Save controls: nothing clicked");
     assert.equal(rows[2]?.ok, false);
   } finally {
@@ -110,13 +110,23 @@ test("ear: a typed reflex whose words differ from what Live heard is undone with
     await engine.wake("test");
     await settle();
     hands.ops.length = 0;
+    const fired: unknown[] = [];
+    engine.on("reflex.fired", (row) => fired.push(row));
     engine.ear("type hello there", true, 1, 1);
-    await settle();
+    // The reflex's row lands once the ear has it on the record the delegation below reconciles against.
+    await until(() => fired.length === 1);
     assert.equal(hands.named("type").length, 1);
     assert.equal(hands.named("type")[0]!.params["text"], "hello there");
 
     delegate(w, "jarhead type hello there everyone how are you today", "item_1");
-    await settle(60);
+    const item1 = () => engine.snapshot().delegations.find((x) => x.liveId === "item_1");
+    await until(
+      () =>
+        hands.named("type").length === 2 &&
+        hands.named("key").some((k) => k.params["combo"] === "cmd+z") &&
+        live.instructions.some((i) => /it has been undone/.test(i)) &&
+        (item1()?.steps.some((s) => /reflex mismatch/.test(s.text ?? "")) ?? false),
+    );
     const keys = hands.named("key").map((k) => k.params["combo"]);
     assert.ok(keys.includes("cmd+z"), `⌘Z was pressed (${keys.join(",")})`);
     assert.ok(live.instructions.some((i) => /by reflex but Kevin said something else; it has been undone/.test(i)));
@@ -145,13 +155,13 @@ test("ear: Settings.reflexes off switches the layer off (ear and delegation alik
     await settle();
     assert.equal(hands.named("scroll").length, 0, "reflexes off: the ear does nothing");
     delegate(w, "jarhead scroll down", "item_1");
-    await settle();
+    await until(() => brain.tasks.length === 1);
     assert.equal(hands.named("scroll").length, 0, "and the delegation goes to the brain");
     assert.equal(brain.tasks.length, 1);
     // The brain is holding the task; "stop" through the ear ends it.
     engine.updateSettings({ reflexes: true });
     engine.ear("stop", false, 2, 2);
-    await settle();
+    await until(() => engine.snapshot().delegations[0]!.status === "cancelled" && brain.cancels === 1);
     assert.equal(engine.snapshot().delegations[0]!.status, "cancelled");
     assert.equal(engine.snapshot().delegations[0]!.summary, "Kevin said stop");
     assert.equal(brain.cancels, 1);
@@ -176,34 +186,34 @@ test("dictation: \"start dictating\" types the ear's finals into the focused fie
     await settle();
     hands.ops.length = 0;
     engine.ear("start dictating", true, 1, 1);
-    await settle();
+    await until(() => engine.isDictating && engine.currentPhase === "acting" && live.instructions.some((i) => /Kevin is dictating/.test(i)));
     assert.equal(engine.isDictating, true);
     assert.equal(engine.currentPhase, "acting");
     assert.ok(live.instructions.some((i) => /Kevin is dictating/.test(i)));
     engine.ear("start dictating dear ana thanks for the notes new line see you tomorrow", true, 1, 2);
-    await settle(40);
+    await until(() => hands.named("type").length === 2);
     assert.deepEqual(hands.named("type").map((t) => t.params["text"]), ["dear ana thanks for the notes ", "see you tomorrow "]);
     assert.deepEqual(hands.named("key").map((k) => k.params["combo"]), ["Return"]);
     // Live delegates the dictated words as a task: refused, recorded.
     delegate(w, "dear ana thanks for the notes", "item_1");
-    await settle();
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_1")?.status === "cancelled");
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_1")!;
     assert.equal(d.status, "cancelled");
     assert.equal(d.summary, "Kevin is dictating");
     // Focus lands in a password field: nothing is typed, dictation ends, Kevin is told.
     hands.secure = true;
     engine.ear("my secret word", true, 2, 3);
-    await settle(40);
+    await until(() => !engine.isDictating && live.instructions.some((i) => /Dictation stopped: the focused field is a password field/.test(i)));
     assert.equal(hands.named("type").length, 2, "nothing typed into the password field");
     assert.equal(engine.isDictating, false);
     assert.ok(live.instructions.some((i) => /Dictation stopped: the focused field is a password field/.test(i)));
     // Again, then stop by voice.
     hands.secure = false;
     engine.ear("start dictating", true, 3, 4);
-    await settle();
+    await until(() => engine.isDictating);
     assert.equal(engine.isDictating, true);
     engine.ear("start dictating hello stop dictating", true, 3, 5);
-    await settle(40);
+    await until(() => hands.named("type").length === 3 && !engine.isDictating && engine.currentPhase === "listening");
     assert.equal(hands.named("type").length, 3);
     assert.equal(engine.isDictating, false);
     assert.equal(engine.currentPhase, "listening");
@@ -222,14 +232,14 @@ test("typed while dictating: a line from the Console's composer is the voice's, 
     await engine.wake("test");
     await settle();
     engine.ear("start dictating", true, 1, 1);
-    await settle();
+    await until(() => engine.isDictating);
     assert.equal(engine.isDictating, true);
     hands.ops.length = 0;
     await engine.command({ type: "say-text", text: "open safari" });
     assert.equal(hands.named("open_app").length, 0, "no reflex while dictating");
     assert.ok(live.instructions.some((i) => /Kevin just typed .*"open safari"\. Respond to it now/.test(i)), "the voice takes the line");
     engine.ear("stop dictating", true, 2, 2);
-    await settle(40);
+    await until(() => !engine.isDictating);
     assert.equal(engine.isDictating, false);
   } finally {
     await engine.stop();
@@ -247,7 +257,7 @@ test("circle that: the blob traces a frame around the element under the cursor (
     await settle();
     overlays.length = 0;
     engine.ear("circle that", true, 1, 1);
-    await settle();
+    await until(() => overlays.some((o) => o.cmd === "orb.trace"));
     const trace = overlays.find((o) => o.cmd === "orb.trace");
     assert.ok(trace && trace.cmd === "orb.trace", "an orb.trace went to the overlay");
     assert.equal(trace.label, "Save");
@@ -268,8 +278,11 @@ test("reconciliation with Live's real ordering — transcript delta, a quiet mom
     await engine.wake("test");
     await settle();
     hands.ops.length = 0;
+    const fired: unknown[] = [];
+    engine.on("reflex.fired", (row) => fired.push(row));
     engine.ear("scroll down", true, 1, clock.t - 120);
-    await settle();
+    // The reflex's row lands once the ear has it on the record the delegation below reconciles against.
+    await until(() => fired.length === 1);
     assert.equal(hands.named("scroll").length, 1);
     // Live's transcript lands ~400 ms later; its delegation another ~300 ms after that (the
     // Delegator's prefire window of 180 ms runs out in between and looks at the ear's reflex).
@@ -280,7 +293,7 @@ test("reconciliation with Live's real ordering — transcript delta, a quiet mom
     await settle(320);
     assert.equal(hands.named("scroll").length, 1, "the prefire check did not scroll");
     live.emit("delegation", "item_1", "client", live.nowMs);
-    await settle();
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_1")?.status === "done" && live.commentary.length === 1);
     assert.equal(hands.named("scroll").length, 1, "and the delegation did not either");
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_1")!;
     assert.equal(d.status, "done");
@@ -306,11 +319,17 @@ test("a longer request that merely ends with the ear's reflex is not 'already di
     engine.ear("read me the headline", false, 1, clock.t);
     await settle(20);
     clock.t += 1600;
+    const fired: unknown[] = [];
+    engine.on("reflex.fired", (row) => fired.push(row));
     engine.ear("read me the headline scroll down", true, 1, clock.t);
-    await settle();
+    // The reflex's row lands once the ear has it on the record the delegation below reconciles against.
+    await until(() => fired.length === 1);
     assert.equal(hands.named("scroll").length, 1);
     delegate(w, "jarhead read me the headline scroll down", "item_1");
-    await settle();
+    await until(() => {
+      const d = engine.snapshot().delegations.find((x) => x.liveId === "item_1");
+      return brain.tasks.length === 1 && d?.status === "running" && d.steps.some((s) => s.kind === "note" && /already ran on the last words of this request/.test(s.text ?? ""));
+    });
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_1")!;
     assert.equal(d.status, "running", "the brain has it");
     assert.notEqual(d.summary, "already did it");
@@ -318,7 +337,7 @@ test("a longer request that merely ends with the ear's reflex is not 'already di
     assert.equal(brain.tasks.length, 1);
     assert.equal(hands.named("scroll").length, 1, "the delegation did not scroll again");
     brain.resolve?.({ status: "done", summary: "the headline says hello." });
-    await settle();
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_1")!.status === "done");
     assert.equal(engine.snapshot().delegations.find((x) => x.liveId === "item_1")!.status, "done");
   } finally {
     await engine.stop();
@@ -343,29 +362,29 @@ test("Jarhead's own words back through the microphone press nothing: while the v
     assert.equal(hands.named("key").length, 0, "Return was not pressed on the voice's own words");
     // Kevin talks over it: "stop" goes through.
     engine.ear("now press enter stop", false, 3, clock.t);
-    await settle();
+    await until(() => engine.outputGated && live.instructions.some((i) => /Kevin said stop/.test(i)));
     assert.ok(live.instructions.some((i) => /Kevin said stop/.test(i)), "stop reached the engine while speaking");
     assert.equal(engine.outputGated, true);
     // The words heard while speaking stay consumed: the segment's later final fires nothing for them, Kevin's next words do.
     engine.ear("now press enter stop press escape", true, 3, clock.t);
-    await settle();
+    await until(() => hands.named("key").length === 1);
     assert.deepEqual(hands.named("key").map((k) => k.params["combo"]), ["Escape"]);
 
     // A brain task running: the ear holds ("scroll under the brain's hands"); stop still works.
     clock.t += 3000;
     nextUtterance(w);
     delegate(w, "jarhead what is on my screen", "item_1");
-    await settle();
+    await until(() => brain.tasks.length === 1);
     assert.equal(brain.tasks.length, 1);
     engine.ear("scroll down", true, 4, clock.t);
     await settle(60);
     assert.equal(hands.named("scroll").length, 0, "no scroll under a running task");
     engine.ear("scroll down stop", false, 4, clock.t);
-    await settle();
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_1")!.status === "cancelled");
     assert.equal(engine.snapshot().delegations.find((x) => x.liveId === "item_1")!.status, "cancelled");
     clock.t += 3000; // past the stop's output gate
     engine.ear("scroll down stop scroll down", true, 4, clock.t);
-    await settle(60);
+    await until(() => hands.named("scroll").length === 1);
     assert.equal(hands.named("scroll").length, 1, "after the task is gone the ear acts again");
 
     // Muted: the mic button is Kevin's word that he is not talking to Jarhead.
@@ -375,7 +394,7 @@ test("Jarhead's own words back through the microphone press nothing: while the v
     assert.equal(hands.named("scroll").length, 1);
     engine.setMuted(false);
     engine.ear("scroll up", true, 6, clock.t);
-    await settle(60);
+    await until(() => hands.named("scroll").length === 2);
     assert.equal(hands.named("scroll").length, 2);
   } finally {
     await engine.stop();
@@ -392,10 +411,13 @@ test("after Stop the recogniser's late partial or final for the same segment run
     await engine.wake("test");
     await settle();
     hands.ops.length = 0;
+    const fired: unknown[] = [];
+    engine.on("reflex.fired", (row) => fired.push(row));
     engine.ear("type hello", false, 7, clock.t);
     await settle(40);
     assert.equal(hands.named("type").length, 0, "a typed text waits out the careful window, not the short one");
-    await settle(60);
+    // Typed and on the record before the Stop, as on a quiet Mac.
+    await until(() => hands.named("type").length === 1 && fired.length === 1);
     assert.equal(hands.named("type").length, 1);
     await engine.command({ type: "interrupt" });
     engine.ear("type hello", true, 7, clock.t + 300);
@@ -406,7 +428,7 @@ test("after Stop the recogniser's late partial or final for the same segment run
     engine.ear("type good", false, 8, clock.t);
     await settle(40);
     engine.ear("type good morning", false, 8, clock.t);
-    await settle(100);
+    await until(() => hands.named("type").length === 2);
     assert.deepEqual(hands.named("type").map((t) => t.params["text"]), ["hello", "good morning"]);
     // "right click save" is not "click save".
     engine.ear("right click save", true, 9, clock.t);
@@ -430,11 +452,19 @@ test("a typed mismatch where ⌘Z cannot reach (the focus is not a text field): 
     hands.frontApp = "Terminal";
     hands.focusedRole = "AXGroup";
     hands.ops.length = 0;
+    const fired: unknown[] = [];
+    engine.on("reflex.fired", (row) => fired.push(row));
     engine.ear("type ls", true, 1, clock.t);
-    await settle();
+    // The reflex's row lands once the ear has it on the record the delegation below reconciles against.
+    await until(() => fired.length === 1);
     assert.deepEqual(hands.named("type").map((t) => t.params["text"]), ["ls"]);
     delegate(w, "jarhead type ls dash la", "item_1");
-    await settle(60);
+    await until(
+      () =>
+        brain.tasks.length === 1 &&
+        live.instructions.some((i) => /could not be undone/.test(i)) &&
+        (engine.snapshot().delegations.find((x) => x.liveId === "item_1")?.steps.some((s) => /reflex mismatch/.test(s.text ?? "") && /could not be undone/.test(s.text ?? "")) ?? false),
+    );
     assert.deepEqual(hands.named("key").map((k) => k.params["combo"]), [], "no ⌘Z outside a text field");
     assert.ok(live.instructions.some((i) => /could not be undone/.test(i)), "the voice is told the text stands");
     assert.deepEqual(hands.named("type").map((t) => t.params["text"]), ["ls"], "the request's own type reflex did not run on top");
@@ -476,7 +506,7 @@ test("search through the ear: \"search the wiki for design\" with the wiki up in
     engine.ear("search the wiki for design", false, 1, heardAt);
     await settle(20);
     assert.equal(hands.named("type").length, 0, "a careful kind waits out its window");
-    await settle(120);
+    await until(() => rows.length === 1);
     assert.deepEqual(handsBg.named("find_element").map((f) => [f.params["name"], f.params["role"]]), [["search", "pagefield"]], "the page's field, never the address bar");
     assert.equal(hands.named("click").length, 1, "the field was clicked");
     assert.deepEqual(hands.named("key").map((k) => k.params["combo"]), ["cmd+a", "Return"]);
@@ -488,7 +518,7 @@ test("search through the ear: \"search the wiki for design\" with the wiki up in
     // Live catches up with the same words: finished as done, the reflex's line spoken, nothing typed twice.
     clock.t += 500;
     delegate(w, "Jarhead, search the wiki for design.", "item_1");
-    await settle(60);
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_1")?.status === "done" && live.commentary.length === 1);
     assert.equal(brain.tasks.length, 0, "no brain");
     assert.deepEqual(hands.named("type").map((t) => t.params["text"]), ["design"], "typed once");
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_1")!;
@@ -514,7 +544,7 @@ test("the ear is not held by output audio that is silence: GPT-Live-1 streams fr
     // Silence, as the API streams between sentences: frames keep arriving, nothing is audible.
     for (let i = 0; i < 5; i++) live.emit("audio", Buffer.alloc(480, 0));
     engine.ear("scroll down", true, 1, clock.t);
-    await settle(30);
+    await until(() => hands.named("scroll").length === 1);
     assert.equal(hands.named("scroll").length, 1, "silent frames do not hold the ear");
     // Audible output (Jarhead talking): the same words are held.
     live.emit("audio", Buffer.alloc(480, 7));
@@ -524,7 +554,7 @@ test("the ear is not held by output audio that is silence: GPT-Live-1 streams fr
     // The hold lapses with the speaking window; then the next words act.
     clock.t += 1300;
     engine.ear("scroll down scroll up scroll left", true, 1, clock.t);
-    await settle(30);
+    await until(() => hands.named("scroll").length === 2);
     assert.equal(hands.named("scroll").length, 2);
     // The app's ear reports its own state on a negative segment: logged, never judged.
     engine.ear("off: Speech Recognition not decided", true, -1, clock.t);
@@ -563,7 +593,7 @@ test("ear hints: the AX warm tick turns the front window into `ear.hints` — ap
     await engine.ready();
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
-    await settle(150);
+    await until(() => sent.length > 0);
     assert.equal(sent.length, 1, "one set after the first tick");
     const first = sent[0]!.strings;
     assert.deepEqual(first.slice(0, 2), ["Notes", "Meeting notes"], "the app, then the window");
@@ -578,7 +608,7 @@ test("ear hints: the AX warm tick turns the front window into `ear.hints` — ap
     assert.equal(handsBg.named("ax_tree").filter((o) => !o.params["summary"]).length, reads, "same summary: no node read");
     // The tree changes: a new set, at least 500 ms after the first, carrying the new control.
     nodes = [...nodes, { i: 7, depth: 1, role: "AXButton", title: "Send" }];
-    await settle(600);
+    await until(() => sent.length > 1, 3000);
     assert.equal(sent.length, 2, "a changed tree sends a new set");
     assert.ok(sent[1]!.at - sent[0]!.at >= 500, `paced: ${Math.round(sent[1]!.at - sent[0]!.at)} ms apart`);
     assert.ok(sent[1]!.strings.includes("Send"));
@@ -646,10 +676,10 @@ test("ear: a dismissal is judged before the hold and only to Jarhead — a final
     assert.equal(rows<SleepRow>(w, "sleep").length, 0);
     // "stop" is the interrupt, even now.
     delegate(w, "jarhead what is on my screen", "item_1");
-    await settle();
+    await until(() => brain.tasks.length === 1);
     assert.equal(brain.tasks.length, 1);
     engine.ear("stop", true, 3, clock.t);
-    await settle();
+    await until(() => engine.snapshot().delegations[0]!.status === "cancelled");
     assert.equal(engine.snapshot().delegations[0]!.status, "cancelled");
     assert.equal(rows<SleepRow>(w, "sleep").length, 0);
     assert.equal(live.currentState, "started");
@@ -658,7 +688,7 @@ test("ear: a dismissal is judged before the hold and only to Jarhead — a final
     live.emit("outputTranscript", " stopped.", live.nowMs + 100, live.nowMs + 400);
     clock.t += 3000;
     engine.ear("goodnight", true, 4, clock.t);
-    await settle();
+    await until(() => rows<SleepRow>(w, "sleep").length === 1 && live.instructions.includes(Engine.FAREWELL_LINE));
     assert.equal(rows<SleepRow>(w, "sleep").length, 1);
     assert.equal(rows<SleepRow>(w, "sleep")[0]!.phrase, "goodnight");
     assert.equal(rows<SleepRow>(w, "sleep")[0]!.cause, "said");
@@ -687,7 +717,7 @@ test("ear: a meta kind passes the hold — 'what are you doing' over a running b
     await engine.wake("test");
     await settle();
     delegate(w, "jarhead what is on my screen", "item_1");
-    await settle();
+    await until(() => brain.tasks.length === 1);
     assert.equal(brain.tasks.length, 1);
     hands.ops.length = 0;
     live.commentary.length = 0;
