@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The global hotkeys type nothing (APP-12, decision D3): for every combo App/Hotkeys.swift
 # registers, UCKeyTranslate says what the US layout types; a combo must type no character
-# unless HotkeyCheckMain.swift's `typesAllowed` records it (only ⌥⇧Space, an open question).
+# unless HotkeyCheckMain.swift's `typesAllowed` records it (only ⌥⇧Space, decision D8).
 # Then the off switch (`defaults write com.kevinliu.jarhead hotkeys.off -bool YES`), read
 # through the argument domain so no plist is written: only ⌥⎋ Stop still registers.
 #   Scripts/hotkey-check.sh                # run the checks (a second)

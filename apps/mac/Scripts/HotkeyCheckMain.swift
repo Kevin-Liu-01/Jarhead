@@ -54,11 +54,11 @@ func spelled(_ s: String) -> String {
 }
 
 /// The registered combos allowed to type a character, with exactly what they type. Each entry
-/// is a question on record, never a default. ⌥⇧Space (Go / Pause) types U+00A0, a no-break
-/// space, on the US layout, so no field gets one while Jarhead runs. Whether Go / Pause moves
-/// is open for Kevin (launch decision D8): ⌃⌥Space types nothing but is macOS's "next input
-/// source"; ⌃⌥ + a letter types nothing. Drop the entry once D8 is decided. A new hotkey that
-/// types a character fails here.
+/// is a decision on record, never a default. Decided (D8, 2026-10-06): Go / Pause keeps
+/// ⌥⇧Space; this entry stays. On the US layout ⌥⇧Space types U+00A0, a no-break space, so
+/// that combo never reaches a field while Jarhead runs (⌥Space still types one). The choices
+/// passed over: ⌃⌥Space types nothing but is macOS's "next input source"; ⌃⌥ + a letter types
+/// nothing. A new hotkey that types a character fails here.
 let typesAllowed: [Hotkeys.Action: String] = [.transportToggle: "U+00A0"]
 
 func glyph(_ modifiers: UInt32) -> String {
@@ -102,7 +102,7 @@ struct HotkeyCheck {
             let name = "\(glyph(action.modifiers)) key \(action.keyCode) (\(action))"
             let what = dead ? "a dead key" : (text.isEmpty ? "nothing" : spelled(text))
             if let allowed = typesAllowed[action] {
-                check(!dead && spelled(text) == allowed, "\(name) types \(what), allowed as \(allowed) until decision D8")
+                check(!dead && spelled(text) == allowed, "\(name) types \(what), allowed as \(allowed) (D8)")
             } else {
                 check(!dead && !isText(text), "\(name) types no character on the US layout (it types \(what))")
             }
