@@ -217,8 +217,8 @@ Capture pipeline: `SCShareableContent.excludingDesktopWindows(false, onScreenWin
 the cache is dropped on display reconfiguration, when an excluded pid is unknown to it (at
 most once per second), or after 30 s) → `SCScreenshotManager.captureImage` → PNG.
 PNG encoding uses the built-in `FastPNG` encoder (8-bit RGB, "Up" filter, zlib level 1
-deflated in parallel strips, ~8 ms for 3.75 Mpx vs ~135 ms for ImageIO, measured 2026-09-10). Set
-`JARHEAD_HANDS_PNG=imageio` to force `NSBitmapImageRep` instead.
+deflated in parallel strips, ~8 ms for 3.75 Mpx vs ~135 ms for ImageIO, measured 2026-09-10,
+n not recorded). Set `JARHEAD_HANDS_PNG=imageio` to force `NSBitmapImageRep` instead.
 
 Measured: on 2026-09-10, on an M-series Mac, a warm full-display screenshot took 48–71 ms end to
 end (JSON in → JSON out; n not recorded) and the first capture in a process ~145 ms
@@ -381,9 +381,9 @@ desktop full of icons or a long page is what goes). Cached per app: reused while
 (default 500) and the same window is up; the engine keeps the frontmost one warm every 500 ms
 while awake (`summary: true` returns only the counts). Chromium apps get `AXManualAccessibility`
 set so their web content is exposed; a first walk that finds almost nothing is retried once after
-120 ms. Measured by hand on 2026-09-11: Chrome 188 nodes in ~70–100 ms cold, 2 ms cached;
-Finder's desktop hits the 250 ms budget at ~400 nodes; Slack (Electron) exposes 60 nodes. Needs
-Accessibility.
+120 ms. Measured by hand on 2026-09-11 (n not recorded): Chrome 188 nodes in ~70–100 ms
+cold, 2 ms cached; Finder's desktop hits the 250 ms budget at ~400 nodes; Slack (Electron)
+exposes 60 nodes. Needs Accessibility.
 
 **`find_element {name, role?, app?, maxAgeMs?, maxMs?, threshold?}`** →
 `{app, window, found, unique, candidates, tier: "exact"|"fuzzy"|"none", element?: {…node, app,
@@ -393,7 +393,7 @@ description or short value matches `name`: exact after lowercasing and dropping 
 trailing ellipsis, else edit-distance similarity ≥ `threshold` (default 0.85). Candidates whose
 frames coincide (a cell and its label) count once. `unique` is what the reflex path needs: two
 candidates mean "no reflex": the caller must not guess. 2–14 ms on a cached tree (by hand,
-2026-09-11).
+2026-09-11, n not recorded).
 
 ### Browser scripting (Apple events, no process spawn)
 
@@ -415,8 +415,8 @@ touches nothing of his and runs.
 **`browser_url {app}`** → `{url, title}` of the active tab; needs no JavaScript permission.
 
 **`browser_tabs {app}`** → `{tabs: [{index, title, url, active}], active}` for the front window,
-fetched as two whole lists (75 ms for 80 tabs, 2026-09-11; 94 ms median and 218 ms p95 through
-`pnpm jarhead bench`, n = 5, 2026-10-06).
+fetched as two whole lists (75 ms for 80 tabs, 2026-09-11, n not recorded; 94 ms median and
+218 ms p95 through `pnpm jarhead bench`, n = 5, 2026-10-06).
 
 **`browser_navigate {app, url}`** → `{ok: true}`; opens a window when the browser has none. It
 replaces the page Kevin may be typing in, so it is held like a click while his hands are on the

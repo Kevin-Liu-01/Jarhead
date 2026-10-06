@@ -16,7 +16,7 @@ Jarhead.app ──spawns──► node --import tsx packages/daemon/src/main.ts 
 ```sh
 cd apps/mac
 swift build
-JARHEAD_REPO=$PWD/.. .build/debug/Jarhead
+JARHEAD_REPO=$PWD/../.. .build/debug/Jarhead
 ```
 
 `JARHEAD_REPO` is optional when the binary lives under `apps/mac/.build`: the app
@@ -149,8 +149,9 @@ Then the one-Jarhead pass:
 worktree's probe bundle, an old stage path; never a symlink that resolves to the
 installed bundle) unregistered from the LaunchServices database (no file, the Trash
 included, is touched), and a READ-ONLY line about the Dock. lsregister waits on lsd:
-the Bundle dump is 2 s idle and over a minute under heavy load, so each call gets
-120 s, and a build dumps the table once (the `-u` exit codes are the report). The Dock itself is rewritten only by
+the Bundle dump took about 2 s idle and 66 to 85 s at load average 300 (written down
+2026-09-12, n not recorded), so each call gets 120 s, and a build dumps the table once
+(the `-u` exit codes are the report). The Dock itself is rewritten only by
 `pnpm jarhead dock --fix` or `JARHEAD_INSTALL_HYGIENE=fix` (`defaults export`, drop
 Jarhead's recent tiles, keep one pin stripped to the keys the Dock rebuilds its
 bookmark from, `defaults import` behind a `mod-count` race check, `killall Dock` only
