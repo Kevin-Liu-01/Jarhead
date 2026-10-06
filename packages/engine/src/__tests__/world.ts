@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { JarheadConfig } from "@jarhead/core";
 import type { LiveSession, SessionConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarhead/brain";
-import { FAKE_ACTING_OPS, FAKE_HELD_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
+import { FAKE_ACTING_OPS, fakeHeldNow, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
 import type { AgentConnector, SendResult, TranscriptDelta, TranscriptOptions, TranscriptPage } from "@jarhead/agents";
 import type { AgentInfo, AgentMessage, ConnectorHealth, EngineEvent, LedgerRow, LocalModel, LocalServerStatus, MemoryItem, MemoryKind, MemoryOrigin, MemoryState, MemorySummary, OverlayCommand } from "@jarhead/protocol";
 import type { Exec } from "@jarhead/install";
@@ -124,9 +124,10 @@ export class FakeLive extends EventEmitter {
  * Hands with canned answers; `hold` names an op to keep in flight until `release()`.
  * Kevin's hands win here as in the helper: after `kevinActed()` every acting op within
  * KEVIN_QUIET_MS answers `busy` (nothing posted) unless the op says `ownDriver`, and so
- * do `move`, `focus_app` and an `open_app` that activates (FAKE_HELD_OPS, as the hands'
- * own fake holds them); `user_idle` reports the same clock. `focus_app` / `open_app`
- * change `frontApp`.
+ * do `move`, `focus_app`, an `open_app` that activates, `browser_navigate` and a
+ * `browser_js` in the front browser that is not `readOnly` (fakeHeldNow, the predicate
+ * the hands' own fake calls); `user_idle` reports the same clock. `focus_app` /
+ * `open_app` change `frontApp`.
  */
 /** The one screen both helpers look at: the front app, the focused field, the front window's labels. */
 interface FakeScreen {
@@ -205,8 +206,8 @@ export class RecordingHands implements NativeHands {
       // As the helper does, before its first CGEvent.post: Kevin's hands on the machine → nothing is posted.
       this.guardBusy(params);
       this.posted.push({ op, params, at });
-    } else if (FAKE_HELD_OPS.has(op) && !(op === "open_app" && params["activate"] === false)) {
-      // The pointer jumping, or an app pulled over the one he types in, steps on him as a click does (a background open does not).
+    } else if (fakeHeldNow(op, params, this.frontApp)) {
+      // The pointer jumping, an app pulled over the one he types in, or the page under his keys replaced or scripted, steps on him as a click does.
       this.guardBusy(params);
     }
     switch (op) {

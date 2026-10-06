@@ -6,28 +6,20 @@
  * engine now passes ANTHROPIC_WALK_PROBE_MS (16 s) when its selection walks; an explicit pick keeps the 5 s cap
  * (w3-4-probe-patience).
  *
- * engine.ts is W3-1's in wave 3, so until the W3-1 / W3-4 integration edit lands this test skips itself; the
- * integration patch (TRIAGE, "W3-1 / W3-4 (the Anthropic key check under a walk)") deletes the skip.
- *
  * The real engine selection and the real AnthropicBrain against a loopback server (ANTHROPIC_BASE_URL); nothing
  * leaves the Mac.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { tempDir, testConfig, until, world } from "./world.ts";
 
 /** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. */
 const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
-const WIRED = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "engine.ts"), "utf8").includes("probeTimeoutMs: ANTHROPIC_WALK_PROBE_MS");
 
 test(
   "F-AUTO-PROBE under auto: a valid Anthropic key whose check answers after 5 s takes over from Responses once it proves itself",
-  { skip: WIRED ? false : "engine.ts does not pass ANTHROPIC_WALK_PROBE_MS yet (the W3-1 / W3-4 integration edit)" },
   async () => {
     const sockets = new Set<Socket>();
     const server = createServer((req, res) => {

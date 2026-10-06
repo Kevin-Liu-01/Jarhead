@@ -2056,7 +2056,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const baseUrl = this.settings.brainBaseUrl?.trim() || this.config.brainBaseUrl;
     // Same modules as the static imports above; loaded here so this body stays self-contained.
     const { AUTO_BRAIN_ORDER } = await import("@jarhead/protocol");
-    const { AnthropicBrain, CodexBrain, OpenAICompatibleBrain, probeCodex, resolveCompatibleApiKey } = await import("@jarhead/brain");
+    const { ANTHROPIC_WALK_PROBE_MS, AnthropicBrain, CodexBrain, OpenAICompatibleBrain, probeCodex, resolveCompatibleApiKey } = await import("@jarhead/brain");
     type Kind = Exclude<Settings["brain"], "auto">;
 
     // One cheap look at the Codex install (binary, version, login) serves the
@@ -2107,7 +2107,9 @@ export class Engine extends EventEmitter<EngineEvents> {
             }),
           };
         case "anthropic-api":
-          return { label: "Anthropic API", brain: new AnthropicBrain({ runner, userName: this.userName, apiKey: this.config.anthropicApiKey, model, effort: this.settings.effort, ...(spec ? { maxWallMs: spec.secondsCap * 1000 } : {}) }) };
+          // F-AUTO-PROBE: a walk (`auto`, or `codex` walking on) stops waiting at its patience and lets this key check go on,
+          // so a slow but valid key still takes over; an explicit pick has nothing to move on to, so its check is capped at 5 s.
+          return { label: "Anthropic API", brain: new AnthropicBrain({ runner, userName: this.userName, apiKey: this.config.anthropicApiKey, model, effort: this.settings.effort, ...(spec ? { maxWallMs: spec.secondsCap * 1000 } : {}), ...(wanted === "auto" || wanted === "codex" ? { probeTimeoutMs: ANTHROPIC_WALK_PROBE_MS } : {}) }) };
         case "openai-compatible": {
           // Only a key Kevin set for this brain (JARHEAD_BRAIN_API_KEY) goes to an arbitrary
           // host; config.brainApiKey falls back to OPENAI_API_KEY, which belongs to OpenAI alone.
