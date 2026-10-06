@@ -15,7 +15,7 @@ in §5 come from the AFTER run on a quiet machine (load ≈ 4).
 
 | what Kevin experiences | target | before (measured) |
 |---|---|---|
-| speech end → first visible action (a click, a scroll, a typed text, an app coming to front, a search result, a circle drawn on the screen) | **2–5 s** | 12.5 s median from the delegation on the 11 simple app-server commands (§3a; 12.2 s over all 39, §3b); speech end → delegation adds 0.4–1.6 s (n=4) → ≈ 13–14 s |
+| speech end → first visible action (a click, a scroll, a typed text, an app coming to front, a search result, a circle drawn on the screen) | **2–5 s** | 12.5 s median from the delegation on the 11 simple app-server commands (§3a; 12.2 s over all 39, §3b); speech end → delegation adds 0.4–1.6 s (n=4) → ≈ 13–14 s; the 2026-10-06 live checks measured 0.95–1.77 s, median 1.5 s (LC-10, n=10, §3d) |
 | one tool use (the brain deciding on a tool → the tool's effect) | **< 2 s** | a model generation is 3.4 s median / 5.9 s p90; the tool's own round trip is 55 ms median |
 | the tool path Jarhead controls (runner → toolset → helper → back) | already met: 55 ms median, 211 ms p95 | 0.4–2.2 % of a delegation's wall time |
 
@@ -96,7 +96,8 @@ API dollars on ten screenshot-carrying turns — unless `--allow-api-spend` is p
 
 Seconds in this report are **from the delegation** (Live's hand-off to the brain)
 unless a row says "speech end". Speech end → delegation is Live's own transcription
-and decision time (0.4–1.6 s in the 4 measurable cases); it is now stamped on every
+and decision time (0.4–1.6 s in the 4 measurable cases of 2026-09-11; 0.95–1.77 s,
+median 1.5 s, in the 2026-10-06 live checks, §3d); it is now stamped on every
 delegation (`DelegationTimings.speechEndAt`, §5) so the next pull of the ledger has it
 for all of them.
 
@@ -167,6 +168,11 @@ failed MCP calls, `npm run status` 2.1 s once, 2 AppleScript calls over 3 s. Con
 rollovers: 11 in daemon.log over ~31 app-server delegations; 14 of the 18 app-server
 delegations in the first 39 ran their first turn on a fresh thread.
 
+The 55 ms / 211 ms round trip was the 2026-09-11 ledger (n = 120). The launch audit could not
+reproduce it from later ledgers: 75 ms median / 692 ms p95 over all rows, 82 ms / 518 ms after
+this pass (PERF-11, 2026-10-05). The bench on 2026-10-06 measured 15 ms median for
+`frontmost_app` with the real helper (n = 5, §10).
+
 Reasoned from the above: **latency ≈ 0.7 s + (model generations) × 3.4 s.** A
 visible action inside 5 s needs the first generation to BE the action and a
 per-generation cost under ~3 s; nothing in the tool path is worth optimising for
@@ -225,6 +231,19 @@ utterance was closed by `finalizeOpen` without a `final` emission and never reac
 the ledger. Fixed in this change: `finalizeOpen` emits `final` for each item it
 closes (`packages/live/src/transcript.ts`), and every delegation now carries
 `timings.speechEndAt` — not measurable before this change (4 of 51 delegations had their triggering utterance on the ledger); every `delegation.finished` row now carries it, so after a day of use the medians of `delegatedAt − speechEndAt` and `firstActionAt − speechEndAt` are the end-to-end numbers Kevin asked for.
+
+**Since 2026-10-05 (W3-1, PERF-6).** `speechEndAt` was first stamped on Live's session
+timeline, and the launch audit found 24 of 88 stamps later than their own delegation. It is
+now the wall clock at which the utterance's last input delta arrived, so it is never later
+than a delegation handled after it. `pnpm jarhead ledger --speed` leaves out a negative
+interval (an action stamped before its delegation, a speech end after its action) and prints
+how many it left out.
+
+**Measured on GPT-Live-1, 2026-10-06** (`scripts/live-check.mts` LC-10, the end of a fed clip of
+"Jarhead, what's on my screen?" to Live's delegation, n = 5 per run): 948, 1351, 1415, 1473,
+1640 ms (median 1.42 s) at c7d4e63, and 966, 1543, 1606, 1656, 1772 ms (median 1.61 s) at
+98c7cfe. Together: 0.95–1.77 s, median 1.5 s, n = 10. The reports are
+`build/live-check/2026-10-06/lc-10-speech-end-*.json`.
 
 ## 4. Investigated inefficiencies, with the verdict on each
 
@@ -329,6 +348,26 @@ this repo's own harness ran a clock; "claimed" means the vendor's page says so.
 | Operator / ChatGPT agent / Atlas, Claude computer use, Claude in Chrome (screenshot-loop agents) | a whole errand | — | Atlas: 10 min for three Amazon items, 16 min for flights; Claude in Chrome: "tasks that take you seconds can take Claude minutes"; Claude on the Mac: ~50 % success over 12 operations; Operator: 38.1 % OSWorld, 13 nuisance errors per 100 tasks unmitigated | reviewers and the vendor's system card; no per-action clock published | [Futurism](https://futurism.com/artificial-intelligence/openai-atlas-web-browser-messy) 2025-10-23; [aitoolanalysis](https://aitoolanalysis.com/claude-in-chrome-review/) 2026-03-04; [jock.pl](https://thoughts.jock.pl/p/claude-cowork-dispatch-computer-use-honest-agent-review-2026) 2026-03-24; [Operator system card](https://cdn.openai.com/operator_system_card.pdf) 2025-01-23 |
 | Hermes Agent, CLI voice (chained STT → LLM → TTS) | speech → the reply's audio | — | **3.0 s of silence** before the turn even ends, then STT 0.5–2 s (Groq / OpenAI), then TTS 1–2 s | vendor docs (design numbers) | [voice-mode doc](https://hermes-agent.nousresearch.com/docs/user-guide/features/voice-mode); [tts doc](https://hermes-agent.nousresearch.com/docs/user-guide/features/tts), 2026 |
 
+Three more rows for Jarhead's own voice, measured on the wire by this repo's live-check harness
+on 2026-10-06 (`scripts/live-check.mts`, typed or fed audio, fake hands, the reports in
+`build/live-check/2026-10-06/`):
+
+| clock | median | p90 | n | source |
+|---|---:|---:|---:|---|
+| a typed line sent → the first audible frame of GPT-Live-1's reply | 1.35 s | 1.67 s | 10 | LC-5 at 98c7cfe |
+| the same, earlier the same night | 1.89 s | 2.25 s | 10 | LC-5 at c7d4e63 |
+| the end of a spoken request that delegates → the first audible "looking." | 2.20 s (1.73–2.54) | not computed | 5 | LC-10 at c7d4e63 |
+
+The engine's own share of the typed row: 1 ms median from the typed send to its append on the
+wire (13 ms max), and 0 ms median from the first audible frame to the speaker sink (1 ms max;
+LC-5 at 98c7cfe). The app's playout cushion adds 120 ms before the first chunk of a reply
+(docs/AUDIO.md §9). Agora's 1.11 s is a spoken reply with no action; the typed and delegating
+rows are slower, and none of the three is Jarhead's share.
+
+The model-path row is the harness with canned hands. Production after this pass, read from
+Kevin's ledger by the launch audit (PERF-3, 2026-10-05): 7.0 s median and 27.6 s p95 from the
+delegation to the first action, 12.6 s and 50.0 s to done.
+
 **What is measured versus claimed.** Both Jarhead rows are measured by this repo's
 own harness on this Mac and read from the ledger (§2, §5): nearest-rank p95 over
 small n (6–50), so a single slow run moves them; the reflex row is like-for-like
@@ -354,8 +393,9 @@ action and 8.9 s median to a verified finish.
   best, ~4–5 s after speech end — the top of Kevin's 2–5 s window, met only when the
   first generation is the action. The "< 2 s per tool use" target is not reachable
   on this transport for anything that needs the model; it is met by the reflex path.
-- **Speech end → delegation**: Live's own transcription and decision, 0.4–1.6 s
-  (n=4). Not Jarhead's to shorten; now measured on every delegation.
+- **Speech end → delegation**: Live's own transcription and decision, 0.95–1.77 s,
+  median 1.5 s (LC-10, n=10, 2026-10-06; 0.4–1.6 s, n=4, on 2026-09-11). Not Jarhead's to
+  shorten; now measured on every delegation.
 - **Codex 0.154's context**: the skills catalog and the missing tool schemas have no
   knob; a fresh thread pays them every time, so the rollover policy is the lever.
 - **Verification**: a claimed action must be verified before it is reported done;
@@ -366,8 +406,9 @@ action and 8.9 s median to a verified finish.
 **2–5 s to a visible action after Kevin stops speaking — met at the top of the
 window on the model path, met outright on the reflex path.** On the brain path the
 first action lands 4.4 s after the delegation (median, p95 5.1 s, n = 6, load ≈ 4,
-canned hands); Live adds 0.4–1.6 s from speech end to delegation, so the spoken-word
-number is about 5–6 s — the edge of the window, not inside it, and the whole of it is
+canned hands); Live adds 0.4–1.6 s from speech end to delegation (n = 4; 1.5 s median,
+n = 10, on 2026-10-06), so the spoken-word number is about 5–6 s: the edge of the
+window, not inside it, and the whole of it is
 one model generation (3.9 s median between consecutive tools, 6.0 s p95) plus ~0.7 s
 of hand-off. Nothing in Jarhead's plumbing remains on that path: turn/start is
 acknowledged in 5 ms, the model has the task in 0.65 s, tools answer in 1–55 ms. On
@@ -380,8 +421,9 @@ faster to act and twice as fast to finish, and the wiki search no longer detours
 through a bootstrap that does not exist.
 
 **Tool uses under 2 s — met for the tool, not for the model's decision between
-tools.** Every tool round trip is under 2 s (55 ms median in production, 211 ms
-p95; applescript queries that took 3.9 s are steered to the millisecond tools),
+tools.** Every tool round trip is under 2 s (55 ms median, 211 ms p95 in the 2026-09-11
+ledger; 82 ms and 518 ms after this pass, PERF-11; applescript queries that took 3.9 s are
+steered to the millisecond tools),
 but the model spends 3.9 s median between one tool result and the next call, and
 effort low does not change that (4.4 s). No prompt or transport change shortens a
 generation on gpt-6-astra through the app-server; the levers left are fewer
@@ -440,3 +482,29 @@ product-mix number (reflex tails + replay + brain path) and must be reported as 
 the observation's 150 ms settle can read "nothing changed" before a page load lands — the
 `<N> ms after` suffix and the `--observe off` A/B are the guards, and `browser_navigate` is
 the first tool to drop it if the model starts double-acting.
+
+### Where the levers stand (2026-10-06)
+
+The bench below is `pnpm jarhead bench --no-duck` with the real Swift helper and the stand-in
+brain, at 48aa9a9 on Kevin's Mac with the screen locked, load average about 120 to 180, n = 5. It
+spends nothing.
+
+| lever | target | where it stands |
+|---|---|---|
+| SplitHands, a read during a type | < 20 ms | **met in the bench**: 4 ms median (row "read during a type") |
+| SplitHands, read-only round trip | p95 ≤ 80 ms | **not shown**. The bench's `frontmost_app` round trip is 15 ms median. The ledger's read-only class also counts screenshots, zooms, file reads and web fetches; the launch audit read it at 184 ms median and 699 ms p95 from the production ledger (PF-23, 2026-10-05), so that row cannot show SplitHands alone |
+| observation line, `now:` on acting results | ≥ 95 % | **met in the bench**: 5 of 5 acting results carried a `now:` line; an acting call with its observation took 169 ms median, 191 ms p95. **Production unread**: before W3-1 the line lived only in the brain's result and `ledger --speed` counted 0 % by construction (PERF-5); since W3-1 the lane runner records it as a `now:` note after the step, so the next day of use reads it |
+| observation line, acting step then a screenshot | ≤ 15 % | **unread since the fix**. The launch audit counted 8 of 10 acting steps followed by a screenshot (PF-24, 2026-10-05), before the `now:` line reached the ledger |
+| warm brain pool | first two thread starts < 5 ms | 2 ms and 5 ms in the launch audit (PF-22, 2026-10-05) |
+| thread verbs from the table | 0 generations, ≤ 5 ms | 2 ms in the launch audit (PF-21, 2026-10-05); the F5 commit's bench (4727241, n = 3) stopped one of two live threads in 2 ms |
+
+One cost moved with W3-1: an observed acting step is recorded after its `now:` line, so its
+`firstActionAt` includes the observation, the 150 ms settle (400 ms after `browser_click` and
+`browser_navigate`) and a read raced against 300 ms. A first-action figure from a day with
+`Settings.observe` on is up to about 0.7 s later than the same action without it.
+
+Before F5 (2026-10-06, 4727241) the same bench timed out on a locked screen (6002 ms and
+8002 ms): two helper processes started from one executable path both captured through
+ScreenCaptureKit, one capture's
+callback never came, and the acting helper's queue stayed blocked. Now only the acting helper
+captures, and a capture answers `capture_failed` after 5 s so the queue moves on (AGENTS.md).
