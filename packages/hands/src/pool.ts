@@ -25,6 +25,10 @@ import { NativeHandsProcess, type NativeHands, type NativeHandsProcessOptions } 
  *   30 s) or a `type` longer than 6 s times out a background thread's shot; that timeout
  *   fails `capture_failed`, so its screenshot falls back to `screencapture`;
  * - a thread's eyes shot adds about 100 to 300 ms to the acting queue (during dictation, say);
+ * - a background-lane thread's own screenshots and zooms also run on the acting queue, at the
+ *   toolset's default budget (DEFAULT_SHOT_BUDGET: a 2000 px long edge, and 2.5 MP for a
+ *   screenshot that does not ask for a quick one), so each one delays the main lane's next click, type or dictation by its capture
+ *   and PNG encode. A thread that looks again and again delays it each time;
  * - the cold wake shot (0.4 to 1.6 s) sits on the acting queue at wake, so a spoken click
  *   right after a wake waits behind it.
  */

@@ -253,7 +253,9 @@ let runBlockingRetryFloorSec: Double = 0.5
 
 /// SCStreamErrorDomain -3801, "the user declined". replayd also answers it with Screen Recording granted:
 /// after the interrupt loop above, the surviving process's captures fail -3801. Only a false preflight makes
-/// it a missing grant (mapCaptureError says so then). With the grant in place it is a failed capture.
+/// it a missing grant (mapCaptureError says so then). With a true preflight it is answered as a failed capture,
+/// and the message names no cause: a real refusal can read as granted too (a stale grant from an earlier
+/// build, a system re-approval pending or declined).
 func isDeclinedWithGrant(_ error: Error, granted: () -> Bool) -> Bool {
     let ns = error as NSError
     return ns.domain == SCStreamErrorDomain && ns.code == -3801 && granted()
@@ -270,7 +272,7 @@ func runBlocking<T>(timeoutSec: Double = runBlockingTimeoutSec,
     do {
         return try awaitBody(until: deadline, timeoutSec: timeoutSec, body)
     } catch where isDeclinedWithGrant(error, granted: granted) {
-        let failed = "The screen capture failed (SCStreamErrorDomain -3801). Screen Recording is granted, so replayd dropped it."
+        let failed = "The screen capture failed (SCStreamErrorDomain -3801) while Screen Recording reads as granted."
         guard DispatchTime.now() + runBlockingRetryFloorSec < deadline else { throw HandsError.captureFailed(failed) }
         debugLog("capture: -3801 with Screen Recording granted; one more try")
         do {

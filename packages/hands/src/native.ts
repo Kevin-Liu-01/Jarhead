@@ -306,7 +306,8 @@ export const TYPE_CANCEL_SIGNAL: NodeJS.Signals = "SIGURG";
  * replayd connections interrupting each other dozens of times a second. The second capture's callback
  * never comes, and the helper waits on it on its serial queue, so every op after it (a move, a click,
  * a cursor read) times out until the process is restarted (likely after unlock too; every probe ran
- * locked). Two processes from two paths, or one process after the other, capture fine.
+ * locked). Two processes from two paths capture fine, and so does a second process started after
+ * the first has exited. Two live processes from one path capturing one after the other is the stall.
  */
 export const CAPTURE_OPS: ReadonlySet<string> = new Set(["screenshot", "zoom"]);
 
@@ -492,16 +493,17 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
 
   /**
    * A capture the capturing helper takes for this one. It queues behind whatever that helper is doing (an
-   * `open_app` up to 30 s, a `type` longer than the capture's 6 s), so its timeout is a capture that never ran:
-   * it fails `capture_failed`, which the toolset's screenshot answers with its `screencapture` fallback. A cut
-   * reaches it through the capturing client's pending map, where it waits.
+   * `open_app` up to 30 s, a `type` longer than the capture's 6 s). Its timeout does not say which: a capture
+   * that waited and never ran, or one that ran slow. Either way it fails `capture_failed`, which the toolset's
+   * screenshot answers with its `screencapture` fallback. A cut reaches it through the capturing client's
+   * pending map, where it waits.
    */
   private async forwardCapture<T>(to: NativeHands, op: string, params: Record<string, unknown>, timeoutMs: number | undefined): Promise<T> {
     try {
       return await to.request<T>(op, params, timeoutMs);
     } catch (e) {
       if (!(e instanceof NativeRequestError) || e.detail.code !== "timeout") throw e;
-      throw new NativeRequestError({ code: "capture_failed", message: `${e.detail.message}. It waited behind the acting helper, the one process that captures.` });
+      throw new NativeRequestError({ code: "capture_failed", message: `${e.detail.message}. It was queued on the acting helper, the one process that captures.` });
     }
   }
 
