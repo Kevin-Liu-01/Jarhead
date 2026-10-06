@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ScreenCaptureKit
 
 // MARK: - Protocol primitives shared by every op.
 //
@@ -235,16 +236,57 @@ func truncated(_ s: String, to limit: Int) -> String {
     return s.count > limit ? String(s.prefix(limit)) : s
 }
 
-/// Runs an async body to completion from a synchronous (non-cooperative) thread.
-/// Used by the serial worker to await ScreenCaptureKit; the main RunLoop keeps spinning.
+/// A value handed from an async body (or a callback) to the thread waiting on it.
 final class ResultBox<T> {
     var value: Result<T, Error>?
 }
 
-func runBlocking<T>(_ body: @escaping () async throws -> T) throws -> T {
+/// How long the serial worker waits on ScreenCaptureKit in all (both tries, see `runBlocking`) before the
+/// op answers `capture_failed` and the worker moves on. Under the client's 6 s screenshot and zoom timeouts.
+/// A callback that never comes otherwise holds every op queued behind it, and the exit on stdin EOF, for the
+/// life of the process: measured 2026-10-06 with the Mac locked, when a second capturing helper from the
+/// same executable path set replayd's connections interrupting each other. replayd restarting does it too.
+let runBlockingTimeoutSec: Double = 5
+
+/// Less than this left before the bound: a -3801 gets no second try (a warm capture takes about 0.1 s).
+let runBlockingRetryFloorSec: Double = 0.5
+
+/// SCStreamErrorDomain -3801, "the user declined". replayd also answers it with Screen Recording granted:
+/// after the interrupt loop above, the surviving process's captures fail -3801. Only a false preflight makes
+/// it a missing grant (mapCaptureError says so then). With a true preflight it is answered as a failed capture,
+/// and the message names no cause: a real refusal can read as granted too (a stale grant from an earlier
+/// build, a system re-approval pending or declined).
+func isDeclinedWithGrant(_ error: Error, granted: () -> Bool) -> Bool {
+    let ns = error as NSError
+    return ns.domain == SCStreamErrorDomain && ns.code == -3801 && granted()
+}
+
+/// Runs an async ScreenCaptureKit body to completion from the serial worker (a synchronous, non-cooperative
+/// thread; the main RunLoop keeps spinning). Bounded: `capture_failed` after `timeoutSec`, the body abandoned.
+/// A -3801 with Screen Recording granted is tried once more inside the same bound, and a second one answers
+/// `capture_failed`, never "not granted". A -3801 without the grant is rethrown as it came, for mapCaptureError.
+func runBlocking<T>(timeoutSec: Double = runBlockingTimeoutSec,
+                    granted: () -> Bool = { CGPreflightScreenCaptureAccess() },
+                    _ body: @escaping () async throws -> T) throws -> T {
+    let deadline = DispatchTime.now() + timeoutSec
+    do {
+        return try awaitBody(until: deadline, timeoutSec: timeoutSec, body)
+    } catch where isDeclinedWithGrant(error, granted: granted) {
+        let failed = "The screen capture failed (SCStreamErrorDomain -3801) while Screen Recording reads as granted."
+        guard DispatchTime.now() + runBlockingRetryFloorSec < deadline else { throw HandsError.captureFailed(failed) }
+        debugLog("capture: -3801 with Screen Recording granted; one more try")
+        do {
+            return try awaitBody(until: deadline, timeoutSec: timeoutSec, body)
+        } catch where isDeclinedWithGrant(error, granted: granted) {
+            throw HandsError.captureFailed("\(failed) A second try failed the same way.")
+        }
+    }
+}
+
+private func awaitBody<T>(until deadline: DispatchTime, timeoutSec: Double, _ body: @escaping () async throws -> T) throws -> T {
     let box = ResultBox<T>()
     let semaphore = DispatchSemaphore(value: 0)
-    Task.detached(priority: .userInitiated) {
+    let task = Task.detached(priority: .userInitiated) {
         do {
             box.value = .success(try await body())
         } catch {
@@ -252,7 +294,11 @@ func runBlocking<T>(_ body: @escaping () async throws -> T) throws -> T {
         }
         semaphore.signal()
     }
-    semaphore.wait()
+    if semaphore.wait(timeout: deadline) == .timedOut {
+        // The body is abandoned, not awaited: a late callback lands in a box nobody reads.
+        task.cancel()
+        throw HandsError.captureFailed(String(format: "ScreenCaptureKit did not answer within %.1f s.", timeoutSec))
+    }
     guard let result = box.value else { throw HandsError.internalError("async task produced no result") }
     return try result.get()
 }

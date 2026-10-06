@@ -299,6 +299,18 @@ interface Pending {
  */
 export const TYPE_CANCEL_SIGNAL: NodeJS.Signals = "SIGURG";
 
+/**
+ * The ops that capture through ScreenCaptureKit. One process may run them, never two. Measured
+ * 2026-10-06 with the Mac locked: a second capturing helper from the same executable path (both of
+ * the app's helpers start from Jarhead.app/Contents/MacOS/jarhead-hands) sets the two processes'
+ * replayd connections interrupting each other dozens of times a second. The second capture's callback
+ * never comes, and the helper waits on it on its serial queue, so every op after it (a move, a click,
+ * a cursor read) times out until the process is restarted (likely after unlock too; every probe ran
+ * locked). Two processes from two paths capture fine, and so does a second process started after
+ * the first has exited. Two live processes from one path capturing one after the other is the stall.
+ */
+export const CAPTURE_OPS: ReadonlySet<string> = new Set(["screenshot", "zoom"]);
+
 export interface NativeHandsProcessOptions {
   readonly binPath: string;
   readonly defaultTimeoutMs?: number;
@@ -311,6 +323,11 @@ export interface NativeHandsProcessOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** The user's name for the helper's `busy` refusals (release F1), read live; default "Kevin". */
   readonly userName?: (() => string) | undefined;
+  /**
+   * Where this client's captures (CAPTURE_OPS) go instead of its own process. HandsPool points the
+   * reading helper at the acting one, so ScreenCaptureKit runs in one process whoever asks.
+   */
+  readonly captures?: NativeHands | undefined;
 }
 
 export class NativeHandsProcess extends EventEmitter implements NativeHands {
@@ -450,6 +467,9 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
   }
 
   async request<T = unknown>(op: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+    // A capture asked of a client that does not capture: the process that does takes it (this one is not even spawned for it).
+    const captures = this.opts.captures;
+    if (captures && captures !== this && CAPTURE_OPS.has(op)) return this.forwardCapture<T>(captures, op, params, timeoutMs);
     await this.ensure();
     const child = this.child;
     if (!child?.stdin) throw new NativeRequestError({ code: "unavailable", message: "hands helper is not running" });
@@ -469,6 +489,22 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
         }
       });
     });
+  }
+
+  /**
+   * A capture the capturing helper takes for this one. It queues behind whatever that helper is doing (an
+   * `open_app` up to 30 s, a `type` longer than the capture's 6 s). Its timeout does not say which: a capture
+   * that waited and never ran, or one that ran slow. Either way it fails `capture_failed`, which the toolset's
+   * screenshot answers with its `screencapture` fallback. A cut reaches it through the capturing client's
+   * pending map, where it waits.
+   */
+  private async forwardCapture<T>(to: NativeHands, op: string, params: Record<string, unknown>, timeoutMs: number | undefined): Promise<T> {
+    try {
+      return await to.request<T>(op, params, timeoutMs);
+    } catch (e) {
+      if (!(e instanceof NativeRequestError) || e.detail.code !== "timeout") throw e;
+      throw new NativeRequestError({ code: "capture_failed", message: `${e.detail.message}. It was queued on the acting helper, the one process that captures.` });
+    }
   }
 
   /** The resident helper's greeting: its version, pid and the grants it read at launch (a key the helper did not print is absent). */

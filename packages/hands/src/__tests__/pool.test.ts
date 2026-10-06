@@ -184,3 +184,58 @@ test("restartAll restarts both helpers (a grant is per process); a stale child's
   assert.equal(bgChildren[1]!.killed, 1);
   assert.equal(pool.pendingCount, 0);
 });
+
+/** Two fake helpers that record what reaches each process; neither answers. */
+function twoRecorded(): { pool: HandsPool; focusChildren: FakeChild[]; bgChildren: FakeChild[]; seen: (children: FakeChild[]) => string[] } {
+  const focusChildren: FakeChild[] = [];
+  const bgChildren: FakeChild[] = [];
+  const pool = new HandsPool({
+    binPath: binPath(),
+    spawnImpl: (() => {
+      const c = new FakeChild(0);
+      focusChildren.push(c);
+      return c as unknown as ChildProcess;
+    }) as never,
+    background: {
+      spawnImpl: (() => {
+        const c = new FakeChild(0);
+        bgChildren.push(c);
+        return c as unknown as ChildProcess;
+      }) as never,
+    },
+  });
+  return { pool, focusChildren, bgChildren, seen: (children) => children.flatMap((c) => c.seen.map((r) => r.op)) };
+}
+
+test("one process captures: a screenshot or zoom asked of the reading helper is taken by the acting helper's process, reads stay on the reading one (two capturing helpers from one executable path wedge each other while the screen is locked)", async () => {
+  // Measured 2026-10-06 on a locked Mac: helper A captures, helper B (same executable path) captures, and from then
+  // on B's capture never calls back and B's serial queue never answers again; A's next capture hangs too.
+  const { pool, focusChildren, bgChildren, seen } = twoRecorded();
+  const shot = pool.focus.request("screenshot", { display: "cursor" });
+  const wakeShot = pool.background.request("screenshot", { display: "cursor" });
+  const zoom = pool.background.request("zoom", { x: 0, y: 0, w: 10, h: 10 });
+  const read = pool.background.request("frontmost");
+  await until(() => seen(focusChildren).length + seen(bgChildren).length === 4, "four requests on the wire");
+  assert.deepEqual(seen(focusChildren).sort(), ["screenshot", "screenshot", "zoom"], "every capture on the acting helper's process");
+  assert.deepEqual(seen(bgChildren), ["frontmost"], "the reading helper only reads");
+  assert.equal(focusChildren.length, 1, "one acting process");
+  // A forwarded capture waits in the acting client's pending map: counted once, and a cut reaches it.
+  assert.equal(pool.pendingCount, 4);
+  const failed = [shot, wakeShot, zoom, read].map((p) => assert.rejects(p, /cancelled/));
+  assert.equal(pool.cancelAll("done"), 4);
+  await Promise.all(failed);
+  pool.stop();
+});
+
+test("a capture asked of the reading helper that times out behind the acting queue fails capture_failed, so the toolset's screencapture fallback serves it; the acting helper's own capture still times out as a timeout", async () => {
+  // The cost of one capturing process: a reading-side capture queues behind the acting helper (an open_app up to
+  // 30 s, a type longer than 6 s). Its timeout is a capture that never ran, not a helper that stopped answering.
+  const { pool, focusChildren, bgChildren, seen } = twoRecorded();
+  await assert.rejects(pool.background.request("screenshot", { display: "cursor" }, 40), (e: unknown) => e instanceof NativeRequestError && e.detail.code === "capture_failed" && /acting helper/.test(e.detail.message) && !/not granted/.test(e.detail.message));
+  await assert.rejects(pool.background.request("zoom", { x: 0, y: 0, w: 10, h: 10 }, 40), (e: unknown) => e instanceof NativeRequestError && e.detail.code === "capture_failed");
+  await assert.rejects(pool.focus.request("screenshot", { display: "cursor" }, 40), (e: unknown) => e instanceof NativeRequestError && e.detail.code === "timeout");
+  assert.deepEqual(seen(focusChildren), ["screenshot", "zoom", "screenshot"]);
+  assert.equal(bgChildren.length, 0, "the reading helper was never spawned for a capture");
+  assert.equal(pool.pendingCount, 0);
+  pool.stop();
+});

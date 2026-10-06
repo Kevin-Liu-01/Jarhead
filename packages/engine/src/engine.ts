@@ -5429,10 +5429,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.settings.threads) this.threads.warm();
     if (!this.hands.available && !this.hands.ready) return;
     if (!(this.brain instanceof ResponsesBrain)) {
-      // The wake shot goes to the reading helper (ScreenCaptureKit's first capture is the slow one) and
-      // still sets the main lane's Screen mapping, so a spoken click maps through it at once.
+      // The wake shot warms ScreenCaptureKit (its first capture is the slow one) in the one process that captures, the acting
+      // helper (CAPTURE_OPS), so the eyes' shot after it is warm. It sets the main lane's Screen mapping, so a spoken click maps at once.
       const t0 = this.now();
-      void this.pool.background
+      void this.pool.focus
         .request<ScreenshotResult>("screenshot", { display: "cursor", maxLongEdge: QUICK_SHOT_BUDGET.maxLongEdge, maxPixels: QUICK_SHOT_BUDGET.maxPixels, excludePids: [...this.excludePids, process.pid], showCursor: true }, 6000)
         .then((shot) => {
           this.toolset.screen.remember(shot);
