@@ -906,7 +906,7 @@ test("system.signal parses as a ClientMessage and reaches engine.systemSignal as
   await server.close();
 });
 
-test("the three automation events broadcast to every client like toast: automation.event, local.say and notify pass through with their fields", async () => {
+test("the three automation events broadcast to every client like toast: automation.event, local.say (its ring kind included) and notify pass through with their fields", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
@@ -917,14 +917,14 @@ test("the three automation events broadcast to every client like toast: automati
   const event = { seq: 1, at: 2, id: "auto_1", kind: "state", state: "snoozed", nextAt: 3 };
   engine.emit("event", { type: "automation.event", event });
   engine.emit("event", { type: "local.say", text: "call mum", sound: "Glass", automationId: "auto_1" });
-  engine.emit("event", { type: "local.say", sound: "Hero", automationId: "auto_2" });
+  engine.emit("event", { type: "local.say", sound: "Hero", ring: "alarm", automationId: "auto_2" });
   engine.emit("event", { type: "notify", id: "ntf_1", title: "07:10 · Wake up", presses: [{ kind: "snooze", minutes: 10 }, { kind: "done" }], automationId: "auto_2" });
   await until(() => a.of("notify").length === 1 && b.of("notify").length === 1, "both clients got the banner");
   for (const c of [a, b]) {
     assert.deepEqual(c.of("automation.event"), [{ type: "automation.event", event }]);
     assert.deepEqual(c.of("local.say"), [
       { type: "local.say", text: "call mum", sound: "Glass", automationId: "auto_1" },
-      { type: "local.say", sound: "Hero", automationId: "auto_2" },
+      { type: "local.say", sound: "Hero", ring: "alarm", automationId: "auto_2" },
     ]);
     assert.deepEqual(c.of("notify"), [{ type: "notify", id: "ntf_1", title: "07:10 · Wake up", presses: [{ kind: "snooze", minutes: 10 }, { kind: "done" }], automationId: "auto_2" }]);
   }

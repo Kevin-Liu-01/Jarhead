@@ -114,8 +114,8 @@ export type DaemonMessage =
   | { readonly type: "thread.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" | "prepend" }
   /** One change on one automation row (an AutomationEvent; ≤ 200 B, `fired` ≈ 270 B with its presses): broadcast, like `thread.event`. */
   | { readonly type: "automation.event"; readonly event: unknown }
-  /** Engine → app: play an earcon and/or have the LocalSpeaker read a FIXED line on-device; never model text except a redacted wake-brain line. Broadcast. */
-  | { readonly type: "local.say"; readonly text?: string; readonly sound?: string; readonly automationId: string }
+  /** Engine → app: play an earcon and/or have the LocalSpeaker read a FIXED line on-device; never model text except a redacted wake-brain line. `ring`: what a chime rings for (alarm · timer · chime). Broadcast. */
+  | { readonly type: "local.say"; readonly text?: string; readonly sound?: string; readonly ring?: string; readonly automationId: string }
   /** Engine → app: a banner with the ring's presses (Snooze · Done / Open · Done); a press comes back as an `automation.*` command. Broadcast. */
   | { readonly type: "notify"; readonly id: string; readonly title: string; readonly body?: string; readonly presses: readonly unknown[]; readonly automationId: string }
   /**

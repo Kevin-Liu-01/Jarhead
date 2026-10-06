@@ -40,6 +40,7 @@ import {
   audioSettingsOf,
   isAudioState,
   automationKind,
+  ringOf,
   grantOf,
   isEngineCommand,
   liveRecipes,
@@ -50,6 +51,7 @@ import {
   type AudioSettings,
   type AudioState,
   type ClockTime,
+  type EngineEvent,
   type LedgerRow,
   type Permissions,
   type Settings,
@@ -477,6 +479,16 @@ test("the palette's knobs: AudioSettings carries sounds and soundVolume only whe
   assert.deepEqual(audioSettingsOf({ recording: true, extra: 1 }), { recording: true }, "unknown keys are not kept");
   const patch: SettingsPatch = { audio: { recording: false, sounds: true, soundVolume: 0.7 } };
   assert.equal(patch.audio?.sounds, true);
+});
+
+test("local.say carries the ring's kind from the row's kind (alarm · timer · chime), so the app never reads a ring from the sound's name; an open's Pop carries none", () => {
+  assert.deepEqual((["alarm", "timer", "reminder", "routine", "watcher"] as const).map(ringOf), ["alarm", "timer", "chime", "chime", "chime"]);
+  const timer: Automation["when"] = { kind: "in", ms: 60_000 };
+  assert.equal(ringOf(automationKind({ when: timer, then: [{ kind: "chime", line: "tea", sound: "Pop" }] })), "timer", "a timer that names Pop is still a timer ring");
+  const say: EngineEvent = { type: "local.say", sound: "Pop", ring: "chime", automationId: "auto_1" };
+  const open: EngineEvent = { type: "local.say", sound: "Pop", automationId: "auto_1" };
+  assert.equal(JSON.stringify(say), '{"type":"local.say","sound":"Pop","ring":"chime","automationId":"auto_1"}');
+  assert.equal("ring" in open, false);
 });
 
 test("isAudioState takes the awake earcon's held milliseconds as an optional counter", () => {

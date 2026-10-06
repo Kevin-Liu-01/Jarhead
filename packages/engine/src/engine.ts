@@ -627,6 +627,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private muted = false;
   private wantAwake = false;
   private connecting = false;
+  /** A fire's lines that came during a handshake (`holdForSession`): said by the session it opens, or rung if none does (`releaseHeldFires`). */
+  private heldFires: { readonly instruction: string; readonly fallback: readonly EngineEvent[] }[] = [];
   /** Settles when the connect in flight has finished, whichever way: a line typed during a handshake waits on it (V6). */
   private connectDone: Promise<void> | undefined;
   /**
@@ -893,6 +895,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       userName: () => this.userName,
       // Awake: a fire is delivered through the open session (one instruction), not the speaker.
       live: () => (this.live && !this.connecting && this.live.currentState === "started" ? this.live : undefined),
+      // Opening (the handshake; the app's mic already runs): the fire's lines wait for the session and ring only if none opens.
+      opening: () => this.connecting && this.wantAwake,
+      holdForSession: (instruction, fallback) => this.heldFires.push({ instruction, fallback }),
       brain: {
         warmUp: async () => {
           await this.brain?.warmUp?.();
@@ -2675,6 +2680,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.connectDone = undefined;
       connected();
       this.setPhase("asleep");
+      this.releaseHeldFires();
       return;
     }
     // A fresh process whose predecessor was cut mid-conversation: the first Go inside the
@@ -2764,7 +2770,24 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.pauseAtStart = false;
       this.connectDone = undefined;
       connected();
+      this.releaseHeldFires();
     }
+  }
+
+  /**
+   * The handshake is over: the fires that came during it (`holdForSession`) are said by the session it opened, one
+   * instruction each, as an awake fire is — or, when none opened (stopped, paused at start, failed), their rings and
+   * lines go to the app's speaker now, the phase already quiet (the app holds a frame that beats the snapshot).
+   */
+  private releaseHeldFires(): void {
+    if (this.heldFires.length === 0) return;
+    const held = this.heldFires.splice(0);
+    const open = this.live && this.live.currentState === "started" && (this.phase === "listening" || this.phase === "muted") ? this.live : undefined;
+    for (const h of held) {
+      if (open) open.appendInstructions(null, h.instruction);
+      else for (const e of h.fallback) this.emit("event", e);
+    }
+    log.info(`automations: ${held.length} fire${held.length === 1 ? "" : "s"} from the handshake ${open ? "said by the session" : "rung by the speaker (no session opened)"}`);
   }
 
   /**

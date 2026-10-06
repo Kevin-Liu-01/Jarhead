@@ -494,6 +494,15 @@ export const AUTOMATION_TERMINAL: ReadonlySet<AutomationState> = new Set<Automat
 
 /** The Console's word for a row, derived — nothing stores it. */
 export type AutomationKind = "alarm" | "timer" | "reminder" | "routine" | "watcher";
+/**
+ * What a `local.say` rings for, set by the engine from the row's kind: the app's ring is the kind's, never the
+ * sound's name — it sounds with Settings › Audio › Sounds off, Snooze and Done fade it, and an alarm keeps its own
+ * level whatever the Volume says. An open's confirmation carries none (it is the interface's tink).
+ */
+export type LocalSayRing = "alarm" | "timer" | "chime";
+export function ringOf(kind: AutomationKind): LocalSayRing {
+  return kind === "alarm" ? "alarm" : kind === "timer" ? "timer" : "chime";
+}
 export function automationKind(a: Pick<Automation, "when" | "then">): AutomationKind {
   const w = a.when.kind, first = a.then[0]?.kind;
   if (w === "in") return "timer";
@@ -723,10 +732,13 @@ export interface AudioSettings {
   /**
    * Settings › Audio › Sounds: the palette's interface sounds (heard, awake, pause, sleep, snooze, opened,
    * mark, cue, problem). Absent until Kevin flips it: the app follows macOS's "Play user interface sound
-   * effects" (read, never written). The rings (chime, timer, alarm) sound either way.
+   * effects" (read, never written). The rings (a `local.say` with a `ring`: chime, timer, alarm) sound either way.
    */
   readonly sounds?: boolean;
-  /** Settings › Audio › Volume, 0…1, times the system output volume; absent = DEFAULT_SOUND_VOLUME. The alarm never plays under 0.4. */
+  /**
+   * Settings › Audio › Volume, 0…1, times the system output volume; absent = DEFAULT_SOUND_VOLUME. The alarm ignores it:
+   * its first ring is level with the system Hero it replaced (−19.5 LUFS), each repeat 1 dB louder up to the file's −16.
+   */
   readonly soundVolume?: number;
 }
 
@@ -1448,8 +1460,11 @@ export type EngineEvent =
   | { readonly type: "thread.transcript"; readonly transcript: ThreadTranscript; readonly mode: "replace" | "append" | "prepend" }
   /** One change on one automation row (broadcast, coalesced 50 ms per id; ≤ 200 B except `fired`, ≈ 270 B with its presses). */
   | { readonly type: "automation.event"; readonly event: AutomationEvent }
-  /** The app plays the earcon and the local speaker reads `text`; never model text except a redacted wake-brain line ≤ AUTOMATION_LINE_CHARS. */
-  | { readonly type: "local.say"; readonly text?: string; readonly sound?: "Pop" | "Glass" | "Ping" | "Hero"; readonly automationId: string }
+  /**
+   * The app plays the earcon and the local speaker reads `text`; never model text except a redacted wake-brain line ≤ AUTOMATION_LINE_CHARS.
+   * `sound` picks the file; `ring` (a chime's, set from the row's kind) makes it a ring. An app before `ring` reads the name alone.
+   */
+  | { readonly type: "local.say"; readonly text?: string; readonly sound?: "Pop" | "Glass" | "Ping" | "Hero"; readonly ring?: LocalSayRing; readonly automationId: string }
   /** A banner with the ring's presses; a press lands on the same row as the island's. */
   | { readonly type: "notify"; readonly id: string; readonly title: string; readonly body?: string; readonly presses: readonly AutomationPress[]; readonly automationId: string };
 

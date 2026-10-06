@@ -4,7 +4,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, classifyUrl, clockOf, openPathReason, pressKeyReason, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
 import { runShell, type Brain, type BrainResult, type BrainSink, type BrainTask } from "@jarhead/brain";
 import { KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_POLL_MS, WAIT_MAX_MS, isHandsBusyMessage, type FocusedText, type FrontmostInfo, type NativeHands, type UserIdle } from "@jarhead/hands";
-import { AUTOMATION_LINE_CHARS, automationKind, recipeNamed, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
+import { AUTOMATION_LINE_CHARS, automationKind, recipeNamed, ringOf, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
 import type { LaneRunner } from "../threads/runner.ts";
 
 /**
@@ -14,7 +14,8 @@ import type { LaneRunner } from "../threads/runner.ts";
  * `presence.recent` is false on every policy call so a confirm-tier action in a
  * presence-gated app holds and the hold is the failure. The app owns the speaker and
  * the banners: `chime`, `say` and `notify` are `local.say` / `notify` events; awake, the
- * same fire is one instruction to Live instead (the FAREWELL_LINE pattern). `wake-brain`
+ * same fire is one instruction to Live instead (the FAREWELL_LINE pattern), and while a
+ * session opens it is held for that session (`holdForSession`) — rung only if none opens. `wake-brain`
  * is one headless turn on a background-lane brain behind its budget; the engine's
  * `wake()` / `connect()` are never called from here.
  */
@@ -131,6 +132,13 @@ export interface ExecutorOptions {
   readonly shellGate: ShellGate;
   /** The open session, when one is up: the fire is delivered through it instead of the speaker. */
   readonly live: () => LiveLike | undefined;
+  /**
+   * A session is opening (the handshake): the app's microphone already runs, so a chime or a say is neither rung nor
+   * dropped. Its lines go to `holdForSession` with the `local.say` events that would have sounded: the engine says the
+   * lines through the session once it opens, or emits the events when the handshake ends without one.
+   */
+  readonly opening?: (() => boolean) | undefined;
+  readonly holdForSession?: ((instruction: string, fallback: readonly EngineEvent[]) => void) | undefined;
   readonly brain: WakeBrainSeam;
   readonly home: string;
   readonly repoRoot?: string | undefined;
@@ -275,11 +283,13 @@ export class AutomationExecutor {
     let ok = true;
     // Awake, the line kinds are ONE instruction to Live for the whole fire, appended after the loop; each chime/say adds its line here.
     const spoken: string[] = [];
+    // A session opening: what each line kind would have sounded, rung only if the session never opens (`holdForSession`).
+    const held: EngineEvent[] = [];
     // The actions run in the order Kevin set them — `then` is his sequence — and the first failure stops the chain.
     for (const action of a.then) {
       if (ctx.muted && LINE_KINDS.has(action.kind)) continue;
       actions.push(action.kind);
-      const r = await this.one(action, ctx, kind, what, nextAt, spoken);
+      const r = await this.one(action, ctx, kind, what, nextAt, spoken, held);
       if (r.what) what = r.what;
       if (r.open) openTarget = r.open;
       if (r.ring) ring = true;
@@ -295,21 +305,35 @@ export class AutomationExecutor {
     const line = this.line(a, ctx.dueAt, what);
     const presses = this.presses(a, openTarget);
     const live = this.opts.live();
-    if (live && spoken.length > 0) live.appendInstructions(null, `${this.userName}'s ${a.name} fired: say '${[...new Set(spoken)].join("; ")}' once, with its name, and nothing more.`);
+    if (spoken.length > 0) {
+      const instruction = `${this.userName}'s ${a.name} fired: say '${[...new Set(spoken)].join("; ")}' once, with its name, and nothing more.`;
+      if (live) live.appendInstructions(null, instruction);
+      else if (held.length > 0 || this.opening()) {
+        // Still opening: the engine says it once the session is up, or rings `held` if it never opens. Opened or
+        // abandoned while the fire ran: the speaker rings `held` now (the app holds a frame that lands mid-handshake).
+        if (this.opening() && this.opts.holdForSession) this.opts.holdForSession(instruction, held);
+        else for (const e of held) this.opts.emit(e);
+      }
+    }
     return { ok, actions, line, calm: this.calm(a, nextAt), detail: detail ? cut(this.opts.redact(detail), DETAIL_CHARS) : undefined, presses, ring, delegationId, brainSeconds, ms: this.opts.now() - t0 };
   }
 
   // ------------------------------------------------------------- actions
 
-  private async one(action: AutomationAction, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined, spoken: string[]): Promise<StepOutcome> {
+  /** The handshake runs and the engine takes held lines (`opening` and `holdForSession` both wired). */
+  private opening(): boolean {
+    return this.opts.holdForSession !== undefined && this.opts.opening?.() === true;
+  }
+
+  private async one(action: AutomationAction, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined, spoken: string[], held: EngineEvent[]): Promise<StepOutcome> {
     // The Settings › While asleep chip is a kill switch per kind: judged at set-up AND here, so a chip turned off after a row
     // was armed stops that row's action at its next fire (a failed row with the reason; repeaters re-arm and say so).
     if (!this.opts.settings().automations.unattended.includes(action.kind)) return { ok: false, detail: `${action.kind} is off in Settings › Automations › While asleep` };
     switch (action.kind) {
       case "chime":
-        return this.chime(action, ctx, kind, what, nextAt, spoken);
+        return this.chime(action, ctx, kind, what, nextAt, spoken, held);
       case "say":
-        return this.say(action, ctx, what, spoken);
+        return this.say(action, ctx, what, spoken, held);
       case "notify":
         return this.notify(action, ctx);
       case "open":
@@ -332,32 +356,43 @@ export class AutomationExecutor {
     this.opts.emit({ type: "notify", id: newId("ntf"), title: cut(this.opts.redact(title), AUTOMATION_LINE_CHARS), ...(body ? { body: cut(this.opts.redact(body), AUTOMATION_LINE_CHARS) } : {}), presses: this.presses(a, open), automationId: a.id });
   }
 
-  private chime(action: Extract<AutomationAction, { kind: "chime" }>, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined, spoken: string[]): StepOutcome {
+  private chime(action: Extract<AutomationAction, { kind: "chime" }>, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined, spoken: string[], held: EngineEvent[]): StepOutcome {
     const { a } = ctx;
     const line = this.line(a, ctx.dueAt, what);
     const said = cut(this.opts.redact(action.line.trim() || a.name), AUTOMATION_LINE_CHARS);
+    // The default sound by kind (the app's alarm for Hero, timer for Ping, chime for Glass); `ring` is the kind, so a
+    // chime that names Pop is still a ring in the app (Sounds off, Snooze, an alarm's own level).
+    const ring: EngineEvent = { type: "local.say", sound: action.sound ?? (kind === "alarm" ? "Hero" : kind === "timer" ? "Ping" : "Glass"), ring: ringOf(kind), automationId: a.id };
     let detail: string | undefined;
     if (this.opts.live()) {
       // Awake: the island line only; the chime is skipped (the mic would hear it) and Live is told once per fire, after the loop.
       spoken.push(said);
       detail = "said by the voice";
+    } else if (this.opening()) {
+      // The handshake: the mic runs already. Said by the voice once the session opens; rung if it never does.
+      spoken.push(said);
+      if (!ctx.quiet) held.push(ring);
+      detail = "held for the opening session";
     } else if (ctx.quiet) {
       detail = "quiet hours: shown, not said";
     } else {
-      // The default sound by kind: the app plays its palette's alarm for Hero, the timer for Ping, the chime for Glass.
-      this.opts.emit({ type: "local.say", sound: action.sound ?? (kind === "alarm" ? "Hero" : kind === "timer" ? "Ping" : "Glass"), automationId: a.id });
+      this.opts.emit(ring);
     }
     this.banner(a, line, said !== line ? said : this.calm(a, nextAt), undefined);
     return { ok: true, ring: true, detail };
   }
 
-  private say(action: Extract<AutomationAction, { kind: "say" }>, ctx: FireContext, what: string | undefined, spoken: string[]): StepOutcome {
+  private say(action: Extract<AutomationAction, { kind: "say" }>, ctx: FireContext, what: string | undefined, spoken: string[], held: EngineEvent[]): StepOutcome {
     const { a } = ctx;
     const text = cut(this.opts.redact(action.line.trim()), AUTOMATION_LINE_CHARS);
     let detail: string | undefined;
     if (this.opts.live()) {
       spoken.push(text);
       detail = "said by the voice";
+    } else if (this.opening()) {
+      spoken.push(text);
+      if (!ctx.quiet) held.push({ type: "local.say", text, automationId: a.id });
+      detail = "held for the opening session";
     } else if (ctx.quiet) {
       detail = "quiet hours: shown, not said";
     } else {
