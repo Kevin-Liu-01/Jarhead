@@ -4,8 +4,8 @@ import { FOOTER, HERO } from "@/content/deck";
 import { aroundQuote, parts, row } from "@/lib/cut";
 
 /**
- * The figures line's first two parts, how it ships and the licence (the hero, Costs and Hands carry the rest; the first is
- * `source only` until the v2.0.0 tag exists, D7), held whole between their dots so the line wraps only between parts.
+ * The figures line's first two parts, the release and the licence (the hero, Costs and Hands carry the rest; the first is
+ * the tag, `v2.0.0`, D7), held whole between their dots so the line wraps only between parts.
  */
 const FIGURES = parts(HERO.figures).slice(0, 2);
 

@@ -38,7 +38,7 @@ eyebrow LINES above a heading, so never set them as a line. The `desk caption` m
 - button, solid: `Install` → `#install`
 - button, text tile: `Read the source` → `https://github.com/Kevin-Liu-01/Jarhead` (README:20)
 - note under the buttons: `Send, pay, delete, post and purchase ask every time.` (README:362)
-- figures line: `source only · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto` (facts:40-41, README:23, README:377, README:349, README:356). `v2.0.0` takes the first slot once the tag exists (D7); until then the page claims no release.
+- figures line: `v2.0.0 · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto` (the v2.0.0 tag, 2026-10-06, D7; README:23, README:377, README:349, README:356). The first slot names the release; Install's label still says `source only`, since the release is a tag, not a download.
 - desk caption: `menu bar 33 · notch 185×32 · island 420×184 · drawn at 1:1 · the Console is the app's own harness render` (facts:109, README:90)
 - InstallPlate eyebrow: `INSTALL · ONE LINE`
 - InstallPlate code: `curl -fsSL https://jarhead.kevinliu.studio/install.sh | sh` (README:41)
@@ -253,7 +253,7 @@ Never on this page: "download", ".dmg", "cask", "Delete", "Empty Trash", a relea
 - brand: `Jarhead` (README:11)
 - line: `A voice-first Mac assistant that uses the computer for you.` (README:15)
 - line: `Built with Swift and TypeScript.` (README:22)
-- mono line: `source only · MIT`, the hero figures line's first two parts as Footer.tsx sets them (facts:40-41, README:569); `v2.0.0` takes the first slot once the tag exists (D7)
+- mono line: `v2.0.0 · MIT`, the hero figures line's first two parts as Footer.tsx sets them (the v2.0.0 tag, D7; README:569)
 - disclosure 1: `Every picture is rendered by the app's own preview harnesses over fixed fake data.` (README:90-91)
 - disclosure 2: `None is a photo of a desktop.` (README:91)
 - disclosure 3: `The alarm's "Wake up, Kevin" is the harness's fixed data.` (facts:392, README:298)

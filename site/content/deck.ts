@@ -26,7 +26,7 @@ export const HERO = {
   lead: "Say jarhead, pass Touch ID, talk. It uses the computer for you. The brain is whatever you already have a login for.", // README:26, README:15, README:27
   install: "Install",
   source: "Read the source", // README:20
-  figures: "source only · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto", // facts:40-41 (v2.0.0 takes this slot once the tag exists, D7), README:23, README:377, README:349, README:356
+  figures: "v2.0.0 · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto", // the v2.0.0 tag (2026-10-06, D7), README:23, README:377, README:349, README:356
   blobLabel: "Jarhead's blob, {phase}",
 } as const;
 
