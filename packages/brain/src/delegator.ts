@@ -51,6 +51,8 @@ const log = logger("delegator");
 
 /** A delegation the room-talk gate refused: its ledger summary, and the silent note that closes it for the voice. */
 const NOT_ADDRESSED = "not addressed: room talk, heard and not run";
+/** A refusal the session's end settled: no verdict came before the voice went, so it says so (a paid LC-7 reads both as refusals). */
+const NOT_ADDRESSED_ENDED = "not addressed: the session ended before a name came";
 const NOT_ADDRESSED_THINKING = "Not run: those words were not said to you. Say nothing about them.";
 
 /**
@@ -1551,7 +1553,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const aside = this.recordAside(liveId, offsetMs, words, this.speechEndAt(heardItems, offsetMs), heardItems);
     const quoted = `not addressed: "${words.slice(0, 120)}"`;
     this.addStep(aside.id, { kind: "note", text: ended ? `${quoted}; the session ended before a name came, so it stays on the record and was not run` : `${quoted} — heard, kept on the record, not run` });
-    this.closeRecord(aside.id, "cancelled", NOT_ADDRESSED);
+    this.closeRecord(aside.id, "cancelled", ended ? NOT_ADDRESSED_ENDED : NOT_ADDRESSED);
     return { aside, words };
   }
 
