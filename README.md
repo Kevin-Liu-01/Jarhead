@@ -114,15 +114,15 @@ The Console shots are JPEGs: a dithered ground does not compress as PNG.
     <td>Peeking, awake. <code>O O</code></td>
   </tr>
   <tr>
-    <td><img src="docs/media/notch-island.png" alt="The island: the face and Listening as the anchor, the level trace and the last line as the 18 pt hero on the black pool, Go · Stop · Mute, the Say box, the Circle · Window · Ask strip, the meter as a bar with figures, Console · Sleep"></td>
-    <td><img src="docs/media/notch-island-working.png" alt="The island while acting: Working · 0:02 in the head, the request as the hero, two thread tiles with their Stops"></td>
+    <td><img src="docs/media/notch-island.png" alt="The island: the face and Listening as the anchor, the level trace and the last line as the 18 pt hero on the black pool, Go · Stop · Mute, the Say box, the Circle · Window · Ask strip, the foot in words (12:37 · 7.2 min · $0.36), Console · Sleep"></td>
+    <td><img src="docs/media/notch-island-working.png" alt="The island while acting: Working · 0:02 in the head, the request as the hero, two thread tiles with their Stops, and the two threads' blobs hanging under the island"></td>
   </tr>
   <tr>
     <td>The island under the pointer: anchor, display, control row, foot.</td>
-    <td>Acting: the counter in the head, the request as the hero, a tile per thread.</td>
+    <td>Acting: the counter in the head, the request as the hero, a tile per thread, each thread's blob under the island.</td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/media/notch-island-marks.png" alt="The island with three circled regions as films across the display (a crop with the amber frame, a skeleton for one still capturing, a used one at half alpha), the caption at the head's right end, Clear joining the strip"></td>
+    <td colspan="2"><img src="docs/media/notch-island-marks.png" alt="The island with three circled regions as films across the display (a crop with the amber frame, a skeleton for one still capturing, a used one at half alpha), the caption at the head's right end, Clear joining the strip, two threads' blobs under the island"></td>
   </tr>
   <tr>
     <td colspan="2">Three marks as films (a crop, a skeleton while its crop is on its way, a used one dimmed), the caption in the head, Clear joining the strip.</td>

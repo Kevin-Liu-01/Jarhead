@@ -71,7 +71,9 @@
 #                     island frames are cut to a centred README_NOTCH_CROP (HxW, default 500x920 —
 #                     the panel's 460 pt) from the top, the tucked and peek frames to
 #                     README_NOTCH_CROP_SMALL (default 270x920), so a 2-up table shows the island,
-#                     not the margin. notch-stay keeps its full frame. The island is four bands:
+#                     not the margin; the working and marks frames to README_NOTCH_CROP_TALL (default
+#                     640x920), which takes in the thread satellites hanging under the island whole
+#                     (at 500 they were cut through). notch-stay keeps its full frame. The island is four bands:
 #                     the anchor (face, phase word, Go · Stop · Mute), the display (head, 18 pt hero,
 #                     the middle by kind), the control row (Say box, the circling strip), the foot
 #                     (meter or problem row, Console · Sleep).
@@ -111,6 +113,7 @@ MAX_W="${README_SHOTS_MAX_W:-1600}"
 MAX_BYTES="${README_SHOTS_MAX_BYTES:-600000}"
 NOTCH_CROP="${README_NOTCH_CROP:-500x920}"
 NOTCH_CROP_SMALL="${README_NOTCH_CROP_SMALL:-270x920}"
+NOTCH_CROP_TALL="${README_NOTCH_CROP_TALL:-640x920}"
 
 ONLY=""
 SKIP_BUILD=0
@@ -300,7 +303,7 @@ if want orb; then
   orb notch-working ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NOTCH_PHASE=acting ORB_NOTCH_WORKING=1 \
     ORB_NOTCH_REQUEST="opening the PR in Cursor" ORB_FLEET="Slack:screen:working;Spotify:background:working" \
     ORB_NOTCH_SHOT_TAG=working ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=4.5
-  crop_notch "$TMP/orb-notch-working/preview-blob-notch-island-working.png"
+  crop_notch "$TMP/orb-notch-working/preview-blob-notch-island-working.png" "$NOTCH_CROP_TALL"
   place "$TMP/orb-notch-working/preview-blob-notch-island-working.png" notch-island-working
   # The ring while asleep (design11): the alarm fires at 1.5 s, the island opens pinned with Snooze 10 · Done, the foot's next timer.
   orb notch-alarm ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" \
@@ -311,7 +314,7 @@ if want orb; then
   orb notch-marks ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full \
     ORB_FLEET="Slack:screen:working;Spotify:background:working" \
     ORB_NOTCH_MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack" ORB_EXIT_AFTER=4.5
-  crop_notch "$TMP/orb-notch-marks/preview-blob-notch-island-marks.png"
+  crop_notch "$TMP/orb-notch-marks/preview-blob-notch-island-marks.png" "$NOTCH_CROP_TALL"
   place "$TMP/orb-notch-marks/preview-blob-notch-island-marks.png" notch-island-marks
   # Every face.
   orb eyes ORB_EYES=1 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_EXIT_AFTER=3
