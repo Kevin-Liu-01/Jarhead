@@ -35,7 +35,9 @@ import { BYTES_PER_MS } from "./audio-telemetry.ts";
  *   after a pause. When new words split a turn, the old turn's sound still on its way stays its own; a granted one
  *   keeps only its words' worth. Once it has had as much PCM from its first audible frame as its words cover on Live's
  *   timeline, the next frame is the next turn's (CI 1c140d8: an answer to the room sounded 219 ms behind its words,
- *   and three of its frames played as the clause).
+ *   and three of its frames played as the clause). Until the old bound, such a frame does not decide an undecided
+ *   next turn: it is dropped and held, and the turn locks at an audible frame past the bound, so a late name counts
+ *   from the turn's own sound.
  * - **A delegation** is judged on the utterance Live raised it for. One that looks like room talk waits up to
  *   DELEGATION_LATE_MS for a late name before it is refused.
  *
@@ -243,16 +245,20 @@ export class VoiceAttention {
    * 347-547 ms after its `start_ms` (" on it" 347 and 440, " night." 412, " hello ke" 459, " i didn't" 547). The dry
    * stand-in sounds a reply to the room 200 ms after its words, 219 ms under load (CI 1c140d8). So for a granted turn
    * this is only a cap: its tail ends sooner, once it has had its words' worth of sound (`sounded`). A dropped turn's
-   * tail keeps all of it.
+   * tail keeps all of it. Past a granted turn's words' worth and short of this, an audible frame is dropped and held
+   * for an undecided next turn without locking it.
    */
   static readonly SPLIT_SOUND_LAG_MS = 250;
   /**
    * A gap this long or longer between two of a turn's transcript deltas is the voice still sounding: Live's
    * transcript runs on a 200 ms grid and skips a slot with no new text ("hello kevin, here and listening.": 1200 ms of
-   * deltas, 1800 ms from first start to last end, 1801 ms of frames, LC-7). A shorter gap is the stand-in's clock
-   * running late, not sound (CI 1c140d8: 2 and 4 ms).
+   * deltas, 1800 ms from first start to last end, 1801 ms of frames, LC-7). Its gaps are whole slots: 0, 200, 400 ms.
+   * A shorter gap is the dry stand-in's clock running late, not sound: 2 and 4 ms in CI 1c140d8, 135 ms between two
+   * words of a reply in an LC-7 dry run under load. Counted as sound, that pause put a clause's words ahead of its
+   * sound, its tail ran to SPLIT_SOUND_LAG_MS, and the answer to the room played as the clause. So the bar sits just
+   * under one slot.
    */
-  static readonly WORD_GAP_MS = 100;
+  static readonly WORD_GAP_MS = 190;
   /**
    * A delegation whose words look like room talk waits this long for a late name before it is refused: Live's
    * delegation comes 190-727 ms before its reply's first words (LC-7, LC-10), plus LATE_NAME_MS. Only room-looking
@@ -277,8 +283,11 @@ export class VoiceAttention {
   /** Each ear segment: when its first partial came, and the name's count in it so far (a partial repeats the segment's earlier words; only a new name counts). */
   private readonly earSegments = new Map<number, { readonly firstAt: number; names: number }>();
   private turn: VoiceTurn | undefined;
-  /** The turn a split ended, while its sound still streams (`SPLIT_SOUND_LAG_MS`, `sounded`), and the one being split now. */
-  private tail: { readonly turn: VoiceTurn; readonly untilMs: number; readonly untilAt: number } | undefined;
+  /**
+   * The turn a split ended, while its sound still streams (`SPLIT_SOUND_LAG_MS`, `sounded`), and the one being split
+   * now. `handing`: the old turn has had its sound, and until the old bound its frames go to the next turn.
+   */
+  private tail: { readonly turn: VoiceTurn; readonly untilMs: number; readonly untilAt: number; handing?: boolean } | undefined;
   private splitOff: VoiceTurn | undefined;
   private ring: Buffer[] = [];
   private readonly waiters = new Set<Waiter>();
@@ -584,15 +593,23 @@ export class VoiceAttention {
   /**
    * A locked turn that answered this utterance, whose first audible frame came under LATE_NAME_MS ago, is granted
    * after all: its frames from that first audible one go to the speaker now (RING_FRAMES at most), its words count.
+   * An undecided turn that answers it, holding frames a sounded tail handed it, is decided now and they go too.
    */
   private release(u: Utterance): Buffer[] {
     const turn = this.turn;
-    if (!turn || turn.grant !== null || turn.lockedAt === undefined || turn.answers === undefined || !u.items.has(turn.answers)) return [];
-    if (this.now() - turn.lockedAt > VoiceAttention.LATE_NAME_MS) return [];
-    turn.grant = "named";
-    this.stats.droppedTurns = Math.max(0, this.stats.droppedTurns - 1);
-    if (turn.endMs !== undefined) this.speak(turn, turn.endMs);
-    this.seams.decided?.([...turn.itemIds]);
+    if (!turn) return [];
+    if (turn.grant === undefined) {
+      // Only a hand-over fills an undecided turn's ring. Not granted by the name: it waits for its own first audible frame.
+      if (this.ring.length === 0 || !u.items.has(this.answersOf(turn)?.id ?? "") || !this.grantFor(turn, false)) return [];
+      this.lock(turn);
+    } else {
+      if (turn.grant !== null || turn.lockedAt === undefined || turn.answers === undefined || !u.items.has(turn.answers)) return [];
+      if (this.now() - turn.lockedAt > VoiceAttention.LATE_NAME_MS) return [];
+      turn.grant = "named";
+      this.stats.droppedTurns = Math.max(0, this.stats.droppedTurns - 1);
+      if (turn.endMs !== undefined) this.speak(turn, turn.endMs);
+      this.seams.decided?.([...turn.itemIds]);
+    }
     const out = this.ring;
     this.ring = [];
     this.stats.releasedFrames += out.length;
@@ -647,16 +664,18 @@ export class VoiceAttention {
    * An output audio frame (`nowMs`: the session timeline now): true to play it. An audible frame decides its turn at the
    * latest; a turn nobody asked for is dropped whole, its silence too, until the voice has been quiet VOICE_TURN_GAP_MS.
    * A granted turn a split ended takes the frames after the split only until it has had its words' worth of sound.
+   * Until the split's old bound, an audible frame it hands to an undecided turn is dropped and held, and does not
+   * lock that turn: its first audible frame may still be the old turn's sound, and LATE_NAME_MS counts from its own.
    */
   frame(pcm: Buffer, audible: boolean, nowMs: number): boolean {
     this.expire();
     const ms = pcm.length / BYTES_PER_MS;
     const tail = this.tail;
     if (tail && (nowMs >= tail.untilMs || this.now() > tail.untilAt)) this.tail = undefined;
-    else if (tail && sounded(tail.turn)) {
-      this.tail = undefined;
+    else if (tail && !tail.handing && sounded(tail.turn)) {
+      tail.handing = true;
       this.seams.log?.(`attention: a split's granted turn had its sound (${tail.turn.soundMs} ms for ${tail.turn.wordsMs} ms of words); the next frame is the next turn's`);
-    } else if (tail && tail.turn.grant !== undefined) {
+    } else if (tail && !tail.handing && tail.turn.grant !== undefined) {
       hear(tail.turn, audible, ms);
       if (tail.turn.grant) return true;
       this.stats.droppedFrames++;
@@ -665,15 +684,29 @@ export class VoiceAttention {
     }
     const turn = audible ? this.turnAt(nowMs) : this.openTurn();
     if (turn) hear(turn, audible, ms);
-    if (turn && turn.grant === undefined && audible) this.lock(turn);
+    if (turn && turn.grant === undefined && audible) {
+      // Handed over: it may be the old turn's sound running past its words (LC-7 " night.": 200 ms of words, 500 ms of
+      // sound). So it does not lock this turn; its lock waits for an audible frame past the old bound. Its sound
+      // counts: a later split of this turn ends its tail sooner, never later.
+      if (this.tail?.handing) {
+        this.stats.droppedFrames++;
+        this.stats.droppedAudibleFrames++;
+        this.hold(pcm);
+        return false;
+      }
+      this.lock(turn);
+    }
     if (turn?.grant !== null || !turn) return true;
     this.stats.droppedFrames++;
     if (audible) this.stats.droppedAudibleFrames++;
-    if (turn.lockedAt !== undefined && this.now() - turn.lockedAt <= VoiceAttention.LATE_NAME_MS) {
-      this.ring.push(pcm);
-      if (this.ring.length > VoiceAttention.RING_FRAMES) this.ring.shift();
-    }
+    if (turn.lockedAt !== undefined && this.now() - turn.lockedAt <= VoiceAttention.LATE_NAME_MS) this.hold(pcm);
     return false;
+  }
+
+  /** Keep a dropped frame of the turn for a late name (RING_FRAMES, the oldest out first). */
+  private hold(pcm: Buffer): void {
+    this.ring.push(pcm);
+    if (this.ring.length > VoiceAttention.RING_FRAMES) this.ring.shift();
   }
 
   /** The engine's tick: a turn that ended without a sound is decided as it was left; a waiting delegation past its deadline is the room's. */
@@ -984,8 +1017,9 @@ function hear(turn: VoiceTurn, audible: boolean, ms: number): void {
  * 1c140d8: an answer to the room sounded 219 ms behind its words, inside SPLIT_SOUND_LAG_MS, and three of its frames
  * played as the clause). No slack, and a tie goes to the next turn: the stand-in's clause has 60 ms of words and 60 ms
  * of sound, and the answer's first frame can come straight after. The price is a granted turn's last frame when a
- * dropped turn follows mid-stream: LC-7's replies sounded 0-300 ms longer than their words. A dropped turn's tail is
- * never cut short: that could only play its last sound as the next turn's.
+ * dropped turn follows mid-stream: LC-7's replies sounded 0-300 ms longer than their words. Such a frame is held, not
+ * the next turn's first audible frame: a late name for the next turn counts from that turn's own, and releases the
+ * held frame with it. A dropped turn's tail is never cut short: that could only play its last sound as the next turn's.
  */
 function sounded(turn: VoiceTurn): boolean {
   return Boolean(turn.grant) && turn.wordsMs > 0 && turn.soundMs !== undefined && turn.soundMs >= turn.wordsMs;

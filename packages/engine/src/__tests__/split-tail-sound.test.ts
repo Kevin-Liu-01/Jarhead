@@ -10,7 +10,9 @@ import { VoiceAttention } from "../voice-attention.ts";
  * dropped turn's tail keeps SPLIT_SOUND_LAG_MS: cutting it short could only play its last sound as the next turn's.
  *
  * Frames carry their real length: Live's are 100 ms (4800 bytes of PCM16 at 24 kHz), the dry stand-in's 10 ms (480).
- * Wall clock and session timeline move together here. Five of the six fail on b7525e8.
+ * Wall clock and session timeline move together here. Five of the first six fail on b7525e8. Two of the last three
+ * fail on 60f1996: a pause of the stand-in's clock counted as words (WORD_GAP_MS), and a handed-over frame that
+ * started the next turn's late-name clock.
  */
 
 const LIVE_FRAME = Buffer.alloc(4800);
@@ -152,4 +154,69 @@ test("a late name releases the answer's frames the clause no longer takes", () =
   const head = say("head", 10_600, 10_800, "t_k2");
   assert.equal(head.verdict, "named");
   assert.equal(head.released.length, 2, "the answer's two held frames go to the speaker after all");
+});
+
+test("the stand-in's clock pausing 100-180 ms mid-clause is not sound: the answer to the room still plays nothing", () => {
+  // LC-7 dry under load stalled 135 ms between two words of a reply. Live's transcript gaps are whole 200 ms slots.
+  for (const pause of [100, 105, 135, 180]) {
+    const { a, at, say, frame } = gate();
+    at(0);
+    a.ask({ aside: true, content: CLAUSE });
+    // The CI 1c140d8 clause, with " sleep." `pause` ms after " to" ends (81): 60 ms of words, 60 ms of sound.
+    const s = 81 + pause;
+    const clause: [number, string | undefined][] = [[39, " Going"], [49, undefined], [61, " to"], [71, undefined], [s, " sleep."], [s + 10, undefined]];
+    let played = 0;
+    for (const [t, word] of clause) {
+      if (frame(t, DRY_FRAME)) played++;
+      if (word) a.output(word, t, t + 20, "o1");
+    }
+    assert.equal(played, 6, `pause ${pause}: the clause is heard to its end`);
+    const d = s - 85;
+    at(200 + d);
+    say(" my sister is visiting next weekend", 120 + d, 280 + d, "t_tv");
+    at(310 + d);
+    assert.equal(a.output(" yeah,", 310 + d, 330 + d, "o2"), "pending");
+    const answer = [529 + d, 540 + d, 552 + d].filter((t) => frame(t, DRY_FRAME)).length;
+    assert.equal(answer, 0, `pause ${pause} ms: frames of the answer to the room that played as the clause`);
+  }
+});
+
+/**
+ * Real Live (LC-7): a reply sounds 347-547 ms after its words' `start_ms`, and a word can sound longer than its slot
+ * (" night.": 200 ms of words, 500 ms of sound). Here the clause has 400 ms of words and 500 ms of sound; its fifth
+ * frame comes after its words' worth. Live's answer to Kevin starts at 11_200, its words land 150 ms later, its sound
+ * 400 ms after its start. The name lands 410 ms after that sound's first frame (LC-6 trial 3).
+ */
+function clauseThenAnswer(nameAfterMs: number) {
+  const { a, at, say, frame } = gate();
+  at(10_000);
+  say(" what time is it,", 10_000, 10_400, "t_k");
+  at(10_500);
+  a.ask({ aside: true, content: CLAUSE });
+  at(10_800);
+  a.output(" going to", 10_600, 10_800, "o1");
+  at(11_000);
+  a.output(" sleep.", 10_800, 11_000, "o1");
+  for (const t of [11_000, 11_100, 11_200, 11_300]) assert.equal(frame(t, LIVE_FRAME), true, "the clause");
+  at(11_330);
+  say(" Jar", 10_400, 10_600, "t_k");
+  at(11_350);
+  assert.equal(a.output(" it's", 11_200, 11_400, "o2"), "pending");
+  frame(11_400, LIVE_FRAME); // the clause's last sound, past its words' worth
+  frame(11_500, LIVE_FRAME, false);
+  for (const t of [11_600, 11_700, 11_800, 11_900, 12_000]) assert.equal(frame(t, LIVE_FRAME), false, "the answer, held");
+  at(11_600 + nameAfterMs);
+  return say("head", 10_600, 10_800, "t_k2");
+}
+
+test("real Live: a frame the clause's sounded tail hands over does not start the answer's late-name clock; a name 410 ms after the answer's own first frame releases it", () => {
+  const head = clauseThenAnswer(410);
+  assert.equal(head.verdict, "named");
+  assert.equal(head.released.length, 6, "the answer's five held frames, and the handed-over one before them");
+});
+
+test("real Live: the late-name clock is still LATE_NAME_MS from the answer's own first audible frame", () => {
+  const head = clauseThenAnswer(VoiceAttention.LATE_NAME_MS + 50);
+  assert.equal(head.verdict, "named");
+  assert.equal(head.released.length, 0);
 });

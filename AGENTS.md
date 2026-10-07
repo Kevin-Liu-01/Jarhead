@@ -714,7 +714,12 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   was asked. The old turn's sound still on its way stays its own: up to 250 ms
   behind the new words' `start_ms`, and a granted turn's only until it has had
   its words' worth of PCM (CI on 1c140d8: an answer to the room sounded 219 ms
-  behind its words and three of its frames played as the clause). A room
+  behind its words and three of its frames played as the clause). Its words'
+  worth bridges a transcript gap of 190 ms or more (Live skips whole 200 ms
+  slots; the dry stand-in's clock paused 135 ms under load, and that is not
+  sound). A frame past that worth and inside 250 ms does not decide an undecided
+  next turn: it is dropped and held, and that turn's 600 ms for a late name
+  counts from its own first audible frame. A room
   delegation waits ≤ 1.2 s for a late name, then is refused before the brain
   and closed with a silent `thinking` append;
   when it may have been Kevin's unnamed answer (a confirmation waiting, or a
