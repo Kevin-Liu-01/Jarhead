@@ -39,7 +39,7 @@ import { BYTES_PER_MS } from "./audio-telemetry.ts";
  *   next turn: it is dropped and held, and the turn locks at an audible frame past the bound, so a late name counts
  *   from the turn's own sound.
  * - **A delegation** is judged on the utterance Live raised it for. One that looks like room talk waits up to
- *   DELEGATION_LATE_MS for a late name before it is refused.
+ *   DELEGATION_LATE_MS for a late name before it is refused, or until the session closes, whichever is first.
  *
  * Pure apart from the injected clock and one backup timer per waiting delegation. The engine owns the wiring.
  */
@@ -330,14 +330,16 @@ export class VoiceAttention {
     this.cuedConfirm = undefined;
     this.saidBy.clear();
     this.exchangeEndMs = open ? 0 : Number.NEGATIVE_INFINITY;
-    for (const w of [...this.waiters]) w.settle(false);
   }
 
   /**
    * The session ended: a voice turn it left undecided never sounded, so its lines are settled as unheard now, while they
-   * are still on the session's Transcript (the engine moves it to the held record next).
+   * are still on the session's Transcript (the engine moves it to the held record next). A delegation still waiting for
+   * a late name is the room's now: no name can come after the close, and its unref'd timer may never fire (the Delegator
+   * has refused it on the record already, at its dispose).
    */
   close(): void {
+    for (const w of [...this.waiters]) w.settle(false);
     const left = this.turn;
     if (!left || left.grant !== undefined) return;
     left.grant = null;

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import type { LiveSession } from "@jarhead/live";
 import type { LedgerRow } from "@jarhead/protocol";
-import { rows, settle, until, world } from "./world.ts";
+import { current, rows, settle, until, world } from "./world.ts";
 import { APPEND_AUDIBLE_MS, VOICED, earLine, firstVoicedPlayedAt, rig, tick, type Rig, type Script } from "./live-rig.ts";
 
 /**
@@ -373,3 +373,67 @@ test("the exchange chain is bounded: a TV answered every 5 s after one named tur
     await engine.stop();
   }
 });
+
+/**
+ * LC-7's flake (dry runs on bc937ae: 16 of 566 failed, at load 20 to 155; 9 of 24 with 30 to 75 ms event-loop stalls).
+ * Every failure had a room delegation raised 77 to 687 ms before the idle sleep, still in its 1.2 s wait for a late
+ * name when the session detached. The Delegator returned on its `disposed` flag when the wait ended, before it wrote
+ * anything, so the judge found Live's id with no refused row. Pause and Stop inside the wait lost it the same way.
+ * The record is now written as the session goes, inside the closer, and nothing runs or is said for it.
+ */
+for (const how of ["idle", "pause", "stop"] as const) {
+  test(`a room delegation still waiting for a late name when the session goes (${how}) is refused on the ledger as the session detaches: no brain, no append, no cue`, async () => {
+    const w = world();
+    const { engine, clock } = w;
+    try {
+      await engine.start();
+      await engine.ready();
+      engine.updateSettings({ idleSleepMinutes: how === "idle" ? 1 : 0 });
+      await engine.wake("test");
+      const live = current(w);
+      const thinking: unknown[] = [];
+      live.appendThinking = (...args: unknown[]): string => {
+        thinking.push(args[0]);
+        return "t";
+      };
+      const deadline = (): number | undefined => (engine as unknown as { sleepDeadlineAt?: number }).sleepDeadlineAt;
+      // To 30 s, or (idle) to the pre-sleep clause: the room line comes 800 ms before the sleep falls due.
+      const t0 = clock.t;
+      while (clock.t - t0 < 30_000 || (how === "idle" && deadline() === undefined)) {
+        clock.t += 1000;
+        tick(engine);
+      }
+      if (how === "idle") clock.t = deadline()! - 800;
+      const instructionsBefore = live.instructions.length;
+      live.emit("inputTranscript", " scroll down a bit", live.nowMs - 900, live.nowMs - 100);
+      live.emit("delegation", "item_room_wait", "client", live.nowMs);
+      await settle(20);
+      assert.equal(rows<CreatedRow>(w, "delegation.created").length, 0, "the room line did not wait for a late name");
+      let closing: Promise<void>;
+      if (how === "idle") {
+        clock.t += 800;
+        tick(engine);
+        assert.equal(engine.transportState, "asleep", "the idle sleep did not fall due");
+        closing = Promise.resolve();
+      } else closing = how === "pause" ? engine.pause() : engine.pressStop();
+      // Synchronously, inside the closer: before it resolves and long before the gate's 1.2 s wait would end.
+      const created = rows<CreatedRow>(w, "delegation.created").filter((row) => row.delegation.liveId === "item_room_wait");
+      const finished = rows<FinishedRow>(w, "delegation.finished").filter((row) => row.delegationId === created[0]?.delegation.id);
+      assert.equal(created.length, 1, "no created row as the session went");
+      assert.deepEqual(finished.map((row) => row.status), ["cancelled"], "no finished row as the session went");
+      assert.match(finished[0]!.summary ?? "", /^not addressed/);
+      await closing;
+      await settle(50);
+      assert.equal(rows<CreatedRow>(w, "delegation.created").length, 1, "a second record after the wait");
+      assert.equal(rows<FinishedRow>(w, "delegation.finished").length, 1, "a second finish after the wait");
+      assert.equal(w.brain.tasks.length, 0, "the room reached the brain");
+      assert.deepEqual(thinking, [], "a thinking append on the session that went");
+      assert.deepEqual(live.instructions.slice(instructionsBefore), [], "an append (the name cue) on the session that went");
+      // The Console keeps the record as the ledger has it.
+      const kept = engine.snapshot().delegations.find((d) => d.liveId === "item_room_wait");
+      assert.deepEqual([kept?.status, kept?.summary?.startsWith("not addressed")], ["cancelled", true]);
+    } finally {
+      await engine.stop();
+    }
+  });
+}

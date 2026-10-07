@@ -36,8 +36,14 @@ test("LC-7 room-talk, the stand-in as GPT-Live-1 measured (it answers the room a
   assert.equal(assertions(r, /^Live raised no delegation for room talk/).pass, false);
   assert.equal(assertions(r, /^no room talk reached the brain$/).pass, true);
   assert.equal(assertions(r, /^Live's room delegations were refused before the brain/).pass, true);
-  const closeOut = r.metrics["refusedCloseOut"] as { closedBy: string | null }[];
-  assert.ok(closeOut.length === delegated.length && closeOut.every((c) => c.closedBy === "session.thinking.append"), `each refusal closed with a silent thinking append: ${JSON.stringify(closeOut)}`);
+  // A refusal the session's end settled (raised inside the 1.2 s wait for a late name before the idle sleep, 16 of 566
+  // dry runs on bc937ae) has no voice to close out: its finished row comes after the sleep row, written at the detach.
+  const closeOut = r.metrics["refusedCloseOut"] as { id: string; closedBy: string | null }[];
+  const letGo = r.ledger.findIndex((row) => row.type === "sleep" || row.type === "pause" || row.type === "stop");
+  const createdFor = new Map(r.ledger.flatMap((row) => (row.type === "delegation.created" ? [[row.delegation.liveId, row.delegation.id] as const] : [])));
+  const finishedAt = (liveId: string): number => r.ledger.findIndex((row) => row.type === "delegation.finished" && row.delegationId === createdFor.get(liveId));
+  const voiced = closeOut.filter((c) => letGo < 0 || finishedAt(c.id) < letGo);
+  assert.ok(closeOut.length === delegated.length && voiced.every((c) => c.closedBy === "session.thinking.append"), `each refusal made while the session was open closed with a silent thinking append: ${JSON.stringify(closeOut)}`);
   const firstRoom = r.marks.find((m) => m.name === "room");
   assert.equal(firstRoom?.data?.["line"], ROOM_TALK[0], "the room opens with a command");
   assert.ok(r.wire.outText.some((d) => d.t < (firstRoom?.t ?? 0)), "the opening exchange was answered before the room");

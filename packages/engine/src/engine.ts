@@ -2843,8 +2843,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.outputLevel = 0;
     this.outlivedSince = 0;
     if (this.delegator) {
-      this.lastDelegations = [...this.lastDelegations, ...this.delegator.all()].slice(-Engine.MAX_DELEGATIONS);
+      // Disposed first: the records it closes as the session goes (a cut turn, a room delegation that waited for a
+      // name) are kept as the ledger has them.
       this.delegator.dispose();
+      this.lastDelegations = [...this.lastDelegations, ...this.delegator.all()].slice(-Engine.MAX_DELEGATIONS);
       this.delegator = undefined;
       // The main turn went with its Delegator; the spawned threads did not (the scheduler is the engine's).
       this.threads.publish(this.threads.table.status(MAIN_THREAD_ID, "idle"));
