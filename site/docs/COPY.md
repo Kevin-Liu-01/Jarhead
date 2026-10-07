@@ -66,8 +66,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 01 · Wake  `id="story"`
 
 - eyebrow: `Listening` · `The mic is open. The meter runs.` · `O O`
-- h2, line 1: `It wakes up to its name` (README:67; the name is "jarhead")
-- h2, line 2 *grey*: `and Touch ID opens it.` (README:417: asleep, hearing "jarhead" opens nothing until Touch ID does; paused, the word alone resumes). Wake.tsx cuts `Touch ID` from it for the pad.
+- h2, line 1: `It wakes up to its name` (README:67)
+- h2, line 2 *grey*: `“Hey, jarhead.”` (Kevin's words, 2026-10-07: the name it wakes to). Touch ID is the lead's and the demo's; Wake.tsx cuts it from the lead.
 - lead: `Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.` (README:57). Memory reads a closed conversation on your key at the next quiet tick (engine.ts:3208, :6111), so the voice is the subject.
 - line 1: `Three misses lock the gate for a minute.` (README:57)
 - line 2: `Speaker verification is not attempted.` (README:365)
@@ -80,7 +80,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 
 - eyebrow: `Thinking` · `The brain has the task.` · `- -`
 - h2, line 1: `Codex, Claude Code, a key,` (README:27-28, README:69)
-- h2, line 2 *grey*: `or a model on this Mac.` (README:69, LOCAL:3-4). Say.tsx cuts the four brains from the two lines.
+- h2, line 2 *grey*: `or a model on your Mac.` (README:69, LOCAL:3-4). Say.tsx cuts the four brains from the two lines.
 - lead: `Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.` (README:61, README:269-270, README:59)
 - the brain card's badge: `SAY_BADGE` (`7.0 s`, deck.ts), a brain's first visible action in real use with Codex (the author's ledger, 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28). It replaced `NUMBERS.figures[3].value` (`4.5 s`), the canned-hands harness figure (docs/latency/after.json, n = 6, 2026-09-12), which stays in Numbers with its label.
 - line 1: `"Click Save" runs. The voice is told after.` (README:61)
@@ -140,8 +140,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 06 · Sleep  `id="sleep"`
 
 - eyebrow: `Asleep` · `No session. The voice bills nothing.` · `- -`
-- h2, line 1: `Your alarms still ring` (AUTOMATIONS:3-4)
-- h2, line 2 *grey*: `after you say good night.` (README:79)
+- h2, line 1: `You say it once,` (Kevin's words, 2026-10-07; README "Automations": say it once while Jarhead is awake)
+- h2, line 2 *grey*: `it never forgets.` (the daemon carries it out asleep and no row is deleted, AUTOMATIONS:3-7; nothing fires while Jarhead is quit, which the note says)
 - lead: `It says "night." and closes the session. Ten minutes without a word to it do the same. Alarms, timers, watchers and routines fire while it sleeps.` (README:69, README:301-304, AUTOMATIONS:3-4)
 - line 1: `No session. The voice bills nothing.` (AUTOMATIONS:6-7). Memory reads a closed conversation at the next quiet tick, on your key (engine.ts:3208, :6111), and a wake-brain row bills one brain turn (AUTOMATIONS §5).
 - line 2: `Set-up asks once. Fire time never asks.` (AUTOMATIONS:11-13, README:310-312)
@@ -419,11 +419,11 @@ named so a reviewer can put it back.
 
 Kevin: one sentence each, black into grey, never "blah blah. blah blah.". Say's was one sentence already.
 
-- Wake `Asleep, it wakes on a word. / Touch ID opens it.` → `It wakes up to its name / and Touch ID opens it.`
+- Wake `Asleep, it wakes on a word. / Touch ID opens it.` → `It wakes up to its name / “Hey, jarhead.”` (2026-10-07, Kevin)
 - Threads `Several things at once. / Each with its own brain.` → `Tasks run side by side, / each with its own brain.`
 - Hands `Label first. Click second. / Screenshots when they help.` → `It finds the label, clicks it / and checks a screenshot.`
 - Rails `One policy table. / Run, confirm or refuse.` → `One table sorts each call: / run, confirm or refuse.`
-- Sleep `Say good night. / Alarms still ring.` → `Your alarms still ring / after you say good night.`
+- Sleep `Say good night. / Alarms still ring.` → `You say it once, / it never forgets.` (2026-10-07, Kevin)
 - Numbers `Measured on one Mac. / Written down.` → `Measured on one Mac / and logged with dates.`
 - Costs `Five cents a minute. / The voice costs nothing asleep.` → `It's five cents a minute / and nothing asleep.`
 - Install `Four commands. / Then say jarhead.` → `It takes four commands, / then you say jarhead.`

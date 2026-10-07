@@ -188,7 +188,7 @@ Settings.`; Wake's lead drops the four ways in; Rails' lines drop the feet the t
 The idea: the spoken line forks. Read left to right: the orb (`O O`, `Listening`) hears a line (`Wave`); at a `Joint`
 the reflex lane (`Unambiguous commands`, ink, arrow) runs to the `"Click Save"` card (`lightning`, `in milliseconds`),
 and `The rest` (accent) runs straight into the Settings card (`gearSix`), lighting Codex (the `hi` row, its mark, the
-`checkCircle`), with dashed spurs to Claude Code, a key and a model on this Mac. Both lanes join one bus and one arrow into
+`checkCircle`), with dashed spurs to Claude Code, a key and a model on your Mac. Both lanes join one bus and one arrow into
 the hands: a `Win` with `Save` the one accent fill and `cursorClick` on it. The section's lead keeps only `You pick the
 brain in Settings.`
 
@@ -214,7 +214,7 @@ their own values (`457 ms`, `9.0 s`), and the dithered lens shows the first is t
 Wake, Hands, Sleep and Costs were redrawn in this system in the same pass, and the Console window restyled; refine them
 against these briefs. Install is the one left in its earlier form.
 
-- **Wake** (`Wake.tsx`, split, listening, 600 × 264). Subject: `It wakes up to its name and Touch ID opens it.`
+- **Wake** (`Wake.tsx`, split, listening, 600 × 264). Subject: `It wakes up to its name, “Hey, jarhead.”`
   Reading order left to right: asleep (quiet orb, `Asleep`), `one word` (the wave), `heard` (`O O`), into the `gate` card (lock) at a fork:
   Touch ID lit (`fingerprint`), Apple Watch, the Mac password, a passphrase dashed; out to `granted` (`^ ^`). Parts: three
   orbs from one sprite, `Wave`, `Card` with four rows, `Wire`s. The lead keeps the first sentence only.
@@ -229,7 +229,7 @@ against these briefs. Install is the one left in its earlier form.
   dashed in the accent, `find a control by label`), Save pressed (`click it`), the window captured with a check (`A
   screenshot checks the work.`). Since 2026-10-06 (C2, `COPY.md` 04) the screenshot has no fixed place in a task, and a
   delegation usually starts with one; the frames follow the demo's order, not the engine's.
-- **Sleep** (`Sleep.tsx`, split, mark, 600 × 384). Subject: `Your alarms still ring after you say good night.`
+- **Sleep** (`Sleep.tsx`, split, mark, 600 × 384). Subject: `You say it once, it never forgets.`
   Reading order top to bottom: the orb says `"night."` and goes quiet (`Asleep`, `closes the session`); the card lists
   the lead's four kinds with the island's own examples: Alarms lit (`07:10 · Wake up, Kevin`, tag `weekdays`), timers
   (`11:56 · pasta`), watchers, routines.

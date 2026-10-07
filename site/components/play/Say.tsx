@@ -27,12 +27,12 @@ const SAVE = part(CLICK_SAVE, "Save");
 const REFLEX = nth(SAY.lead, 0);
 const REST = nth(SAY.lead, 1);
 const PICK = nth(SAY.lead, 2);
-/** The brains, cut from the h2: Codex, Claude Code, a key, a model on this Mac. */
+/** The brains, cut from the h2: Codex, Claude Code, a key, a model on your Mac. */
 const BRAINS: ReadonlyArray<{ readonly id: string; readonly text: string; readonly mark: ReactNode }> = [
   { id: "codex", text: part(SAY.h2[0], "Codex"), mark: <AgentMark tool="codex" size={14} decorative /> },
   { id: "claude", text: part(SAY.h2[0], "Claude Code"), mark: <AgentMark tool="claude" size={14} decorative /> },
   { id: "key", text: part(SAY.h2[0], "a key"), mark: <Icon name="key" size={16} /> },
-  { id: "local", text: part(SAY.h2[1], "a model on this Mac"), mark: <Icon name="laptop" size={16} /> },
+  { id: "local", text: part(SAY.h2[1], "a model on your Mac"), mark: <Icon name="laptop" size={16} /> },
 ];
 /** The two routes' measured times: the reflex's dispatch (Numbers) and a brain's first visible action in real use (the
  * deck's SAY_BADGE, the author's ledger with Codex, not the canned-hands harness). It was measured with Codex only, so
@@ -75,7 +75,7 @@ const AT_REST: WireSet = {
 /**
  * Say: say one of two deck lines and watch it route. `"Click Save"` is unambiguous: it takes the reflex lane to the hands
  * in milliseconds and Save is pressed. The Slack and Spotify line goes to the brain picked in Settings (pick any of the
- * four rows: Codex, Claude Code, a key, a model on this Mac), which thinks, then hands its work on: two threads. The wire
+ * four rows: Codex, Claude Code, a key, a model on your Mac), which thinks, then hands its work on: two threads. The wire
  * the line takes draws along its length; the others wait dashed. The island thinks and acts with it.
  */
 export function Say(): ReactElement {

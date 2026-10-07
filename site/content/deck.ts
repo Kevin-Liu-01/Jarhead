@@ -60,7 +60,7 @@ export const WAKE: Story & { readonly faces: string } = {
   name: "Wake",
   phase: "listening",
   face: "O O",
-  h2: ["It wakes up to its name", "and Touch ID opens it."], // README:67, README:417; the name is "jarhead", and hearing it asleep opens nothing until Touch ID does; paused, the word alone resumes (README:417)
+  h2: ["It wakes up to its name", "“Hey, jarhead.”"], // README:67 (Kevin's words, 2026-10-07): the name is "jarhead"; asleep, hearing it opens nothing until Touch ID does (README:417), which the lead and the demo say
   lead: "Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.", // README:57; memory reads a closed conversation on your key at the next quiet tick (engine.ts:3208, :6111), so the voice is the subject
   lines: ["Three misses lock the gate for a minute.", "Speaker verification is not attempted.", "Say stop. It stops mid-sentence."], // README:57, README:365, README:56
   faces: "gate · heard · granted · denied · locked", // README:178
@@ -73,7 +73,7 @@ export const SAY: Story = {
   name: "Say",
   phase: "thinking",
   face: "- -",
-  h2: ["Codex, Claude Code, a key,", "or a model on this Mac."], // README:27-28, README:69, LOCAL:3-4
+  h2: ["Codex, Claude Code, a key,", "or a model on your Mac."], // README:27-28, README:69, LOCAL:3-4
   lead: "Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.", // README:61, README:269-270, README:59
   lines: ['"Click Save" runs. The voice is told after.', "Same policy for every brain. A local one gets fewer tools.", "A local brain keeps memory on the Mac."], // README:61, README:59, LOCAL:4-5
 };
@@ -126,7 +126,7 @@ export const SLEEP: Story = {
   name: "Sleep",
   phase: "asleep",
   face: "- -",
-  h2: ["Your alarms still ring", "after you say good night."], // README:79, AUTOMATIONS:3-4
+  h2: ["You say it once,", "it never forgets."], // Kevin's words, 2026-10-07; README "Automations": say it once while Jarhead is awake and the daemon carries it out asleep; rows are never deleted (AUTOMATIONS:3-7)
   lead: 'It says "night." and closes the session. Ten minutes without a word to it do the same. Alarms, timers, watchers and routines fire while it sleeps.', // README:69, README:301-304, AUTOMATIONS:3-4
   lines: ["No session. The voice bills nothing.", "Set-up asks once. Fire time never asks.", "Nothing fires while Jarhead is quit."], // AUTOMATIONS:6-7 (memory reads at the next quiet tick, engine.ts:3208 and :6111; a wake-brain row bills one brain turn, AUTOMATIONS §5), AUTOMATIONS:11-13, AUTOMATIONS:116-117
 };

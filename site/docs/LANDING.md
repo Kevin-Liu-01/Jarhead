@@ -44,7 +44,7 @@ app's own text as the inputs and outputs. Examples to choose from and improve on
   shows `> <` and the gate's lock.
 - **Say:** pick one of the deck's lines (`"Click Save"`, `"Tell Ben on Slack I'm late and put on Focus on Spotify"`,
   `"Stop the Slack one"`) and watch it route: the reflex lane lights in milliseconds, or the line goes to the brain you
-  pick (Codex, Claude Code, a key, a model on this Mac) and on to the hands.
+  pick (Codex, Claude Code, a key, a model on your Mac) and on to the hands.
 - **Threads:** the Slack and Spotify line splits into two lanes with their own blobs; Slack stops at `asks` until the
   visitor presses Allow or Deny; Spotify finishes on its own.
 - **Hands:** watch label, click, screenshot happen on a drawn window; the target ring follows.
