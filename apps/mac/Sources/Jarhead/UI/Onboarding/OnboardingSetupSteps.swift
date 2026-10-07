@@ -45,7 +45,7 @@ struct OnboardingPermissionsStep: View, Equatable {
             group(OnboardingWords.moreFold, OnboardingWords.moreHead, optional, defaultOpen: false)
             // Grants are re-read from a fresh process every few seconds and the hands
             // helper restarts itself when one appears, so nothing here needs a relaunch.
-            ConsoleHint("Switches take effect here within a few seconds. No relaunch. \(granted) of \(max(permissions.count, 1)) granted.", indent: 0)
+            ConsoleHint("Switches take effect here within a few seconds, with no relaunch. \(granted) of \(max(permissions.count, 1)) granted.", indent: 0)
             if permissions.contains(where: { ($0.kind == .accessibility || $0.kind == .screenRecording) && $0.grant != .granted }) {
                 ConsoleHint("Already switched on in System Settings but still not ready here? That row was made by an earlier build: remove Jarhead from the list with the − button, press Request, and switch the new row on.", indent: 0)
                     .transition(Motion.appear)

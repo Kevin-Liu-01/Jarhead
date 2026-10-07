@@ -113,7 +113,7 @@ enum SettingsWords {
     static let systemDefaultPrefix = "system default"
     static let pickAModel = "pick a model"
     static let backendDefault = "backend default"
-    static let gateRests = "Awake. The gate rests until the session ends"
+    static let gateRests = "Awake, so the gate rests until the session ends"
     static let switchNow = "Switch now"
     static let learnNow = "Learn now"
     static let sweepNow = "Sweep now"
@@ -197,21 +197,21 @@ enum SettingsWords {
     static let memoryIsOff = "Memory is off"
     static let pendingTip = "Conversations that ended and are not read yet"
     static let sweepTip = "Move the days past retention to the trash (asks first)"
-    static let sweepNothing = "Both keep forever. Nothing would move"
-    static let sweepGoTip = "Move them now. Each comes back with Restore"
+    static let sweepNothing = "Both keep forever, so nothing would move"
+    static let sweepGoTip = "Move them now (each comes back with Restore)"
     static let keepAll = "Keep everything where it is"
     static let cancelSweep = "Cancel the sweep"
     static let ledgerTip = "Days a day's conversations stay before the sweep"
     static let shotsTip = "Days a day's screenshots stay before the sweep"
-    static let revealTrashTip = "Show the trash in Finder. Emptying it happens there"
+    static let revealTrashTip = "Show the trash in Finder, where emptying it happens"
     static let noTrash = "No trash folder yet"
     static let setUpAgainTip = "Open the setup wizard"
     static let noKeyTip = "No OpenAI key"
     static let uncheckedTip = "Not checked yet"
     static func keyWorks(_ model: String) -> String { "Works with \(model)" }
     /// The key answered but the Live model probe came back 404 (SetupStatus.openaiKey = noLiveModel).
-    static func keyNoLiveModel(_ model: String) -> String { "Key works, but \(model) is not on it. Enable it on the key's OpenAI project" }
-    static let keyRejected = "Rejected by OpenAI. Paste a fresh one"
+    static func keyNoLiveModel(_ model: String) -> String { "Key works, but \(model) is not on it: enable it on the key's OpenAI project" }
+    static let keyRejected = "Rejected by OpenAI: paste a fresh one"
     static let nothingHeard = "Nothing heard yet"
     // mic
     static let micAuto = "Auto"
@@ -244,7 +244,7 @@ enum SettingsWords {
         let a = account.trimmingCharacters(in: .whitespacesAndNewlines)
         return a.isEmpty ? "your name" : a
     }
-    static let nameTip = "What Jarhead calls you. Empty uses this Mac's account name"
+    static let nameTip = "What Jarhead calls you (empty uses this Mac's account name)"
     static let localServerRoot = "Local server root"
     static let wakePhrasesLabel = "Wake phrases, comma separated"
     static let wakePassphraseLabel = "Wake passphrase"
@@ -304,10 +304,10 @@ enum NowWords {
     static let openSettings = "Open"
     static let copy = "Copy"
     static let ask = "Ask"
-    static let copyTip = "Copy the command. It runs by hand, never here"
+    static let copyTip = "Copy the command to run by hand, never here"
     static func requestTip(_ label: String) -> String { "Ask for \(label.lowercased()) access" }
     static let openSettingsTip = "Open the System Settings pane"
-    static let openSettingsDragTip = "Open the System Settings pane. Drag Jarhead.app in"
+    static let openSettingsDragTip = "Open the System Settings pane and drag Jarhead.app in"
     static let none = "None."
     static let retry = "Retry"
     static func sends(_ type: String) -> String { "Sends \(type)" }

@@ -786,7 +786,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       brainState.mode = "answer";
       extras["threads"] = { live: before.length, names: before.map((t) => t.name), splitResults: brainState.splitResults };
       if (before.length < 2) {
-        log(`  threads: could not get two live threads (${before.map((t) => `${t.name}:${t.status}`).join(", ") || "none"}); ${brainState.splitResults.join(" | ") || "no thread_start answer"}. Status reflex and targeted stop not measured`);
+        log(`  threads: could not get two live threads (${before.map((t) => `${t.name}:${t.status}`).join(", ") || "none"}); ${brainState.splitResults.join(" | ") || "no thread_start answer"}, so the status reflex and targeted stop were not measured`);
       } else {
         log(`  threads: ${before.map((t) => `${t.name} ${t.status} (${t.id})`).join(", ")} live`);
         // Status reflex: the spoken line's time and the generations it cost.
@@ -837,7 +837,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       for (const ms of probe.report.heldRestoreMs ?? []) add("barge-in: no confirmation, still speaking → back to unity", ms);
       if (probe.note) log(`  barge-in: ${probe.note}`);
       else {
-        const med = (v: readonly number[] | undefined): string => (v && v.length ? `${median(v).toFixed(0)} ms` : "none");
+        const med = (v: readonly number[] | undefined): string => (v && v.length ? `${median(v).toFixed(0)} ms` : "(no sample)");
         log(`  barge-in: probe ok; confirmed by Live's transcript ${med(probe.report.liveConfirmMs)} after the duck (modelled at +${probe.report.liveModelledMs ?? "?"} ms from onset), by the ear's words ${med(probe.report.earConfirmMs)}; ${probe.report.refusedEchoPartials ?? 0} partial(s) of Jarhead's own words refused as confirmation`);
         if (probe.report.ranked?.length) log(`  barge-in: mic ranking on this Mac (auto): ${probe.report.ranked.join(" › ")}`);
       }

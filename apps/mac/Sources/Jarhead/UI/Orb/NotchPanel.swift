@@ -288,7 +288,7 @@ struct DockContent: Equatable {
     var request: String?
     /// The last transcript line (the hero otherwise).
     var lastLine: String?
-    /// The wake gate's words (the hero asleep).
+    /// The wake gate's words in the island's grammar (the hero asleep).
     var gateLabel: String?
     /// Newest last, as the snapshot carries them.
     var marks: [Mark]
@@ -2211,7 +2211,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         if let q = content.question { return (.question, Self.heroQuestion(q.text, asker: q.name), Self.heroBrightAttrs) }
         if workingSince != nil, let r = content.request, !r.isEmpty { return (.request, r, Self.heroAttrs) }
         if !lastLine.isEmpty { return (.lastLine, lastLine, Self.heroAttrs) }
-        if !awake, let g = content.gateLabel, !g.isEmpty { return (.gate, Self.islandWords(g), Self.heroCalmAttrs) }
+        if !awake, let g = content.gateLabel, !g.isEmpty { return (.gate, g, Self.heroCalmAttrs) }
         return (.none, "", Self.heroAttrs)
     }
 
@@ -2231,14 +2231,6 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             t = String(t.dropLast(tail.count)) + "?"
         }
         return t
-    }
-
-    /// The gate's words as the island sets them: its sentences never carry an em dash (the
-    /// site's copy rule, site/docs/DESIGN.md), so `Wake word off — microphone not granted`
-    /// reads `Wake word off · microphone not granted`, the island's own separator. The status
-    /// menu keeps its wording.
-    static func islandWords(_ text: String) -> String {
-        text.replacingOccurrences(of: " — ", with: " · ")
     }
 
     /// Lines the hero may take: one over the films, two over Allow · Deny or the tiles, else three.
@@ -2500,7 +2492,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let c = content
         if c.marking {
             let figure = "Circle something · Esc"
-            list.append(Chip(kind: .marking, glyph: "pencil.and.outline", tint: Self.markTone, figure: figure, tooltip: "Circling. Draw around something, Esc to cancel", alpha: 0.72, width: measure("scope", figure)))
+            list.append(Chip(kind: .marking, glyph: "pencil.and.outline", tint: Self.markTone, figure: figure, tooltip: "Circling: draw around something, Esc to cancel", alpha: 0.72, width: measure("scope", figure)))
         } else {
             if let r = c.ring {
                 list.append(Chip(kind: .ring, glyph: "bell.fill", tint: Self.markTone, figure: r.chip, tooltip: Self.ringTooltip(r), alpha: 0.72, width: measure("bell.fill", r.chip)))
@@ -4122,14 +4114,14 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         case .face: return ""
         case .circle:
             if c.marking { return "Cancel circling (Esc)" }
-            if !c.screenRecordingGranted { return "Circle something. Needs Screen Recording (Request below)" }
+            if !c.screenRecordingGranted { return "Circle something (needs Screen Recording, Request below)" }
             let n = c.pendingMarks
             return n > 0 ? "Circle something · \(n) waiting · ⌃⌥C" : "Circle something · ⌃⌥C"
         case .window:
-            return c.screenRecordingGranted ? "Capture the front window for Jarhead" : "Capture the front window for Jarhead. Needs Screen Recording"
+            return c.screenRecordingGranted ? "Capture the front window for Jarhead" : "Capture the front window for Jarhead (needs Screen Recording)"
         case .ask:
-            if !awake { return c.typedWakes ? "What's this? Wakes · billed" : "What's this? Press Go first" }
-            return c.pendingMarks > 0 ? "What's this? Ask about what you circled" : "What's this? Circle first, then ask"
+            if !awake { return c.typedWakes ? "What's this? (wakes · billed)" : "What's this? (press Go first)" }
+            return c.pendingMarks > 0 ? "What's this? (asks about what you circled)" : "What's this? (circle first, then ask)"
         case .clear:
             let used = c.marks.filter(\.consumed).count
             return "Clear · \(c.marks.count) circled" + (used > 0 ? " · \(used) already used" : "")
@@ -4155,16 +4147,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             let name = c.threads.first(where: { $0.id == id })?.name ?? "thread"
             return "Stop \(name)"
         case .console: return "Console (⌃⌥J)"
-        case .sleep: return awake ? "Sleep. Back to the notch" : "Asleep"
+        case .sleep: return awake ? "Sleep: back to the notch" : "Asleep"
         case .remedy:
             guard let p = c.problem else { return "" }
             return p.text + (p.remedyLabel.map { " · " + $0 } ?? "")
         case .field:
             return fieldPlaceholder()
         case .snooze(let m):
-            return "Snooze. Rings again in \(m) min"
+            return "Snooze: rings again in \(m) min"
         case .done:
-            return "Done. Stops the \(c.ring?.kind ?? "ring")"
+            return "Done: stops the \(c.ring?.kind ?? "ring")"
         case .ringOpen(let target):
             guard let r = c.ring else { return "" }
             return target == "console" ? "\(r.head) · Console" : "Open \(target)"

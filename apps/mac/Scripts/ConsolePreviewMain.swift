@@ -2038,7 +2038,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         expect("composer asleep, typed wakes off", ComposerBar.placeholder(phase: .asleep, typedWakes: false), "Type to Jarhead… (asleep: press Go)")
         expect("composer asleep, typed wakes on (Kevin's word)", ComposerBar.placeholder(phase: .asleep, typedWakes: true), "Type to wake Jarhead…")
         expect("composer in session", ComposerBar.placeholder(phase: .listening, typedWakes: false), "Say something…")
-        expect("composer paused", ComposerBar.placeholder(phase: .paused, typedWakes: false), "Paused. Press Go or type to resume")
+        expect("composer paused", ComposerBar.placeholder(phase: .paused, typedWakes: false), "Paused, press Go or type to resume")
         expect("composer keeps the words while asleep (the engine refuses)", "\(ComposerBar.keepsText(phase: .asleep, typedWakes: false))\(ComposerBar.keepsText(phase: .error, typedWakes: false))\(ComposerBar.keepsText(phase: .asleep, typedWakes: true))\(ComposerBar.keepsText(phase: .listening, typedWakes: false))", "truetruefalsefalse")
         expect("Return is never a yes (ConsoleConfirm)", String(ConsoleConfirm.returnIsAYes), "false")
         expect("key ⌘0 → Now", String(ConsoleWindow.command(flags: .command, chars: "0") == .showNow), "true")
@@ -2350,7 +2350,7 @@ struct FakeData {
     var setup: SetupStatus {
         SetupStatus(openaiKey: .ok, brain: .ok, brainDetail: "ok", brainResolved: .claudeCode, liveModel: "gpt-live-1",
                     secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
-                    local: noServer(), dataPaths: cloudPaths(brain: "claude-opus-5 — Anthropic (your Claude Code login); screenshots and tool results leave"))
+                    local: noServer(), dataPaths: cloudPaths(brain: "Anthropic claude-opus-5: screenshots and tool results leave"))
     }
 
     // MARK: the Local brain (SetupStatus.local / dataPaths as the engine's discovery would send them)
@@ -2390,9 +2390,9 @@ struct FakeData {
     /// The four rows with the brain and memory in the cloud (a Codex / Claude / OpenAI brain).
     func cloudPaths(brain: String) -> [DataPath] {
         [
-            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session"),
+            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1: every word heard and said, billed per second of open session"),
             DataPath(what: "brain", where: "cloud", detail: brain),
-            DataPath(what: "memory", where: "cloud", detail: "text-embedding-3-small + a mini model — item text and closed conversations leave"),
+            DataPath(what: "memory", where: "cloud", detail: "text-embedding-3-small + a mini model, so item text and closed conversations leave"),
             DataPath(what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)"),
         ]
     }
@@ -2400,9 +2400,9 @@ struct FakeData {
     /// The four rows under the Local brain: only the voice and the web leave.
     func localPaths() -> [DataPath] {
         [
-            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session"),
-            DataPath(what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0 — nothing leaves"),
-            DataPath(what: "memory", where: "mac", detail: "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves"),
+            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1: every word heard and said, billed per second of open session"),
+            DataPath(what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0, and nothing leaves"),
+            DataPath(what: "memory", where: "mac", detail: "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b, and nothing leaves"),
             DataPath(what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)"),
         ]
     }
@@ -2449,8 +2449,8 @@ struct FakeData {
         s.settings.brain = .local
         s.settings.brainModel = ""
         s.settings.brainBaseUrl = nil
-        var paths = cloudPaths(brain: "gpt-5.6-terra — OpenAI (the voice key), while nothing local can call tools; screenshots and tool results leave")
-        paths[2] = DataPath(what: "memory", where: "mac", detail: "keywords · rules — nothing leaves")
+        var paths = cloudPaths(brain: "OpenAI gpt-5.6-terra, standing in for the local model until it is back, so screenshots and tool results leave")
+        paths[2] = DataPath(what: "memory", where: "mac", detail: "keywords · rules, and nothing leaves")
         s.setup = SetupStatus(openaiKey: .ok, brain: .ok,
                               brainDetail: "Local · nothing on Ollama 0.34.0 can call tools → OpenAI gpt-5.6-terra until a model with the tools badge is pulled",
                               brainResolved: .openaiResponses, liveModel: "gpt-live-1",
@@ -3752,7 +3752,7 @@ extension PreviewDelegate {
         expect("copy: catches a full stop and you", HelpCopy.violations(HelpCopy.Entry(name: "Forget", hint: "Forget your circle.")).joined(separator: ", "), "full stop, says you")
         expect("copy: catches the shortcut in the hint", HelpCopy.violations(HelpCopy.Entry(name: "Go", hint: "Go (⌘P)", key: "⌘P")).joined(separator: ", "), "shortcut in the hint")
         expect("copy: spoken form carries the key last", HelpCopy.spoken(HelpCopy.go), "Open the live session (⌘P)")
-        expect("copy: a thread's verb carries its name", HelpCopy.stopThread("Slack").hint, "Stop Slack. The others carry on")
+        expect("copy: a thread's verb carries its name", HelpCopy.stopThread("Slack").hint, "Stop Slack and let the others carry on")
         checkTipCards(expect)
         checkKitMenu(expect)
         failed += checkKitLists()
@@ -4001,9 +4001,9 @@ extension PreviewDelegate {
         expect("local: field saved unlisted is quiet", "\(LocalBrainWords.fieldTitle(saved: "qwen3:8b", status: up)) \(LocalBrainWords.isQuiet(saved: "qwen3:8b", status: up))", "qwen3:8b true")
         expect("local: disabled is the tool-less one", "\(LocalBrainWords.isDisabled("gemma4:31b", status: up)) \(LocalBrainWords.isDisabled("deepseek-v3.1:671b", status: up))", "true false")
         expect("local: loaded", "\(LocalBrainWords.isLoaded("qwen3.5:27b", status: up)) \(LocalBrainWords.isLoaded("qwen3.5:9b", status: up))", "true false")
-        expect("local: foot tight", LocalBrainWords.foot("gpt-oss:120b", status: up) ?? "nil", "gpt-oss:120b · 65 GB on a 137 GB Mac. Tight: slow first token, swaps under load.")
-        expect("local: foot too big", LocalBrainWords.foot("deepseek-v3.1:671b", status: up) ?? "nil", "deepseek-v3.1:671b · 404 GB on a 137 GB Mac. Too big: it will not load.")
-        expect("local: foot no tools", LocalBrainWords.foot("gemma4:31b", status: up) ?? "nil", "gemma4:31b cannot call tools. The hands need them, so it is listed and greyed.")
+        expect("local: foot tight", LocalBrainWords.foot("gpt-oss:120b", status: up) ?? "nil", "gpt-oss:120b · 65 GB is tight on a 137 GB Mac: slow first token, swaps under load.")
+        expect("local: foot too big", LocalBrainWords.foot("deepseek-v3.1:671b", status: up) ?? "nil", "deepseek-v3.1:671b · 404 GB is too big for a 137 GB Mac: it will not load.")
+        expect("local: foot no tools", LocalBrainWords.foot("gemma4:31b", status: up) ?? "nil", "gemma4:31b cannot call tools (the hands need them), so it is listed and greyed.")
         expect("voice: default badge", VoiceWords.badges("ballad").map(ConsoleBadge.text).joined(), "default")
         expect("voice: saved outside the list", "\(VoiceWords.group("nova")) · \(VoiceWords.badges("nova").map(ConsoleBadge.text).joined()) · \(VoiceWords.meta("nova") ?? "nil")", "Saved, not listed · saved · from env")
         expect("voice: the field shows the name alone", VoiceWords.name("cedar"), "Cedar")
@@ -4245,8 +4245,8 @@ extension PreviewDelegate {
         expect("audio: recording words", [SettingsWords.recording, SettingsWords.recordingHint, SettingsWords.recordingLabel, SettingsWords.recordingOn].joined(separator: " / "),
                "settings.recording / shares the mic / Recording a demo: hand the mic back, guard the echo / No Apple unit. Jarhead holds the wire while he speaks; a word over him opens it.")
         expect("audio: RecordingWords", [RecordingWords.heldTip, RecordingWords.chipTip, RecordingWords.menuRow, RecordingWords.menuTipSpoken, RecordingWords.badge].joined(separator: " / "),
-               "Mic held while he speaks. A word over him opens it / Recording: mic shared, echo guarded / Recording / Hand back the mic, guard the echo. Apps keep their sound (⌃⌥R) / recording")
-        expect("audio: the mute tip says the mic stays open", HelpCopy.mute.hint, "Stop sending. The session and the mic stay open")
+               "Mic held while he speaks, but a word over him opens it / Recording: mic shared, echo guarded / Recording / Hand back the mic and guard the echo; apps keep their sound (⌃⌥R) / recording")
+        expect("audio: the mute tip says the mic stays open", HelpCopy.mute.hint, "Stop sending but keep the session and the mic open")
         let aec = MicRouteInfo(Self.micRouteFixture("aec-airpods"))
         let rec = MicRouteInfo(Self.micRouteFixture("recording-macbook"))
         // Named pieces, not `??` inside one wide array literal (CI's older Swift).
@@ -4528,7 +4528,7 @@ extension PreviewDelegate {
         var billed = row(FakeData.standupId); billed.then = [fake.action("wake-brain")]
         expect("automations: badges (resting rows wear none)", (rows + [billed]).map { AutomationFormat.badge($0).map(ConsoleBadge.text) ?? "-" }.joined(separator: ","), "-,-,snoozed,-,-,off,-,billed")
         expect("tip card: automation spoken", ConsoleTipCard.automation(papers, now: now, cap: 5).spoken,
-               "Downloads → Papers, armed, When a PDF lands in Downloads, file it under ~/Documents/Papers and chime., next — · on a file, fires 3 · cooldown 30 s, last 14:02 · filed invoice.pdf, does file + chime · never overwrites, cost nothing billed, Opens its row ⏎")
+               "Downloads → Papers, armed, When a PDF lands in Downloads, file it under ~/Documents/Papers and chime., next on a file, fires 3 · cooldown 30 s, last 14:02 · filed invoice.pdf, does file + chime · never overwrites, cost nothing billed, Opens its row ⏎")
         var wakeBrain = row(FakeData.standupId); wakeBrain.then = [AutomationAction(kind: "wake-brain", line: nil, sound: nil, title: nil, body: nil, open: nil, app: nil, url: nil, path: nil, into: nil, recipe: nil, key: nil, prompt: "summarise", budget: AutomationBudget(steps: 25, seconds: 120), speak: true)]
         expect("tip card: billed row", "\(ConsoleTipCard.automation(wakeBrain, now: now, cap: 5).badge.map(ConsoleBadge.text) ?? "-") · \(AutomationFormat.costWord(wakeBrain, cap: 5))", "billed · ≈ 2 brain min per fire · up to 5 a day")
         let parts = AutomationFormat.ringParts("07:10 · Wake up, Kevin"), plain = AutomationFormat.ringParts("Filed · invoice.pdf → Papers")

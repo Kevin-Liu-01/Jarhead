@@ -350,7 +350,7 @@ struct OnboardingFakeData {
                  problems: [], brainReady: true, handsReady: false,
                  setup: SetupStatus(openaiKey: .ok, brain: .ok, brainDetail: "Claude Agent SDK · claude-opus-5 · logged in as kevin", liveModel: "gpt-live-1",
                                     secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
-                                    local: noServer(), dataPaths: cloudPaths(brain: "claude-opus-5 — Anthropic (your Claude Code login); screenshots and tool results leave")),
+                                    local: noServer(), dataPaths: cloudPaths(brain: "Anthropic claude-opus-5: screenshots and tool results leave")),
                  marks: [], threads: [])
     }
 
@@ -363,7 +363,7 @@ struct OnboardingFakeData {
                  problems: [], brainReady: true, handsReady: true,
                  setup: SetupStatus(openaiKey: .ok, brain: .ok, brainDetail: "Claude Agent SDK · logged in as kevin", brainResolved: .claudeCode, liveModel: "gpt-live-1",
                                     secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
-                                    local: ollamaUp(), dataPaths: cloudPaths(brain: "claude-opus-5 — Anthropic (your Claude Code login); screenshots and tool results leave")),
+                                    local: ollamaUp(), dataPaths: cloudPaths(brain: "Anthropic claude-opus-5: screenshots and tool results leave")),
                  marks: [], threads: [])
     }
 
@@ -388,7 +388,7 @@ struct OnboardingFakeData {
                  problems: [Problem(kind: "voice.connection", text: "could not reach api.openai.com: fetch failed", remedy: nil, since: ago(30))], brainReady: false, handsReady: false,
                  setup: SetupStatus(openaiKey: .invalid, brain: .unavailable, brainDetail: "connect ECONNREFUSED 127.0.0.1:11434", liveModel: "gpt-live-1",
                                     secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: true),
-                                    local: noServer(), dataPaths: cloudPaths(brain: "qwen3:32b — an OpenAI-compatible server at localhost:11434; screenshots and tool results leave")),
+                                    local: noServer(), dataPaths: cloudPaths(brain: "OpenAI qwen3:32b: screenshots and tool results leave")),
                  marks: [], threads: [])
     }
 
@@ -421,9 +421,9 @@ struct OnboardingFakeData {
     /// The four rows with the brain and memory in the cloud (a Codex / Claude / OpenAI brain).
     func cloudPaths(brain: String) -> [DataPath] {
         [
-            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session"),
+            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1: every word heard and said, billed per second of open session"),
             DataPath(what: "brain", where: "cloud", detail: brain),
-            DataPath(what: "memory", where: "cloud", detail: "text-embedding-3-small + a mini model — item text and closed conversations leave"),
+            DataPath(what: "memory", where: "cloud", detail: "text-embedding-3-small + a mini model, so item text and closed conversations leave"),
             DataPath(what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)"),
         ]
     }
@@ -431,9 +431,9 @@ struct OnboardingFakeData {
     /// The four rows under the Local brain: only the voice and the web leave.
     func localPaths() -> [DataPath] {
         [
-            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session"),
-            DataPath(what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0 — nothing leaves"),
-            DataPath(what: "memory", where: "mac", detail: "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves"),
+            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1: every word heard and said, billed per second of open session"),
+            DataPath(what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0, and nothing leaves"),
+            DataPath(what: "memory", where: "mac", detail: "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b, and nothing leaves"),
             DataPath(what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)"),
         ]
     }
@@ -459,8 +459,8 @@ struct OnboardingFakeData {
         let problem = Problem(kind: "brain.local",
                               text: "No local server answers at 127.0.0.1:11434, :1234 or :8080. Open Ollama (or pin a root under Server); the brain's work goes to OpenAI until then, memory stays local.",
                               remedy: ProblemRemedy(label: "Retry", command: ["type": .string("problem.retry"), "kind": .string("brain.local")], open: nil), since: ago(45))
-        var paths = cloudPaths(brain: "gpt-5.6-terra — OpenAI (the voice key), while the local server is down; screenshots and tool results leave")
-        paths[2] = DataPath(what: "memory", where: "mac", detail: "keywords · rules — nothing leaves")
+        var paths = cloudPaths(brain: "OpenAI gpt-5.6-terra, standing in for qwen3.5:27b until it is back, so screenshots and tool results leave")
+        paths[2] = DataPath(what: "memory", where: "mac", detail: "keywords · rules, and nothing leaves")
         return Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: agents(), connectors: connectors(codexOk: true),
                         settings: settings(brain: .local, model: "", onboarded: true, wake: .standard),
                         permissions: permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted),

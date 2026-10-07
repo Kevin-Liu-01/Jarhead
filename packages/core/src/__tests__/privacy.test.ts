@@ -38,7 +38,7 @@ function wellFormed(paths: DataPath[]): void {
     assert.equal(/nothing leaves the Mac/i.test(p.detail), false, `${p.what} does not claim the whole Mac: ${p.detail}`);
   }
   assert.equal(paths[0]?.where, "cloud", "the voice is always cloud");
-  assert.match(paths[0]?.detail ?? "", /^OpenAI gpt-live-1\. Every word heard and said; billed per second/);
+  assert.match(paths[0]?.detail ?? "", /^OpenAI gpt-live-1: every word heard and said, billed per second/);
   assert.equal(paths[3]?.where, "cloud", "the web is the sites Kevin asks for");
   assert.match(paths[3]?.detail ?? "", /web_fetch, web_search/);
 }
@@ -47,8 +47,8 @@ test("(a) a local brain on loopback with a local embedder: voice cloud · brain 
   const { paths, where, byWhat } = rows(base);
   wellFormed(paths);
   assert.deepEqual(where, ["cloud", "mac", "mac", "cloud"]);
-  assert.equal(byWhat.brain?.detail, "qwen3.5:27b on Ollama 0.34.0. Nothing leaves.", "the brain row names the picked model and the server");
-  assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b. Nothing leaves.");
+  assert.equal(byWhat.brain?.detail, "qwen3.5:27b on Ollama 0.34.0, and nothing leaves", "the brain row names the picked model and the server");
+  assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b, and nothing leaves");
 });
 
 test("(b) the same brain pinned on a LAN box: brain and memory rows are lan — the embedder posts item text and the extractor posts closed conversations to that host", () => {
@@ -56,20 +56,20 @@ test("(b) the same brain pinned on a LAN box: brain and memory rows are lan — 
   const { paths, where, byWhat } = rows({ ...base, local: lan });
   wellFormed(paths);
   assert.deepEqual(where, ["cloud", "lan", "lan", "cloud"]);
-  assert.match(byWhat.brain?.detail ?? "", /^qwen3.5:27b on Ollama 0.34.0 at 10\.0\.0\.5:11434\. .*leave for your network\.$/);
-  assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b at 10.0.0.5:11434. Item text and closed conversations leave for your network.");
+  assert.match(byWhat.brain?.detail ?? "", /^qwen3.5:27b on Ollama 0.34.0 at 10\.0\.0\.5:11434, so .*leave for your network$/);
+  assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b at 10.0.0.5:11434, so item text and closed conversations leave for your network");
   // Keyword matching runs in the daemon, so only the extractor's conversations cross the wire.
   const keyword = rows({ ...base, local: lan, memory: keywordMemory }).byWhat.memory;
   assert.equal(keyword?.where, "lan");
-  assert.equal(keyword?.detail, "keywords · extractor qwen3.5:27b at 10.0.0.5:11434. Closed conversations leave for your network.");
+  assert.equal(keyword?.detail, "keywords · extractor qwen3.5:27b at 10.0.0.5:11434, so closed conversations leave for your network");
   // A pinned id the LAN server does not list: rules read, so only item text goes over, and keywords send nothing.
   const gone = { ...lan, models: [EMBED] };
   const rulesEmbed = rows({ ...base, brainModel: "qwen3.5:27b", local: gone }).byWhat.memory;
   assert.equal(rulesEmbed?.where, "lan");
-  assert.equal(rulesEmbed?.detail, "embeddings embeddinggemma 768 dims · rules at 10.0.0.5:11434. Item text leaves for your network.");
+  assert.equal(rulesEmbed?.detail, "embeddings embeddinggemma 768 dims · rules at 10.0.0.5:11434, so item text leaves for your network");
   const rulesKeyword = rows({ ...base, brainModel: "qwen3.5:27b", local: gone, memory: keywordMemory }).byWhat.memory;
   assert.equal(rulesKeyword?.where, "mac");
-  assert.equal(rulesKeyword?.detail, "keywords · rules. Nothing leaves.");
+  assert.equal(rulesKeyword?.detail, "keywords · rules, and nothing leaves");
   // A loopback pin, however spelt, stays mac.
   for (const url of ["http://localhost:11434", "http://[::1]:11434", "http://127.0.0.1:11434/"]) {
     assert.equal(rows({ ...base, local: ollama(url) }).byWhat.memory?.where, "mac", url);
@@ -80,41 +80,41 @@ test("(c) the fallback: brain local in settings, openai-responses running → br
   const { paths, where, byWhat } = rows({ ...base, brainModel: "qwen3.5:27b", brainResolved: "openai-responses", brainDetail: "responses delegation via gpt-5.6-terra", local: NONE });
   wellFormed(paths);
   assert.deepEqual(where, ["cloud", "cloud", "mac", "cloud"]);
-  assert.equal(byWhat.brain?.detail, "OpenAI responses delegation via gpt-5.6-terra, standing in for qwen3.5:27b until it is back. Screenshots and tool results leave.");
+  assert.equal(byWhat.brain?.detail, "OpenAI responses delegation via gpt-5.6-terra, standing in for qwen3.5:27b until it is back, so screenshots and tool results leave");
   assert.equal(byWhat.brain?.detail.includes("OpenAI qwen3.5"), false, "the local id is never credited to OpenAI");
   assert.equal(byWhat.brain?.detail.includes("ChatGPT login"), false, "Responses is the key, not the plan");
   assert.equal(byWhat.memory?.where, "mac");
-  assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · rules. Nothing leaves.");
+  assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · rules, and nothing leaves");
   // No pin (best fit) and nothing picked: the stand-in names "the local model"; an empty detail falls back to the default-model words.
   const unpinned = rows({ ...base, brainResolved: "openai-responses", brainDetail: "", local: NONE }).byWhat.brain;
-  assert.equal(unpinned?.detail, "OpenAI the backend's default model, standing in for the local model until it is back. Screenshots and tool results leave.");
+  assert.equal(unpinned?.detail, "OpenAI the backend's default model, standing in for the local model until it is back, so screenshots and tool results leave");
   // A cloud setting with a pinned cloud model is untouched by the stand-in wording.
   const cloud = rows({ ...base, brain: "openai-responses", brainModel: "gpt-5.6", brainResolved: "openai-responses", brainDetail: "responses delegation via gpt-5.6", local: NONE, memory: keywordMemory }).byWhat.brain;
-  assert.equal(cloud?.detail, "OpenAI gpt-5.6. Screenshots and tool results leave.");
+  assert.equal(cloud?.detail, "OpenAI gpt-5.6: screenshots and tool results leave");
 });
 
 test("(g) the memory row names a local extractor only when one can read: server offline → rules; pinned model gone from the server → rules; listed (or :latest) → the model", () => {
   const offline = rows({ ...base, brainModel: "qwen3.5:27b", local: NONE, memory: keywordMemory }).byWhat.memory;
   assert.equal(offline?.where, "mac");
-  assert.equal(offline?.detail, "keywords · rules. Nothing leaves.", "the bridge builds RulesExtractor for an offline server");
+  assert.equal(offline?.detail, "keywords · rules, and nothing leaves", "the bridge builds RulesExtractor for an offline server");
   const removed = rows({ ...base, brainModel: "qwen3.5:27b", local: { ...ollama("http://127.0.0.1:11434"), models: [EMBED] }, memory: keywordMemory }).byWhat.memory;
-  assert.equal(removed?.detail, "keywords · rules. Nothing leaves.", "a ChatExtractor on a missing id 404s into rules every run");
+  assert.equal(removed?.detail, "keywords · rules, and nothing leaves", "a ChatExtractor on a missing id 404s into rules every run");
   const { picked: _none, ...noPick } = ollama("http://127.0.0.1:11434");
   void _none;
   const unresolvedPick = rows({ ...base, brainModel: "", local: noPick, memory: keywordMemory }).byWhat.memory;
-  assert.equal(unresolvedPick?.detail, "keywords · rules. Nothing leaves.", "no pick yet means rules read");
+  assert.equal(unresolvedPick?.detail, "keywords · rules, and nothing leaves", "no pick yet means rules read");
   const latest = rows({ ...base, brainModel: "qwen3.5", local: { ...ollama("http://127.0.0.1:11434"), models: [{ ...QWEN, id: "qwen3.5:latest" }, EMBED] }, memory: keywordMemory }).byWhat.memory;
-  assert.equal(latest?.detail, "keywords · extractor qwen3.5. Nothing leaves.", "Kevin's spelling resolves to :latest on the server");
+  assert.equal(latest?.detail, "keywords · extractor qwen3.5, and nothing leaves", "Kevin's spelling resolves to :latest on the server");
   const localOff = rows({ ...base, brainModel: "qwen3.5:27b", local: NONE }).byWhat.memory;
-  assert.equal(localOff?.detail, "embeddings embeddinggemma 768 dims · rules. Nothing leaves.");
+  assert.equal(localOff?.detail, "embeddings embeddinggemma 768 dims · rules, and nothing leaves");
 });
 
 test("(d) codex with an OpenAI key and OpenAI embeddings: brain cloud via the ChatGPT login, memory cloud naming what leaves", () => {
   const { paths, where, byWhat } = rows({ brain: "codex", brainModel: "gpt-5.6", brainResolved: "codex", brainDetail: "Codex app-server · gpt-5.6", local: NONE, memory: openaiMemory, hasOpenAIKey: true, liveModel: "gpt-live-1" });
   wellFormed(paths);
   assert.deepEqual(where, ["cloud", "cloud", "cloud", "cloud"]);
-  assert.equal(byWhat.brain?.detail, "OpenAI via your ChatGPT login gpt-5.6. Screenshots and tool results leave.");
-  assert.equal(byWhat.memory?.detail, "text-embedding-3-small + a mini model. Item text and closed conversations leave.");
+  assert.equal(byWhat.brain?.detail, "OpenAI via your ChatGPT login gpt-5.6: screenshots and tool results leave");
+  assert.equal(byWhat.memory?.detail, "text-embedding-3-small + a mini model, so item text and closed conversations leave");
 });
 
 test("(e) memory disabled → off, whatever the brain; no summary at all reads as off too", () => {
@@ -130,15 +130,15 @@ test("(e) memory disabled → off, whatever the brain; no summary at all reads a
   assert.deepEqual(absent.where, ["cloud", "mac", "off", "cloud"]);
 });
 
-test("(f) keyword matching with no key and a cloud brain → memory mac, 'keywords · rules. Nothing leaves.'", () => {
+test("(f) keyword matching with no key and a cloud brain → memory mac, 'keywords · rules, and nothing leaves'", () => {
   const { paths, where, byWhat } = rows({ brain: "codex", brainModel: "", brainResolved: "codex", brainDetail: "Codex app-server", local: NONE, memory: keywordMemory, hasOpenAIKey: false, liveModel: "gpt-live-1" });
   wellFormed(paths);
   assert.deepEqual(where, ["cloud", "cloud", "mac", "cloud"]);
-  assert.equal(byWhat.memory?.detail, "keywords · rules. Nothing leaves.");
+  assert.equal(byWhat.memory?.detail, "keywords · rules, and nothing leaves");
   // Under a local brain the extractor is the brain model, and the row says so.
   const local = rows({ ...base, memory: keywordMemory }).byWhat.memory;
   assert.equal(local?.where, "mac");
-  assert.equal(local?.detail, "keywords · extractor qwen3.5:27b. Nothing leaves.");
+  assert.equal(local?.detail, "keywords · extractor qwen3.5:27b, and nothing leaves");
 });
 
 test("the vendor names: claude-code and anthropic-api say Anthropic, openai-compatible says OpenAI, auto before it resolves is cloud", () => {
@@ -147,13 +147,13 @@ test("the vendor names: claude-code and anthropic-api say Anthropic, openai-comp
   const { brainResolved: _drop, ...unresolved } = base;
   void _drop;
   assert.match(rows({ ...unresolved, brain: "auto", local: NONE }).byWhat.brain?.detail ?? "", /not started yet/);
-  assert.equal(cloud("claude-code", "claude-code")?.detail, "Anthropic the backend's default model. Screenshots and tool results leave.");
+  assert.equal(cloud("claude-code", "claude-code")?.detail, "Anthropic the backend's default model: screenshots and tool results leave");
   assert.match(cloud("anthropic-api", "anthropic-api")?.detail ?? "", /^Anthropic /);
   assert.match(cloud("openai-compatible", "openai-compatible")?.detail ?? "", /^OpenAI /);
   // An explicit local that has not started yet is cloud-bound while the key is present, and says so.
   const notYet = rows({ ...unresolved, local: NONE }).byWhat.brain;
   assert.equal(notYet?.where, "cloud");
-  assert.match(notYet?.detail ?? "", /not running yet\. Until it is, the brain's work goes to OpenAI/);
+  assert.match(notYet?.detail ?? "", /not running yet, and until it is, the brain's work goes to OpenAI/);
   const noKey = rows({ ...unresolved, local: NONE, hasOpenAIKey: false }).byWhat.brain;
-  assert.match(noKey?.detail ?? "", /Nothing runs the brain until it is\./);
+  assert.match(noKey?.detail ?? "", /not running yet, and nothing runs the brain until it is$/);
 });

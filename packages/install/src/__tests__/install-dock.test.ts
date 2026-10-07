@@ -72,7 +72,7 @@ test("dock: the audit removes the recent tile, rebuilds the pin in place, and le
   for (const key of ["last-analytics-stamp", "lastShowIndicatorTime", "loc", "mod-count", "persistent-others", "region", "tilesize", "trash-full", "version", "wvous-br-corner"]) {
     assert.deepEqual(dictGet(a.doc, key), dictGet(doc, key), key);
   }
-  assert.match(describeDock(a), /^Dock: 1 pinned, 1 recent\. Two tiles$/);
+  assert.match(describeDock(a), /^Dock: 1 pinned, 1 recent, two tiles$/);
   assert.equal(describeDockChanges(a.changes), "removed 1 recent tile, pin rebuilt");
 });
 
@@ -105,7 +105,7 @@ test("dock: two pins keep the first and drop the second; a missing recent-apps k
   );
   assert.equal(tileNodes(a.doc, "persistent-apps").length, 2);
   assert.equal(integerAt(tileNodes(a.doc, "persistent-apps")[1]!, "GUID"), "2654545783", "the first pin kept its slot");
-  assert.match(describeDock(a), /2 pinned, 0 recent\. 1 duplicate pin/);
+  assert.match(describeDock(a), /2 pinned, 0 recent, 1 duplicate pin/);
 });
 
 test("dock: no Jarhead pin means report only — never pin on Kevin's behalf", () => {
@@ -117,7 +117,7 @@ test("dock: no Jarhead pin means report only — never pin on Kevin's behalf", (
   assert.equal(a.pinned, 0);
   assert.equal(a.changes.length, 0);
   assert.equal(a.doc, unpinned);
-  assert.match(describeDock(a), /^Dock: not pinned\. Drag/);
+  assert.match(describeDock(a), /^Dock: not pinned \(drag/);
   // A recent tile without a pin is still left alone: two tiles cannot happen without a pin.
   const recentOnly = dictSet(unpinned, "recent-apps", { kind: "array", items: [tileNodes(fixture("dock-two-tiles.xml"), "recent-apps")[0]!] });
   const b = auditDock(recentOnly);
@@ -138,7 +138,7 @@ test("dock: a pin at a stale URL is rebuilt to the installed bundle and gets fil
   const data = dictGet(tileNodes(a.doc, "persistent-apps")[0]!, "tile-data")!;
   assert.equal(stringAt(dictGet(data, "file-data")!, "_CFURLString"), INSTALLED_URL);
   assert.equal(integerAt(data, "file-type"), DEFAULT_FILE_TYPE);
-  assert.ok(describeDock(a).includes("Pin points at file:///Users/kevinliu/jarvis/build/Jarhead.app/"), describeDock(a));
+  assert.ok(describeDock(a).includes("pin points at file:///Users/kevinliu/jarvis/build/Jarhead.app/"), describeDock(a));
 });
 
 test("dock: a tile is Jarhead by exact bundle id or by a URL named Jarhead.app (any case); a sub-id probe bundle is not", () => {

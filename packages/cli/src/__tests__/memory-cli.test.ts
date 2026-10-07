@@ -66,11 +66,11 @@ test("doctor: memory rows — counts and the last learn from a running daemon, t
   const off = memoryChecks({ ...base, enabled: false, summary: liveSummary });
   assert.equal(off.length, 1, "off: nothing is configured to run, so no extractor row");
   assert.equal(off[0]!.status, "ok", "off is Kevin's choice, not a finding");
-  assert.match(off[0]!.detail, /^off \(Settings › Memory\)\. Nothing is extracted, injected or embedded; the store under \/tmp\/jh\/memory stays as it is$/);
+  assert.match(off[0]!.detail, /^off \(Settings › Memory\), so nothing is extracted, injected or embedded; the store under \/tmp\/jh\/memory stays as it is$/);
 
   const disagree = memoryChecks({ ...base, summary: { ...liveSummary, enabled: false } });
   assert.equal(disagree[0]!.status, "warn");
-  assert.match(disagree[0]!.fix ?? "", /\. Restart the daemon or flip Settings › Memory/);
+  assert.match(disagree[0]!.fix ?? "", /: restart the daemon or flip Settings › Memory/);
 
   // Never the word delete: forget is a state.
   for (const c of [...withDaemon, ...noDaemon, ...off]) assert.doesNotMatch(`${c.detail} ${c.fix ?? ""}`, /delet/i);
@@ -83,33 +83,33 @@ test("doctor: extractor row — names the model the engine WILL run (the default
 
   const noKey = row({ hasOpenAIKey: false, modelIds: undefined });
   assert.equal(noKey.status, "ok");
-  assert.match(noKey.detail, /^rules \(regex over the user's lines\)\. No OPENAI_API_KEY/);
+  assert.match(noKey.detail, /^rules \(regex over the user's lines\) since there is no OPENAI_API_KEY/);
   assert.match(memoryChecks({ ...base, hasOpenAIKey: false, modelIds: undefined })[0]!.detail, /keywords \(no OPENAI_API_KEY, so nothing leaves the Mac\)/);
 
   // Unpinned: the default runs; a newer mini on the key is a hint, not a claim.
   const unpinned = row({});
   assert.equal(unpinned.status, "ok");
-  assert.equal(unpinned.detail, `runs ${DEFAULT_MEMORY_MODEL} (the memory module's default, listed for this key). The key's best mini-class id is gpt-5.6-mini: pin it with JARHEAD_MEMORY_MODEL=gpt-5.6-mini. Dollars on the key, never the ChatGPT plan; ≤ 5 runs a day, ≤ ~8k in + 0.9k out each`);
+  assert.equal(unpinned.detail, `runs ${DEFAULT_MEMORY_MODEL} (the memory module's default, listed for this key); the key's best mini-class id is gpt-5.6-mini: pin it with JARHEAD_MEMORY_MODEL=gpt-5.6-mini. Dollars on the key, never the ChatGPT plan; ≤ 5 runs a day, ≤ ~8k in + 0.9k out each`);
   const unpinnedBest = row({ modelIds: new Set(["gpt-live-1", "gpt-5-mini"]) });
   assert.equal(unpinnedBest.detail, `runs gpt-5-mini (the memory module's default, listed for this key). Dollars on the key, never the ChatGPT plan; ≤ 5 runs a day, ≤ ~8k in + 0.9k out each`, "no hint when the default is already the key's best");
 
   // Unpinned and the default is not on the key: every run falls to rules — the fix is the pin.
   const defaultMissing = row({ modelIds: new Set(["gpt-live-1", "gpt-5.6-mini"]) });
   assert.equal(defaultMissing.status, "warn");
-  assert.equal(defaultMissing.detail, `runs ${DEFAULT_MEMORY_MODEL} (the memory module's default). Not listed for this key, so every run falls back to rules with one warning`);
+  assert.equal(defaultMissing.detail, `runs ${DEFAULT_MEMORY_MODEL} (the memory module's default), but it is not listed for this key, so every run falls back to rules with one warning`);
   assert.equal(defaultMissing.fix, "pin JARHEAD_MEMORY_MODEL=gpt-5.6-mini in ~/.jarhead/env (the key's best mini-class Responses id)");
   const noMini = row({ modelIds: new Set(["gpt-live-1", "gpt-5.6-terra"]) });
   assert.equal(noMini.status, "warn");
-  assert.match(noMini.detail, /\. Not listed for this key/);
+  assert.match(noMini.detail, /, but it is not listed for this key/);
   assert.match(noMini.fix ?? "", /or leave the rules extractor to it/);
 
   // Pinned: Kevin's word runs; listed or not is the only finding.
   assert.equal(row({ override: "gpt-5.6-mini" }).status, "ok");
   assert.equal(row({ override: "gpt-5.6-mini" }).detail, "runs gpt-5.6-mini (JARHEAD_MEMORY_MODEL, listed for this key). Dollars on the key, never the ChatGPT plan; ≤ 5 runs a day, ≤ ~8k in + 0.9k out each");
-  assert.match(row({ override: "gpt-5-mini" }).detail, /^runs gpt-5-mini \(JARHEAD_MEMORY_MODEL, listed for this key\)\. The key also lists gpt-5\.6-mini\./);
+  assert.match(row({ override: "gpt-5-mini" }).detail, /^runs gpt-5-mini \(JARHEAD_MEMORY_MODEL, listed for this key\)\; the key also lists gpt-5\.6-mini\./);
   const unlisted = row({ override: "gpt-9-mini" });
   assert.equal(unlisted.status, "warn");
-  assert.equal(unlisted.detail, "runs gpt-9-mini (JARHEAD_MEMORY_MODEL). Not listed for this key, so every run falls back to rules with one warning");
+  assert.equal(unlisted.detail, "runs gpt-9-mini (JARHEAD_MEMORY_MODEL), but it is not listed for this key, so every run falls back to rules with one warning");
   assert.match(unlisted.fix ?? "", /pin JARHEAD_MEMORY_MODEL=gpt-5\.6-mini/);
 
   // No list (the keys row says why): a pin is Kevin's word, the default is only unverified.
@@ -138,7 +138,7 @@ test("status words: agentsByStatus lists ended and unknown apart in AGENT_STATUS
   assert.equal(agoWords(NOW - 4 * 86_400_000, NOW), "4 d ago");
 
   assert.equal(memoryLine(undefined), "(no summary in the snapshot)");
-  assert.equal(memoryLine({ ...summary, enabled: false }), "off. Nothing is extracted, injected or embedded; the store stays as it is");
+  assert.equal(memoryLine({ ...summary, enabled: false }), "off, so nothing is extracted, injected or embedded; the store stays as it is");
   assert.equal(memoryLine(summary, NOW), "142 remembered · 3 forgotten · 7 archived · matching openai · 1 conversation waiting · learned 12 min ago (+3 · ~1 · responses) · last prompts 143 brain / 96 voice tokens (caps 250 / 120) · 2 used this turn");
   const { lastRun: _lastRun, budgetUsed: _budget, lastUsedIds: _ids, ...bare } = summary;
   const fresh = memoryLine({ ...bare, pending: 0, lastRunAt: NOW - 5000 }, NOW);
@@ -207,7 +207,7 @@ test("jarhead memory: a bad id, an unknown state or kind, an empty text and an u
     ["run", runOk],
   ] as const) {
     assert.equal(r.code, 1, name);
-    assert.match(r.err, /no daemon on .*nobody\.sock\. Start Jarhead\.app or `pnpm jarheadd`/, name);
+    assert.match(r.err, /no daemon on .*nobody\.sock \(start Jarhead\.app or `pnpm jarheadd`\)/, name);
     assert.doesNotMatch(r.err, /usage|unknown/, name);
   }
   assert.equal(help.code, 0);

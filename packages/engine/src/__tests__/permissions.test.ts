@@ -240,7 +240,7 @@ test("the app reports a helper kind's grant before the poll: the engine keeps it
     assert.equal(row(w, "accessibility")?.grant, "granted");
     assert.equal(grant(w, "accessibility"), "granted");
     assert.ok(!problems(w).includes(Engine.PERMISSION_PROBLEMS.accessibility));
-    assert.ok(toasts(w).some((t) => /^app accessibility granted\. Hands can click and type now\.$/.test(t)), "the toast wears the app's row label");
+    assert.ok(toasts(w).some((t) => /^app accessibility granted · hands can click and type now$/.test(t)), "the toast wears the app's row label");
     assert.equal(helperExits(), 1, "restarted once, by the fresh read");
     w.clock.t += 31_000;
     await poll();

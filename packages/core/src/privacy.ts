@@ -87,29 +87,29 @@ function brainRow(i: DataPathsInput): DataPath {
   if (i.brainResolved === "local") {
     const model = localModel || "the local model";
     const server = serverName(i.local);
-    if (!onLan(i.local)) return { what: "brain", where: "mac", detail: `${model} on ${server}. Nothing leaves.` };
-    return { what: "brain", where: "lan", detail: `${model} on ${server} at ${hostPort(i.local.baseUrl)}. Screenshots and tool results leave for your network.` };
+    if (!onLan(i.local)) return { what: "brain", where: "mac", detail: `${model} on ${server}, and nothing leaves` };
+    return { what: "brain", where: "lan", detail: `${model} on ${server} at ${hostPort(i.local.baseUrl)}, so screenshots and tool results leave for your network` };
   }
   const kind = i.brainResolved ?? i.brain;
-  if (kind === "auto") return { what: "brain", where: "cloud", detail: "The first signed-in backend, not started yet. Screenshots and tool results leave." };
+  if (kind === "auto") return { what: "brain", where: "cloud", detail: "the first signed-in backend (not started yet), so screenshots and tool results leave" };
   if (kind === "local") {
     const model = localModel || "the best fit on this Mac";
-    const until = i.hasOpenAIKey ? "Until it is, the brain's work goes to OpenAI and screenshots and tool results leave." : "Nothing runs the brain until it is.";
-    return { what: "brain", where: "cloud", detail: `${model} is not running yet. ${until}` };
+    const until = i.hasOpenAIKey ? "until it is, the brain's work goes to OpenAI and screenshots and tool results leave" : "nothing runs the brain until it is";
+    return { what: "brain", where: "cloud", detail: `${model} is not running yet, and ${until}` };
   }
   if (i.brain === "local") {
     // The Responses fallback under an explicit local: brainModel is the LOCAL id, so the cloud brain is named by its own detail.
     const cloud = i.brainDetail.trim() || "the backend's default model";
-    return { what: "brain", where: "cloud", detail: `${vendorOf(kind)} ${cloud}, standing in for ${localModel || "the local model"} until it is back. Screenshots and tool results leave.` };
+    return { what: "brain", where: "cloud", detail: `${vendorOf(kind)} ${cloud}, standing in for ${localModel || "the local model"} until it is back, so screenshots and tool results leave` };
   }
   const model = i.brainModel.trim() || i.brainDetail.trim() || "the backend's default model";
-  return { what: "brain", where: "cloud", detail: `${vendorOf(kind)} ${model}. Screenshots and tool results leave.` };
+  return { what: "brain", where: "cloud", detail: `${vendorOf(kind)} ${model}: screenshots and tool results leave` };
 }
 
 function memoryRow(i: DataPathsInput): DataPath {
   const m = i.memory;
-  if (!m || !m.enabled) return { what: "memory", where: "off", detail: "Memory is off. Nothing is read or kept." };
-  if (m.embeddings === "openai") return { what: "memory", where: "cloud", detail: `${m.embeddingModel ?? "text-embedding-3-small"} + a mini model. Item text and closed conversations leave.` };
+  if (!m || !m.enabled) return { what: "memory", where: "off", detail: "memory is off, so nothing is read or kept" };
+  if (m.embeddings === "openai") return { what: "memory", where: "cloud", detail: `${m.embeddingModel ?? "text-embedding-3-small"} + a mini model, so item text and closed conversations leave` };
   const extractor = localExtractorOf(i);
   const reads = extractor ? `extractor ${extractor}` : "rules";
   const lan = onLan(i.local);
@@ -117,12 +117,12 @@ function memoryRow(i: DataPathsInput): DataPath {
     const dims = m.embeddingDims ? ` ${m.embeddingDims} dims` : "";
     const how = `embeddings ${m.embeddingModel ?? "local"}${dims} · ${reads}`;
     // The embedder posts item text to the server root; the extractor, when one reads, posts closed conversations there too.
-    if (lan) return { what: "memory", where: "lan", detail: `${how} at ${hostPort(i.local.baseUrl)}. ${extractor ? "Item text and closed conversations leave" : "Item text leaves"} for your network.` };
-    return { what: "memory", where: "mac", detail: `${how}. Nothing leaves.` };
+    if (lan) return { what: "memory", where: "lan", detail: `${how} at ${hostPort(i.local.baseUrl)}, so ${extractor ? "item text and closed conversations leave" : "item text leaves"} for your network` };
+    return { what: "memory", where: "mac", detail: `${how}, and nothing leaves` };
   }
   // Keyword matching runs in the daemon; only a local extractor sends anything, and only to the server root.
-  if (extractor && lan) return { what: "memory", where: "lan", detail: `keywords · ${reads} at ${hostPort(i.local.baseUrl)}. Closed conversations leave for your network.` };
-  return { what: "memory", where: "mac", detail: `keywords · ${reads}. Nothing leaves.` };
+  if (extractor && lan) return { what: "memory", where: "lan", detail: `keywords · ${reads} at ${hostPort(i.local.baseUrl)}, so closed conversations leave for your network` };
+  return { what: "memory", where: "mac", detail: `keywords · ${reads}, and nothing leaves` };
 }
 
 /**
@@ -147,7 +147,7 @@ function memoryRow(i: DataPathsInput): DataPath {
  */
 export function dataPaths(i: DataPathsInput): DataPath[] {
   return [
-    { what: "voice", where: "cloud", detail: `OpenAI ${i.liveModel}. Every word heard and said; billed per second of open session.` },
+    { what: "voice", where: "cloud", detail: `OpenAI ${i.liveModel}: every word heard and said, billed per second of open session` },
     brainRow(i),
     memoryRow(i),
     { what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)" },

@@ -37,7 +37,7 @@ const ASK_WORD: Record<PermissionInfo["ask"], string> = { prompt: "prompt", sett
  * the four the helper reads are known) says how many the app still has to read.
  */
 export function summarizePermissions(all: readonly PermissionInfo[] | undefined): string {
-  if (!all || all.length === 0) return "not read yet. The app reads them (Setup › Permissions), the daemon's helper reads four";
+  if (!all || all.length === 0) return "not read yet: the app reads them (Setup › Permissions), the daemon's helper reads four";
   const granted = all.filter((p) => p.grant === "granted");
   const missing = all.filter((p) => p.grant === "denied");
   const unknown = all.filter((p) => p.grant === "unknown");
@@ -220,11 +220,11 @@ export function installChecks(deps: InstallCheckDeps = {}): Check[] {
     const signature = `${dvv.stderr}${dvv.stdout}`;
     const adhoc = /Signature=adhoc/.test(signature);
     const authority = signature.match(/^Authority=(.+)$/m)?.[1];
-    add({ group: "app", name: "signing identity", status: adhoc ? "warn" : "ok", detail: adhoc ? "ad-hoc. Microphone/screen/accessibility grants reset on every rebuild" : (authority ?? "signed with a real identity"), required: false, fix: adhoc ? "Keychain Access → Certificate Assistant → Create a Certificate (Code Signing), then pnpm build:mac; or set JARHEAD_SIGN_IDENTITY" : undefined });
+    add({ group: "app", name: "signing identity", status: adhoc ? "warn" : "ok", detail: adhoc ? "ad-hoc, so microphone/screen/accessibility grants reset on every rebuild" : (authority ?? "signed with a real identity"), required: false, fix: adhoc ? "Keychain Access → Certificate Assistant → Create a Certificate (Code Signing), then pnpm build:mac; or set JARHEAD_SIGN_IDENTITY" : undefined });
 
     const plan = planInstall(probe, uid, installed);
     if (plan.kind === "refuse") {
-      add({ group: "app", name: "install", status: "warn", detail: `${plan.reason}. The next pnpm build:mac refuses`, required: false, fix: plan.hint });
+      add({ group: "app", name: "install", status: "warn", detail: `${plan.reason}, so the next pnpm build:mac refuses`, required: false, fix: plan.hint });
     } else {
       const verify = exec(CODESIGN, [...CODESIGN_VERIFY_ARGS, installed], { timeoutMs: 8000 });
       const req = exec(CODESIGN, [...CODESIGN_REQUIREMENT_ARGS, installed], { timeoutMs: 8000 });
@@ -364,7 +364,7 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
       ? "openai embeddings (text-embedding-3-small, 512 dims)"
       : "keywords (no OPENAI_API_KEY, so nothing leaves the Mac)";
   if (!input.enabled) {
-    out.push({ group: "memory", name: "memory", status: "ok", detail: `off (Settings › Memory). Nothing is extracted, injected or embedded; the store under ${input.storeDir} stays as it is`, required: false });
+    out.push({ group: "memory", name: "memory", status: "ok", detail: `off (Settings › Memory), so nothing is extracted, injected or embedded; the store under ${input.storeDir} stays as it is`, required: false });
   } else if (input.summary) {
     const m = input.summary;
     const learned = m.lastRunAt ? `learned ${agoWords(m.lastRunAt)}${m.lastRun ? ` (+${m.lastRun.added} · ~${m.lastRun.updated} · ${m.lastRun.noop} noop · ${m.lastRun.extractor})` : ""}` : "not learned yet (runs after a conversation closes, at a quiet moment)";
@@ -378,7 +378,7 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
       status: m.enabled ? "ok" : "warn",
       detail: `${m.count} remembered · ${m.forgotten} forgotten · ${m.archived} archived · matching ${how} · ${learned}${waiting}${spent} (caps ${BRAIN_MEMORY_TOKENS} brain / ${VOICE_MEMORY_TOKENS} voice tokens per prompt)`,
       required: false,
-      fix: m.enabled ? undefined : "the daemon reports memory off while settings.json says on. Restart the daemon or flip Settings › Memory",
+      fix: m.enabled ? undefined : "the daemon reports memory off while settings.json says on: restart the daemon or flip Settings › Memory",
     });
   } else {
     const store = input.storeRows === undefined ? `no store yet at ${input.storeDir} (it appears after the first closed conversation)` : `${input.storeRows} row${input.storeRows === 1 ? "" : "s"} in ${join(input.storeDir, "memory.jsonl")} (counts come from a running daemon)`;
@@ -389,22 +389,22 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
   // Under the local brain the extractor is the brain's model on this Mac (Chat Completions JSON mode); the OpenAI plan does not apply.
   // No server answering is rules, whatever model the setting names — the fix is the server, not the pick.
   if (local) {
-    const detail = offline ? "rules (no local server answering). Nothing leaves for memory" : chat ? `runs ${chat} on the local server (Chat Completions JSON mode; rules when it cannot answer). Nothing leaves for memory` : "rules until the local brain has a model (pick one, or pull a tool-capable model)";
+    const detail = offline ? "rules (no local server answering), so nothing leaves for memory" : chat ? `runs ${chat} on the local server (Chat Completions JSON mode; rules when it cannot answer), and nothing leaves for memory` : "rules until the local brain has a model (pick one, or pull a tool-capable model)";
     out.push({ group: "memory", name: "extractor", status: !offline && chat ? "ok" : "warn", detail, required: false, ...(offline ? { fix: OPEN_OLLAMA } : {}) });
     return out;
   }
   const plan = extractorPlan(input.modelIds, input.override);
   const via = plan.pinned ? "JARHEAD_MEMORY_MODEL" : "the memory module's default";
   const spend = "Dollars on the key, never the ChatGPT plan; ≤ 5 runs a day, ≤ ~8k in + 0.9k out each";
-  const pin = plan.best && plan.best !== plan.runs ? (plan.pinned ? `. The key also lists ${plan.best}` : `. The key's best mini-class id is ${plan.best}: pin it with JARHEAD_MEMORY_MODEL=${plan.best}`) : "";
+  const pin = plan.best && plan.best !== plan.runs ? (plan.pinned ? `; the key also lists ${plan.best}` : `; the key's best mini-class id is ${plan.best}: pin it with JARHEAD_MEMORY_MODEL=${plan.best}`) : "";
   if (!input.hasOpenAIKey) {
-    out.push({ group: "memory", name: "extractor", status: "ok", detail: "rules (regex over the user's lines). No OPENAI_API_KEY; with one, a mini-class Responses model reads each closed conversation once", required: false });
+    out.push({ group: "memory", name: "extractor", status: "ok", detail: "rules (regex over the user's lines) since there is no OPENAI_API_KEY; with one, a mini-class Responses model reads each closed conversation once", required: false });
   } else if (plan.listed === false) {
     out.push({
       group: "memory",
       name: "extractor",
       status: "warn",
-      detail: `runs ${plan.runs} (${via}). Not listed for this key, so every run falls back to rules with one warning`,
+      detail: `runs ${plan.runs} (${via}), but it is not listed for this key, so every run falls back to rules with one warning`,
       required: false,
       fix: plan.best ? `pin JARHEAD_MEMORY_MODEL=${plan.best} in ~/.jarhead/env (the key's best mini-class Responses id)` : "set JARHEAD_MEMORY_MODEL in ~/.jarhead/env to a Responses model the key lists, or leave the rules extractor to it",
     });
@@ -416,7 +416,7 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
       group: "memory",
       name: "extractor",
       status: plan.pinned ? "ok" : "warn",
-      detail: `runs ${plan.runs} (${via}, not checked: the key's model list could not be read). A wrong id falls back to rules with one warning`,
+      detail: `runs ${plan.runs} (${via}, not checked: the key's model list could not be read), and a wrong id falls back to rules with one warning`,
       required: false,
     });
   }
@@ -460,7 +460,7 @@ export function localChecks(input: LocalCheckInput): Check[] {
   const pinned = input.brainBaseUrl?.trim();
   if (!status.reachable) {
     out.push({ group: "local", name: "server", status: "warn", detail: pinned ? `not answering at ${pinned}` : `not running (${LOCAL_ROOTS})`, required: false, fix: OPEN_OLLAMA });
-    if (local) out.push({ group: "local", name: "model", status: "warn", detail: `${brainModel || "the best fit"} waits for a server. Until one answers, the brain's work goes to OpenAI (memory stays on the Mac)`, required: false, fix: OPEN_OLLAMA });
+    if (local) out.push({ group: "local", name: "model", status: "warn", detail: `${brainModel || "the best fit"} waits for a server, and until one answers the brain's work goes to OpenAI (memory stays on the Mac)`, required: false, fix: OPEN_OLLAMA });
     return out;
   }
   const server = serverLabel(status);
@@ -526,7 +526,7 @@ export function staleDaemonCheck(running: RunningDaemon | undefined): Check | un
     group: "local",
     name: "daemon",
     status: "warn",
-    detail: "the daemon on the socket predates this build (its snapshot has no setup.local). The rows below are the doctor's own look, and `jarhead brain <kind>` refuses a pick until it is restarted",
+    detail: "the daemon on the socket predates this build (its snapshot has no setup.local), so the rows below are the doctor's own look and `jarhead brain <kind>` refuses a pick until it is restarted",
     required: false,
     fix: "quit and reopen Jarhead.app (or restart jarheadd) so the bundled daemon runs",
   };
@@ -650,11 +650,11 @@ export function automationChecks(input: AutomationCheckInput): Check[] {
   // enabled: the master switch, the counts and the next fire.
   const journalLive = "live" in input.journal ? input.journal.live : undefined;
   if (!settings.enabled) {
-    add({ name: "enabled", status: "warn", detail: `off (Settings › Automations). Nothing fires; every row stays${rows ? ` (${rows.length} set)` : ""}`, fix: "Settings › Automations › the switch, when you want them back" });
+    add({ name: "enabled", status: "warn", detail: `off (Settings › Automations), so nothing fires; every row stays${rows ? ` (${rows.length} set)` : ""}`, fix: "Settings › Automations › the switch, when you want them back" });
   } else if (rows === undefined) {
-    add({ name: "enabled", status: "ok", detail: `on · ${journalLive === undefined ? "no daemon answering" : `${journalLive} live in the journal`}. The rows and the next fire come from a running daemon` });
+    add({ name: "enabled", status: "ok", detail: `on · ${journalLive === undefined ? "no daemon answering" : `${journalLive} live in the journal`} (the rows and the next fire come from a running daemon)` });
   } else if (rows.length === 0) {
-    add({ name: "enabled", status: "ok", detail: "on · nothing set. Say \"wake me at 7:10 on weekdays\", or pnpm jarhead automations add \"at 7:10 weekdays chime 'Wake up'\"" });
+    add({ name: "enabled", status: "ok", detail: "on · nothing set (say \"wake me at 7:10 on weekdays\", or pnpm jarhead automations add \"at 7:10 weekdays chime 'Wake up'\")" });
   } else {
     const armed = rows.filter((a) => a.state === "armed" || a.state === "snoozed" || a.state === "deferred").length;
     const next = input.nextFire ? ` · next ${clockOf(input.nextFire.at)} ${input.nextFire.name} (${inWords(input.nextFire.at, now)})` : rows.some((a) => a.when.kind === "on") ? " · watching" : "";
@@ -663,18 +663,18 @@ export function automationChecks(input: AutomationCheckInput): Check[] {
 
   // journal: the schedule on disk (append-only; last row per id wins).
   const j = input.journal;
-  if ("error" in j) add({ name: "journal", status: "fail", detail: `${j.path} unreadable (${j.error}) → nothing fires until it is`, fix: "Open Console. The Now rail says what the daemon could load; a journal the daemon cannot read is never rewritten by it" });
+  if ("error" in j) add({ name: "journal", status: "fail", detail: `${j.path} unreadable (${j.error}) → nothing fires until it is`, fix: "Open Console, where the Now rail says what the daemon could load; a journal the daemon cannot read is never rewritten by it" });
   else if ("missing" in j) add({ name: "journal", status: "ok", detail: `no journal yet at ${j.path} (it appears with the first automation)` });
   else add({ name: "journal", status: "ok", detail: `${j.path} · ${j.live} live · ${j.rows} row${j.rows === 1 ? "" : "s"}` });
 
   // daemon: the honest line.
-  if (settings.openAtLogin) add({ name: "daemon", status: "ok", detail: "Open at login is on. Jarhead and its daemon come back at login; nothing fires while Jarhead is quit" });
-  else add({ name: "daemon", status: "warn", detail: "nothing fires while Jarhead is quit. Open at login is off", fix: "Settings › Automations › Open at login" });
+  if (settings.openAtLogin) add({ name: "daemon", status: "ok", detail: "Open at login is on, so Jarhead and its daemon come back at login; nothing fires while Jarhead is quit" });
+  else add({ name: "daemon", status: "warn", detail: "nothing fires while Jarhead is quit, and Open at login is off", fix: "Settings › Automations › Open at login" });
 
   // banners: the grant; the island and the chime do not need it.
-  if (input.notifications === "granted") add({ name: "banners", status: "ok", detail: "Notifications granted. Snooze · Done on the banner land the same row as the island's" });
-  else if (input.notifications === undefined) add({ name: "banners", status: "warn", detail: "Notifications not read (no daemon answering). The island and the chime still fire" });
-  else add({ name: "banners", status: "warn", detail: `Notifications ${input.notifications === "denied" ? "not granted" : "not asked yet"}. The island and the chime still fire`, fix: "pnpm jarhead cmd request-permission notifications (the app puts up the system prompt; Setup › Permissions › Notifications and the automation.notifications problem's Request button do the same)" });
+  if (input.notifications === "granted") add({ name: "banners", status: "ok", detail: "Notifications granted, so Snooze · Done on the banner land the same row as the island's" });
+  else if (input.notifications === undefined) add({ name: "banners", status: "warn", detail: "Notifications not read (no daemon answering), but the island and the chime still fire" });
+  else add({ name: "banners", status: "warn", detail: `Notifications ${input.notifications === "denied" ? "not granted" : "not asked yet"}, but the island and the chime still fire`, fix: "pnpm jarhead cmd request-permission notifications (the app puts up the system prompt; Setup › Permissions › Notifications and the automation.notifications problem's Request button do the same)" });
 
   // wake for HH:MM: the earliest armed alarm; a closed lid sleeps through it unless pmset says otherwise.
   const alarm = (rows ?? [])
@@ -684,13 +684,13 @@ export function automationChecks(input: AutomationCheckInput): Check[] {
     const at = clockOf(alarm.nextAt);
     const scheduled = input.pmsetSched !== undefined && /wake/i.test(input.pmsetSched);
     const copy = pmsetCopy(alarm);
-    if (scheduled) add({ name: `wake for ${at}`, status: "ok", detail: `pmset schedules a wake (pmset -g sched: ${input.pmsetSched?.trim().split("\n").find((l) => /wake/i.test(l))?.trim() ?? "a wake"}). Check it covers ${at}` });
-    else add({ name: `wake for ${at}`, status: "warn", detail: `a closed lid sleeps through ${at}. The alarm rings late (within ${AUTOMATION_GRACE_ALARM_MIN} min) or is missed; the Mac is never woken by Jarhead`, ...(copy ? { fix: `copy (root; never run by Jarhead): ${copy}` } : {}) });
+    if (scheduled) add({ name: `wake for ${at}`, status: "ok", detail: `pmset schedules a wake (pmset -g sched: ${input.pmsetSched?.trim().split("\n").find((l) => /wake/i.test(l))?.trim() ?? "a wake"}); check it covers ${at}` });
+    else add({ name: `wake for ${at}`, status: "warn", detail: `a closed lid sleeps through ${at}, so the alarm rings late (within ${AUTOMATION_GRACE_ALARM_MIN} min) or is missed; the Mac is never woken by Jarhead`, ...(copy ? { fix: `copy (root; never run by Jarhead): ${copy}` } : {}) });
   }
 
   // quiet hours.
   const q = settings.quietHours;
-  add({ name: "quiet hours", status: "ok", detail: q ? `${q.from}–${q.to} · alarms override; chime/say show silently; acting kinds wait` : "none set. Everything fires as set" });
+  add({ name: "quiet hours", status: "ok", detail: q ? `${q.from} to ${q.to} · alarms override; chime/say show silently; acting kinds wait` : "none set, so everything fires as set" });
 
   // missed: the last seven day files.
   if (input.missed.count === 0) add({ name: "missed", status: "ok", detail: "0 in 7 days" });
@@ -703,13 +703,13 @@ export function automationChecks(input: AutomationCheckInput): Check[] {
   const cap = settings.wakeBudgetMinutesPerDay;
   const usedMin = Math.ceil(input.brainSecondsToday / 60);
   const wakeRows = (rows ?? []).filter((a) => a.then.some((t) => t.kind === "wake-brain")).length;
-  if (cap <= 0) add({ name: "brain budget", status: "ok", detail: "wake-brain off (Brain minutes 0). No automation wakes the brain; nothing is billed asleep" });
+  if (cap <= 0) add({ name: "brain budget", status: "ok", detail: "wake-brain off (Brain minutes 0), so no automation wakes the brain and nothing is billed asleep" });
   else if (usedMin >= cap) add({ name: "brain budget", status: "warn", detail: `spent: ${usedMin} of ${cap} min used today; wake-brain rows fail until midnight (a failed row, never a question)`, fix: "Settings › Automations › Brain minutes, or wait for midnight" });
   else add({ name: "brain budget", status: "ok", detail: `${wakeRows === 0 ? "wake-brain unused" : `${wakeRows} wake-brain row${wakeRows === 1 ? "" : "s"}`} · ${usedMin} of ${cap} min used today` });
 
   // recipes: the gate's word for each, now.
   const recipes = settings.recipes;
-  if (recipes.length === 0) add({ name: "recipes", status: "ok", detail: "none. A recipe is a shell command you approved once; the gate re-judges it at every fire" });
+  if (recipes.length === 0) add({ name: "recipes", status: "ok", detail: "none (a recipe is a shell command you approved once; the gate re-judges it at every fire)" });
   else {
     const judged = recipes.map((r) => ({ r, v: recipeVerdict(r, input.home) }));
     const asks = judged.filter((x) => x.v.word !== "run");
@@ -718,7 +718,7 @@ export function automationChecks(input: AutomationCheckInput): Check[] {
   }
 
   // time-sensitive banners: pass 1 notes it.
-  add(input.timeSensitive ? { name: "time-sensitive", status: "ok", detail: "entitlement present. Alarm banners may break through Focus" } : { name: "time-sensitive", status: "warn", detail: "entitlement absent. Alarm banners honour Focus like any banner (the island and the chime still fire)" });
+  add(input.timeSensitive ? { name: "time-sensitive", status: "ok", detail: "entitlement present, so alarm banners may break through Focus" } : { name: "time-sensitive", status: "warn", detail: "entitlement absent, so alarm banners honour Focus like any banner (the island and the chime still fire)" });
 
   // folder grant: a watched Downloads/Desktop/Documents needs its grant.
   if (rows) {
@@ -734,7 +734,7 @@ export function automationChecks(input: AutomationCheckInput): Check[] {
       const grant = input.folderGrants[kind];
       const folder = kind.replace(/^files/, "");
       if (grant === "granted") add({ name: "folder grant", status: "ok", detail: `watching ${path} · the ${folder} folder grant is on` });
-      else add({ name: "folder grant", status: "warn", detail: `watching ${path} needs the ${folder} folder grant${grant === undefined ? " (not read)" : ""}. A denied read is the automation.watch problem, never a silent watcher`, fix: "Ask (the automation.watch problem's button; Setup › Permissions)" });
+      else add({ name: "folder grant", status: "warn", detail: `watching ${path} needs the ${folder} folder grant${grant === undefined ? " (not read)" : ""}, and a denied read is the automation.watch problem, never a silent watcher`, fix: "Ask (the automation.watch problem's button; Setup › Permissions)" });
     }
   }
   return out;
@@ -808,7 +808,7 @@ export function agentsByStatus(agents: readonly Pick<AgentInfo, "status">[]): st
 /** One line for `jarhead status`: what the durable memory holds and when it last learned; the cost words are the caps, not a saving. */
 export function memoryLine(m: MemorySummary | undefined, now = Date.now()): string {
   if (!m) return "(no summary in the snapshot)";
-  if (!m.enabled) return "off. Nothing is extracted, injected or embedded; the store stays as it is";
+  if (!m.enabled) return "off, so nothing is extracted, injected or embedded; the store stays as it is";
   const parts = [`${m.count} remembered`, `${m.forgotten} forgotten`, `${m.archived} archived`, `matching ${m.embeddings}`];
   if (m.pending) parts.push(`${m.pending} conversation${m.pending === 1 ? "" : "s"} waiting`);
   parts.push(m.lastRunAt ? `learned ${agoWords(m.lastRunAt, now)}${m.lastRun ? ` (+${m.lastRun.added} · ~${m.lastRun.updated} · ${m.lastRun.extractor})` : ""}` : "never learned yet");
@@ -873,7 +873,7 @@ export function transportWord(t: string | undefined): string {
 
 /** AUVoiceIOOtherAudioDuckingLevel as a word: 0 default · 10 min · 20 mid · 30 max. */
 export function duckWord(level: number | undefined): string {
-  if (level === undefined) return "?";
+  if (level === undefined) return "unknown";
   return level === 0 ? "default" : level === 10 ? "min" : level === 20 ? "mid" : level === 30 ? "max" : `level ${level}`;
 }
 
@@ -1112,9 +1112,9 @@ export function leakCheck(probe: AudioProbeRead | undefined, appBuiltAt: number 
   const measured = probe.runs.filter((r) => leakFigure(r) !== undefined);
   const run = measured.find((r) => r.mode === "recording") ?? measured.sort((a, b) => b.at - a.at)[0];
   const figure = run ? leakFigure(run) : undefined;
-  if (!run || !figure) return { ...g, status: "warn", detail: `${probe.runs.length} run${probe.runs.length === 1 ? "" : "s"} (${probe.runs.map((r) => r.mode).join(", ")}). None measured the guard's residual`, fix: rerun };
+  if (!run || !figure) return { ...g, status: "warn", detail: `${probe.runs.length} run${probe.runs.length === 1 ? "" : "s"} (${probe.runs.map((r) => r.mode).join(", ")}), but none measured the guard's residual`, fix: rerun };
   const figures = `${figure.word} ${figure.dbfs} dBFS${run.tailMs !== undefined ? ` · tail ${run.tailMs} ms` : ""} · ${run.mode} · ${agoWords(run.at, now)}`;
-  if (figure.dbfs > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures}, above ${LEAK_FAIL_DBFS} dBFS`, fix: "the guard is not holding on this hardware. Use headphones for Recording, or leave it off" };
+  if (figure.dbfs > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures}, above ${LEAK_FAIL_DBFS} dBFS`, fix: "the guard is not holding on this hardware: use headphones for Recording, or leave it off" };
   if (appBuiltAt !== undefined && run.at < appBuiltAt) return { ...g, status: "warn", detail: `${figures}, measured before this app build`, fix: rerun };
   return { ...g, status: "ok", detail: figures };
 }
@@ -1165,7 +1165,7 @@ export function audioChecks(i: AudioCheckInput): Check[] {
   const add = (c: Omit<Check, "group" | "required">): void => void out.push({ group: "audio", required: false, ...c });
   const s = i.state;
   const recording = s?.recording ?? i.settings?.recording ?? false;
-  if (!s) add({ name: "audio state", status: "warn", detail: "app not running. The graph's read-back needs Jarhead.app connected", fix: "open Jarhead.app; it reports its graph to the daemon on start, stop and every route change" });
+  if (!s) add({ name: "audio state", status: "warn", detail: "app not running, and the graph's read-back needs Jarhead.app connected", fix: "open Jarhead.app; it reports its graph to the daemon on start, stop and every route change" });
   else {
     const fallbackWon = s.running && !s.voiceProcessing && !s.recording;
     add({ name: "voice processing", status: fallbackWon ? "fail" : "ok", detail: voiceProcessingWords(s), ...(fallbackWon ? { fix: "echo cancellation failed to start on this device pair; Jarhead runs guarded" } : {}) });
@@ -1177,16 +1177,16 @@ export function audioChecks(i: AudioCheckInput): Check[] {
       const refusedRanked = s.recording && s.running && !s.voiceProcessing && s.rung === RECORDING_DEFAULT_MIC_RUNG;
       const detail = `${s.hears.name} · ${hzWords(s.hears)} · ${transportWord(s.hears.transport)} · ${hearsState(s)}${refusedRanked ? " · ranked mic refused; hearing the system default" : ""}`;
       const fix = bluetooth
-        ? `a headset mic drops every app's sound to hands-free while held. Make ${builtIn} the default in System Settings › Sound, or turn Recording on`
+        ? `a headset mic drops every app's sound to hands-free while held, so make ${builtIn} the default in System Settings › Sound, or turn Recording on`
         : refusedRanked
-          ? `the plain graph could not pin the ranked microphone (rung ${RECORDING_DEFAULT_MIC_RUNG}). Make ${builtIn} the default in System Settings › Sound so Recording hears it`
+          ? `the plain graph could not pin the ranked microphone (rung ${RECORDING_DEFAULT_MIC_RUNG}): make ${builtIn} the default in System Settings › Sound so Recording hears it`
           : undefined;
       add({ name: "hears", status: bluetooth || refusedRanked ? "warn" : "ok", detail, ...(fix ? { fix } : {}) });
     } else add({ name: "hears", status: "ok", detail: "nothing (the graph is down)" });
     if (s.speaks) {
       const narrowed = s.speaks.rate < NARROWED_BELOW_HZ;
       const bluetoothWhileRecording = s.recording && transportWord(s.speaks.transport) === "bluetooth";
-      const fix = narrowed ? "the headset mic is held (by Jarhead's unit, or another app). Make the built-in mic the default in System Settings › Sound, or turn Recording on" : bluetoothWhileRecording ? "Bluetooth output buffers lengthen the guard tail. Wired headphones or the speakers cut it" : undefined;
+      const fix = narrowed ? "the headset mic is held (by Jarhead's unit, or another app), so make the built-in mic the default in System Settings › Sound, or turn Recording on" : bluetoothWhileRecording ? "Bluetooth output buffers lengthen the guard tail, and wired headphones or the speakers cut it" : undefined;
       add({ name: "speaks", status: narrowed || bluetoothWhileRecording ? "warn" : "ok", detail: `${s.speaks.name} · ${hzWords(s.speaks)} · ${transportWord(s.speaks.transport)} · ${speaksState(s.speaks)}`, ...(fix ? { fix } : {}) });
     } else add({ name: "speaks", status: "ok", detail: "nothing (the graph is down)" });
     const def = i.profiler?.defaultInput?.name ?? (s.voiceProcessing ? s.hears?.name : undefined);
@@ -1203,7 +1203,7 @@ export function audioChecks(i: AudioCheckInput): Check[] {
   add({ name: "recording", status: recording ? "warn" : "ok", detail: `${recording ? "on" : "off"} · Settings › Audio, ⌃⌥R`, ...(recording ? { fix: "turn it off after the demo" } : {}) });
   if (s) {
     const asleep = i.phase === undefined || ASLEEP_PHASES.has(i.phase);
-    if (!asleep) add({ name: "released at sleep", status: "ok", detail: `awake · voice processing ${onOff(s.voiceProcessing)}. Read again after the next sleep` });
+    if (!asleep) add({ name: "released at sleep", status: "ok", detail: `awake · voice processing ${onOff(s.voiceProcessing)} (read again after the next sleep)` });
     else if (s.running) add({ name: "released at sleep", status: "warn", detail: "the graph is still up while asleep", fix: "sleep and wake once; if it stays, quit Jarhead.app" });
     else {
       const aggregate = s.aggregatePresent || i.profiler?.aggregatePresent === true;
@@ -1212,7 +1212,7 @@ export function audioChecks(i: AudioCheckInput): Check[] {
         name: "released at sleep",
         status: bad ? "warn" : "ok",
         detail: `voice processing ${s.voiceProcessing ? "still on" : "off"} after the last stop · ${aggregate ? "the unit's aggregate (VPAUAggregateAudioDevice) is still present" : "no unit aggregate present"}`,
-        ...(bad ? { fix: "the unit was not released. Sleep and wake once; if it stays, quit Jarhead.app" } : {}),
+        ...(bad ? { fix: "the unit was not released: sleep and wake once; if it stays, quit Jarhead.app" } : {}),
       });
     }
   }
@@ -1477,7 +1477,7 @@ export function audioStatusLines(state: AudioState | undefined, settings: AudioS
   if (!state) {
     const recording = settings?.recording ? " · recording on" : "";
     const device = (d: AudioProfilerDevice | undefined): string => (d ? `${d.name} ${d.rate} Hz` : "none");
-    const head = profiler ? `  audio      no app connected${recording}. Defaults: in ${device(profiler.defaultInput)} · out ${device(profiler.defaultOutput)}` : `  audio      no app connected${recording}`;
+    const head = profiler ? `  audio      no app connected${recording} · defaults: in ${device(profiler.defaultInput)} · out ${device(profiler.defaultOutput)}` : `  audio      no app connected${recording}`;
     // The playback figures (voice PLAN W1.5): the open session's Live figures, else the ledger's last session.
     return [head, ...playbackBlock(undefined, extras)];
   }
@@ -1530,7 +1530,7 @@ function lastJsonLine(text: string): Record<string, unknown> | undefined {
  */
 export function audioTestCheck(i: AudioTestInput): Check {
   const g = { group: "audio", name: "test audio", required: false } as const;
-  if (!i.scriptExists) return { ...g, status: "warn", detail: "apps/mac/Scripts/audio-probe.sh missing. Nothing played", fix: "the probe is builder D's: apps/mac/Scripts/audio-probe.sh --test --json" };
+  if (!i.scriptExists) return { ...g, status: "warn", detail: "apps/mac/Scripts/audio-probe.sh missing, so nothing played", fix: "the probe is builder D's: apps/mac/Scripts/audio-probe.sh --test --json" };
   if (i.phase !== undefined && !ASLEEP_PHASES.has(i.phase)) return { ...g, status: "warn", detail: "Jarhead is awake; sleep it first (two voice-processing clients cut each other)", fix: "pnpm jarhead cmd sleep, then doctor --test-audio again" };
   const out = i.run();
   if (out === undefined) return { ...g, status: "warn", detail: "the probe printed nothing (timed out, or the mic grant was refused)", fix: "run apps/mac/Scripts/audio-probe.sh --test yourself and read its lines" };
@@ -1547,7 +1547,7 @@ export function audioTestCheck(i: AudioTestInput): Check {
   const rung = typeof j["rung"] === "number" ? ` · rung ${j["rung"]}` : "";
   const mode = typeof j["mode"] === "string" ? ` · ${j["mode"]}` : "";
   const figures = `${tail !== undefined ? "tail leak" : "leak"} ${leak} dB${gated}${rung}${mode}`;
-  if (leak > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures}, above ${LEAK_FAIL_DBFS} dB`, fix: "the guard is not holding on this hardware. Use headphones for Recording, or leave it off" };
+  if (leak > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures}, above ${LEAK_FAIL_DBFS} dB`, fix: "the guard is not holding on this hardware: use headphones for Recording, or leave it off" };
   return { ...g, status: "ok", detail: figures };
 }
 
@@ -1657,7 +1657,7 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
         group: "brain",
         name: "ANTHROPIC_API_KEY",
         status: r.status === 200 ? "ok" : "warn",
-        detail: r.status === 200 ? `valid (${settingsKey && anthropicKey === settingsKey ? "from ~/.claude/settings.json" : "from env"})` : `rejected with HTTP ${r.status}. Claude Code headless will fail to authenticate`,
+        detail: r.status === 200 ? `valid (${settingsKey && anthropicKey === settingsKey ? "from ~/.claude/settings.json" : "from env"})` : `rejected with HTTP ${r.status}, so Claude Code headless will fail to authenticate`,
         required: false,
         fix: r.status === 200 ? undefined : "rotate the key in ~/.claude/settings.json (env.ANTHROPIC_API_KEY) or remove it and run `claude /login` so OAuth is used",
       });
@@ -1665,7 +1665,7 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
       add({ group: "brain", name: "ANTHROPIC_API_KEY", status: "warn", detail: (e as Error).message, required: false });
     }
   } else {
-    add({ group: "brain", name: "ANTHROPIC_API_KEY", status: "warn", detail: "not set. The anthropic-api brain is unavailable; claude-code uses your Claude login instead", required: false });
+    add({ group: "brain", name: "ANTHROPIC_API_KEY", status: "warn", detail: "not set, so the anthropic-api brain is unavailable; claude-code uses your Claude login instead", required: false });
   }
   // ---- codex brain (first in auto's order): the CLI bundled in ChatGPT.app, on Kevin's ChatGPT login
   const codex = await probeCodex({ bin: cfg.codexBin });
@@ -1678,7 +1678,7 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
     fix: !codex.bin ? "install Codex Desktop (inside ChatGPT.app) or set JARHEAD_CODEX_BIN" : !codex.signedIn ? "sign in to Codex in ChatGPT, or run `codex login`" : undefined,
   });
   const claudeBin = cfg.claudeBin ?? sh("which", ["claude"]);
-  add({ group: "brain", name: "claude", status: claudeBin ? "ok" : "warn", detail: claudeBin ? `${claudeBin} (${sh(claudeBin, ["--version"]) ?? "?"})` : "not on PATH. The claude-code brain is unavailable; auto skips to the next backend", required: false });
+  add({ group: "brain", name: "claude", status: claudeBin ? "ok" : "warn", detail: claudeBin ? `${claudeBin} (${sh(claudeBin, ["--version"]) ?? "?"})` : "not on PATH, so the claude-code brain is unavailable; auto skips to the next backend", required: false });
   // What `auto` resolves to: the running daemon's answer when there is one, else what this Mac's configuration implies.
   const saved = readSavedSettings(cfg.stateDir);
   const brain: BrainKind = saved.brain ?? cfg.brain;
@@ -1722,15 +1722,15 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
       // running daemon's list (below) is the app's.
       const perms: HelloPermissions = hello.permissions;
       const asThis = "(this terminal's grant, not the app's)";
-      add({ group: "hands", name: "Accessibility", status: perms.accessibility ? "ok" : "warn", detail: perms.accessibility ? `granted ${asThis}` : `not granted ${asThis}. Clicks/typing will silently no-op`, required: false, fix: "System Settings → Privacy & Security → Accessibility: switch Jarhead on; if it is already on, remove the row (−) and press Request in Setup. That row was made by an earlier build" });
-      add({ group: "hands", name: "Screen Recording", status: perms.screenRecording ? "ok" : "warn", detail: perms.screenRecording ? `granted ${asThis}` : `not granted ${asThis}. Screenshots fall back to \`screencapture\``, required: false, fix: "System Settings → Privacy & Security → Screen & System Audio Recording" });
+      add({ group: "hands", name: "Accessibility", status: perms.accessibility ? "ok" : "warn", detail: perms.accessibility ? `granted ${asThis}` : `not granted ${asThis}, so clicks/typing will silently no-op`, required: false, fix: "System Settings → Privacy & Security → Accessibility: switch Jarhead on; if it is already on, remove the row (−) and press Request in Setup, since that row was made by an earlier build" });
+      add({ group: "hands", name: "Screen Recording", status: perms.screenRecording ? "ok" : "warn", detail: perms.screenRecording ? `granted ${asThis}` : `not granted ${asThis}, so screenshots fall back to \`screencapture\``, required: false, fix: "System Settings → Privacy & Security → Screen & System Audio Recording" });
       if (perms.inputMonitoring === undefined || perms.fullDiskAccess === undefined) {
         add({ group: "hands", name: "Input Monitoring / FDA", status: "warn", detail: "this helper build does not read them", required: false, fix: "pnpm build:hands" });
       } else {
-        add({ group: "hands", name: "Input Monitoring", status: perms.inputMonitoring ? "ok" : "warn", detail: perms.inputMonitoring ? `granted ${asThis}` : `not granted ${asThis}. The keys watched while circling will not arrive`, required: false, fix: "Setup › Permissions › Ask for everything (the app prompts), or System Settings → Privacy & Security → Input Monitoring" });
-        add({ group: "hands", name: "Full Disk Access", status: perms.fullDiskAccess ? "ok" : "warn", detail: perms.fullDiskAccess ? `granted ${asThis}` : `not granted ${asThis}. Mail, Safari, Messages and every folder without a prompt of its own fail with EPERM`, required: false, fix: "System Settings → Privacy & Security → Full Disk Access: add /Applications/Jarhead.app (no prompt exists; Setup opens the pane and reveals the app)" });
+        add({ group: "hands", name: "Input Monitoring", status: perms.inputMonitoring ? "ok" : "warn", detail: perms.inputMonitoring ? `granted ${asThis}` : `not granted ${asThis}, so the keys watched while circling will not arrive`, required: false, fix: "Setup › Permissions › Ask for everything (the app prompts), or System Settings → Privacy & Security → Input Monitoring" });
+        add({ group: "hands", name: "Full Disk Access", status: perms.fullDiskAccess ? "ok" : "warn", detail: perms.fullDiskAccess ? `granted ${asThis}` : `not granted ${asThis}, so Mail, Safari, Messages and every folder without a prompt of its own fail with EPERM`, required: false, fix: "System Settings → Privacy & Security → Full Disk Access: add /Applications/Jarhead.app (no prompt exists; Setup opens the pane and reveals the app)" });
       }
-      add({ group: "hands", name: "other permissions", status: "ok", detail: "microphone, speech, camera, contacts, calendars, reminders, notifications, local network, Automation and the Desktop/Documents/Downloads folders are read by Jarhead.app itself. Setup › Permissions shows them, `jarhead status` prints the app's list", required: false });
+      add({ group: "hands", name: "other permissions", status: "ok", detail: "microphone, speech, camera, contacts, calendars, reminders, notifications, local network, Automation and the Desktop/Documents/Downloads folders are read by Jarhead.app itself: Setup › Permissions shows them, `jarhead status` prints the app's list", required: false });
       // The browser fast path, asked only under --browsers (an Apple event per browser).
       for (const c of await browserChecks({ ask: opts.browsers ?? process.argv.includes("--browsers"), running: (app) => sh("pgrep", ["-x", app]) !== undefined, probe: (app) => browserJsDoctor(hands, app) })) add(c);
     } catch (e) {
@@ -1748,7 +1748,7 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
     group: "permissions",
     name: "Jarhead.app",
     status: appPerms === undefined ? "warn" : missingRequired.length ? "warn" : "ok",
-    detail: appPerms === undefined ? "no daemon answering. Start Jarhead.app; Setup › Permissions asks for all sixteen in one sweep" : summarizePermissions(appPerms),
+    detail: appPerms === undefined ? "no daemon answering: start Jarhead.app, and Setup › Permissions asks for all sixteen in one sweep" : summarizePermissions(appPerms),
     required: false,
     ...(missingRequired.length ? { fix: `Setup › Permissions › Ask for everything (required and missing: ${missingRequired.map((p) => p.label).join(", ")})` } : {}),
   });
@@ -1853,7 +1853,7 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
       name: "wake word",
       status: !wake.enabled ? "warn" : unguarded ? "warn" : needsPassphrase && !passphrase && wake.auth === "passphrase" ? "warn" : "ok",
       detail: !wake.enabled
-        ? "off. The session opens on launch (autoWake) or by command"
+        ? "off, so the session opens on launch (autoWake) or by command"
         : `on: "${wake.phrases.join('" / "')}" → ${wake.auth}${passphrase ? ", passphrase set" : ", no passphrase (Touch ID / Mac password only)"}; on-device recognition, no API until authenticated`,
       required: false,
       fix: unguarded ? "set wake.auth to touch-id, passphrase or either in the Console" : needsPassphrase && !passphrase && wake.auth === "passphrase" ? "set a passphrase in Console › Settings › Wake" : undefined,
@@ -1869,7 +1869,7 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
     status: !daemonSock ? "warn" : daemon ? "ok" : "warn",
     detail: !daemonSock ? "no daemon running" : daemon ? `${cfg.socketPath} answered in ${daemon.ms} ms` : `${cfg.socketPath} present but nothing answered within 1.5 s`,
     required: false,
-    fix: daemonSock && !daemon ? "the daemon is not answering. Jarhead.app respawns one on two missed pongs; from a terminal, pnpm jarhead status, or kill the stale jarheadd" : undefined,
+    fix: daemonSock && !daemon ? "the daemon is not answering (Jarhead.app respawns one on two missed pongs); from a terminal, pnpm jarhead status, or kill the stale jarheadd" : undefined,
   });
   // ---- problems: what the running engine itself says is wrong, typed, each with its one remedy (REDESIGN §16 "Problems, typed")
   if (daemon) {

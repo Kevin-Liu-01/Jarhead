@@ -21,7 +21,7 @@ const HELP = `
 jarhead: voice-first computer use for your Mac
 
   pnpm jarhead doctor                 keys, brain, hands, permissions, audio (voice processing · hears · speaks · other mic clients · recording · released at sleep · leak), local (server · model · embeddings), memory, privacy (where words go), agents, app (signing, wake word), toolchain
-  pnpm jarhead doctor --test-audio    also run apps/mac/Scripts/audio-probe.sh --test --json: the graph as the app builds it, a 1 s chime through the player, the leak figure. Refused while Jarhead is awake; nothing paid
+  pnpm jarhead doctor --test-audio    also run apps/mac/Scripts/audio-probe.sh --test --json: the graph as the app builds it, a 1 s chime through the player, the leak figure (refused while Jarhead is awake; nothing paid)
   pnpm jarhead live                   headless session in this terminal (ffmpeg mic, ffplay speaker)
   pnpm jarhead probe "<utterance>"    synthesize the utterance, run it through the whole stack, print the timeline
   pnpm jarhead agents                 list the agent sessions on this Mac (Claude Code, Codex, …)
@@ -35,7 +35,7 @@ jarhead: voice-first computer use for your Mac
                                       The daemon reads 32 MB of day files a request; the search asks again from where the last page stopped
   pnpm jarhead ledger --speed [--days N]   where the time went over the last N days (1): acting steps followed by a screenshot, results carrying the now: line,
                                       tool round trips by class (read-only target p95 ≤ 80 ms), generation gaps by what came before, first action, threads
-  pnpm jarhead reflex-miss [--days N]  the short commands you said that the grammar did not catch, grouped by head word (7 days). The grammar grows from these
+  pnpm jarhead reflex-miss [--days N]  the short commands you said that the grammar did not catch, grouped by head word (7 days); the grammar grows from these
   pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] [--limit N]   what Jarhead durably knows about you: one sentence per item, over the daemon (50 by default, 200 at most)
   pnpm jarhead memory search "<words>" [--limit N]   the items closest to the words. Embeddings while memory is on with an embedder (an OpenAI key or a local model);
                                       keywords otherwise, or when the words hold a secret, and then nothing leaves the Mac
@@ -55,11 +55,11 @@ jarhead: voice-first computer use for your Mac
                                       "weekdays 09:00 open Notes", "tomorrow 15:00 say 'call mum'". Free kinds only (chime · say · notify · open); run recipe, press and wake the brain
                                       are set up by voice or in the Console, where the yes is heard. The policy judges the draft before it is armed; a refusal comes back as a toast
   pnpm jarhead automations snooze <id|name> [--minutes 10] · done · skip · pause · resume · rename <id|name> "<name>"
-  pnpm jarhead automations run <id|name>   fire it now so you hear it. The daemon refuses unless you are there (a session open, or presence recent)
+  pnpm jarhead automations run <id|name>   fire it now so you hear it, but the daemon refuses unless you are there (a session open, or presence recent)
   pnpm jarhead automations trash <id|name> · restore <id|name>   Move to Trash / Restore (the newest eight trashed rows are under --state trashed; an older one restores by its id). Nothing is deleted
   pnpm jarhead recipes [list]         the approved shell recipes: name · the gate's word (run · asks · refused · fronts) · command · approved · cwd · timeout
-  pnpm jarhead recipes add <name> "<command>" [--cwd DIR] [--timeout 120]   save one (through the daemon; it writes settings.json) and print the shell gate's verdict first.
-                                      A confirm-tier command saves with \`asks\` and can never be armed: nobody is there to say yes when it runs
+  pnpm jarhead recipes add <name> "<command>" [--cwd DIR] [--timeout 120]   save one (through the daemon; it writes settings.json) and print the shell gate's verdict first;
+                                      a confirm-tier command saves with \`asks\` and can never be armed: nobody is there to say yes when it runs
   pnpm jarhead recipes trash <name>   Move to Trash (kept in Settings with trashedAt; a recipe.trashed row); a row that names it fails at its next fire and says so
   pnpm jarhead recipes restore <name> Restore it from the Trash (a recipe.restored row); nothing is ever deleted
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (phase, session, brain, the local server and whether it is the brain; --permissions: every grant as a row; agents by status:
@@ -69,7 +69,7 @@ jarhead: voice-first computer use for your Mac
                                       full quality, the echo guard's counters, from the app's read-back; with no app connected, system_profiler's defaults (skipped with --no-levels))
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <go|pause|resume|stop|interrupt|mute|unmute|agent.refresh>   send a command to the running daemon (go opens the session)
-  pnpm jarhead cmd request-permission <kind|all>   ask the app to put up the system prompt for one grant (notifications, screenRecording, …). The doctor's banners row names it; you answer macOS yourself
+  pnpm jarhead cmd request-permission <kind|all>   ask the app to put up the system prompt for one grant (notifications, screenRecording, …); the doctor's banners row names it, and you answer macOS yourself
   pnpm jarhead cmd sleep [cause]      go to sleep: return to the notch and close the session (cause: said|idle|pause-decayed|brain-changed|dock|command|stop|shutdown; default command)
   pnpm jarhead cmd thread.stop <id|name>   stop one thread (its id or name from \`jarhead status\`; "main" parks the main turn); the others and the session carry on
   pnpm jarhead cmd thread.pause <id|name> | thread.resume <id|name>   hold one thread's brain turn and release its screen; run its continuation turn
@@ -91,12 +91,12 @@ flags
   --fake-hands   (bench) answer the helper's requests in-process instead of the Swift helper
   --no-gate      (bench) do not exit non-zero when the ear's p95 to dispatch is over 250 ms with the real helper
   --no-duck      (bench) skip the Swift duck probe
-  --effort E     (bench --brain) run the brain at effort low|medium|high|xhigh|max (default: the configured effort). One flag for an A/B
-  --observe off  (bench --brain) run with Settings.observe off: acting results without the now: line. The A/B for the observation lever
+  --effort E     (bench --brain) run the brain at effort low|medium|high|xhigh|max (default: the configured effort), one flag for an A/B
+  --observe off  (bench --brain) run with Settings.observe off: acting results without the now: line, the A/B for the observation lever
   --compare F    (bench --brain) print median deltas per command against a previous --out report
   --days N       (ledger --speed, reflex-miss) how many day files back, today included
   --no-reflex    (bench --brain) skip the reflexes-on phase: brain path only
-  --allow-api-spend  (bench --brain) run even when Codex is not signed in. The auto brain then costs REAL API dollars; off by default the bench refuses
+  --allow-api-spend  (bench --brain) run even when Codex is not signed in, so the auto brain costs REAL API dollars; off by default the bench refuses
   --only a,b     (bench --brain) restrict to these command ids (wiki-search, open-safari, whats-on-screen, click-search-type, scroll-down)
   --out FILE     (bench --brain) also write the JSON report to FILE
   --json         (bench) print the table as JSON; (bench --brain) print the whole report as JSON
@@ -520,7 +520,7 @@ function printMemoryItems(items: readonly MemoryItem[], empty: string, tail: str
 
 async function memoryList(state: MemoryState | "all", limit: number): Promise<void> {
   const items = await memoryItems({ type: "memory.list", state, limit });
-  printMemoryItems(items, state === "live" ? "nothing remembered yet. Jarhead learns after a conversation closes" : `nothing under ${state}`, `${items.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""} · forget <id> hides one (nothing is deleted); restore <id> brings it back`);
+  printMemoryItems(items, state === "live" ? "nothing remembered yet (Jarhead learns after a conversation closes)" : `nothing under ${state}`, `${items.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""} · forget <id> hides one (nothing is deleted); restore <id> brings it back`);
 }
 
 async function memorySearch(query: string, limit: number): Promise<void> {
@@ -544,7 +544,7 @@ async function daemon(): Promise<DaemonClient> {
   try {
     await client.connect({ pid: process.pid, audio: false });
   } catch {
-    throw new Error(`no daemon on ${cfg.socketPath}. Start Jarhead.app or \`pnpm jarheadd\``);
+    throw new Error(`no daemon on ${cfg.socketPath} (start Jarhead.app or \`pnpm jarheadd\`)`);
   }
   return client;
 }
@@ -712,7 +712,7 @@ async function automationsCommand(rest: string[]): Promise<void> {
       for (const t of toasts) console.log(`  ${t}`);
       const row = snapshot ? landedAutomation(snapshot.automations ?? [], draft.name, sentAt) : undefined;
       if (row) console.log(automationLine(row, Date.now()));
-      else if (toasts.length === 0) console.log(`  the daemon did not show the row within ${AUTOMATION_WAIT_MS / 1000} s. \`jarhead automations\` lists what is set`);
+      else if (toasts.length === 0) console.log(`  the daemon did not show the row within ${AUTOMATION_WAIT_MS / 1000} s, but \`jarhead automations\` lists what is set`);
       console.log("");
       return;
     }
@@ -783,13 +783,13 @@ async function recipesCommand(rest: string[]): Promise<void> {
       console.log(`  sent recipe.set ${recipe.name}`);
       for (const t of toasts) console.log(`  ${t}`);
       if (snapshot) for (const line of recipesLines(recipesOf(snapshot).filter((r) => r.name === recipe.name), Date.now())) console.log(line);
-      else if (toasts.length === 0) console.log(`  the daemon did not show the recipe within ${AUTOMATION_WAIT_MS / 1000} s. \`jarhead recipes\` lists what is saved`);
+      else if (toasts.length === 0) console.log(`  the daemon did not show the recipe within ${AUTOMATION_WAIT_MS / 1000} s, but \`jarhead recipes\` lists what is saved`);
       console.log("");
       return;
     }
     case "trash": {
       const name = args[0];
-      if (!name) throw new Error("usage: jarhead recipes trash <name>  (Move to Trash; the recipe stays in Settings with trashedAt and `recipes restore <name>` brings it back. Nothing is deleted.)");
+      if (!name) throw new Error("usage: jarhead recipes trash <name>  (Move to Trash; the recipe stays in Settings with trashedAt and `recipes restore <name>` brings it back; nothing is deleted)");
       await sendCommand({ type: "recipe.trash", name }, 800);
       return;
     }

@@ -42,7 +42,7 @@ test("modelsLines: the header counts the chat models, the tool-capable ones and 
   assert.equal(lines[0], "  Ollama 0.34.0 @ 127.0.0.1:11434 · 2 models · 1 with tools · 1 embedding · 128 GiB on this Mac");
   assert.match(lines[1]!, /^ {2}qwen3\.5:27b\s+17 GB\s+256k\s+tools vision thinking\s+good\s+loaded\s+← brain$/);
   assert.match(lines[2]!, /^ {2}gemma3:27b\s+17 GB\s+128k\s+vision\s+good$/, "tools-less: no badge for tools, no mark");
-  assert.match(lines[3]!, /^ {2}embeddinggemma:latest\s+\?\s+\?\s+embedding\s+\?\s+← memory$/, "the row discovery never lists: size and window are not in the status");
+  assert.match(lines[3]!, /^ {2}embeddinggemma:latest\s+—\s+—\s+embedding\s+—\s+← memory$/, "the row discovery never lists: size and window are not in the status");
   assert.equal(lines.length, 4, "a list with a tool-capable model prints no pull line");
   assert.ok(lines.every((l) => !/cloud/.test(l)), "no cloud rows: discovery drops cloud tags before the status");
   // No embedding model pulled: no row, no count.
@@ -60,17 +60,17 @@ test("modelsLines: nothing tool-capable prints the pull to run for this Mac on O
   const noTools: LocalServerStatus = { ...omit(status, "picked", "embedModel"), models: [model("gemma3:27b", { capabilities: ["completion", "vision"] })], suggested: { id: "qwen3.5:27b", sizeBytes: 17e9, command: "ollama pull qwen3.5:27b" } };
   const lines = modelsLines(noTools);
   assert.equal(lines.at(-1), "  no models with tools: ollama pull qwen3.5:27b (17 GB; fits this Mac's 128 GiB)");
-  assert.deepEqual(modelsLines({ reachable: false, baseUrl: "", models: [], ramBytes: 128 * GIB, checkedAt: 1 }), ["  nothing on 127.0.0.1:11434 / :1234 / :8080. Open Ollama, or see docs/LOCAL.md"]);
-  assert.deepEqual(modelsLines({ reachable: false, baseUrl: "http://10.0.0.5:11434", models: [], ramBytes: 128 * GIB, checkedAt: 1 }), ["  nothing on 10.0.0.5:11434. Open Ollama, or see docs/LOCAL.md"]);
+  assert.deepEqual(modelsLines({ reachable: false, baseUrl: "", models: [], ramBytes: 128 * GIB, checkedAt: 1 }), ["  nothing on 127.0.0.1:11434 / :1234 / :8080 (open Ollama, or see docs/LOCAL.md)"]);
+  assert.deepEqual(modelsLines({ reachable: false, baseUrl: "http://10.0.0.5:11434", models: [], ramBytes: 128 * GIB, checkedAt: 1 }), ["  nothing on 10.0.0.5:11434 (open Ollama, or see docs/LOCAL.md)"]);
   // A tools-less list without a suggestion still names the pull (the RAM tier's).
   const bare = modelsLines(omit(noTools, "suggested"));
   assert.match(bare.at(-1)!, /^ {2}no models with tools: ollama pull \S+ \(\d+ GB; fits this Mac's 128 GiB\)$/);
   // Discovery sets `suggested` (an `ollama pull`) for every flavour; the table does not repeat it for a server that is not Ollama.
   const lmStudio = modelsLines({ ...omit(noTools, "version"), flavor: "lmstudio", baseUrl: "http://127.0.0.1:1234", models: [] });
   assert.equal(lmStudio[0], "  LM Studio @ 127.0.0.1:1234 · 0 models · 0 with tools · 128 GiB on this Mac");
-  assert.equal(lmStudio.at(-1), "  no models with tools. Load a model that can call tools in LM Studio");
+  assert.equal(lmStudio.at(-1), "  no models with tools (load a model that can call tools in LM Studio)");
   const llamaCpp = modelsLines({ ...omit(noTools, "version"), flavor: "llamacpp", baseUrl: "http://127.0.0.1:8080" });
-  assert.equal(llamaCpp.at(-1), "  no models with tools. Load a model that can call tools in llama.cpp");
+  assert.equal(llamaCpp.at(-1), "  no models with tools (load a model that can call tools in llama.cpp)");
   for (const l of [...lmStudio, ...llamaCpp]) assert.doesNotMatch(l, /ollama pull/);
 });
 
@@ -117,9 +117,9 @@ function snapshotOf(over: { brain?: Snapshot["settings"]["brain"]; brainModel?: 
       secrets: { openai: true, anthropic: false, brainApiKey: false },
       ...(over.noLocal ? ({} as { local: LocalServerStatus }) : { local: over.local ?? status }),
       dataPaths: over.dataPaths ?? [
-        { what: "voice", where: "cloud", detail: "OpenAI gpt-live-1. Every word heard and said; billed per second of open session." },
-        { what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0. Nothing leaves." },
-        { what: "memory", where: "mac", detail: "embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b. Nothing leaves." },
+        { what: "voice", where: "cloud", detail: "OpenAI gpt-live-1: every word heard and said, billed per second of open session" },
+        { what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0, and nothing leaves" },
+        { what: "memory", where: "mac", detail: "embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b, and nothing leaves" },
         { what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)" },
       ],
     },
@@ -134,9 +134,9 @@ test("brainLines: the setting (best fit named), what runs, and the four data-pat
     "  setting    local · model best fit (qwen3.5:27b)",
     "  running    local · ready: Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools",
     "  leaves the Mac",
-    "    voice   cloud  OpenAI gpt-live-1. Every word heard and said; billed per second of open session.",
-    "    brain   mac    qwen3.5:27b on Ollama 0.34.0. Nothing leaves.",
-    "    memory  mac    embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b. Nothing leaves.",
+    "    voice   cloud  OpenAI gpt-live-1: every word heard and said, billed per second of open session",
+    "    brain   mac    qwen3.5:27b on Ollama 0.34.0, and nothing leaves",
+    "    memory  mac    embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b, and nothing leaves",
     "    web     cloud  the sites you ask for (web_fetch, web_search)",
   ]);
   const pinned = brainLines(snapshotOf({ brainModel: "qwen3.5:27b", brainBaseUrl: "http://10.0.0.5:11434", resolved: "openai-responses", ready: true }));

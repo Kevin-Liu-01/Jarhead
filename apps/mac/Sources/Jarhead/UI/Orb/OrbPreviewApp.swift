@@ -3288,8 +3288,8 @@ extension OrbPreviewDelegate {
         case "ask":
             if !awake {
                 if content.typedWakes {
-                    let ok = tooltip.contains("Wakes · billed") && sent == ["say-text"]
-                    check(ok, "ask, asleep, typedWakes 1 → tooltip contains \"Wakes · billed\"; press → say-text 1", "tooltip '\(tooltip)' sent \(sent)")
+                    let ok = tooltip.contains("(wakes · billed)") && sent == ["say-text"]
+                    check(ok, "ask, asleep, typedWakes 1 → tooltip contains \"(wakes · billed)\"; press → say-text 1", "tooltip '\(tooltip)' sent \(sent)")
                 } else {
                     let ok = abs(dim - 0.35) < 0.01 && !hittable && sent.isEmpty
                     check(ok, "ask, asleep, typedWakes 0 → α 0.35, not in hit list, sends 0", "dim \(String(format: "%.2f", dim)) hittable \(hittable ? 1 : 0) sent \(sent)")
@@ -3362,9 +3362,9 @@ extension OrbPreviewDelegate {
         guard let sr = screenRecordingSeen else { return }
         let r = remedyResult
         let remedyOK = r.map { $0.sent == ["request-permission"] && $0.which == "screenRecording" } ?? false
-        let tipOK = sr.tooltip.contains("Needs Screen Recording")
+        let tipOK = sr.tooltip.contains("needs Screen Recording")
         let ok = sr.circleDim && sr.windowDim && tipOK && sr.chipGlyph && sr.pillRequest && remedyOK
-        check(ok, "screen recording denied → Circle/Window α 0.45, Circle tooltip contains \"Needs Screen Recording\", peek chip glyph rectangle.inset.filled.badge.record amber, foot row with [Request]; remedy → request-permission screenRecording 1",
+        check(ok, "screen recording denied → Circle/Window α 0.45, Circle tooltip contains \"needs Screen Recording\", peek chip glyph rectangle.inset.filled.badge.record amber, foot row with [Request]; remedy → request-permission screenRecording 1",
               "circle dim \(sr.circleDimValue) window dim \(sr.windowDimValue) tooltip '\(sr.tooltip)'; chip \(sr.chip); pill '\(sr.pill)' (\(sr.pillKind)), foot row remedy '\(sr.remedyLabel)'; remedy press " + (r.map { "sent \($0.sent) which '\($0.which)'" } ?? "not pressed (ORB_NOTCH_PRESS=remedy@t)"))
         screenRecordingSeen = nil
     }
@@ -3889,8 +3889,8 @@ extension OrbPreviewDelegate {
                   "kind \(kind) word '\(word)' hero '\(line)' awake \(content.awake ? 1 : 0) hits \(hits.map(\.name)) minis \(minis.map { "\($0.name)@\(Int($0.rect.minX))" }) ask \(String(format: "%.2f", ask)) foot '\(foot)'")
             let heroTip = orb.previewNotchTooltipAt(NSPoint(x: 200, y: 40))
             let snoozeTip = orb.previewNotchTooltip("snooze:10"), doneTip = orb.previewNotchTooltip("done"), headTip = orb.previewNotchTooltip("ringOpen")
-            let tips = heroTip.hasPrefix(ring) && snoozeTip == "Snooze. Rings again in 10 min" && doneTip == "Done. Stops the alarm" && headTip == "Alarm · weekdays · Console"
-            check(tips, "ring tooltips: hero = the whole line; Snooze. Rings again in 10 min; Done. Stops the alarm; head → Alarm · weekdays · Console",
+            let tips = heroTip.hasPrefix(ring) && snoozeTip == "Snooze: rings again in 10 min" && doneTip == "Done: stops the alarm" && headTip == "Alarm · weekdays · Console"
+            check(tips, "ring tooltips: hero = the whole line; Snooze: rings again in 10 min; Done: stops the alarm; head → Alarm · weekdays · Console",
                   "hero '\(heroTip)' snooze '\(snoozeTip)' done '\(doneTip)' head '\(headTip)'")
         }
         if let e = ringEarly {

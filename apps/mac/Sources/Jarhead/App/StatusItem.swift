@@ -237,12 +237,12 @@ final class StatusItem: NSObject {
             snooze.keyEquivalentModifierMask = Hotkeys.Action.snooze.keyEquivalent.1
             snooze.target = self
             snooze.image = StatusItem.symbol("bell.fill")
-            snooze.toolTip = "Snooze. Rings again in \(minutes) min (\(Hotkeys.Action.snooze.glyph))"
+            snooze.toolTip = "Snooze: rings again in \(minutes) min (\(Hotkeys.Action.snooze.glyph))"
             menu.addItem(snooze)
             let done = NSMenuItem(title: "Done", action: #selector(doDoneRing), keyEquivalent: "")
             done.target = self
             done.image = StatusItem.symbol("checkmark.circle.fill")
-            done.toolTip = "Done. Stops the \(ring.kind)"
+            done.toolTip = "Done: stops the \(ring.kind)"
             menu.addItem(done)
         } else if let next = state.nextFire {
             let row = NSMenuItem(title: StatusItem.nextLabel(next), action: nil, keyEquivalent: "")

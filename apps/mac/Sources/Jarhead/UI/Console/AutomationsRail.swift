@@ -142,7 +142,7 @@ enum AutomationWords {
     // a11y
     static func row(_ name: String, _ kind: String, _ state: String) -> String { "\(kind) \(name), \(state)" }
     static func ring(_ line: String) -> String { "Ringing: \(line)" }
-    static let dismissRing = "Done. Stops the ring"
+    static let dismissRing = "Done: stops the ring"
     static let enabledLabel = "Automations on or off"
     static let loginLabel = "Open Jarhead at login"
     static let snoozeLabel = "Snooze minutes"
@@ -293,9 +293,9 @@ enum AutomationFormat {
         }
     }
 
-    /// The card's `next` value: `07:10 · tomorrow` for a clock, `— · on a file` for a watcher.
+    /// The card's `next` value: `07:10 · tomorrow` for a clock, `on a file` for a watcher; `—` (a bare cell) with no time.
     static func nextWord(_ a: Automation, now: Double) -> String {
-        if a.kind == .watcher { return AutomationWords.dash + AutomationWords.dot + (a.when.on?.kind == "folder.file" || a.when.on?.kind == "download.done" ? AutomationWords.onAFile : triggerWord(a.when.on)) }
+        if a.kind == .watcher { return a.when.on?.kind == "folder.file" || a.when.on?.kind == "download.done" ? AutomationWords.onAFile : triggerWord(a.when.on) }
         guard let next = a.nextAt else { return AutomationWords.dash }
         return ConsoleFormat.clock(next) + AutomationWords.dot + dayWord(next, now: now)
     }

@@ -219,14 +219,14 @@ rows; the Console's Recipes list and `jarhead recipes` fold trashed recipes unde
 ```
 automations   enabled          ok    6 set · 5 armed · next 07:10 Wake up, Kevin (in 6 h)
               journal          ok    ~/.jarhead/automations/jobs.ndjson · 6 live · 41 rows
-              daemon           warn  nothing fires while Jarhead is quit. Open at login is off      (fix: Settings › Automations › Open at login)
-              banners          warn  Notifications not granted. The island and the chime still fire     (fix: pnpm jarhead cmd request-permission notifications)
+              daemon           warn  nothing fires while Jarhead is quit, and Open at login is off      (fix: Settings › Automations › Open at login)
+              banners          warn  Notifications not granted, but the island and the chime still fire     (fix: pnpm jarhead cmd request-permission notifications)
               wake for 07:10   warn  a closed lid sleeps through 07:10 …   (fix: copy (root; never run by Jarhead): sudo pmset repeat wakeorpoweron MTWRF 07:05:00)
-              quiet hours      ok    23:00–07:00 · alarms override; chime/say show silently; acting kinds wait
+              quiet hours      ok    23:00 to 07:00 · alarms override; chime/say show silently; acting kinds wait
               missed           ok    0 in 7 days                                       warn: 2 missed in 7 days · the Mac slept
               brain budget     ok    wake-brain unused · 0 of 5 min used today          warn: spent: 5 of 5 min used today
               recipes          ok    3 · 2 run-tier · 1 asks (vpn-up: would need a yes when it runs)
-              time-sensitive   warn  entitlement absent. Alarm banners honour Focus like any banner
+              time-sensitive   warn  entitlement absent, so alarm banners honour Focus like any banner
               folder grant     warn  watching ~/Downloads needs the Downloads folder grant     (fix: Ask)
 ```
 

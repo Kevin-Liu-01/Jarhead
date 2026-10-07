@@ -204,9 +204,9 @@
         },
         "local": { "reachable": false, "baseUrl": "", "models": [], "ramBytes": 137438953472, "checkedAt": 0 },
         "dataPaths": [
-          { "what": "voice", "where": "cloud", "detail": "OpenAI gpt-live-1 — every word heard and said; billed per second of open session" },
-          { "what": "brain", "where": "cloud", "detail": "gpt-5.3-codex — OpenAI via your ChatGPT login; screenshots and tool results leave" },
-          { "what": "memory", "where": "cloud", "detail": "text-embedding-3-small + a mini model — item text and closed conversations leave" },
+          { "what": "voice", "where": "cloud", "detail": "OpenAI gpt-live-1: every word heard and said, billed per second of open session" },
+          { "what": "brain", "where": "cloud", "detail": "OpenAI via your ChatGPT login gpt-5.3-codex: screenshots and tool results leave" },
+          { "what": "memory", "where": "cloud", "detail": "text-embedding-3-small + a mini model, so item text and closed conversations leave" },
           { "what": "web", "where": "cloud", "detail": "the sites you ask for (web_fetch, web_search)" }
         ]
       },
@@ -1212,9 +1212,9 @@
         },
         "local": { "reachable": false, "baseUrl": "", "models": [], "ramBytes": 137438953472, "checkedAt": 0 },
         "dataPaths": [
-          { "what": "voice", "where": "cloud", "detail": "OpenAI gpt-live-1 — every word heard and said; billed per second of open session" },
-          { "what": "brain", "where": "cloud", "detail": "gpt-5.3-codex — OpenAI via your ChatGPT login; screenshots and tool results leave" },
-          { "what": "memory", "where": "cloud", "detail": "text-embedding-3-small + a mini model — item text and closed conversations leave" },
+          { "what": "voice", "where": "cloud", "detail": "OpenAI gpt-live-1: every word heard and said, billed per second of open session" },
+          { "what": "brain", "where": "cloud", "detail": "OpenAI via your ChatGPT login gpt-5.3-codex: screenshots and tool results leave" },
+          { "what": "memory", "where": "cloud", "detail": "text-embedding-3-small + a mini model, so item text and closed conversations leave" },
           { "what": "web", "where": "cloud", "detail": "the sites you ask for (web_fetch, web_search)" }
         ]
       },

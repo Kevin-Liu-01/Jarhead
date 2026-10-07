@@ -97,7 +97,7 @@ test("requirementHasIdentifier matches the designated requirement's identifier c
 test("installLine says kept (same inode) or REPLACED, and counts what rsync did", () => {
   const rsync = { created: [], updated: ["a", "b", "c", "d"], deleted: ["e"], appleDouble: [] };
   assert.equal(installLine({ plan: { kind: "update", inode: 103261417 }, inodeAfter: 103261417, rsync }), "install    /Applications/Jarhead.app kept (inode 103261417) · 4 files replaced, 0 added, 1 removed · strict ok · requirement identifier com.kevinliu.jarhead");
-  assert.match(installLine({ plan: { kind: "update", inode: 1 }, inodeAfter: 2, rsync }), /REPLACED \(inode 1 → 2\)\. Report this/);
+  assert.match(installLine({ plan: { kind: "update", inode: 1 }, inodeAfter: 2, rsync }), /REPLACED \(inode 1 → 2\): report this/);
   assert.match(installLine({ plan: { kind: "create" }, inodeAfter: 5, rsync: undefined }), /created \(inode 5\) · copied whole/);
   // The counts are of unique entries: a summary built from the runner's doubled lines must not count twice.
   assert.match(installLine({ plan: { kind: "update", inode: 1 }, inodeAfter: 1, rsync: { created: ["n", "n"], updated: ["a", "a"], deleted: ["e", "e", "Contents/Resources"], appleDouble: [] } }), /1 file replaced, 1 added, 2 removed/);
@@ -291,7 +291,7 @@ test("performInstall, update with a snapshot asked for: the ditto archive is tak
   assert.ok(!refused.ok);
   if (!refused.ok) {
     assert.equal(refused.what, "refusing to install: the snapshot path /r/build/previous/Jarhead.app is not a .zip archive");
-    assert.match(refused.lines[0] ?? "", /second Jarhead\. Snapshot to a \.zip archive/);
+    assert.match(refused.lines[0] ?? "", /\(a second Jarhead\), so snapshot to a \.zip archive/);
   }
   assert.deepEqual(bad.trace, ["probe /Applications/Jarhead.app"], "refused before the snapshot or any write");
 });
@@ -399,7 +399,7 @@ test("performInstall: a failed snapshot is a warning, continues, and drops the r
   const replaced = scripted({ probes: [DIR, { ...DIR, inode: 999 }] });
   const r2 = performInstall(SPEC, replaced.io);
   assert.ok(r2.ok);
-  if (r2.ok) assert.match(r2.line, /REPLACED \(inode 103261417 → 999\)\. Report this/);
+  if (r2.ok) assert.match(r2.line, /REPLACED \(inode 103261417 → 999\): report this/);
   assert.deepEqual(replaced.warnings, ["the bundle directory was replaced (inode 103261417 → 999); the Dock tile may duplicate — report this"]);
   assert.ok(replaced.trace.includes("relink /r/build/Jarhead.app -> /Applications/Jarhead.app"), "the install stands; the warning is for Kevin");
 });

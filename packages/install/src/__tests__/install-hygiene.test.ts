@@ -55,7 +55,7 @@ const RUNNING_HELPER = RUNNING_APP + HELPER_BLOCK;
 /** The Bundle table after the -u loop did its work: the stale records gone, everything else kept. */
 const CLEAN_DUMP = DUMP.split(SEP).filter((b) => !STALE.some((p) => b.includes(p))).join(SEP);
 const HELPER = { pid: 66017, bundleId: "com.kevinliu.jarhead", executable: "/Applications/Jarhead.app/Contents/MacOS/jarhead-hands", type: "Foreground" };
-const CLAUSE = "jarhead-hands pid 66017 is a Foreground app (the second tile). The pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then dock --fix clears the leftover";
+const CLAUSE = "jarhead-hands pid 66017 is a Foreground app (the second tile), but the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then dock --fix clears the leftover";
 
 interface Call {
   readonly cmd: string;
@@ -156,7 +156,7 @@ test("hygiene fix, Dock race: a mod-count that moved re-audits the fresh documen
   assert.equal(r1.dock.imported, false);
   assert.ok(!one.calls.some((c) => c.args[0] === "import" || c.cmd === "killall"));
   assert.match(r1.dock.skipped ?? "", /kept changing; rerun pnpm jarhead dock --fix/);
-  assert.match(r1.line, /Two tiles\. The Dock kept changing/);
+  assert.match(r1.line, /two tiles \(skipped: the Dock kept changing/);
 });
 
 test("hygiene: an export that fails or a domain without persistent-apps skips the Dock; a failed import restarts nothing", () => {
@@ -164,7 +164,7 @@ test("hygiene: an export that fails or a domain without persistent-apps skips th
   const r = runHygiene({ ...base, mode: "fix", exec: failed.exec });
   assert.match(r.dock.skipped ?? "", /defaults export failed/);
   assert.ok(!failed.calls.some((c) => c.args[0] === "import"));
-  assert.match(r.line, /Dock: not read\. Defaults export failed/);
+  assert.match(r.line, /Dock: not read \(skipped: defaults export failed/);
 
   const empty = fake({ exports: ['<?xml version="1.0"?><plist version="1.0"><dict><key>mod-count</key><integer>1</integer></dict></plist>'] });
   assert.match(runHygiene({ ...base, mode: "fix", exec: empty.exec }).dock.skipped ?? "", /no persistent-apps/);
@@ -189,7 +189,7 @@ test("hygiene audit (doctor, `jarhead dock`): dump and export only — no -f, no
   assert.deepEqual(r.launchServices.unregistered, []);
   assert.deepEqual(r.launchServices.remaining.map((x) => x.path), STALE, "what a fix would unregister");
   assert.equal(r.dock.imported, false);
-  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent. Two tiles (pnpm jarhead dock --fix repairs it)`);
+  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent, two tiles (pnpm jarhead dock --fix repairs it)`);
 });
 
 test("hygiene install (pnpm build:mac): LaunchServices is refreshed and cleaned with ONE dump — the -u exit codes are the report — and the Dock is only read", () => {
@@ -205,7 +205,7 @@ test("hygiene install (pnpm build:mac): LaunchServices is refreshed and cleaned 
   assert.deepEqual(r.launchServices.unregistered, STALE);
   assert.deepEqual(r.launchServices.remaining, []);
   assert.equal(r.dock.imported, false);
-  assert.match(r.line, /^one jarhead  LaunchServices: \/Applications\/Jarhead\.app registered · 3 stale records unregistered · Dock: 1 pinned, 1 recent. Two tiles \(pnpm jarhead dock --fix repairs it\)$/);
+  assert.match(r.line, /^one jarhead  LaunchServices: \/Applications\/Jarhead\.app registered · 3 stale records unregistered · Dock: 1 pinned, 1 recent, two tiles \(pnpm jarhead dock --fix repairs it\)$/);
 
   // A -u that fails stays in `remaining` and on the line; verifyUnregister brings the second dump back.
   const failing = fake({ exports: [TWO], unregisterFails: [STALE[1]!] });
@@ -233,7 +233,7 @@ test("hygiene: a Foreground jarhead-hands in `lsappinfo list` is a helper tile �
   const r = runHygiene({ ...base, mode: "audit", exec: audit.exec });
   assert.deepEqual(r.running, { helperTiles: [HELPER] });
   assert.deepEqual(r.dock.before?.helperTiles, [HELPER], "the audit the doctor and the engine read carries the cause");
-  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent. Two tiles; ${CLAUSE}`);
+  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent, two tiles; ${CLAUSE}`);
   assert.ok(!/repairs it/.test(r.line));
   // fix: the recent-apps leftover goes (it is a leftover), the pin is rebuilt, and the line refuses to call that repaired.
   const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
@@ -256,7 +256,7 @@ test("hygiene: no helper in `lsappinfo list` (the app alone, a node process, a B
   const quiet = RUNNING_APP + HELPER_BLOCK.replace('type="Foreground"', 'type="BackgroundOnly"');
   const r = runHygiene({ ...base, mode: "audit", exec: fake({ exports: [TWO], running: quiet }).exec });
   assert.deepEqual(r.running, { helperTiles: [] }, "a helper that set its activation policy is not a tile");
-  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent. Two tiles (pnpm jarhead dock --fix repairs it)`);
+  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent, two tiles (pnpm jarhead dock --fix repairs it)`);
   assert.equal(r.dock.before?.helperTiles, undefined, "no helpers → the audit is the plain plist audit");
   const failed = runHygiene({ ...base, mode: "audit", exec: fake({ exports: [TWO], runningResult: { code: 1, stdout: "", stderr: "lsappinfo: no LaunchServices\nmore" } }).exec });
   assert.deepEqual(failed.running, { helperTiles: [], skipped: "lsappinfo list failed (1): lsappinfo: no LaunchServices" });
@@ -296,7 +296,7 @@ test("lsappinfo list parsing: a block per process with pid, bundleID (NULL → u
   assert.deepEqual(parseLsAppInfoList('1) "gone" ASN:0x0-0x1:\n    bundleID=[ NULL ] \n    pid =  !cgsConnection type=[ NULL ]\n'), [], "an ASN without a pid is skipped");
   assert.equal(describeHelperTiles([HELPER]), CLAUSE);
   assert.equal(describeHelperTiles([HELPER], "Fix the Dock"), CLAUSE.replace("then dock --fix clears", "then Fix the Dock clears"));
-  assert.equal(describeHelperTiles([HELPER, { ...HELPER, pid: 66020 }]), "jarhead-hands pids 66017, 66020 are Foreground apps (the extra tiles). The pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then dock --fix clears the leftover");
+  assert.equal(describeHelperTiles([HELPER, { ...HELPER, pid: 66020 }]), "jarhead-hands pids 66017, 66020 are Foreground apps (the extra tiles), but the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then dock --fix clears the leftover");
   assert.equal(describeHelperTiles([]), "");
 });
 
@@ -320,7 +320,7 @@ test("hygiene: a dump that times out or fails carries its reason (the ETIMEDOUT 
   assert.equal(r.launchServices.skipped, `lsregister -dump Bundle failed (1): spawnSync ${LSREGISTER} ETIMEDOUT`);
   assert.ok(!calls.some((c) => c.args[0] === "-u"), "no stale rule without a table");
   assert.equal(r.launchServices.refreshed, true, "-f still ran");
-  assert.match(r.line, /^one jarhead  LaunchServices: skipped \(lsregister -dump Bundle failed \(1\): spawnSync .*ETIMEDOUT\) · Dock: 1 pinned, 1 recent. Two tiles/);
+  assert.match(r.line, /^one jarhead  LaunchServices: skipped \(lsregister -dump Bundle failed \(1\): spawnSync .*ETIMEDOUT\) · Dock: 1 pinned, 1 recent, two tiles/);
   assert.ok(logged.some((l) => /ETIMEDOUT/.test(l)), "the reason reaches the build log");
   // Only the first line of a chatty stderr travels.
   const chatty = fake({ exports: [TWO], dumpResult: { code: 2, stdout: "", stderr: "first line\nsecond line\n" } });

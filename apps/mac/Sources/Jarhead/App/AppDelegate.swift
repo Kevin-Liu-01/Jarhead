@@ -474,7 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if grant == .denied {
                 if previous != .denied {
-                    self.state.toast("Microphone access denied. Jarhead cannot hear you. Enable it in System Settings › Privacy › Microphone.", tone: .error)
+                    self.state.toast("Microphone access denied, so Jarhead cannot hear you. Enable it in System Settings › Privacy › Microphone.", tone: .error)
                 }
                 if openSettingsIfDenied { PermissionsKit.openSettings(pane: .microphone) }
             } else if grant == .granted, previous == .denied {

@@ -55,7 +55,7 @@ test("doctor app rows: a healthy Mac — installed, real identity, strict ok wit
 test("doctor app rows: two Dock tiles and stale records warn with `pnpm jarhead dock --fix`; a failed verify or a missing identifier warns with `pnpm build:mac`", () => {
   const rows = byName(installChecks({ exec: exec({ dock: fixture("dock-two-tiles.xml") }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
   assert.equal(rows["dock"]!.status, "warn");
-  assert.equal(rows["dock"]!.detail, "1 pinned, 1 recent. Two tiles");
+  assert.equal(rows["dock"]!.detail, "1 pinned, 1 recent, two tiles");
   assert.equal(rows["dock"]!.fix, "pnpm jarhead dock --fix");
   assert.equal(rows["launch services"]!.status, "warn");
   assert.match(rows["launch services"]!.detail, /^4 Jarhead records: also .*\.Trash\/Jarhead\.app.*open -a Jarhead can pick one of them/);
@@ -148,7 +148,7 @@ test("doctor app rows: a Dock with no Jarhead pin is a warn that asks Kevin to d
   const unpinned = serializePlistXml(dictSet(clean, "persistent-apps", { kind: "array", items: others }));
   const rows = byName(installChecks({ exec: exec({ dock: unpinned, dump: CLEAN_DUMP }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
   assert.equal(rows["dock"]!.status, "warn", "an ok row that tells Kevin to do something is a contradiction");
-  assert.match(rows["dock"]!.detail, /^not pinned\. Drag \/Applications\/Jarhead\.app to the Dock once/);
+  assert.match(rows["dock"]!.detail, /^not pinned \(drag \/Applications\/Jarhead\.app to the Dock once/);
   assert.equal(rows["dock"]!.fix, undefined, "nothing `dock --fix` can do about a missing pin");
 
   const slow = byName(installChecks({ exec: exec({ dumpCode: 1 }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
@@ -167,7 +167,7 @@ test("doctor app rows: not installed → both rows say pnpm build:mac; a symlink
 
   const link = byName(installChecks({ exec: exec({ dump: CLEAN_DUMP }), probe: () => ({ exists: true, isSymlink: true, isDirectory: false, uid: 501, inode: 3, linkTarget: "/Users/kevinliu/jarvis/build/stage/Jarhead.app" }), uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
   assert.equal(link["install"]!.status, "warn");
-  assert.match(link["install"]!.detail, /is a symlink to .*build\/stage\/Jarhead\.app.*\. The next pnpm build:mac refuses/);
+  assert.match(link["install"]!.detail, /is a symlink to .*build\/stage\/Jarhead\.app.*\, so the next pnpm build:mac refuses/);
   assert.match(link["install"]!.fix ?? "", /move it to the Trash/);
 
   const root = byName(installChecks({ exec: exec({ dump: CLEAN_DUMP }), probe: () => ({ ...dir, uid: 0 }), uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));

@@ -131,7 +131,7 @@ export function automationsLines(rows: readonly Automation[], pointers: Pointers
   }
   const trashed = rows.filter((a) => a.state === "trashed");
   if (trashed.length === rows.length) {
-    lines.push("    nothing set. Say \"wake me at 7:10 on weekdays\", or: jarhead automations add \"at 7:10 weekdays chime 'Wake up'\"");
+    lines.push("    nothing set (say \"wake me at 7:10 on weekdays\", or: jarhead automations add \"at 7:10 weekdays chime 'Wake up'\")");
     if (trashed.length > 0) lines.push(`    ${trashed.length} in the Trash: jarhead automations list --state trashed · restore <id>`);
     return lines;
   }
@@ -216,7 +216,7 @@ export function parseClockAutomation(words: string, now: number): ParsedAutomati
   const verb = (toks[verbAt] ?? "").toLowerCase();
   if (ASKING_VERBS.has(verb)) return { error: `${verb} is set up by voice or in the Console, where the yes is heard; the CLI arms chime · say · notify · open` };
   const whenPhrase = toks.slice(0, verbAt).join(" ");
-  if (!whenPhrase) return { error: `say when first. ${USAGE}` };
+  if (!whenPhrase) return { error: `the when comes first. ${USAGE}` };
   const when = parseWhen(whenPhrase, now);
   if ("error" in when) return when;
   const what = toks.slice(verbAt + 1).join(" ").trim();

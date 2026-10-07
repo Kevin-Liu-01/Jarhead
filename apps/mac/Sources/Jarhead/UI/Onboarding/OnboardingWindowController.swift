@@ -471,13 +471,13 @@ enum OnboardingBench {
 
         // The Done page's data line, from the engine's four rows; none before they arrive.
         func path(_ what: String, _ where: String, _ detail: String) -> DataPath { DataPath(what: what, where: `where`, detail: detail) }
-        let voice = path("voice", "cloud", "OpenAI gpt-live-1 — every word heard and said; billed per second of open session")
+        let voice = path("voice", "cloud", "OpenAI gpt-live-1: every word heard and said, billed per second of open session")
         let web = path("web", "cloud", "the sites you ask for (web_fetch, web_search)")
-        let local = OnboardingReport.dataLine([voice, path("brain", "mac", "qwen3.5:27b on Ollama 0.34.0 — nothing leaves"), path("memory", "mac", "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves"), web])
+        let local = OnboardingReport.dataLine([voice, path("brain", "mac", "qwen3.5:27b on Ollama 0.34.0, and nothing leaves"), path("memory", "mac", "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b, and nothing leaves"), web])
         check(local?.text == "Voice in the cloud (OpenAI); brain and memory on this Mac.", "Done data line, local brain and memory: \(local?.text ?? "nil")")
-        let cloud = OnboardingReport.dataLine([voice, path("brain", "cloud", "gpt-5.3-codex — OpenAI via your ChatGPT login"), path("memory", "cloud", "text-embedding-3-small + a mini model — item text leaves"), web])
+        let cloud = OnboardingReport.dataLine([voice, path("brain", "cloud", "OpenAI via your ChatGPT login gpt-5.3-codex: screenshots and tool results leave"), path("memory", "cloud", "text-embedding-3-small + a mini model, so item text and closed conversations leave"), web])
         check(cloud?.text == "Voice, brain and memory in the cloud.", "Done data line, everything in the cloud: \(cloud?.text ?? "nil")")
-        let keywords = OnboardingReport.dataLine([voice, path("brain", "mac", "qwen3.5:27b on Ollama 0.34.0 — nothing leaves"), path("memory", "mac", "keywords · rules — nothing leaves"), web])
+        let keywords = OnboardingReport.dataLine([voice, path("brain", "mac", "qwen3.5:27b on Ollama 0.34.0, and nothing leaves"), path("memory", "mac", "keywords · rules, and nothing leaves"), web])
         check(keywords?.text == "Voice in the cloud; brain on this Mac; memory by keywords.", "Done data line, memory by keywords: \(keywords?.text ?? "nil")")
         check(OnboardingReport.dataLine([]) == nil, "no data line before the engine has said")
         check(OnboardingBrainStep.defaultModel(.local) == "" && OnboardingBrainStep.takesBaseUrl(.local) && !OnboardingBrainStep.takesBaseUrl(.codex), "the Local kind: no default model, takes a server pin")

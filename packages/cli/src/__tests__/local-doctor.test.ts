@@ -63,7 +63,7 @@ test("local rows: the server not running is one advisory row (and under local a 
   const local = byName(localChecks({ status: down, brain: "local", brainModel: "qwen3.5:27b" }));
   assert.deepEqual(Object.keys(local), ["server", "model"]);
   assert.equal(local["model"]!.status, "warn");
-  assert.match(local["model"]!.detail, /^qwen3\.5:27b waits for a server\. Until one answers, the brain's work goes to OpenAI \(memory stays on the Mac\)$/);
+  assert.match(local["model"]!.detail, /^qwen3\.5:27b waits for a server, and until one answers the brain's work goes to OpenAI \(memory stays on the Mac\)$/);
   const pinned = localChecks({ status: { ...down, baseUrl: "http://10.0.0.5:11434" }, brain: "local", brainModel: "", brainBaseUrl: "http://10.0.0.5:11434" });
   assert.equal(pinned[0]!.detail, "not answering at http://10.0.0.5:11434");
 });
@@ -131,8 +131,8 @@ test("privacy rows equal dataPaths(): one ok row per path, name = what, detail =
     rows.map((r) => r.detail),
     paths.map((p) => `${p.where} · ${p.detail}`),
   );
-  assert.equal(rows[1]!.detail, "mac · qwen3.5:27b on Ollama 0.34.0. Nothing leaves.");
-  assert.equal(rows[2]!.detail, "mac · embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b. Nothing leaves.");
+  assert.equal(rows[1]!.detail, "mac · qwen3.5:27b on Ollama 0.34.0, and nothing leaves");
+  assert.equal(rows[2]!.detail, "mac · embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b, and nothing leaves");
   assert.match(render(rows).text, /\n {2}privacy\n {4}✔ voice {24}cloud · OpenAI gpt-live-1/);
 });
 
@@ -141,7 +141,7 @@ test("memory rows under the local brain: matching names the local space (or keyw
   const noDaemon = byName(memoryChecks(base));
   assert.match(noDaemon["memory"]!.detail, /^on · matching local \(qwen3\.5:27b on this Mac's server; nothing leaves for memory\) · 12 rows in/);
   assert.equal(noDaemon["extractor"]!.status, "ok");
-  assert.equal(noDaemon["extractor"]!.detail, "runs qwen3.5:27b on the local server (Chat Completions JSON mode; rules when it cannot answer). Nothing leaves for memory");
+  assert.equal(noDaemon["extractor"]!.detail, "runs qwen3.5:27b on the local server (Chat Completions JSON mode; rules when it cannot answer), and nothing leaves for memory");
   const summary: MemorySummary = { enabled: true, count: 5, forgotten: 0, archived: 0, embeddings: "local", embeddingModel: "embeddinggemma:latest", embeddingDims: 768, pending: 0, lastRunAt: Date.now() - 60_000, lastRun: { extractor: "local", added: 2, updated: 0, noop: 1, refused: 0, ms: 900 } };
   const withDaemon = byName(memoryChecks({ ...base, summary }));
   assert.match(withDaemon["memory"]!.detail, /matching local embeddings \(embeddinggemma:latest, 768 dims\) · extractor qwen3\.5:27b \(nothing leaves for memory\) · learned 1 min ago \(\+2 · ~0 · 1 noop · local\)/);
@@ -163,7 +163,7 @@ test("memory rows under the local brain with no server answering: matching is ke
   assert.match(offline["memory"]!.detail, /^on · matching keywords · rules \(no local server answering; nothing leaves for memory\) · 12 rows in/);
   assert.doesNotMatch(offline["memory"]!.detail, /this Mac's server|matching local/);
   assert.equal(offline["extractor"]!.status, "warn");
-  assert.equal(offline["extractor"]!.detail, "rules (no local server answering). Nothing leaves for memory");
+  assert.equal(offline["extractor"]!.detail, "rules (no local server answering), so nothing leaves for memory");
   assert.equal(offline["extractor"]!.fix, "open Ollama.app, or brew install --cask ollama-app; see docs/LOCAL.md", "the same fix the local › server row gives");
   assert.doesNotMatch(`${offline["extractor"]!.detail} ${offline["extractor"]!.fix}`, /pick one|pull a tool-capable/);
   // A pinned model changes nothing while the server is down: the caller passes the resolved id ("" when nothing answers), and even a name given anyway does not make the extractor ok.
@@ -183,24 +183,24 @@ test("privacy › memory with no daemon: the summary the engine would report is 
   assert.deepEqual(localDown, { enabled: true, embeddings: "keyword" });
   const rowDown = privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: down, memory: localDown, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!;
   assert.equal(rowDown.name, "memory");
-  assert.equal(rowDown.detail, "mac · keywords · rules. Nothing leaves.");
+  assert.equal(rowDown.detail, "mac · keywords · rules, and nothing leaves");
   // Brain local, server up with an embedding model: local embeddings, the extractor the pick.
   const localUp = memorySummaryWithoutDaemon({ enabled: true, brain: "local", local: up, hasOpenAIKey: true });
   assert.deepEqual(localUp, { enabled: true, embeddings: "local", embeddingModel: "embeddinggemma:latest" });
-  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "qwen3.5:27b", brainDetail: "", local: up, memory: localUp, hasOpenAIKey: true, liveModel: "gpt-live-1" }))[2]!.detail, "mac · embeddings embeddinggemma:latest · extractor qwen3.5:27b. Nothing leaves.");
+  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "qwen3.5:27b", brainDetail: "", local: up, memory: localUp, hasOpenAIKey: true, liveModel: "gpt-live-1" }))[2]!.detail, "mac · embeddings embeddinggemma:latest · extractor qwen3.5:27b, and nothing leaves");
   // Server up without an embedding model: keywords.
   assert.equal(memorySummaryWithoutDaemon({ enabled: true, brain: "local", local: omit(up, "embedModel"), hasOpenAIKey: true }).embeddings, "keyword");
   // A cloud brain with a key: OpenAI embeddings — item text and closed conversations leave, and the row says so instead of "off".
   const codexKey = memorySummaryWithoutDaemon({ enabled: true, brain: "codex", local: up, hasOpenAIKey: true });
   assert.deepEqual(codexKey, { enabled: true, embeddings: "openai" });
-  assert.equal(privacyChecks(dataPaths({ brain: "codex", brainModel: "", brainResolved: "codex", brainDetail: "Codex", local: up, memory: codexKey, hasOpenAIKey: true, liveModel: "gpt-live-1" }))[2]!.detail, "cloud · text-embedding-3-small + a mini model. Item text and closed conversations leave.");
+  assert.equal(privacyChecks(dataPaths({ brain: "codex", brainModel: "", brainResolved: "codex", brainDetail: "Codex", local: up, memory: codexKey, hasOpenAIKey: true, liveModel: "gpt-live-1" }))[2]!.detail, "cloud · text-embedding-3-small + a mini model, so item text and closed conversations leave");
   // A cloud brain without a key: keywords and rules on the Mac. An embedding model on a server the brain does not use is not memory's.
   assert.deepEqual(memorySummaryWithoutDaemon({ enabled: true, brain: "codex", local: up, hasOpenAIKey: false }), { enabled: true, embeddings: "keyword" });
   // Memory off in settings: the row says off, and only then.
   const off = memorySummaryWithoutDaemon({ enabled: false, brain: "local", local: up, hasOpenAIKey: false });
-  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: up, memory: off, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!.detail, "off · Memory is off. Nothing is read or kept.");
+  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: up, memory: off, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!.detail, "off · memory is off, so nothing is read or kept");
   // The hole this closes: no summary at all reads as off.
-  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: up, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!.detail, "off · Memory is off. Nothing is read or kept.");
+  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: up, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!.detail, "off · memory is off, so nothing is read or kept");
 });
 
 test("local › daemon: a daemon whose snapshot has no setup.local (a build before the local brain) is one warn row with the restart fix; no row without a daemon or with a current one", () => {

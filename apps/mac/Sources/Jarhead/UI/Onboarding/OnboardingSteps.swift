@@ -393,7 +393,7 @@ struct OnboardingBrainStep: View, Equatable {
         case .openaiResponses:
             modelRow
             setupRow("Key") {
-                ConsoleHint(setup.secrets.openai ? "Uses the voice key from the previous step." : "Uses the voice key. Set one in the Voice step.", indent: 0)
+                ConsoleHint(setup.secrets.openai ? "Uses the voice key from the previous step." : "Uses the voice key, so set one in the Voice step.", indent: 0)
             }
         case .openaiCompatible:
             setupRow("Base URL") {

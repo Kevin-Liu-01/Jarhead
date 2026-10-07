@@ -148,7 +148,7 @@ enum LocalBrainWords {
     static func canCallTools(_ n: Int) -> String { n == 1 ? "1 can call tools" : "\(n) can call tools" }
     static func bestFitMeta(_ status: LocalServerStatus) -> String { "the engine picks for this Mac · \(gigabytes(status.ramBytes))" }
     static func notOn(_ status: LocalServerStatus) -> String { "not on \(serverName(status))" }
-    static let noToolsFoot = "cannot call tools. The hands need them, so it is listed and greyed"
+    static let noToolsFoot = "cannot call tools (the hands need them), so it is listed and greyed"
     static let bestFitFoot = "The engine picks the best model that fits this Mac and moves when a better one lands."
     static let savedFoot = "Saved, but the server does not list it now. Pull it again or pick another."
 
@@ -270,9 +270,9 @@ enum LocalBrainWords {
         let size = m.sizeBytes.map(gigabytes) ?? "size unknown"
         if !m.hasTools { return "\(id) \(noToolsFoot)." }
         switch m.fit {
-        case .good: return "\(id) · \(size) on a \(ram) Mac. Fits."
-        case .tight: return "\(id) · \(size) on a \(ram) Mac. Tight: slow first token, swaps under load."
-        case .no: return "\(id) · \(size) on a \(ram) Mac. Too big: it will not load."
+        case .good: return "\(id) · \(size) fits a \(ram) Mac."
+        case .tight: return "\(id) · \(size) is tight on a \(ram) Mac: slow first token, swaps under load."
+        case .no: return "\(id) · \(size) is too big for a \(ram) Mac: it will not load."
         case .unknown: return "\(id) · the server does not say its size."
         }
     }

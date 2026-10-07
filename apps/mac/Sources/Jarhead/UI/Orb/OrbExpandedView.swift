@@ -171,9 +171,10 @@ enum OrbStyle {
     /// `auth` is named when it is `.none`, so a gate that opens the session on the word
     /// alone never looks like one that authenticates. While `paused` the gate listens for
     /// the word to *resume*, unauthenticated (WakeGate.isPaused), and the row says so.
-    static func gateLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, now: Date = Date(), paused: Bool = false) -> String {
+    /// `island` sets the reason in the island's grammar (GateWords): `Wake word off · microphone not granted`.
+    static func gateLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, now: Date = Date(), paused: Bool = false, island: Bool = false) -> String {
         switch g {
-        case .off(let reason): return GateWords.off(reason)
+        case .off(let reason): return GateWords.off(reason, island: island)
         case .listening:
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
             if paused { return "paused · say “\(phrase)” or press Go" }
@@ -181,7 +182,7 @@ enum OrbStyle {
         case .heard: return "Heard you"
         case .authenticating(let method): return "Waiting for \(method)"
         case .granted: return paused ? "Resuming…" : "Waking…"
-        case .denied(let reason): return GateWords.denied(reason)
+        case .denied(let reason): return GateWords.denied(reason, island: island)
         case .lockedOut(let until): return "Locked for \(max(1, Int(until.timeIntervalSince(now).rounded()))) s"
         }
     }
@@ -433,7 +434,7 @@ struct OrbCapsuleView: View {
                             .lineLimit(1)
                     }
                 }
-                .help("Billed by the paused session. The meter stopped when it closed" + (today.map { " · " + $0 } ?? ""))
+                .help("Billed by the paused session, whose meter stopped when it closed" + (today.map { " · " + $0 } ?? ""))
             } else if model.connected, let today {
                 Text(today)
                     .font(.system(size: 11, design: .monospaced).monospacedDigit())

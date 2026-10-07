@@ -202,7 +202,7 @@ test("explicit local with a reachable server and an empty brainModel: ready as `
     assert.deepEqual(ofKind(engine, "brain.local"), []);
     assert.deepEqual(ofKind(engine, "brain.unavailable"), []);
     const brainRow = snap.setup.dataPaths.find((p) => p.what === "brain")!;
-    assert.deepEqual(brainRow, { what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0. Nothing leaves." });
+    assert.deepEqual(brainRow, { what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0, and nothing leaves" });
     assert.deepEqual(snap.setup.dataPaths.map((p) => p.what), ["voice", "brain", "memory", "web"]);
     assert.equal(snap.setup.dataPaths.find((p) => p.what === "memory")!.where, "mac");
     assert.ok(server.seen.some((r) => r.method === "GET" && r.path === "/v1/models"), "the compatible probe read the model list");
@@ -229,7 +229,7 @@ test("explicit local with nothing reachable: an amber brain.local row with Retry
     assert.deepEqual(local[0]!.remedy, LOCAL_REMEDY);
     const loud = ofKind(engine, "brain.unavailable");
     assert.equal(loud.length, 1);
-    assert.match(loud[0]!.text, /^Local brain unavailable \(.+\); using the OpenAI backend instead\. Until it is back, the brain's work goes to OpenAI too\. Memory stays local\.$/);
+    assert.match(loud[0]!.text, /^Local brain unavailable \(.+\); using the OpenAI backend instead, so until it is back the brain's work goes to OpenAI too\. Memory stays local\.$/);
     assert.deepEqual(loud[0]!.remedy, BRAIN_REMEDY, "a brain row's Retry restarts the brain, never config.probe");
     // The setting is `local`: the brain row turns cloud and says so; memory's row stays on the Mac.
     assert.equal(snap.setup.dataPaths.find((p) => p.what === "brain")!.where, "cloud");

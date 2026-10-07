@@ -156,7 +156,7 @@ The choices, with their numbers (site/lib/island.ts and NotchInk.swift render(_:
 7. **The hero, the app's**: asleep, the wake gate's words, `Listening for “jarhead”`, at 0.72, the app's 18 pt SF Pro set as
    17.4 px Inter (where Inter's cap height and widths meet SF's) on the 22 px pitch from 29.5; a question names its
    asker once, in the head (`✋ Slack asks`, its hand the only amber), and the app enforces it (`NotchView.heroQuestion` drops
-   a closing ` on Slack`); the island's words never carry an em dash (`NotchView.islandWords`: `Wake word off · microphone not
+   a closing ` on Slack`); the island's words never carry an em dash (`GateWords.off(_:island:)`: `Wake word off · microphone not
    granted`). The ring: `07:10` in the mono, ` · Wake up, Kevin` in the sans, a calm second line at 0.72. Balanced wraps.
 8. **The foot, the problem row's grammar, one line**: a bright noun and a quieter clause one word space on (the app's 6 pt gap
    after `12:37` is gone). Awake `12:37 · 7.2 min · $0.36` (app: `· today 8.5 min` too). Asleep, on both sides, the app's

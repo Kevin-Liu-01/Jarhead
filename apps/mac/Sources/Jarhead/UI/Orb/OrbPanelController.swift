@@ -1085,7 +1085,7 @@ public final class OrbPanelController {
             meter.sleepsIn = max(0, (pause.sleepsAt - now.timeIntervalSince1970 * 1000) / 1000)
         }
         let ws = s.settings.wake
-        let gateLabel = awake ? nil : OrbStyle.gateLabel(gate, phrases: ws.phrases, auth: ws.auth, now: now, paused: s.phase == .paused)
+        let gateLabel = awake ? nil : OrbStyle.gateLabel(gate, phrases: ws.phrases, auth: ws.auth, now: now, paused: s.phase == .paused, island: true)
         let rings = Self.ringRows(ringing: ringing, nextFire: nextFire, automations: automations, snoozeMinutes: s.settings.automationSettings.snoozeMinutes)
         return DockContent(awake: awake, inSession: inSession, typedWakes: s.settings.typedWakes,
                            request: s.delegations.last { $0.status == .running }?.request,
@@ -1247,7 +1247,7 @@ public final class OrbPanelController {
         body.beginDrag(pointer: p)
         scanObstacles(force: true)
         homePillTimer?.cancel()
-        homePill.send(OrbPill(text: "Free. Back to the notch from Settings › Home", tone: .info, icon: "arrow.up.to.line",
+        homePill.send(OrbPill(text: "Free · back to the notch from Settings › Home", tone: .info, icon: "arrow.up.to.line",
                               action: { [weak self] in self?.returnToNotch() }))
         homePillTimer = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 8_000_000_000)

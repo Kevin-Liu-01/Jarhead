@@ -115,7 +115,7 @@ private enum L: Int, CaseIterable {
         case .logEmpty: return "(nothing logged yet)\n"
         case .thenSignal: return "\nthen: signal "
         case .thenSignalEnd: return ", the runtime's abort after the exception above\n"
-        case .survived: return "\nsurvived: the runtime did not abort. AppKit reported the exception and the app kept running; no relaunch, the guard is re-armed\n"
+        case .survived: return "\nsurvived: the runtime did not abort (AppKit reported the exception and the app kept running); no relaunch, the guard is re-armed\n"
         case .nl: return "\n"
         case .colon: return ": "
         case .paren: return " ("

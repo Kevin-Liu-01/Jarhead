@@ -286,7 +286,7 @@ export function installLine(i: { readonly plan: InstallPlan; readonly inodeAfter
       : i.plan.kind === "update"
         ? i.inodeAfter === i.plan.inode
           ? `${installed} kept (inode ${i.plan.inode})`
-          : `${installed} REPLACED (inode ${i.plan.inode} → ${i.inodeAfter ?? "?"}). Report this`
+          : `${installed} REPLACED (inode ${i.plan.inode} → ${i.inodeAfter ?? "?"}): report this`
         : `${installed} refused: ${i.plan.reason}`;
   // Unique entries: a parser fed the runner's doubled deletion lines must not count twice.
   const n = (xs: readonly string[]): number => new Set(xs).size;
@@ -376,7 +376,7 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
   const plan = planInstall(target, spec.uid, spec.installed, parent, spec.user);
   if (plan.kind === "refuse") return { ok: false, what: `refusing to install: ${plan.reason}`, lines: [plan.hint] };
   if (spec.previous !== undefined && !snapshotNameOk(spec.previous)) {
-    return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} is not a .zip archive`, lines: ["LaunchServices registers any directory holding an Info.plist as a bundle, a second Jarhead. Snapshot to a .zip archive (build/previous/Jarhead.app.zip)"] };
+    return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} is not a .zip archive`, lines: ["LaunchServices registers any directory holding an Info.plist as a bundle (a second Jarhead), so snapshot to a .zip archive (build/previous/Jarhead.app.zip)"] };
   }
   if (plan.kind === "update" && spec.signing === "adhoc") {
     const installedSig = io.exec(CODESIGN, [...CODESIGN_AUTHORITY_ARGS, spec.installed]);

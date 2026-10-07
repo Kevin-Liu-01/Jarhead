@@ -2145,10 +2145,10 @@ extension ConsoleFormat {
     }
 
     /// A Jarhead conversation's meta line: `12:34 · 2.3 min · 8 msgs` — how long it ran
-    /// ("—" while never closed), what it billed (the meter's spelling, one decimal),
+    /// ("open" while never closed), what it billed (the meter's spelling, one decimal),
     /// heard + said. The started clock is the title row's stamp.
     static func jarheadMeta(_ chain: JarheadChain) -> String {
-        let ran = chain.endedAt.map { duration(max(0, $0 - chain.startedAt) / 1000) } ?? "—"
+        let ran = chain.endedAt.map { duration(max(0, $0 - chain.startedAt) / 1000) } ?? "open"
         return [ran, TransportFormat.minutes(chain.usageSeconds), messageCount(chain.messages)].joined(separator: " · ")
     }
 

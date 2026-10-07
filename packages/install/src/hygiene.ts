@@ -325,7 +325,7 @@ export function hygieneLine(r: Omit<HygieneReport, "line"> & { readonly installe
   // A live helper tile is the one thing the repair cannot remove: the line never says --fix repairs it, nor that a fix did.
   const helper = r.running.helperTiles.length > 0;
   let dock: string;
-  if (r.dock.skipped && !r.dock.imported) dock = `${describeDock(r.dock.before)}. ${r.dock.skipped.charAt(0).toUpperCase()}${r.dock.skipped.slice(1)}`;
+  if (r.dock.skipped && !r.dock.imported) dock = `${describeDock(r.dock.before)} (skipped: ${r.dock.skipped})`;
   else if (r.dock.imported) {
     const did = describeDockChanges(r.dock.before?.changes ?? []);
     const restart = r.dock.restarted ? ", Dock restarted" : ", Dock not restarted";

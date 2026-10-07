@@ -124,11 +124,11 @@ private struct JarheadConversationHeader: View {
     /// How the chain ended: "paused", "stopped", "idle", "connection_lost", "closed"; "open" while it never did.
     private var ended: String { chain.isOpen ? "open" : ConsoleFormat.closeReason(chain.reason) }
 
-    /// `started 14:03:22 · ran 12:34 · 2.3 min billed · paused` — every figure, whole.
+    /// `started 14:03:22 · ran 12:34 · 2.3 min billed · paused` — every figure, whole; no `ran` while it never closed.
     private var meta: String {
-        let ran = chain.endedAt.map { ConsoleFormat.duration(max(0, $0 - chain.startedAt) / 1000) } ?? "—"
-        return ["started \(ConsoleFormat.time(chain.startedAt))", "ran \(ran)", "\(TransportFormat.minutes(chain.usageSeconds)) billed", ended]
-            .joined(separator: " · ")
+        let ran = chain.endedAt.map { "ran " + ConsoleFormat.duration(max(0, $0 - chain.startedAt) / 1000) }
+        return (["started \(ConsoleFormat.time(chain.startedAt))", ran, "\(TransportFormat.minutes(chain.usageSeconds)) billed", ended] as [String?])
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     /// The strip's figures whole, as a card: every date entire, the counts in mono.

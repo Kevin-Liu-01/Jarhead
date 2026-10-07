@@ -146,7 +146,7 @@ test("status · the fallback rung says so; a stopped graph says the graph is dow
   assert.equal(lingering[1], "             recording off · guard off · voice processing still on after stop");
   assert.deepEqual(audioStatusLines(undefined, { recording: false }), ["  audio      no app connected"]);
   assert.deepEqual(audioStatusLines(undefined, { recording: true }), ["  audio      no app connected · recording on"]);
-  assert.deepEqual(audioStatusLines(undefined, undefined, PROFILER), ["  audio      no app connected. Defaults: in Kevin's AirPods Pro 24000 Hz · out Kevin's AirPods Pro 48000 Hz"]);
+  assert.deepEqual(audioStatusLines(undefined, undefined, PROFILER), ["  audio      no app connected · defaults: in Kevin's AirPods Pro 24000 Hz · out Kevin's AirPods Pro 48000 Hz"]);
 });
 
 test("profiler: names, rates, transports, the default pair and the built-in input; garbage is undefined", () => {
@@ -174,7 +174,7 @@ test("doctor · Kevin's Mac today: voice processing ok, hears and speaks warn (a
   assert.ok(checks.every((c) => c.group === "audio" && !c.required), "advisory throughout");
   assert.equal(row(checks, "voice processing").detail, "on · duck min advanced · agc on · bypass off · rung 2 input-rate");
   assert.equal(row(checks, "hears").detail, "Kevin's AirPods Pro · 24000 Hz ×1 · bluetooth · follows the system default");
-  assert.equal(row(checks, "hears").fix, "a headset mic drops every app's sound to hands-free while held. Make MacBook Pro Microphone the default in System Settings › Sound, or turn Recording on");
+  assert.equal(row(checks, "hears").fix, "a headset mic drops every app's sound to hands-free while held, so make MacBook Pro Microphone the default in System Settings › Sound, or turn Recording on");
   assert.equal(row(checks, "speaks").detail, "Kevin's AirPods Pro · 16000 Hz ×2 · bluetooth · narrowed while the headset mic is held");
   assert.equal(row(checks, "default input").detail, "Kevin's AirPods Pro · held by Jarhead (the unit follows it)");
   assert.equal(row(checks, "other mic clients").detail, "none");
@@ -238,7 +238,7 @@ test("doctor · released at sleep is judged asleep: the graph down with the unit
 test("doctor · no app connected: one warning row, then recording from settings.json and the leak row from the file — never a device row", () => {
   const checks = audioChecks({ state: undefined, settings: { recording: true }, phase: undefined, profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.deepEqual(checks.map((c) => [c.name, c.status]), [["audio state", "warn"], ["recording", "warn"], ["leak", "warn"]]);
-  assert.equal(row(checks, "audio state").detail, "app not running. The graph's read-back needs Jarhead.app connected");
+  assert.equal(row(checks, "audio state").detail, "app not running, and the graph's read-back needs Jarhead.app connected");
   assert.equal(row(checks, "recording").detail, "on · Settings › Audio, ⌃⌥R");
   const bare = audioChecks({ state: undefined, settings: undefined, phase: undefined, profiler: undefined, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(bare, "recording").detail, "off · Settings › Audio, ⌃⌥R", "no settings.json: the default");
@@ -263,13 +263,13 @@ test("probe file: one run, { runs }, or a record keyed by mode; the leak row pre
   const fail = leakCheck(keyed, undefined, NOW);
   assert.equal(fail.status, "fail");
   assert.equal(fail.detail, "residual -40 dBFS · tail 300 ms · recording · 1 h ago, above -50 dBFS");
-  assert.equal(fail.fix, "the guard is not holding on this hardware. Use headphones for Recording, or leave it off");
+  assert.equal(fail.fix, "the guard is not holding on this hardware: use headphones for Recording, or leave it off");
   const stale = leakCheck(one, at + 1, NOW);
   assert.equal(stale.status, "warn");
   assert.match(stale.detail, /measured before this app build/);
   const noFigure = leakCheck(parseAudioProbe(JSON.stringify({ at, mode: "aec" }), "/x"), undefined, NOW);
   assert.equal(noFigure.status, "warn");
-  assert.equal(noFigure.detail, "1 run (aec). None measured the guard's residual");
+  assert.equal(noFigure.detail, "1 run (aec), but none measured the guard's residual");
 });
 
 test("leak row: the tail leak is judged before the residual — recorder-probe's residual is the zero-filled floor (−120) whatever the guard leaks after a hold", () => {
@@ -310,7 +310,7 @@ test("--test-audio: the script missing, Jarhead awake, nothing printed, a refusa
   };
   const missing = audioTestCheck({ scriptExists: false, phase: "asleep", run: spawn });
   assert.equal(missing.status, "warn");
-  assert.equal(missing.detail, "apps/mac/Scripts/audio-probe.sh missing. Nothing played");
+  assert.equal(missing.detail, "apps/mac/Scripts/audio-probe.sh missing, so nothing played");
   const awake = audioTestCheck({ scriptExists: true, phase: "listening", run: spawn });
   assert.equal(awake.status, "warn");
   assert.equal(awake.detail, "Jarhead is awake; sleep it first (two voice-processing clients cut each other)");

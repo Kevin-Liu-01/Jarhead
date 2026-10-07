@@ -111,7 +111,7 @@ test("automationsLines: --state filters; an empty table says how to set one; an 
   assert.deepEqual(automationsLines(table, pointers, NOW, "snoozed"), [automationsSummary(table, pointers, NOW), "    nothing snoozed (set: 3 armed · 1 paused · 1 done · 1 failed)"]);
   const empty = automationsLines([], {}, NOW);
   assert.equal(empty.length, 2);
-  assert.match(empty[1] ?? "", /nothing set\. Say "wake me at 7:10 on weekdays", or: jarhead automations add/);
+  assert.match(empty[1] ?? "", /nothing set \(say "wake me at 7:10 on weekdays", or: jarhead automations add/);
 });
 
 test("parseClockAutomation: the three ladder phrases become drafts with a name, the free action, the quiet clause by kind and the echo line", () => {
@@ -161,7 +161,7 @@ test("parseClockAutomation: the asking kinds are refused by name with where the 
   assert.match(error("daily 18:00 wake 'summarise'"), /^wake is set up by voice/);
   assert.match(error("weekdays 09:00 file ~/Papers"), /^file is set up by voice/);
   assert.match(error("at 7:10 weekdays"), /didn't catch what it does\. Say when, then what/);
-  assert.match(error("chime 'Wake up'"), /^say when first\. Say when, then what/);
+  assert.match(error("chime 'Wake up'"), /^the when comes first\. Say when, then what/);
   assert.match(error("at 7:10 chime"), /^chime needs a line: chime 'Wake up'$/);
   assert.match(error("at 7:10 open"), /^open needs an app, an https URL or a path$/);
   assert.match(error("at sevenish chime hi"), /didn't catch "sevenish"/);
@@ -275,13 +275,13 @@ test("doctor automations: a healthy Mac — every row ok but the two pass-1 note
   assert.equal(wake.status, "ok", "pmset -g sched already shows a wake");
   assert.match(wake.detail, /pmset schedules a wake \(pmset -g sched: wakepoweron at 7:05AM weekdays only\)/);
   assert.equal(wake.fix, undefined);
-  assert.equal(r["quiet hours"]!.detail, "23:00–07:00 · alarms override; chime/say show silently; acting kinds wait");
+  assert.equal(r["quiet hours"]!.detail, "23:00 to 07:00 · alarms override; chime/say show silently; acting kinds wait");
   assert.equal(r["missed"]!.detail, "0 in 7 days");
   assert.equal(r["brain budget"]!.detail, "wake-brain unused · 0 of 5 min used today");
   assert.equal(r["recipes"]!.status, "ok");
   assert.equal(r["recipes"]!.detail, "2 · 2 run-tier");
   assert.equal(r["time-sensitive"]!.status, "warn");
-  assert.match(r["time-sensitive"]!.detail, /entitlement absent\. Alarm banners honour Focus like any banner/);
+  assert.match(r["time-sensitive"]!.detail, /entitlement absent, so alarm banners honour Focus like any banner/);
   assert.equal(r["folder grant"]!.status, "ok");
   assert.equal(r["folder grant"]!.detail, "watching ~/Downloads · the Downloads folder grant is on");
   assert.deepEqual(spawned, [], "the doctor's automations rows spawn nothing — pmset is text, never a command it runs");
@@ -301,16 +301,16 @@ test("doctor automations: the trouble rows — Open at login off, banners denied
   });
   const r = byName(trouble);
   assert.equal(r["daemon"]!.status, "warn");
-  assert.equal(r["daemon"]!.detail, "nothing fires while Jarhead is quit. Open at login is off");
+  assert.equal(r["daemon"]!.detail, "nothing fires while Jarhead is quit, and Open at login is off");
   assert.equal(r["daemon"]!.fix, "Settings › Automations › Open at login");
   assert.equal(r["banners"]!.status, "warn");
-  assert.equal(r["banners"]!.detail, "Notifications not granted. The island and the chime still fire");
+  assert.equal(r["banners"]!.detail, "Notifications not granted, but the island and the chime still fire");
   assert.match(r["banners"]!.fix ?? "", /^pnpm jarhead cmd request-permission notifications/);
   const wake = r[`wake for ${clock(wakeUp.nextAt ?? 0)}`]!;
   assert.equal(wake.status, "warn");
-  assert.match(wake.detail, /^a closed lid sleeps through \d\d:\d\d\. The alarm rings late \(within 15 min\) or is missed; the Mac is never woken by Jarhead$/);
+  assert.match(wake.detail, /^a closed lid sleeps through \d\d:\d\d, so the alarm rings late \(within 15 min\) or is missed; the Mac is never woken by Jarhead$/);
   assert.equal(wake.fix, "copy (root; never run by Jarhead): sudo pmset repeat wakeorpoweron MTWRF 07:05:00");
-  assert.equal(r["quiet hours"]!.detail, "none set. Everything fires as set");
+  assert.equal(r["quiet hours"]!.detail, "none set, so everything fires as set");
   assert.equal(r["missed"]!.status, "warn");
   assert.equal(r["missed"]!.detail, "2 missed in 7 days · the Mac slept");
   assert.match(r["missed"]!.fix ?? "", /^Run now on the row/);
@@ -320,7 +320,7 @@ test("doctor automations: the trouble rows — Open at login off, banners denied
   assert.equal(r["recipes"]!.detail, "3 · 1 run-tier · 2 ask (vpn-up: would need a yes when it runs; notes: the recipe fronts an app (open / osascript); use the open action instead)");
   assert.match(r["recipes"]!.fix ?? "", /fails at fire; edit it so the gate says run/);
   assert.equal(r["folder grant"]!.status, "warn");
-  assert.equal(r["folder grant"]!.detail, "watching ~/Downloads needs the Downloads folder grant (not read). A denied read is the automation.watch problem, never a silent watcher");
+  assert.equal(r["folder grant"]!.detail, "watching ~/Downloads needs the Downloads folder grant (not read), and a denied read is the automation.watch problem, never a silent watcher");
   assert.equal(r["folder grant"]!.fix, "Ask (the automation.watch problem's button; Setup › Permissions)");
   assert.deepEqual(spawned, []);
 });
@@ -328,17 +328,17 @@ test("doctor automations: the trouble rows — Open at login off, banners denied
 test("doctor automations: the switch off, no daemon, no journal yet, brain minutes 0 — honest rows, no wake row without an alarm, no folder row without rows", () => {
   const off = byName(automationChecks({ ...healthy, settings: { ...healthy.settings, enabled: false } }));
   assert.equal(off["enabled"]!.status, "warn");
-  assert.equal(off["enabled"]!.detail, "off (Settings › Automations). Nothing fires; every row stays (6 set)");
+  assert.equal(off["enabled"]!.detail, "off (Settings › Automations), so nothing fires; every row stays (6 set)");
   const quiet = automationChecks({ ...healthy, rows: undefined, nextFire: undefined, notifications: undefined, journal: { path: "/x/jobs.ndjson", missing: true }, settings: { ...healthy.settings, wakeBudgetMinutesPerDay: 0, recipes: [] } });
   const q = byName(quiet);
   assert.deepEqual(quiet.map((r) => r.name), ["enabled", "journal", "daemon", "banners", "quiet hours", "missed", "brain budget", "recipes", "time-sensitive"]);
-  assert.equal(q["enabled"]!.detail, "on · no daemon answering. The rows and the next fire come from a running daemon");
+  assert.equal(q["enabled"]!.detail, "on · no daemon answering (the rows and the next fire come from a running daemon)");
   assert.equal(q["journal"]!.detail, "no journal yet at /x/jobs.ndjson (it appears with the first automation)");
-  assert.equal(q["banners"]!.detail, "Notifications not read (no daemon answering). The island and the chime still fire");
-  assert.equal(q["brain budget"]!.detail, "wake-brain off (Brain minutes 0). No automation wakes the brain; nothing is billed asleep");
-  assert.equal(q["recipes"]!.detail, "none. A recipe is a shell command you approved once; the gate re-judges it at every fire");
+  assert.equal(q["banners"]!.detail, "Notifications not read (no daemon answering), but the island and the chime still fire");
+  assert.equal(q["brain budget"]!.detail, "wake-brain off (Brain minutes 0), so no automation wakes the brain and nothing is billed asleep");
+  assert.equal(q["recipes"]!.detail, "none (a recipe is a shell command you approved once; the gate re-judges it at every fire)");
   const empty = byName(automationChecks({ ...healthy, rows: [], nextFire: undefined }));
-  assert.match(empty["enabled"]!.detail, /^on · nothing set\. Say "wake me at 7:10 on weekdays"/);
+  assert.match(empty["enabled"]!.detail, /^on · nothing set \(say "wake me at 7:10 on weekdays"/);
   assert.equal(empty["folder grant"]!.detail, "no guarded folder watched");
   const torn = byName(automationChecks({ ...healthy, journal: { path: "/x/jobs.ndjson", error: "EACCES" } }));
   assert.equal(torn["journal"]!.status, "fail");

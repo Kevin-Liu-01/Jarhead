@@ -182,7 +182,7 @@ export function ledgerSpeed(ledger: Ledger, days: number): SpeedReport {
 const ms = (v: number): string => (Number.isFinite(v) ? String(Math.round(v)) : "-");
 const sec = (v: number): string => (Number.isFinite(v) ? (v / 1000).toFixed(1) : "-");
 const pct = (v: number): string => `${Math.round(v * 100)} %`;
-const cell = (s: Stat): string => (s.n ? `median ${ms(s.median)} ms · p95 ${ms(s.p95)} ms (n=${s.n})` : "none");
+const cell = (s: Stat): string => (s.n ? `median ${ms(s.median)} ms · p95 ${ms(s.p95)} ms (n=${s.n})` : "n=0");
 
 /** The report as lines, with the targets the levers were built to. */
 export function renderSpeed(r: SpeedReport): string[] {

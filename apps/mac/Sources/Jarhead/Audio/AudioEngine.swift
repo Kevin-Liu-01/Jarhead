@@ -413,7 +413,7 @@ final class AudioEngine {
         retryScheduled = true
         let why = error?.localizedDescription ?? "unknown"
         let when = delay < 1 ? String(format: "%.1f s", delay) : "\(Int(delay)) s"
-        onStatus?(quiet ? "audio start deferred: \(why) — retrying in \(when)" : "audio failed to start: \(why). Retrying in \(when)")
+        onStatus?(quiet ? "audio start deferred: \(why) — retrying in \(when)" : "audio failed to start (\(why)), retrying in \(when)")
         queue.asyncAfter(deadline: .now() + delay) {
             self.retryScheduled = false
             guard self.wanted, !self.running else { return }
