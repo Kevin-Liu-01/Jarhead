@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Ledger } from "@jarhead/core";
 import { AgentRegistry, type AgentConnector } from "@jarhead/agents";
 import { ConfirmationDesk, ConfirmationState, FocusLease, LEASE_IDLE_MS, WAIT_MAX_MS, type AcquireOptions, type LeaseOutcome } from "@jarhead/hands";
-import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarhead/brain";
+import type { Brain, BrainResult, BrainSink, BrainTask, RunnerOptions, ToolRunner } from "@jarhead/brain";
 import { MAIN_THREAD_ID, THREAD_MAX_LIVE, type LedgerRow, type OverlayCommand, type Thread, type ThreadEvent } from "@jarhead/protocol";
 import { ACTING_HOLD_MS, ThreadTable } from "../threads/table.ts";
 import { THREAD_IDLE_END_MS, THREAD_PROGRESS_GAP_MS, ThreadScheduler, type ThreadBrainFactory, type ThreadParent, type ThreadVoice } from "../threads/scheduler.ts";
@@ -17,7 +17,8 @@ import { RecordingHands, bestOf, settle, threadNameOf, until } from "./world.ts"
 /**
  * The scheduler without the engine: fake brains scripted per thread, a real
  * ConfirmationDesk over a ConfirmationState, a FocusLease over fake hands with fast
- * polls, a real Ledger in a temp dir, and a clock the test moves. Admission is
+ * polls, a real Ledger in a temp dir, a fake AppleScript behind every lane runner (no
+ * test here spawns osascript) and a clock the test moves. Admission is
  * synchronous and refuses the fifth live thread, a spawned thread's spawn, a
  * duplicate name (case-insensitively) and a name over sixteen characters; the
  * budgets end a turn; a follow-up supersedes the running turn on the same brain;
@@ -57,6 +58,8 @@ interface Harness {
   readonly changes: { n: number };
   readonly voice: { split: string[]; says: string[] };
   readonly overlays: OverlayCommand[];
+  /** Every AppleScript a lane runner ran, in order: the harness's fake answered it, never osascript. */
+  readonly appleScripts: string[];
   readonly parent: ThreadParent;
   readonly acquires: { actor: string; opts: AcquireOptions & { rank?: number | undefined } }[];
   script: ((job: { brain: FakeBrain; task: BrainTask; sink: BrainSink; runner: ToolRunner }) => Promise<BrainResult | undefined>) | undefined;
@@ -90,6 +93,12 @@ function harness(o: { spares?: number; enabled?: boolean; eyes?: boolean; memory
   const changes = { n: 0 };
   const voice = { split: [] as string[], says: [] as string[] };
   const overlays: OverlayCommand[] = [];
+  const appleScripts: string[] = [];
+  // The lanes' Apple events end here: a script that passed the gates answers ok and touches nothing.
+  const runAppleScript: NonNullable<RunnerOptions["runAppleScript"]> = async (script) => {
+    appleScripts.push(script);
+    return { code: 0, signal: null, stdout: "", stderr: "", timedOut: false, cancelled: false, ms: 0 };
+  };
   const acquires: Harness["acquires"] = [];
   let scheduler!: ThreadScheduler;
   const desk = new ConfirmationDesk(root, (name, q) => void scheduler.speakQuestion(name, q), now);
@@ -114,6 +123,7 @@ function harness(o: { spares?: number; enabled?: boolean; eyes?: boolean; memory
     changes,
     voice,
     overlays,
+    appleScripts,
     acquires,
     parent: { id: "dlg_parent", liveId: "item_1", request: "tell ben on slack i'm late and play focus on spotify", kevinDialogue: "tell ben on slack i'm late and play focus on spotify", offsetMs: 1000 },
     script: undefined,
@@ -186,7 +196,7 @@ function harness(o: { spares?: number; enabled?: boolean; eyes?: boolean; memory
     desk,
     lease,
     hands: { focus: hands, background: handsBg },
-    runnerOptions: () => ({ agents, stateDir: dir, now }),
+    runnerOptions: () => ({ agents, stateDir: dir, now, runAppleScript }),
     toolsetOptions: () => ({ annotate: (cmd) => overlays.push(cmd), now }),
     makeBrain: () => (o.factory === false ? undefined : factory),
     parentFor: () => h.parent,
@@ -330,6 +340,7 @@ test("a thread's steps land on ITS OWN delegation (threadId) with the marks stam
   const t = d.timings as { firstToolAt?: number; firstActionAt?: number; toolRoundTripMs?: number[]; eyesMs?: number; doneAt?: number };
   assert.equal(t.firstToolAt, d.createdAt + 100, "the first LOOK, not the eyes' shot");
   assert.equal(t.firstActionAt, d.createdAt + 200, "the Apple event that returned ok");
+  assert.deepEqual(h.appleScripts, ['tell application "Spotify" to play'], "the Apple event reached the harness's fake, never osascript");
   assert.equal(t.toolRoundTripMs?.length, 2, "one sample per tool, the eyes' shot excluded");
   assert.equal(t.eyesMs, 0, "the eyes' shot took no fake time");
   assert.equal(t.doneAt, d.createdAt + 300);

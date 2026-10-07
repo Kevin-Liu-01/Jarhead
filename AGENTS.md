@@ -483,6 +483,16 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   their 8 s timers alive; node:test then reports the late timeouts as
   "asynchronous activity after the test ended", the symptom of the early
   assertion failure, not a client bug.
+- **A test never reaches the desktop.** `scripts/test-preload.mjs` stubs
+  osascript, open, say, afplay, shortcuts, automator and screencapture, and a
+  test file whose process reached one fails at exit, naming each call. A real
+  `ToolRunner` hands every AppleScript the gates pass to `/usr/bin/osascript`,
+  so a test that runs `applescript` through one gives `RunnerOptions.runAppleScript`
+  a fake, as the threads-scheduler harness does; a lone `return "x"` or
+  `return 2 + 2` is the one script the stub answers. Before the fake, three
+  scheduler tests sent `tell application "Spotify" to play` to osascript: music
+  on a Mac with Spotify, and a LaunchServices lookup slower than the tests' 2 s
+  wait on a loaded Mac without it.
 - **The 250 ms path is a second source, not a faster model** (REDESIGN §12).
   Speech → Live → delegation → brain → first tool is 1.5–4 s and stays so; the
   app's on-device recogniser sends `ear` partials ~100–200 ms behind speech, the

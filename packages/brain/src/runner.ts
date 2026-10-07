@@ -76,6 +76,11 @@ export interface RunnerOptions {
   readonly home?: string | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
   readonly fetch?: typeof fetch | undefined;
+  /**
+   * Test seam: what runs an AppleScript once the gates passed it (default runAppleScript, the real
+   * osascript). The gates in front of it are not replaceable; a test's fake only stands in for the Mac.
+   */
+  readonly runAppleScript?: typeof runAppleScript | undefined;
   /** The per-delegation cap on the shots archive (default SHOTS_CAP): the oldest files past it MOVE to <stateDir>/trash/shots. */
   readonly shotsCap?: ShotsCap | undefined;
   /**
@@ -811,7 +816,7 @@ export class ToolRunner {
     const decision = classifyAppleScript({ script, confirmed, ownedPids: this.jobs.pids(), home: this.home, userName: this.userName, ...(app ? { app } : {}) });
     if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
     if (decision.verdict === "confirm") return this.ask(`run an AppleScript (${script.split("\n")[0]?.slice(0, 60) ?? ""}…)`, "applescript", key, decision);
-    const r = await runAppleScript(script, { signal: this.signal, env: this.opts.env });
+    const r = await (this.opts.runAppleScript ?? runAppleScript)(script, { signal: this.signal, env: this.opts.env });
     if (posts) this.ownInputAt = this.now();
     return { kind: "text", text: describeShellResult(r) };
   }

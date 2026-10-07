@@ -30,6 +30,12 @@
 //   keystrokes types them into whatever app is in front. osascript's stub answers the one script
 //   with no effect at all, a lone `return` of a string literal or of whole numbers added and taken
 //   away (`return 2 + 2` prints 4), so the runner's plumbing stays testable; it refuses anything else.
+// - A test that reaches the desktop fails. Each stub writes what it refused into the fence, and when
+//   the process exits the preload names every call on stderr and exits 1, so the file fails whatever
+//   its asserts said, as an off-Mac fetch fails under JARHEAD_TEST_NET=strict. Without this, the test
+//   passes on a refusal it never meant to meet, after a spawn a loaded Mac can make slower than the
+//   test's wait. A test that runs the applescript tool through a real ToolRunner hands it a fake
+//   (RunnerOptions.runAppleScript); a lone `return` the osascript stub answers fails nothing.
 // - The agent CLIs and the apps are fenced the same way (F1). A program named codex or claude
 //   (claude.js and the like too) outside os.tmpdir(), a file inside an agent CLI's own npm package
 //   outside it (@anthropic-ai/claude-code, @openai/codex, or any package whose bin is codex or
@@ -84,6 +90,8 @@
 //   temp HOME and the unset keys, but run outside the agent, app and fetch fences. None of them
 //   reaches a brain walk today. To fence one, spawn process.execPath with ...process.execArgv, which
 //   carry tsx and this preload.
+// - A child that loads this preload has a fence of its own: a desktop call it makes fails the child
+//   at exit, not the test, unless the test reads the child's exit code.
 //
 // JARHEAD_TEST_NET_LOG=<file> appends one line per off-Mac attempt: pid, verdict, method and URL.
 // Never a header or a body.
@@ -171,22 +179,42 @@ for (const key of AWAY_FROM_HOME) delete process.env[key];
 const FENCED = ["osascript", "open", "say", "afplay", "shortcuts", "automator", "screencapture"];
 const fence = fs.mkdtempSync(join(tmpdir(), "jh-test-fence-"));
 const REFUSED = (name, what = "the desktop") => `${name}: refused (the test preload fences ${what})`;
-/** osascript's stub: the script from -e lines or stdin; a lone `return` of a literal is printed, anything else refused. */
+/** Where the desktop's stubs write what they refused, a line each: the fence is this process's own, so the lines are its calls. */
+const REFUSALS = join(fence, "refused");
+/** osascript's stub: the script from -e lines or stdin; a lone `return` of a literal is printed, anything else refused and written down. */
 const OSASCRIPT = `#!${process.execPath}
 const argv = process.argv.slice(2);
 const lines = [];
 for (let i = 0; i < argv.length; i++) if (argv[i] === "-e") lines.push(argv[++i] ?? "");
 const script = (lines.length ? lines.join("\\n") : require("node:fs").readFileSync(0, "utf8")).trim();
 const m = /^return\\s+(?:"([^"\\\\]*)"|([0-9]+(?:\\s*[-+]\\s*[0-9]+)*))$/.exec(script);
-if (!m) { process.stderr.write(${JSON.stringify(REFUSED("osascript"))} + "\\n"); process.exit(1); }
+if (!m) {
+  try { require("node:fs").appendFileSync(${JSON.stringify(REFUSALS)}, "osascript " + JSON.stringify(script) + "\\n"); } catch {}
+  process.stderr.write(${JSON.stringify(REFUSED("osascript"))} + "\\n");
+  process.exit(1);
+}
 process.stdout.write((m[1] ?? String(m[2].split(/\\s*([-+])\\s*/).reduce((acc, tok, i, a) => (i % 2 ? acc : i === 0 ? Number(tok) : a[i - 1] === "+" ? acc + Number(tok) : acc - Number(tok)), 0))) + "\\n");
 `;
 for (const name of FENCED) {
   const stub = join(fence, name);
-  fs.writeFileSync(stub, name === "osascript" ? OSASCRIPT : `#!/bin/sh\necho "${REFUSED(name)}" >&2\nexit 1\n`);
+  fs.writeFileSync(stub, name === "osascript" ? OSASCRIPT : `#!/bin/sh\nprintf '%s\\n' "${name} $*" 2>/dev/null >> "$(dirname "$0")/refused"\necho "${REFUSED(name)}" >&2\nexit 1\n`);
   fs.chmodSync(stub, 0o755);
 }
 process.env["PATH"] = `${fence}:${process.env["PATH"] ?? ""}`;
+// Ahead of the temp-dir sweep, which takes the fence with it.
+process.prependListener("exit", () => {
+  let calls;
+  try {
+    calls = fs.readFileSync(REFUSALS, "utf8").trim().split("\n");
+  } catch {
+    return;
+  }
+  process.stderr.write(
+    "the test preload: a test here reached the desktop, so this file fails. Hand the runner a fake (RunnerOptions.runAppleScript), " +
+      `or send a lone \`return\` the osascript stub answers. Refused:\n${calls.map((c) => `  ${c}\n`).join("")}`,
+  );
+  process.exitCode = 1;
+});
 const ABSOLUTE = new RegExp(`(?<![\\w/.-])/usr/s?bin/(${FENCED.join("|")})(?![\\w.-])`, "g");
 
 const AGENTS = ["codex", "claude"];
