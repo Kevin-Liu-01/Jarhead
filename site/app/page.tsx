@@ -14,11 +14,12 @@ import { SectionSpy } from "@/components/site/SectionSpy";
 import { section } from "@/components/site/sections";
 import { Top } from "@/components/site/Top";
 import { COSTS, HANDS, NAV, NUMBERS, RAILS, SAY, SLEEP, THREADS, WAKE } from "@/content/deck";
-import { from, nth } from "@/lib/cut";
+import { from, nth, part } from "@/lib/cut";
 import { fetchStars } from "@/lib/stars";
 
-/** Hands' h2, its three sentences set apart so each lights as the hands reach its step. */
-const HANDS_STEPS = [nth(HANDS.h2[0], 0), nth(HANDS.h2[0], 1), HANDS.h2[1]] as const;
+/** Hands' h2, one sentence cut into its three clauses (label, click, shot) so each lights as the hands reach its step. */
+const HANDS_STEPS = [part(HANDS.h2[0], "It finds the label,"), part(HANDS.h2[0], "clicks it"), HANDS.h2[1]] as const;
+if (`${HANDS_STEPS[0]} ${HANDS_STEPS[1]}` !== HANDS.h2[0]) throw new Error("Hands: the label and click steps no longer make the h2's first line");
 
 /**
  * The page: paper, the Mac's top edge fixed over everything (the island wears what the visitor is doing), the hero where

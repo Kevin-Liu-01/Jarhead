@@ -12,7 +12,11 @@ Sources: `README:NN` is `/Users/kevinliu/jarvis/README.md` line NN; `AUTOMATIONS
 are `docs/AUTOMATIONS.md` and `docs/LOCAL.md`; `facts:NN` is `facts-product.md` in this folder;
 `ICONS:NN` is `ICONS.md` in this folder. Verbatim commands keep their own punctuation.
 
-h2 shape: two lines. Where the second line is marked *grey* it is the `--jh-fg-3` continuation.
+h2 shape (Kevin, 2026-10-07): one sentence set on two lines. Line 1 is the ink (`.sec-h2-1`); line 2, marked
+*grey*, is its `--jh-fg-3` continuation (`.sec-h2-2`), picked up at a natural joint. Only line 2 ends on a full stop.
+Never two clipped sentences ("X. Y."), no rhetorical question, no "X isn't Y, it's Z". Each line stays at about 31
+characters or fewer, so it holds one line at every desktop width and at 360 px. Wake, Say, Hands, Rails and Install
+cut words out of their h2 for the demo, so a change here is a change in that component too.
 
 The `eyebrow` entries are the phase word and hint for a dot, a badge or a tooltip at most; SPACE.md forbids
 eyebrow LINES above a heading, so never set them as a line. The `desk caption` may be dropped.
@@ -62,8 +66,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 01 · Wake  `id="story"`
 
 - eyebrow: `Listening` · `The mic is open. The meter runs.` · `O O`
-- h2, line 1: `Asleep, it wakes on a word.` (README:57; paused, the word alone resumes, README:58)
-- h2, line 2: `Touch ID opens it.` (README:365)
+- h2, line 1: `It wakes up to its name` (README:67; the name is "jarhead")
+- h2, line 2 *grey*: `and Touch ID opens it.` (README:417: asleep, hearing "jarhead" opens nothing until Touch ID does; paused, the word alone resumes). Wake.tsx cuts `Touch ID` from it for the pad.
 - lead: `Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.` (README:57). Memory reads a closed conversation on your key at the next quiet tick (engine.ts:3208, :6111), so the voice is the subject.
 - line 1: `Three misses lock the gate for a minute.` (README:57)
 - line 2: `Speaker verification is not attempted.` (README:365)
@@ -75,8 +79,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 02 · Say  `id="say"`
 
 - eyebrow: `Thinking` · `The brain has the task.` · `- -`
-- h2, line 1: `Codex, Claude Code, a key,` (README:27-28, README:59)
-- h2, line 2 *grey*: `or a model on this Mac.` (README:59, LOCAL:3-4)
+- h2, line 1: `Codex, Claude Code, a key,` (README:27-28, README:69)
+- h2, line 2 *grey*: `or a model on this Mac.` (README:69, LOCAL:3-4). Say.tsx cuts the four brains from the two lines.
 - lead: `Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.` (README:61, README:269-270, README:59)
 - the brain card's badge: `SAY_BADGE` (`7.0 s`, deck.ts), a brain's first visible action in real use with Codex (the author's ledger, 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28). It replaced `NUMBERS.figures[3].value` (`4.5 s`), the canned-hands harness figure (docs/latency/after.json, n = 6, 2026-09-12), which stays in Numbers with its label.
 - line 1: `"Click Save" runs. The voice is told after.` (README:61)
@@ -88,8 +92,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 03 · Threads  `id="threads"`
 
 - eyebrow: `Acting` · `The hands are using the Mac.` · `o o`
-- h2, line 1: `Several things at once.` (README:62)
-- h2, line 2 *grey*: `Each with its own brain.` (README:62)
+- h2, line 1: `Tasks run side by side,` (README:72)
+- h2, line 2 *grey*: `each with its own brain.` (README:72)
 - lead: `"Tell Ben on Slack I'm late and put on Focus on Spotify" can split into two threads. Each has its own brain, conversation, budget and blob. Up to three run beside the main one.` (README:62)
 - line 1: `Slack asks before it sends.` (README:140-141)
 - line 2: `Spotify runs in the background by Apple events.` (README:62)
@@ -100,8 +104,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 04 · Hands  `id="hands"`
 
 - eyebrow: `Acting` · `The hands are using the Mac.` · `> >`
-- h2, line 1: `Label first. Click second.` (README:70)
-- h2, line 2 *grey*: `Screenshots when they help.` (README:70, engine.ts lookAtScreen, engine brain-select.test.ts:565). It was `Screenshot last.` until 2026-10-06 (C2). That was false: each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen). A click by coordinates also aims at the latest screenshot (brain tools.ts `screenshot`). Line 1 stands: the hands find a control by its label, then click it. The page still lights the three sentences as label, click and shot; `scripts/__tests__/c2-hands-copy.test.ts` checks the words, the cuts and README:70.
+- h2, line 1: `It finds the label, clicks it` (README:70)
+- h2, line 2 *grey*: `and checks a screenshot.` (README:70, the lead's third sentence). The page lights its three clauses, `It finds the label,` · `clicks it` · `and checks a screenshot.`, as label, click and shot (page.tsx HANDS_STEPS). Nothing in it puts the screenshot last or makes it the only use: each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen, engine brain-select.test.ts:565), and a click by coordinates aims at the latest one (brain tools.ts `screenshot`). It was `Label first. Click second. / Screenshot last.` until 2026-10-06 (C2), which was false for that reason, then `Label first. Click second. / Screenshots when they help.` until 2026-10-07. `scripts/__tests__/c2-hands-copy.test.ts` checks the words, the cuts and README:70.
 - lead: `The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.` (README:28, README:70). The 71 tools are the brain's; 31 of them reach the helper. Not "only verifies": each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen).
 - line 1: `Circle anything with ⌃⌥C. Every brain is told where it is.` (README:76). A brain that takes images also gets the image; a text-only one gets the coordinates alone (brain compatible.ts userContent, local.ts acceptsImages).
 - line 2: `The blob moves to where the hands act.` (README:77)
@@ -112,8 +116,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 05 · Rails  `id="rails"`
 
 - eyebrow: `Speaking` · `It is talking. Say stop to interrupt.` · `^ ^`
-- h2, line 1: `One policy table.` (README:361)
-- h2, line 2 *grey*: `Run, confirm or refuse.` (README:361)
+- h2, line 1: `One table sorts calls into` (README:74, README:413)
+- h2, line 2 *grey*: `run, confirm or refuse.` (README:74, README:413). Rails.tsx cuts the three verdicts from it; `.rail-word` capitalises them.
 - lead: `Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.` (README:361)
 - line 1: `A spoken yes covers one action once.` (README:362)
 - line 2: `Your key or click holds it 1.5 s.` (README:63, README:353; scroll is in Numbers figure 12)
@@ -136,8 +140,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 06 · Sleep  `id="sleep"`
 
 - eyebrow: `Asleep` · `No session. The voice bills nothing.` · `- -`
-- h2, line 1: `Say good night.` (README:69)
-- h2, line 2 *grey*: `Alarms still ring.` (README:301-305)
+- h2, line 1: `Your alarms still ring` (AUTOMATIONS:3-4)
+- h2, line 2 *grey*: `after you say good night.` (README:79)
 - lead: `It says "night." and closes the session. Ten minutes without a word to it do the same. Alarms, timers, watchers and routines fire while it sleeps.` (README:69, README:301-304, AUTOMATIONS:3-4)
 - line 1: `No session. The voice bills nothing.` (AUTOMATIONS:6-7). Memory reads a closed conversation at the next quiet tick, on your key (engine.ts:3208, :6111), and a wake-brain row bills one brain turn (AUTOMATIONS §5).
 - line 2: `Set-up asks once. Fire time never asks.` (AUTOMATIONS:11-13, README:310-312)
@@ -148,8 +152,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## Numbers  `id="numbers"`
 
 - label: `the ledger`
-- h2, line 1: `Measured on one Mac.` (README:331)
-- h2, line 2 *grey*: `Written down.` (README:331)
+- h2, line 1: `Every latency here has its n` (README:356)
+- h2, line 2 *grey*: `and the date it was taken.` (README:356). True of every latency on the plate, the third-party Agora row included; the old `Measured on one Mac.` was not.
 - lead: `Measured on the author's Mac and written down. The harnesses are in the repo. Every latency carries its n and date.` (README:331, facts:388)
 - lead figure: `3 ms` · `ear final to hands dispatch, median` · tooltip `6 ms p95 · real helper · n = 50 · 2026-09-11 · rerun under load 2026-10-06: 8 ms median, 58 ms p95, n = 30` (README:337, facts:308)
 
@@ -180,8 +184,8 @@ Figures, value · label · tooltip:
 ## Costs  `id="costs"`
 
 - label: `what it bills`
-- h2, line 1: `Five cents a minute.` (README:551)
-- h2, line 2 *grey*: `The voice costs nothing asleep.` (README:551; memory reads closed conversations asleep, README:553)
+- h2, line 1: `The voice is five cents` (README:637)
+- h2, line 2 *grey*: `a minute while it is on.` (README:637: billed per second of open session, muted or not; Pause, Stop and sleep close it). The voice is the subject, so the brain and memory reads are never called free. Line 1 names the slider (Costs.tsx).
 - lead: `The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.` (README:551)
 - figures, value · label · tooltip:
   - `$0.05` · `per minute of open session` · `billed per second, muted or not` (README:551)
@@ -194,6 +198,8 @@ Figures, value · label · tooltip:
 ---
 
 ## Made  `id="made"`
+
+Not on the page (deck.ts leaves it out). Its h2 predates the one-sentence shape and needs one before it returns.
 
 - label: `how it is made`
 - h2, line 1: `Swift in the app.` (README:239)
@@ -208,8 +214,8 @@ Figures, value · label · tooltip:
 ## Install  `id="install"`
 
 - label: `source only` (facts:40-41)
-- h2, line 1: `Four commands.` (README:36-38)
-- h2, line 2 *grey*: `Then say jarhead.` (README:51)
+- h2, line 1: `It takes four commands,` (README:45, README:55-59)
+- h2, line 2 *grey*: `then you say jarhead.` (README:60). Install.tsx sets its full stop as the blob.
 - lead: `Source only. One line clones the repo and runs four commands. Setup opens on first launch and writes your key.` (facts:40-41, README:36-38, README:386)
 - plate eyebrow: `INSTALL · ONE LINE`
 - plate code: `curl -fsSL https://jarhead.kevinliu.studio/install.sh | sh` (README:41)
@@ -408,3 +414,16 @@ named so a reviewer can put it back.
 ### Footer (d:317)
 
 - d:317 disclosure `Every picture on this page is rendered by the app's own preview harnesses over fixed fake data; none is a photo of a desktop. The alarm text says the author's name because the harness does. The voice speaks English only. Apple silicon, macOS 14 or newer.` (a semicolon; a "because" tail) → five one-sentence disclosures; `Apple silicon, macOS 14 or newer` is in the mono line.
+
+### h2s (2026-10-07)
+
+Kevin: one sentence each, black into grey, never "blah blah. blah blah.". Say's was one sentence already.
+
+- Wake `Asleep, it wakes on a word. / Touch ID opens it.` → `It wakes up to its name / and Touch ID opens it.`
+- Threads `Several things at once. / Each with its own brain.` → `Tasks run side by side, / each with its own brain.`
+- Hands `Label first. Click second. / Screenshots when they help.` → `It finds the label, clicks it / and checks a screenshot.`
+- Rails `One policy table. / Run, confirm or refuse.` → `One table sorts calls into / run, confirm or refuse.`
+- Sleep `Say good night. / Alarms still ring.` → `Your alarms still ring / after you say good night.`
+- Numbers `Measured on one Mac. / Written down.` → `Every latency here has its n / and the date it was taken.`
+- Costs `Five cents a minute. / The voice costs nothing asleep.` → `The voice is five cents / a minute while it is on.`
+- Install `Four commands. / Then say jarhead.` → `It takes four commands, / then you say jarhead.`

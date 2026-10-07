@@ -47,6 +47,7 @@ interface Story {
   readonly phase: DeskKind;
   /** The eyebrow's face for the section (COPY.md: `O O`, `- -`, `o o`, `> >`, `^ ^`). */
   readonly face: string;
+  /** One sentence set on two lines: line 1 in the ink, line 2 its grey continuation. Only line 2 ends on a full stop. */
   readonly h2: readonly [string, string];
   readonly lead: string;
   readonly lines: readonly [string, string, string];
@@ -59,7 +60,7 @@ export const WAKE: Story & { readonly faces: string } = {
   name: "Wake",
   phase: "listening",
   face: "O O",
-  h2: ["Asleep, it wakes on a word.", "Touch ID opens it."], // README:57, README:365; paused, the word alone resumes (README:58)
+  h2: ["It wakes up to its name", "and Touch ID opens it."], // README:67, README:417; the name is "jarhead", and hearing it asleep opens nothing until Touch ID does; paused, the word alone resumes (README:417)
   lead: "Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.", // README:57; memory reads a closed conversation on your key at the next quiet tick (engine.ts:3208, :6111), so the voice is the subject
   lines: ["Three misses lock the gate for a minute.", "Speaker verification is not attempted.", "Say stop. It stops mid-sentence."], // README:57, README:365, README:56
   faces: "gate · heard · granted · denied · locked", // README:178
@@ -72,7 +73,7 @@ export const SAY: Story = {
   name: "Say",
   phase: "thinking",
   face: "- -",
-  h2: ["Codex, Claude Code, a key,", "or a model on this Mac."], // README:27-28, README:59, LOCAL:3-4
+  h2: ["Codex, Claude Code, a key,", "or a model on this Mac."], // README:27-28, README:69, LOCAL:3-4
   lead: "Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.", // README:61, README:269-270, README:59
   lines: ['"Click Save" runs. The voice is told after.', "Same policy for every brain. A local one gets fewer tools.", "A local brain keeps memory on the Mac."], // README:61, README:59, LOCAL:4-5
 };
@@ -84,7 +85,7 @@ export const THREADS: Story = {
   name: "Threads",
   phase: "acting",
   face: "o o",
-  h2: ["Several things at once.", "Each with its own brain."], // README:62
+  h2: ["Tasks run side by side,", "each with its own brain."], // README:72
   lead: "\"Tell Ben on Slack I'm late and put on Focus on Spotify\" can split into two threads. Each has its own brain, conversation, budget and blob. Up to three run beside the main one.", // README:62
   lines: ["Slack asks before it sends.", "Spotify runs in the background by Apple events.", '"Stop the Slack one" needs no model call.'], // README:140-141, README:62
 };
@@ -96,7 +97,7 @@ export const HANDS: Story = {
   name: "Hands",
   phase: "acting",
   face: "> >",
-  h2: ["Label first. Click second.", "Screenshots when they help."], // README:70; line 2 also engine.ts lookAtScreen and engine brain-select.test.ts:565. Not "Screenshot last.": each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen). C2, scripts/__tests__/c2-hands-copy.test.ts
+  h2: ["It finds the label, clicks it", "and checks a screenshot."], // README:70 and the lead below: find a control by label, click it, a screenshot checks the work. page.tsx lights the three clauses in the demo's order. No "last", "third" or "only" on the screenshot: each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen, engine brain-select.test.ts:565). C2, scripts/__tests__/c2-hands-copy.test.ts
   lead: "The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.", // README:28, README:70; not "only": each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen)
   lines: ["Circle anything with ⌃⌥C. Every brain is told where it is.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:76 (a text-only brain gets the coordinates and no image: compatible.ts userContent, local.ts acceptsImages), README:77, README:75
 };
@@ -108,7 +109,7 @@ export const RAILS: Story & { readonly never: { readonly label: string; readonly
   name: "Rails",
   phase: "speaking",
   face: "^ ^",
-  h2: ["One policy table.", "Run, confirm or refuse."], // README:361
+  h2: ["One table sorts calls into", "run, confirm or refuse."], // README:74, README:413
   lead: "Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.", // README:361
   lines: ["A spoken yes covers one action once.", "Your key or click holds it 1.5 s.", "On-screen text is never an instruction."], // README:362, README:63, README:367
   never: {
@@ -125,7 +126,7 @@ export const SLEEP: Story = {
   name: "Sleep",
   phase: "asleep",
   face: "- -",
-  h2: ["Say good night.", "Alarms still ring."], // README:69, README:301-305
+  h2: ["Your alarms still ring", "after you say good night."], // README:79, AUTOMATIONS:3-4
   lead: 'It says "night." and closes the session. Ten minutes without a word to it do the same. Alarms, timers, watchers and routines fire while it sleeps.', // README:69, README:301-304, AUTOMATIONS:3-4
   lines: ["No session. The voice bills nothing.", "Set-up asks once. Fire time never asks.", "Nothing fires while Jarhead is quit."], // AUTOMATIONS:6-7 (memory reads at the next quiet tick, engine.ts:3208 and :6111; a wake-brain row bills one brain turn, AUTOMATIONS §5), AUTOMATIONS:11-13, AUTOMATIONS:116-117
 };
@@ -144,7 +145,7 @@ export const SAY_BADGE = "7.0 s";
 export const NUMBERS = {
   id: "numbers",
   name: "Numbers",
-  h2: ["Measured on one Mac.", "Written down."] as const, // README:331
+  h2: ["Every latency here has its n", "and the date it was taken."] as const, // README:356, "written down with its n and its date"; true of the third-party Agora row too
   lead: "Measured on the author's Mac and written down. The harnesses are in the repo. Every latency carries its n and date.", // README:331, facts:388
   display: { value: "3 ms", label: "ear final to hands dispatch, median", tip: "6 ms p95 · real helper · n = 50 · 2026-09-11 · rerun under load 2026-10-06: 8 ms median, 58 ms p95, n = 30" } satisfies Figure, // README:337, facts:308; the rerun: pnpm jarhead bench on the real helper on the F5 branch (merged at 48aa9a9), load average 105
   figures: [
@@ -170,7 +171,7 @@ export const NUMBERS = {
 export const COSTS = {
   id: "costs",
   name: "Costs",
-  h2: ["Five cents a minute.", "The voice costs nothing asleep."] as const, // README:551; memory reads closed conversations asleep (README:553)
+  h2: ["The voice is five cents", "a minute while it is on."] as const, // README:637: billed per second of open session, muted or not; Pause and Stop close it, and so does sleep (README:79). The voice is the subject, so the brain and memory reads are not called free
   lead: "The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.", // README:551
   figures: [
     { value: "$0.05", label: "per minute of open session", tip: "billed per second, muted or not" }, // README:551
@@ -185,7 +186,7 @@ export const INSTALL = {
   id: "install",
   name: "Install",
   label: "source only", // facts:40-41
-  h2: ["Four commands.", "Then say jarhead."] as const, // README:36-38, README:51
+  h2: ["It takes four commands,", "then you say jarhead."] as const, // README:45, README:55-60
   lead: "Source only. One line clones the repo and runs four commands. Setup opens on first launch and writes your key.", // facts:40-41, README:36-38, README:386
   url: "https://jarhead.kevinliu.studio/install.sh",
   code: "curl -fsSL https://jarhead.kevinliu.studio/install.sh | sh", // README:41

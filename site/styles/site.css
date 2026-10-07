@@ -328,8 +328,9 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
   @media (max-width: 346px) { .glass-cap { padding: 0 14px; gap: 12px; } .glass-l2 { font-size: 11.5px; line-height: 1.25; white-space: normal; text-wrap: balance; } }
   .source { height: 56px; justify-content: center; }
   .sec-in { padding-top: calc(var(--top-dock) + 40px); padding-bottom: 64px; min-height: 0; }
-  /* one sentence a line as on the desk (Hands' three steps on three), at a size the longest, Say's first, fits from 360 up */
-  .sec-h2 > span, .sec-h2 .h2-step { display: block; text-wrap: balance; }
+  /* the h2's two lines as on the desk (Hands' label and click steps share the first), at a size the longest lines,
+     Say's and Numbers' first, fit from 360 up */
+  .sec-h2 > span { display: block; text-wrap: balance; }
   .h2-mark { width: calc(1.45em * 0.714); }
   .ins-char { left: calc(1.45em * -0.143); bottom: calc(1.45em * -0.143); width: 1.45em; height: 1.45em; }
   .term-one { padding: 22px 18px; }

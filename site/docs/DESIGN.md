@@ -113,7 +113,7 @@ its face never under 32 px.
   spilling a few px at the ends and none toward the terms line; the press point flashes only on bare glass.
   The mark and both lines are masked out of the light with a soft moat, so nothing crosses the words. Springs only while
   something moves; calm cuts between rest, lit and pressed.
-- **Install** (`components/site/InstallBlob.tsx`): `Then say jarhead.` ends the same way, its stop the blob, asleep until
+- **Install** (`components/site/InstallBlob.tsx`): `then you say jarhead.` ends the same way, its stop the blob, asleep until
   any Copy lands (`COPIED_EVENT`), when it wakes and listens and the island wakes with it.
 - **Every demo** has its blob: it hears, thinks, acts, flies to the control the hands press, splits into thread blobs,
   frowns `> <` at a refusal, speaks a reason, falls asleep, looks up at the alarm.

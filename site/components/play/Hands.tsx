@@ -20,7 +20,7 @@ const SAVE = part(CLICK_SAVE, "Save");
 /** The check's line, the lead's whole last sentence: shown dim before the shot, heard once when the step is shot. */
 const VERIFIES = nth(HANDS.lead, 2);
 
-/** The pinned beat: on a desk tall enough, the section holds its plate while the scroll steps the h2's three sentences. The pin itself is CSS under this same query (styles/site.css); keep the two in step. */
+/** The pinned beat: on a desk tall enough, the section holds its plate while the scroll steps the h2's three clauses. The pin itself is CSS under this same query (styles/site.css); keep the two in step. */
 const PIN = "(min-width: 1001px) and (min-height: 700px)";
 /** Where the scroll through the pinned section shows each step (0 is the plate pinned, 1 the pin let go). */
 function stepAt(p: number): Step {
@@ -31,12 +31,12 @@ function stepAt(p: number): Step {
 }
 
 /**
- * Hands: say "Click Save" and watch the hands work through the h2's three sentences, each lit as it plays (the section's
- * `data-step`, styles/play.css). Label first: a ring draws round the control that carries the label Save and its tag is
- * read. Click second: the blob flies on its own spring to where the hands act and presses Save. Then the screenshot (the
- * h2's "Screenshots when they help.", which gives it no fixed place: a delegation usually starts with one, engine.ts
- * lookAtScreen): the window flashes, its corners close in, and a check says the screenshot checks the work. Then the blob
- * flies home. On a desk the section also pins its plate while the scroll steps the same three sentences; elsewhere it
+ * Hands: say "Click Save" and watch the hands work through the h2's three clauses, each lit as it plays (the section's
+ * `data-step`, styles/play.css). "It finds the label,": a ring draws round the control that carries the label Save and
+ * its tag is read. "clicks it": the blob flies on its own spring to where the hands act and presses Save. "and checks a
+ * screenshot.": the window flashes, its corners close in, and a check says the screenshot checks the work. The h2 gives
+ * the screenshot no fixed place in a task: a delegation usually starts with one (engine.ts lookAtScreen). Then the blob
+ * flies home. On a desk the section also pins its plate while the scroll steps the same three clauses; elsewhere it
  * plays once when it first comes into view. The still (no JS, calm) is the whole sequence at once.
  */
 export function Hands(): ReactElement {
@@ -54,7 +54,7 @@ export function Hands(): ReactElement {
   const chip = useRef<HTMLButtonElement>(null);
   const keep = useKeepFocus(root);
 
-  // The h2 lights its sentence for the step in play (styles/play.css reads the section's data-step).
+  // The h2 lights its clause for the step in play (styles/play.css reads the section's data-step).
   useEffect(() => {
     cur.current = step;
     const sec = root.current?.closest("section");

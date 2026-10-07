@@ -214,8 +214,8 @@ their own values (`457 ms`, `9.0 s`), and the dithered lens shows the first is t
 Wake, Hands, Sleep and Costs were redrawn in this system in the same pass, and the Console window restyled; refine them
 against these briefs. Install is the one left in its earlier form.
 
-- **Wake** (`Wake.tsx`, split, listening, 600 × 264). Subject: `Wakes on a word. Touch ID opens it.` Reading order left to
-  right: asleep (quiet orb, `Asleep`), `one word` (the wave), `heard` (`O O`), into the `gate` card (lock) at a fork:
+- **Wake** (`Wake.tsx`, split, listening, 600 × 264). Subject: `It wakes up to its name and Touch ID opens it.`
+  Reading order left to right: asleep (quiet orb, `Asleep`), `one word` (the wave), `heard` (`O O`), into the `gate` card (lock) at a fork:
   Touch ID lit (`fingerprint`), Apple Watch, the Mac password, a passphrase dashed; out to `granted` (`^ ^`). Parts: three
   orbs from one sprite, `Wave`, `Card` with four rows, `Wire`s. The lead keeps the first sentence only.
 - **Threads** (`components/site/ConsoleWindow.tsx`, split, HTML at 560). Subject: several threads at once, each with its
@@ -223,22 +223,22 @@ against these briefs. Install is the one left in its earlier form.
   sessions, the Codex and Cursor folds), the app's own rows byte for byte (`content/rail.ts`). Parts: the panel ground,
   the frame, radius 8, quiet title dots, Phosphor `handPalm`, `checkCircle`, `caretRight`, agent marks; asks in the
   speaking tone (the app's own), working dots in listening; nothing under 12 px.
-- **Hands** (`Hands.tsx`, stack, accent, 1088 × 256). Subject: `Label first. Click second. Screenshot last.` Reading order
-  left to right: the orb (`^ ^`, `Acting`) on one lit path through three frames of one window, each headed by its step and
-  order from the h2 (`tag` Label first, `cursorClick` Click second, `camera` Screenshot last): Save found (its frame
-  dashed in the accent, `find a control by label`), Save pressed (`click it`), the window captured with a check (`only
-  verifies`). Since 2026-10-06 (C2, `COPY.md` 04) the h2's second line is `Screenshots when they help.`: the screenshot
-  has no fixed place, and a delegation usually starts with one.
-- **Sleep** (`Sleep.tsx`, split, mark, 600 × 384). Subject: `Say good night. Alarms still ring.` Reading order top to
-  bottom: the orb says `"night."` and goes quiet (`Asleep`, `closes the session`); the card lists
+- **Hands** (`Hands.tsx`, stack, accent, 1088 × 256). Subject: `It finds the label, clicks it and checks a screenshot.`
+  Reading order left to right: the orb (`^ ^`, `Acting`) on one lit path through three frames of one window, each headed
+  by its clause of the h2 (`tag` the label, `cursorClick` the click, `camera` the screenshot): Save found (its frame
+  dashed in the accent, `find a control by label`), Save pressed (`click it`), the window captured with a check (`A
+  screenshot checks the work.`). Since 2026-10-06 (C2, `COPY.md` 04) the screenshot has no fixed place in a task, and a
+  delegation usually starts with one; the frames follow the demo's order, not the engine's.
+- **Sleep** (`Sleep.tsx`, split, mark, 600 × 384). Subject: `Your alarms still ring after you say good night.`
+  Reading order top to bottom: the orb says `"night."` and goes quiet (`Asleep`, `closes the session`); the card lists
   the lead's four kinds with the island's own examples: Alarms lit (`07:10 · Wake up, Kevin`, tag `weekdays`), timers
   (`11:56 · pasta`), watchers, routines.
-- **Costs** (`Costs.tsx`, split, listening, 600 × 312). Subject: `Five cents a minute. Asleep costs nothing.` Reading order
-  along time: while `Listening` the cost climbs at `$0.05` `per minute of open session` (the slope, its area filling in the
+- **Costs** (`Costs.tsx`, split, listening, 600 × 312). Subject: `The voice is five cents a minute while it is on.`
+  Reading order along time: while `Listening` the cost climbs at `$0.05` `per minute of open session` (the slope, its area filling in the
   meter's dither) to `$3` `an hour of talking`; `Asleep` the line goes flat, `$0`. The island's own reading `7.2 min ·
   $0.36` is marked on the slope and dropped to the time axis. A guard checks $0.05 × 60 = $3.
-- **Install** (`components/site/Install.tsx`, split, not yet redrawn). Subject: `Four commands. Then say jarhead.` Reading
-  order top to bottom: the one-liner (mono 20, primary Copy) and the script's note, then the four commands it runs, then
+- **Install** (`components/site/Install.tsx`, split, not yet redrawn). Subject: `It takes four commands, then you say
+  jarhead.` Reading order top to bottom: the one-liner (mono 20, primary Copy) and the script's note, then the four commands it runs, then
   Setup opening. Brief: keep the terminal an ink plate in both themes (a screen); give the four command rows the
   schematic's rail (a 1.5 wire down the left with a `Joint` per command and an arrow into the last row's note, `Setup
   opens: your OpenAI key, a brain, permissions`), so it reads as a sequence without numbers; requirements as rows with

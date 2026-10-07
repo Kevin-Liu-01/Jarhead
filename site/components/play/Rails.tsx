@@ -45,12 +45,13 @@ const RUNS_TAIL = RUNS.slice(`"${CLICK_SAVE}"`.length);
 if (!RUNS.startsWith(`"${CLICK_SAVE}"`)) throw new Error("Rails: the Run sentence no longer starts with the call");
 
 /**
- * The three verdicts, cut from the h2's second line: the word, the icon, the tag, the row's own reason (always on the
- * table, lit with its row) and what the blob says when a call lands (a second deck line, so nothing is said twice). A
- * refused call is not talked over: its command lights in NEVER and the blob frowns.
+ * The three verdicts, cut from the h2's second line, where they are lowercase (.rail-word capitalises them): the word,
+ * the icon, the tag, the row's own reason (always on the table, lit with its row) and what the blob says when a call
+ * lands (a second deck line, so nothing is said twice). A refused call is not talked over: its command lights in NEVER
+ * and the blob frowns.
  */
 const ROWS: ReadonlyArray<{ readonly id: Verdict; readonly word: string; readonly icon: IconName; readonly tag?: string; readonly why?: string; readonly said?: string }> = [
-  { id: "run", word: part(RAILS.h2[1], "Run"), icon: "playCircle", said: nth(SAY.lines[0], 1) },
+  { id: "run", word: part(RAILS.h2[1], "run"), icon: "playCircle", said: nth(SAY.lines[0], 1) },
   { id: "confirm", word: part(RAILS.h2[1], "confirm"), icon: "handPalm", tag: part(NEVER_LINE, "ask every time"), why: nth(NEVER_LINE, 1), said: RAILS.lines[0] },
   { id: "refuse", word: part(RAILS.h2[1], "refuse"), icon: "prohibit", tag: RAILS.never.label },
 ];

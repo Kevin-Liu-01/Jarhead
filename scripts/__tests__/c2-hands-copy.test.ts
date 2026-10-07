@@ -9,10 +9,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  * order. A delegation usually starts with the eyes' pre-warm screenshot, which gives the brain the screen (engine.ts
  * lookAtScreen; none when the brain is Live's own Responses delegation or cannot take pixels, or the hands are not
  * there; engine brain-select.test.ts:565 pins it), and a click by coordinates aims at the latest screenshot. The hands
- * still find a control by its label before they click it, so the h2 keeps "Label first. Click second." and gives the
- * screenshot no fixed place: "Screenshots when they help." The README's Hands sentence said "screenshot only to verify"
- * for the same reason and is reworded to match. The page lights the h2 in three steps (label, click, shot), each a cut of
- * the deck's words (site/lib/cut.ts), so the cuts must put the h2 back together byte for byte.
+ * still find a control by its label before they click it. The h2 became "Label first. Click second. / Screenshots when
+ * they help." and, since 2026-10-07, is one sentence: "It finds the label, clicks it / and checks a screenshot.", which
+ * names the label before the click and gives the screenshot no fixed place in a task. The README's Hands sentence said
+ * "screenshot only to verify" for the same reason and is reworded to match. The page lights the h2 in three steps (label,
+ * click, shot), each a cut of the deck's words (site/lib/cut.ts), so the cuts must put the h2 back together byte for byte.
  *
  * The engine's behaviour is pinned by the engine's own tests, not here: these checks read only the words and the cuts.
  * The deck and the cuts load at run time by path: site/content/deck.ts imports through the site's `@/` alias, which the
@@ -43,15 +44,16 @@ function sentences(text: string): string[] {
 /** A sentence that puts the screenshot in a fixed place or makes it the only use: last, third, finally, only. */
 const FIXED_PLACE = /\b(last|third|finally|only)\b/i;
 
-test("C2: no Hands sentence on the site puts the screenshot last or alone, and the h2 still opens on the label", async () => {
+test("C2: no Hands sentence on the site puts the screenshot last or alone, and the h2 names the label before the click", async () => {
   const HANDS = await hands();
   const said = [...HANDS.h2, HANDS.lead, ...HANDS.lines].flatMap(sentences);
   for (const s of said) {
     if (!/screenshot/i.test(s)) continue;
     assert.doesNotMatch(s, FIXED_PLACE, `a Hands sentence puts the screenshot last or alone: "${s}"`);
   }
-  // The idea stays: the label comes first, and the h2 still has a screenshot sentence for the shot step to light.
-  assert.equal(sentences(HANDS.h2[0])[0], "Label first.", "the h2 opens on the label");
+  // The idea stays: the label comes before the click, and the h2's second line is the screenshot for the shot step to light.
+  const label = HANDS.h2[0].indexOf("label");
+  assert.ok(label >= 0 && label < HANDS.h2[0].indexOf("click"), "the h2 names the label before the click");
   assert.match(HANDS.h2[1], /screenshot/i, "the h2's second line is about the screenshot");
 });
 
@@ -70,11 +72,12 @@ test("C2: the README's Hands sentence, the deck's source, finds by label and cli
   assert.ok(said.includes("The hands are AX-first: find a control by label, read the focused text, click the element."), "the hands find by label, then click");
 });
 
-test("C2: the Hands h2 follows the deck's rules: short whole sentences, no em dash, no exclamation", async () => {
+test("C2: the Hands h2 follows the deck's rules: one sentence over its two lines, no dash, no exclamation", async () => {
   const HANDS = await hands();
+  assert.equal(sentences(HANDS.h2.join(" ")).length, 1, `the h2 is one sentence: "${HANDS.h2.join(" / ")}"`);
+  assert.match(HANDS.h2[1], /\.$/, `the h2 ends on a full stop: "${HANDS.h2[1]}"`);
   for (const line of HANDS.h2) {
-    assert.match(line, /\.$/, `an h2 line ends on a full stop: "${line}"`);
-    assert.doesNotMatch(line, /[—!()]/, `no em dash, exclamation or parenthesis: "${line}"`);
+    assert.doesNotMatch(line, /[—–!()]/, `no em or en dash, exclamation or parenthesis: "${line}"`);
     assert.ok(line.split(/\s+/).length <= 6, `an h2 line is six words at most: "${line}"`);
   }
 });
