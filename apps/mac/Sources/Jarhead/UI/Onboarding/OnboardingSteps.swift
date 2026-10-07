@@ -393,7 +393,7 @@ struct OnboardingBrainStep: View, Equatable {
         case .openaiResponses:
             modelRow
             setupRow("Key") {
-                ConsoleHint(setup.secrets.openai ? "Uses the voice key from the previous step." : "Uses the voice key — set one in the Voice step.", indent: 0)
+                ConsoleHint(setup.secrets.openai ? "Uses the voice key from the previous step." : "Uses the voice key. Set one in the Voice step.", indent: 0)
             }
         case .openaiCompatible:
             setupRow("Base URL") {
@@ -423,7 +423,7 @@ struct OnboardingBrainStep: View, Equatable {
             }
         }
         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-        .consoleHelp("ollama.com/download — install and open it yourself, then Check")
+        .consoleHelp("ollama.com/download: install and open it yourself, then Check")
     }
 
     /// The key's three faces; the env var it goes to under the on-file face; the typed key stays

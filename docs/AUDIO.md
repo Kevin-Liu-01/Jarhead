@@ -37,7 +37,7 @@ What Recording costs, said plainly: the first ~120 ms of your word over Jarhead 
 break-in by voice is off for the first two seconds of each hold while the guard learns the echo
 floor. On speakers the echo is loud and +12 dB over it is a shout. Recording is a demo mode,
 and the hint says so. A safety fuse: three consecutive turns in which everything Live heard was
-Jarhead's own last sentence send `mute` and toast `heard himself · muted — Recording off?`.
+Jarhead's own last sentence send `mute` and toast `heard himself · muted. Recording off?`.
 
 ## 3. The ten-second check
 
@@ -61,7 +61,7 @@ hands-free tell as a figure), **Recording** `[On | Off] shares the mic`, then th
 echo cancellation follows a headset, `Using <headset>. Echo cancellation follows the system default;
 make <ranked mic> the default in Sound settings to use it.`). The island's mute box dims to 0.48
 while the guard holds; a 2 × 2 dot marks Recording; the tucked island shows a `record.circle` chip
-whose tooltip reads `Recording — mic shared, echo guarded`; the mute box's own tooltip gains
+whose tooltip reads `Recording: mic shared, echo guarded`; the mute box's own tooltip gains
 ` · recording` and ` · shared with <app>`. `pnpm jarhead status` prints the `audio` block (voice processing · knobs ·
 rung · hears · speaks · guard counters); `pnpm jarhead doctor` has an `audio` group (`voice
 processing`, `hears`, `speaks`, `default input`, `other mic clients`, `recording`, `released at
@@ -115,7 +115,7 @@ Asleep is fixed already: the listener no longer opens the headset mic.
 | `Using AirPods Pro. Echo cancellation follows the system default; make MacBook Pro Microphone the default in Sound settings to use it.` | the one case the hint exists for. Do that |
 | `Shared with QuickTime Player.` | fine while Recording is on; under echo cancellation the recorder sits beside the unit; turn Recording on for the take |
 | `Hears · no echo cancellation` | the unit refused every rung on this device pair; Jarhead runs guarded; the doctor's `voice processing` row fails and says which pair |
-| `heard himself · muted — Recording off?` | the fuse fired: Live heard Jarhead's own sentence three turns running; unmute, and turn Recording off unless you are recording |
+| `heard himself · muted. Recording off?` | the fuse fired: Live heard Jarhead's own sentence three turns running; unmute, and turn Recording off unless you are recording |
 | the `[recording]` badge, the dot, the chip | a forgotten switch; ⌃⌥R turns it off. It is never cleared for you |
 
 ## 9. Playback: the cushion, the duck, the numbers

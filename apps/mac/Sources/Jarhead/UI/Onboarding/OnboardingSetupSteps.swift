@@ -29,7 +29,7 @@ struct OnboardingPermissionsStep: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             OnboardingHead("Permissions",
-                           "Everything Jarhead can use, asked for one dialog at a time — the seven it needs first. Full Disk Access has no dialog: System Settings opens on the right pane and the app is revealed for dragging in. Grants made in System Settings show up here on their own.") {
+                           "Everything Jarhead can use, asked for one dialog at a time (the seven it needs first). Full Disk Access has no dialog: System Settings opens on the right pane and the app is revealed for dragging in. Grants made in System Settings show up here on their own.") {
                 if !running {
                     Button("Ask for everything") { actions.permissions.requestAll() }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
@@ -45,7 +45,7 @@ struct OnboardingPermissionsStep: View, Equatable {
             group(OnboardingWords.moreFold, OnboardingWords.moreHead, optional, defaultOpen: false)
             // Grants are re-read from a fresh process every few seconds and the hands
             // helper restarts itself when one appears, so nothing here needs a relaunch.
-            ConsoleHint("Switches take effect here within a few seconds — no relaunch. \(granted) of \(max(permissions.count, 1)) granted.", indent: 0)
+            ConsoleHint("Switches take effect here within a few seconds. No relaunch. \(granted) of \(max(permissions.count, 1)) granted.", indent: 0)
             if permissions.contains(where: { ($0.kind == .accessibility || $0.kind == .screenRecording) && $0.grant != .granted }) {
                 ConsoleHint("Already switched on in System Settings but still not ready here? That row was made by an earlier build: remove Jarhead from the list with the − button, press Request, and switch the new row on.", indent: 0)
                     .transition(Motion.appear)
@@ -135,15 +135,15 @@ struct OnboardingPermissionsStep: View, Equatable {
     static func instruction(_ sweep: PermissionSweepProgress, _ kind: PermissionKind) -> String {
         if sweep.stage == .waiting {
             let later = kind == .screenRecording || kind == .inputMonitoring ? " (choose Later if it offers to quit)" : ""
-            return "allow it in the dialog, or switch Jarhead on in the pane\(later); this moves on by itself — or press Next to skip"
+            return "allow it in the dialog, or switch Jarhead on in the pane\(later); this moves on by itself, or press Next to skip"
         }
         if kind == .fullDiskAccess {
-            return "drag Jarhead.app from the Finder window into the list and switch it on; come back and this moves on by itself — or press Next"
+            return "drag Jarhead.app from the Finder window into the list and switch it on; come back and this moves on by itself, or press Next"
         }
         if sweep.group.count > 1 {
-            return "switch Jarhead on for each of them, come back, and this moves on by itself — or press Next"
+            return "switch Jarhead on for each of them, come back, and this moves on by itself, or press Next"
         }
-        return "switch Jarhead on, come back, and this moves on by itself — or press Next"
+        return "switch Jarhead on, come back, and this moves on by itself, or press Next"
     }
 
     /// Icon · label (+ required badge) / why / detail · Request or Open Settings · status dot.

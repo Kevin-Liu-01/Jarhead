@@ -39,11 +39,11 @@ enum VoiceSwitchWords {
     /// The popup foot for the highlighted row in THIS phase (idle · busy · paused · asleep · connecting). Pinned.
     static func foot(name: String, phase: Phase, busy: Bool) -> String {
         switch phase {
-        case .paused: return "\(name) — heard when the session resumes"
-        case .connecting: return "\(name) — heard at the next wake"
-        case .asleep, .error: return "\(name) — heard at the next Go"
+        case .paused: return "\(name): heard when the session resumes"
+        case .connecting: return "\(name): heard at the next wake"
+        case .asleep, .error: return "\(name): heard at the next Go"
         case .listening, .speaking, .thinking, .acting, .muted:
-            return busy ? "\(name) — busy · heard at the next wake" : "\(name) — ⏎ picks · Switch now hears it · one restart"
+            return busy ? "\(name): busy · heard at the next wake" : "\(name): ⏎ picks · Switch now hears it · one restart"
         }
     }
 

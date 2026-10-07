@@ -1247,7 +1247,7 @@ public final class OrbPanelController {
         body.beginDrag(pointer: p)
         scanObstacles(force: true)
         homePillTimer?.cancel()
-        homePill.send(OrbPill(text: "free — back to the notch from Settings › Home", tone: .info, icon: "arrow.up.to.line",
+        homePill.send(OrbPill(text: "Free. Back to the notch from Settings › Home", tone: .info, icon: "arrow.up.to.line",
                               action: { [weak self] in self?.returnToNotch() }))
         homePillTimer = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 8_000_000_000)

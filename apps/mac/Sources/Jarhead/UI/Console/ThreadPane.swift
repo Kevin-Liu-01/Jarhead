@@ -324,14 +324,14 @@ private struct ThreadComposer: View {
 
     /// One line for a composer that is off: the thread is over, or the engine said it takes none.
     private var off: String? {
-        if !thread.status.isLive { return "\(thread.name) is \(thread.status.words) — nothing more to say to it." }
+        if !thread.status.isLive { return "\(thread.name) is \(thread.status.words). Nothing more to say to it." }
         if !thread.canSay && !isMain { return "\(thread.name) is not taking messages right now." }
         return nil
     }
 
     private var placeholder: String {
         if isMain {
-            if phase == .paused { return "Paused — press Go or type to resume" }
+            if phase == .paused { return "Paused. Press Go or type to resume" }
             if asleep { return typedWakes ? "Type to wake Jarhead…" : "Type to Jarhead… (asleep: press Go)" }
             return ConsoleTheme.sessionPhases.contains(phase) ? "Say something…" : "Type to Jarhead…"
         }

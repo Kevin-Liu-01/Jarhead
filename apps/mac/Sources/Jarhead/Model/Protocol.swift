@@ -479,7 +479,7 @@ public enum BrainKind: String, Codable, CaseIterable {
     /// One line for a picker: what it needs.
     public var needs: String {
         switch self {
-        case .auto: return "Whatever is signed in on this Mac — Codex, Claude Code — or a key you add."
+        case .auto: return "Whatever is signed in on this Mac (Codex, Claude Code) or a key you add."
         case .codex: return "Your ChatGPT / Codex login on this Mac. No key."
         case .claudeCode: return "Your Claude Code login on this Mac. No key."
         case .anthropicApi: return "An Anthropic API key."

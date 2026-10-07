@@ -433,13 +433,13 @@ enum ConsoleTheme {
             // The gate's reason for the plain switch-off is itself "wake word off";
             // the em-dash form would read "Wake word off — wake word off".
             let why = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            let label = why.isEmpty || why.lowercased() == "wake word off" ? "Wake word off" : "Wake word off — \(why)"
+            let label = GateWords.off(why)
             return GateMeta(symbol: "ear.trianglebadge.exclamationmark", color: titanium, label: label)
         case .listening:
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
             // Paused: the word resumes without authentication (WakeGate.isPaused); say so, and name the button.
             if paused { return GateMeta(symbol: "ear.fill", color: listening, label: "paused · say “\(phrase)” or press Go") }
-            return GateMeta(symbol: "ear.fill", color: listening, label: "Listening for “\(phrase)”" + (auth == .none ? " — no authentication" : ""))
+            return GateMeta(symbol: "ear.fill", color: listening, label: "Listening for “\(phrase)”" + (auth == .none ? GateWords.noAuth : ""))
         case .heard:
             return GateMeta(symbol: "waveform.circle.fill", color: acting, label: "Heard you")
         case .authenticating(let method):
@@ -447,7 +447,7 @@ enum ConsoleTheme {
         case .granted:
             return GateMeta(symbol: "waveform.circle.fill", color: acting, label: paused ? "Resuming…" : "Waking…")
         case .denied(let reason):
-            return GateMeta(symbol: "xmark.circle.fill", color: error, label: "Not this time — \(reason)")
+            return GateMeta(symbol: "xmark.circle.fill", color: error, label: GateWords.denied(reason))
         case .lockedOut(let until):
             return GateMeta(symbol: "lock.slash.fill", color: error, label: "Locked for \(max(1, Int(until.timeIntervalSince(now).rounded()))) s")
         }

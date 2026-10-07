@@ -173,15 +173,15 @@ enum OrbStyle {
     /// the word to *resume*, unauthenticated (WakeGate.isPaused), and the row says so.
     static func gateLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, now: Date = Date(), paused: Bool = false) -> String {
         switch g {
-        case .off(let reason): return "Wake word off — \(reason)"
+        case .off(let reason): return GateWords.off(reason)
         case .listening:
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
             if paused { return "paused · say “\(phrase)” or press Go" }
-            return "Listening for “\(phrase)”" + (auth == .none ? " — no authentication" : "")
+            return "Listening for “\(phrase)”" + (auth == .none ? GateWords.noAuth : "")
         case .heard: return "Heard you"
         case .authenticating(let method): return "Waiting for \(method)"
         case .granted: return paused ? "Resuming…" : "Waking…"
-        case .denied(let reason): return "Not this time — \(reason)"
+        case .denied(let reason): return GateWords.denied(reason)
         case .lockedOut(let until): return "Locked for \(max(1, Int(until.timeIntervalSince(now).rounded()))) s"
         }
     }
@@ -433,7 +433,7 @@ struct OrbCapsuleView: View {
                             .lineLimit(1)
                     }
                 }
-                .help("Billed by the paused session — the meter stopped when it closed" + (today.map { " · " + $0 } ?? ""))
+                .help("Billed by the paused session. The meter stopped when it closed" + (today.map { " · " + $0 } ?? ""))
             } else if model.connected, let today {
                 Text(today)
                     .font(.system(size: 11, design: .monospaced).monospacedDigit())
@@ -575,7 +575,7 @@ struct OrbCapsuleView: View {
                           style: AppState.transportFilled(for: phase) ? .accent : .ghost,
                           dim: phase == .connecting, theme: theme, action: pressTransport)
             OrbIconButton(icon: muted ? "mic.slash.fill" : "mic.fill", help: muted ? "Unmute" : "Mute", selected: muted, enabled: inSession, theme: theme, action: actions.toggleMute)
-            OrbIconButton(icon: "stop.fill", help: "Stop — close the session, sleep (⌥⎋)", style: running ? .danger : .ghost, theme: theme, action: actions.stop)
+            OrbIconButton(icon: "stop.fill", help: "Stop: close the session, sleep (⌥⎋)", style: running ? .danger : .ghost, theme: theme, action: actions.stop)
             Spacer(minLength: 0)
             OrbIconButton(icon: "rectangle.3.group.fill", help: "Console", theme: theme, action: actions.openConsole)
         }
