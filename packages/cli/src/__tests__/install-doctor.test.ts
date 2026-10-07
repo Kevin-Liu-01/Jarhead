@@ -55,7 +55,7 @@ test("doctor app rows: a healthy Mac — installed, real identity, strict ok wit
 test("doctor app rows: two Dock tiles and stale records warn with `pnpm jarhead dock --fix`; a failed verify or a missing identifier warns with `pnpm build:mac`", () => {
   const rows = byName(installChecks({ exec: exec({ dock: fixture("dock-two-tiles.xml") }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
   assert.equal(rows["dock"]!.status, "warn");
-  assert.equal(rows["dock"]!.detail, "1 pinned, 1 recent — two tiles");
+  assert.equal(rows["dock"]!.detail, "1 pinned, 1 recent. Two tiles");
   assert.equal(rows["dock"]!.fix, "pnpm jarhead dock --fix");
   assert.equal(rows["launch services"]!.status, "warn");
   assert.match(rows["launch services"]!.detail, /^4 Jarhead records: also .*\.Trash\/Jarhead\.app.*open -a Jarhead can pick one of them/);
@@ -148,7 +148,7 @@ test("doctor app rows: a Dock with no Jarhead pin is a warn that asks Kevin to d
   const unpinned = serializePlistXml(dictSet(clean, "persistent-apps", { kind: "array", items: others }));
   const rows = byName(installChecks({ exec: exec({ dock: unpinned, dump: CLEAN_DUMP }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
   assert.equal(rows["dock"]!.status, "warn", "an ok row that tells Kevin to do something is a contradiction");
-  assert.match(rows["dock"]!.detail, /^not pinned — drag \/Applications\/Jarhead\.app to the Dock once/);
+  assert.match(rows["dock"]!.detail, /^not pinned\. Drag \/Applications\/Jarhead\.app to the Dock once/);
   assert.equal(rows["dock"]!.fix, undefined, "nothing `dock --fix` can do about a missing pin");
 
   const slow = byName(installChecks({ exec: exec({ dumpCode: 1 }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));

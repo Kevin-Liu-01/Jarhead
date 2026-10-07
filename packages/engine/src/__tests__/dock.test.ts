@@ -28,7 +28,7 @@ const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
 // second Foreground "Jarhead" from the same bundle — the second tile no plist repair removes.
 const RUNNING_HELPER = fixture("lsappinfo-helper.txt");
 const HELPER = { pid: 66017, bundleId: "com.kevinliu.jarhead", executable: "/Applications/Jarhead.app/Contents/MacOS/jarhead-hands", type: "Foreground" };
-const HELPER_CLAUSE = "jarhead-hands pid 66017 is a Foreground app (the second tile) — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then Fix the Dock clears the leftover";
+const HELPER_CLAUSE = "jarhead-hands pid 66017 is a Foreground app (the second tile). The pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then Fix the Dock clears the leftover";
 
 interface Call {
   readonly cmd: string;
@@ -370,7 +370,7 @@ test("dockProblemText with helperTiles: a clean plist and one Foreground jarhead
   assert.equal(two.recent, 1);
   assert.equal(Engine.dockProblemText({ ...two, helperTiles: [HELPER] }), `Two Jarhead tiles in the Dock: ${HELPER_CLAUSE}`);
   // Two helpers over the one leftover: three tiles, both pids.
-  assert.equal(Engine.dockProblemText({ ...two, helperTiles: [HELPER, { ...HELPER, pid: 66020 }] }), "3 Jarhead tiles in the Dock: jarhead-hands pids 66017, 66020 are Foreground apps (the extra tiles) — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then Fix the Dock clears the leftover");
+  assert.equal(Engine.dockProblemText({ ...two, helperTiles: [HELPER, { ...HELPER, pid: 66020 }] }), "3 Jarhead tiles in the Dock: jarhead-hands pids 66017, 66020 are Foreground apps (the extra tiles). The pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then Fix the Dock clears the leftover");
   // No helper (an empty list, or nobody read `lsappinfo`): today's lines, no clause.
   assert.equal(Engine.dockProblemText({ ...two, helperTiles: [] }), "Two Jarhead tiles in the Dock");
   assert.equal(Engine.dockProblemText({ ...clean, helperTiles: [] }), undefined);

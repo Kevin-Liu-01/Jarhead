@@ -129,7 +129,7 @@ export function describeHelperTiles(helpers: readonly RunningApp[], remedy = "do
   const names = [...new Set(helpers.map((h) => basenameOf(h.executable ?? "") || "a helper"))].join(", ");
   const pids = helpers.map((h) => h.pid).join(", ");
   const who = helpers.length === 1 ? `${names} pid ${pids} is a Foreground app (the second tile)` : `${names} pids ${pids} are Foreground apps (the extra tiles)`;
-  return `${who} — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then ${remedy} clears the leftover`;
+  return `${who}. The pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then ${remedy} clears the leftover`;
 }
 
 export interface DockOptions {
@@ -269,7 +269,7 @@ export function describeDock(a: DockAudit | undefined, skipped?: string): string
   if (!a) return "Dock: not read";
   const helpers = a.helperTiles ?? [];
   const cause = helpers.length ? `; ${describeHelperTiles(helpers)}` : "";
-  if (a.pinned === 0 && a.recent === 0) return `Dock: not pinned — drag /Applications/Jarhead.app to the Dock once; the bookmark then stays valid across builds${cause}`;
+  if (a.pinned === 0 && a.recent === 0) return `Dock: not pinned. Drag /Applications/Jarhead.app to the Dock once; the bookmark then stays valid across builds${cause}`;
   if (a.pinned === 0) return `Dock: not pinned, ${a.recent} recent${cause}`;
   const base = `Dock: ${a.pinned} pinned, ${a.recent} recent`;
   if (a.changes.length === 0) return `${base}${cause}`;
@@ -279,7 +279,8 @@ export function describeDock(a: DockAudit | undefined, skipped?: string): string
   if (a.pinned > 1) notes.push(`${a.pinned - 1} duplicate pin${a.pinned - 1 === 1 ? "" : "s"}`);
   const rebuild = a.changes.find((c) => c.kind === "rebuild-pin");
   if (rebuild && rebuild.urlWas !== INSTALLED_URL) notes.push(`pin points at ${rebuild.urlWas ?? "nothing"}`);
-  return `${base} — ${notes.join(", ") || "needs a repair"}${cause}`;
+  const said = notes.join(", ") || "needs a repair";
+  return `${base}. ${said.charAt(0).toUpperCase()}${said.slice(1)}${cause}`;
 }
 
 /** What a repair did, for the summary line: "removed 1 recent tile, pin rebuilt". */
