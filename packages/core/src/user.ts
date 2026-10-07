@@ -69,5 +69,5 @@ function safeUsername(): string {
  * engine's problem, Setup › Voice, the report line and the doctor's key row all say it.
  */
 export function noLiveModelLine(liveModel: string): string {
-  return `OpenAI key works, but ${liveModel} is not on it — enable ${liveModel} on the OpenAI project this key belongs to, or paste a key from a project that has it`;
+  return `OpenAI key works, but ${liveModel} is not on it. Enable ${liveModel} on the OpenAI project this key belongs to, or paste a key from a project that has it.`;
 }

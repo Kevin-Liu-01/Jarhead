@@ -1569,18 +1569,18 @@ export class Engine extends EventEmitter<EngineEvents> {
    * and does nothing until it is removed and the app asks again.
    */
   static readonly PERMISSION_PROBLEMS: Record<HelperPermissionKind, string> = {
-    accessibility: "Accessibility not granted: clicks and typing will silently do nothing until it is (if System Settings already shows Jarhead on, that row is from an earlier build — remove it and press Request)",
+    accessibility: "Accessibility not granted: clicks and typing will silently do nothing until it is (if System Settings already shows Jarhead on, that row is from an earlier build: remove it and press Request)",
     screenRecording: "Screen Recording not granted: screenshots will fail until it is (if System Settings already shows Jarhead on, remove that row and press Request)",
-    inputMonitoring: "Input Monitoring not granted: the keys Jarhead watches for while you circle or dictate will not arrive until it is (System Settings › Privacy & Security › Input Monitoring; if it already shows Jarhead on, that row is from an earlier build — remove it and ask again)",
-    fullDiskAccess: "Full Disk Access not granted: files under Desktop/Documents/Downloads/Mail/Safari will fail with EPERM until Jarhead.app is added in System Settings › Privacy & Security › Full Disk Access (if it already shows Jarhead on, that row is from an earlier build — remove it and add the app again)",
+    inputMonitoring: "Input Monitoring not granted: the keys Jarhead watches for while you circle or dictate will not arrive until it is (System Settings › Privacy & Security › Input Monitoring; if it already shows Jarhead on, that row is from an earlier build: remove it and ask again)",
+    fullDiskAccess: "Full Disk Access not granted: files under Desktop/Documents/Downloads/Mail/Safari will fail with EPERM until Jarhead.app is added in System Settings › Privacy & Security › Full Disk Access (if it already shows Jarhead on, that row is from an earlier build: remove it and add the app again)",
   };
 
   /** What a grant that just appeared means, for the toast. */
   private static readonly GRANTED_NOTE: Record<HelperPermissionKind, string> = {
-    accessibility: "hands can click and type now",
-    screenRecording: "screenshots will work now",
-    inputMonitoring: "the keys you press while circling reach Jarhead now",
-    fullDiskAccess: "Mail, Safari and every folder are readable now",
+    accessibility: "Hands can click and type now.",
+    screenRecording: "Screenshots will work now.",
+    inputMonitoring: "The keys you press while circling reach Jarhead now.",
+    fullDiskAccess: "Mail, Safari and every folder are readable now.",
   };
 
   /**
@@ -1667,7 +1667,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         // cut the helper's own greeting short and report a failure that never happened.
         if ((kind === "accessibility" || kind === "screenRecording") && before === "denied") regained = true;
         this.clearProblemText(text);
-        if (before !== "unknown") this.toast(`${row.label} granted — ${Engine.GRANTED_NOTE[kind]}`, "info");
+        if (before !== "unknown") this.toast(`${row.label} granted. ${Engine.GRANTED_NOTE[kind]}`, "info");
       } else {
         this.problemOf(Engine.permissionProblemKind(kind), text, Engine.permissionRemedy(kind));
         if (before === "granted") this.toast(`${row.label} was revoked`, "warn");
@@ -2251,7 +2251,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         // The pick resolved and the server still refused: the heal timer waits for the server to change; Retry and a settings change do not.
         this.localRefusedOn = problem.refused ? Engine.localServerIdentity(this.localStatus) : undefined;
         this.problemOf("brain.local", problem.text, problem.remedy);
-        this.problemOf("brain.unavailable", `Local brain unavailable (${detail}); using the OpenAI backend instead — until it is back, the brain's work goes to OpenAI too. Memory stays local.`, Engine.BRAIN_REMEDY);
+        this.problemOf("brain.unavailable", `Local brain unavailable (${detail}); using the OpenAI backend instead. Until it is back, the brain's work goes to OpenAI too. Memory stays local.`, Engine.BRAIN_REMEDY);
         return;
       }
       this.problemOf("brain.unavailable", `${label} brain unavailable (${detail}); ${walks ? "trying the next backend" : "using the OpenAI backend instead"}`, Engine.BRAIN_REMEDY);
@@ -2465,7 +2465,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const pinned = this.settings.brainBaseUrl?.trim();
     if (!status.reachable) {
       const where = pinned ? `at ${hostOf(status.baseUrl) ? new URL(status.baseUrl).host : pinned}` : "on this Mac (127.0.0.1:11434, :1234, :8080)";
-      return { text: `Local brain: nothing answers ${where}. Open Ollama, or install it — see docs/LOCAL.md.`, remedy: Engine.LOCAL_REMEDY };
+      return { text: `Local brain: nothing answers ${where}. Open Ollama, or install it (see docs/LOCAL.md).`, remedy: Engine.LOCAL_REMEDY };
     }
     const server = serverLabel(status);
     const wanted = this.settings.brainModel.trim();
@@ -3577,7 +3577,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     if (!this.live) {
       if (this.settings.typedWakes !== true) {
-        this.toast("asleep — press Go", "warn");
+        this.toast("Asleep. Press Go.", "warn");
         log.info(`say-text: ${t.length} chars while asleep → refused in ${Math.round(performance.now() - t0)} ms (Settings.typedWakes off; the text stays in the composer)`);
         return;
       }
@@ -5025,7 +5025,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   async resume(): Promise<void> {
     const pause = this.pauseInfo;
     if (!pause) {
-      this.toast(this.live ? "not paused" : "asleep — press Go", "info");
+      this.toast(this.live ? "not paused" : "Asleep. Press Go.", "info");
       return;
     }
     if (this.connecting) return; // the resume is already opening its session
@@ -5046,7 +5046,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   async reopenVoice(opts: { readonly how?: "reconnected" | "voice change"; readonly why?: string } = {}): Promise<void> {
     if (this.delegator?.active !== undefined || this.threads.running() > 0) {
-      this.toast("busy — heard at the next wake", "info");
+      this.toast("Busy. Heard at the next wake.", "info");
       return;
     }
     if (!this.live?.session || this.connecting || this.pauseInfo || this.sleeping) {
@@ -5458,7 +5458,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     });
     this.live?.appendInstructions(null, `${this.userName} is dictating into a field on the screen: the words are typed as they are spoken. Stay completely silent until ${this.userName} says "stop dictating"; do not delegate the dictated words.`, { ask: false });
     this.ledger.append({ at: this.now(), type: "dictation", state: "started" } as unknown as LedgerRow);
-    this.toast("dictating — say \"stop dictating\" to end", "info");
+    this.toast("Dictating. Say \"stop dictating\" to end.", "info");
     this.recomputePhase();
   }
 
@@ -6113,7 +6113,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       const heard = this.lastHeardAt > this.lastAddressedAt ? `; the room was heard ${Math.round((now - this.lastHeardAt) / 1000)} s ago` : "";
       const span = byCeiling ? `${Math.round(ceilingMs / 60_000)} min (the ceiling; words that name Jarhead do not count)` : `${Math.round(limitMs / 60_000)} min${limitMs === idleMs ? "" : " (the ceiling)"}`;
       log.info(`no addressed turn for ${span}${heard}; sleeping`);
-      this.toast("asleep — tap the orb to wake", "info");
+      this.toast("Asleep. Tap the orb to wake.", "info");
       void this.fallAsleep("idle");
     }
     // A pause nobody resumed decays to sleep: the held conversation is let go.
@@ -6573,7 +6573,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   static dockProblemText(a: DockAudit): string | undefined {
     const helpers = a.helperTiles ?? [];
     const tiles = a.pinned + Math.max(a.recent, helpers.length);
-    const cause = helpers.length ? ` — ${describeHelperTiles(helpers, "Fix the Dock")}` : "";
+    const cause = helpers.length ? `: ${describeHelperTiles(helpers, "Fix the Dock")}` : "";
     if (a.pinned >= 1 && tiles >= 2) return `${tiles === 2 ? "Two Jarhead tiles in the Dock" : `${tiles} Jarhead tiles in the Dock`}${cause}`;
     const rebuild = a.changes.find((c) => c.kind === "rebuild-pin");
     if (rebuild && rebuild.urlWas !== INSTALLED_URL) return `The Dock's Jarhead pin points at ${rebuild.urlWas ?? "nothing"}`;
@@ -6603,7 +6603,7 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** What Fix the Dock says while a helper's tile stands: the plist half is done (or was clean); the tile is the helper's to lose. */
   private static dockHelperToast(written: boolean): string {
-    return `${written ? "Dock written" : "Dock unchanged"} — the helper's tile returns while it lives; rebuild (pnpm build:mac) and relaunch`;
+    return `${written ? "Dock written" : "Dock unchanged"}. The helper's tile returns while it lives; rebuild (pnpm build:mac) and relaunch.`;
   }
 
   /** Read the Dock (one `defaults export`, no write) and the running helpers (one `lsappinfo list`), and set or clear the `dock` row from what they say. */
@@ -6677,9 +6677,9 @@ export class Engine extends EventEmitter<EngineEvents> {
     log.info(`fix the Dock: ${describeDock(after)} (${did}${restarted ? ", Dock restarted" : written ? ", Dock NOT restarted" : ", nothing written"})${skipped ? ` — ${skipped}` : ""}`);
     this.dockRestartOwed = written && !restarted;
     if (this.dockRestartOwed) {
-      const stood = Engine.dockProblemText(before) ?? this.typedProblems().find((p) => p.kind === "dock")?.text.replace(/ — .*$/, "") ?? "Two Jarhead tiles in the Dock";
-      this.replaceProblem("dock", `${stood} — Dock not restarted`, Engine.DOCK_REMEDY);
-      this.toast("Dock written, not restarted — press Fix the Dock again", "warn");
+      const stood = Engine.dockProblemText(before) ?? this.typedProblems().find((p) => p.kind === "dock")?.text.replace(/(?:: |\. ).*$/, "") ?? "Two Jarhead tiles in the Dock";
+      this.replaceProblem("dock", `${stood}. Dock not restarted.`, Engine.DOCK_REMEDY);
+      this.toast("Dock written, not restarted. Press Fix the Dock again.", "warn");
       this.scheduleSnapshot();
       return;
     }
@@ -6688,7 +6688,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.clearProblems("dock");
       this.toast(`Dock fixed: ${did}`, "info");
     } else {
-      this.replaceProblem("dock", skipped ? `${text} — ${skipped}` : text, Engine.DOCK_REMEDY);
+      const why = skipped ? `${text}. ${skipped.charAt(0).toUpperCase()}${skipped.slice(1)}` : text;
+      this.replaceProblem("dock", why, Engine.DOCK_REMEDY);
       // The plist half is done; the tile that stands is the helper's, and only its rebuild ends it.
       if (helpers.length) this.toast(Engine.dockHelperToast(written), "warn");
     }

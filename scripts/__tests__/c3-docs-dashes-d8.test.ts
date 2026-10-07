@@ -75,28 +75,17 @@ interface Kept {
   sourceHas?: readonly string[];
 }
 
-const DOCTOR = "packages/cli/src/doctor.ts";
 const ENGINE = "packages/engine/src/engine.ts";
-const PRIVACY = "packages/core/src/privacy.ts";
 
 const KEPT: readonly Kept[] = [
   { text: "tap is pre-duck — measure at the device", source: "apps/mac/Scripts/DuckLeakProbeMain.swift" },
   { text: "would need a yes when it runs; nobody is there then — notify instead", source: "packages/core/src/policy.ts" },
   { text: "this wakes the brain — not the voice — while Jarhead is asleep", source: "apps/mac/Sources/Jarhead/UI/Console/AutomationsRail.swift" },
-  { text: "asleep — press Go", source: ENGINE },
   { text: 'Last task: "<request>" — <status>: <summary>', source: ENGINE, sourceHas: ["`Last task: \"${", "}\" — ${last.status}: ${last.summary}`"] },
-  { text: "— defaults import failed (1)", source: ENGINE, sourceHas: ["skipped ? `${text} — ${skipped}` : text"] },
-  { text: "Two Jarhead tiles in the Dock — Dock not restarted", source: ENGINE, sourceHas: ['"Two Jarhead tiles in the Dock"', "`${stood} — Dock not restarted`"] },
-  { text: "Dock written, not restarted — press Fix the Dock again", source: ENGINE },
   { text: "Spotify is thinking — 0 seconds in", source: "packages/engine/src/threads/lines.ts", sourceHas: ['`${name} is ${phrase ?? "thinking"} — ${s} seconds in`'] },
   { text: "not yet — say the date", source: "packages/core/src/schedule.ts" },
-  // docs/LOCAL.md: the four "Leaves the Mac" rows and the Console's local-brain lines.
-  { text: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session", source: PRIVACY, sourceHas: ["`OpenAI ${i.liveModel} — every word heard and said; billed per second of open session`"] },
-  { text: "qwen3.5:27b on Ollama 0.34.0 — nothing leaves", source: PRIVACY, sourceHas: ["`${model} on ${server} — nothing leaves`"] },
-  { text: "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves", source: PRIVACY, sourceHas: ['`embeddings ${m.embeddingModel ?? "local"}${dims} · ${reads}`', "`${how} — nothing leaves`"] },
-  { text: "Open Ollama, or install it — see docs/LOCAL.md.", source: ENGINE },
+  // docs/LOCAL.md: the Console's local-brain lines.
   { text: "qwen3 is ambiguous here: qwen3:8b, qwen3:32b — pick one", source: "packages/brain/src/local.ts", sourceHas: ['is ambiguous here: ${byName.map((m) => m.id).join(", ")} — pick one`'] },
-  { text: "using the OpenAI backend instead — until it is back, the brain's work goes to OpenAI too. Memory stays local.", source: ENGINE },
 ];
 
 /** A quote may wrap across lines in the doc: any run of whitespace matches any run. */
@@ -158,8 +147,8 @@ test("C3: the docs checked are every Markdown file, the ones C3 rewrote among th
 });
 
 test("C3: the em dash check catches prose and spares a kept quote", () => {
-  assert.deepEqual(strayDashes(`one ${EM} two\n\`asleep ${EM} press Go\`\n`), [`1: one ${EM} two`]);
-  assert.deepEqual(strayDashes(`toast "asleep\n${EM} press Go" kept`), []);
+  assert.deepEqual(strayDashes(`one ${EM} two\n\`not yet ${EM} say the date\`\n`), [`1: one ${EM} two`]);
+  assert.deepEqual(strayDashes(`error "not yet\n${EM} say the date" kept`), []);
 });
 
 test("D8: Go / Pause stays ⌥⇧Space, the one hotkey whose combo types a character; the docs and the check say so", () => {

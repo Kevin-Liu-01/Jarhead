@@ -70,7 +70,7 @@ test("F4: the Live model probe — 404 is noLiveModel with the voice.key line an
     const key = engine.typedProblems().filter((p) => p.kind === "voice.key");
     assert.equal(key.length, 1);
     assert.equal(key[0]!.text, noLiveModelLine(engine.config.liveModel));
-    assert.match(key[0]!.text, /^OpenAI key works, but gpt-live-1 is not on it — enable gpt-live-1 on the OpenAI project/);
+    assert.match(key[0]!.text, /^OpenAI key works, but gpt-live-1 is not on it\. Enable gpt-live-1 on the OpenAI project/);
     assert.deepEqual(key[0]!.remedy, { label: "Open Setup", open: "jarhead://setup" });
     status = 200;
     assert.equal((await engine.probeSetup()).openaiKey, "ok");

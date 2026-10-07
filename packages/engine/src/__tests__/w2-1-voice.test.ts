@@ -277,14 +277,14 @@ test("V6 (audit repro): typed while paused and the resume fails: 'not sent · co
     await engine.sayText("are you there");
     await settle(20);
     assert.equal(engine.transportState, "paused", "the conversation is still held");
-    assert.ok(!toasts(events).includes("asleep — press Go"), "a paused Jarhead is not asleep");
+    assert.ok(!toasts(events).includes("Asleep. Press Go."), "a paused Jarhead is not asleep");
     assert.equal(toasts(events).at(-1), "not sent · could not resume, still paused");
   } finally {
     await engine.stop();
   }
 });
 
-test("V6: a line typed during a handshake waits for its session and reaches it, never 'asleep — press Go'", async () => {
+test("V6: a line typed during a handshake waits for its session and reaches it, never 'Asleep. Press Go.'", async () => {
   let ready!: () => void;
   const brain: Brain = {
     kind: "fake",
@@ -305,7 +305,7 @@ test("V6: a line typed during a handshake waits for its session and reaches it, 
     ready();
     await waking;
     await typing;
-    assert.ok(!toasts(events).some((t) => /asleep|not sent/.test(t)), JSON.stringify(toasts(events)));
+    assert.ok(!toasts(events).some((t) => /asleep|not sent/i.test(t)), JSON.stringify(toasts(events)));
     assert.ok(current(w).instructions.some((i) => i.includes('"open my calendar"')), JSON.stringify(current(w).instructions));
   } finally {
     await engine.stop();

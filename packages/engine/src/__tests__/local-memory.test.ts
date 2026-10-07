@@ -79,7 +79,7 @@ test("brain local with OPENAI_API_KEY set: the store is built over LocalEmbedder
     assert.equal(rf.openai(), 0, `nothing went to api.openai.com: ${rf.urls.join(", ")}`);
     // The data-path row says where memory's words go.
     const memoryRow = engine.snapshot().setup.dataPaths.find((p) => p.what === "memory")!;
-    assert.deepEqual(memoryRow, { what: "memory", where: "mac", detail: "embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b — nothing leaves" });
+    assert.deepEqual(memoryRow, { what: "memory", where: "mac", detail: "embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b. Nothing leaves." });
     // A conversation with enough Kevin lines closes; the quiet tick reads it — on the local server, through the ChatExtractor.
     await engine.wake("test");
     for (const line of ["call me Kev", "I prefer dark mode", "from now on read the diff first", "my sister is called Anna", "what time is it"]) await heard(w, line);
@@ -118,7 +118,7 @@ test("brain local with no embedding model on the server: keyword matching with t
     assert.equal(summary.embeddings, "keyword");
     assert.equal(summary.embeddingModel, undefined);
     assert.equal(server.seen.filter((r) => r.path === "/api/embed").length, 0, "no embedding model: nothing to probe");
-    assert.deepEqual(engine.snapshot().setup.dataPaths.find((p) => p.what === "memory"), { what: "memory", where: "mac", detail: "keywords · extractor qwen3.5:27b — nothing leaves" });
+    assert.deepEqual(engine.snapshot().setup.dataPaths.find((p) => p.what === "memory"), { what: "memory", where: "mac", detail: "keywords · extractor qwen3.5:27b. Nothing leaves." });
     assert.equal(rf.openai(), 0);
   } finally {
     await engine.stop();
@@ -225,7 +225,7 @@ test("brain local while nothing answers: memory runs on keywords and rules — n
     assert.equal(engine.brainInfo.kind, "fake", "the test brain stands in for the fallback");
     assert.equal(engine.snapshot().memory?.embeddings, "keyword");
     assert.equal(rf.openai(), 0, "the setting is local: no OpenAI embedder, no Responses extractor");
-    assert.deepEqual(engine.snapshot().setup.dataPaths.find((p) => p.what === "memory"), { what: "memory", where: "mac", detail: "keywords · rules — nothing leaves" });
+    assert.deepEqual(engine.snapshot().setup.dataPaths.find((p) => p.what === "memory"), { what: "memory", where: "mac", detail: "keywords · rules. Nothing leaves." });
   } finally {
     await engine.stop();
   }
