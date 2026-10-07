@@ -13,9 +13,13 @@
   --ear: 10px;
   --pad: clamp(20px, 6vw, 112px);
   --wrap: min(100% - 2 * var(--pad), 1296px);
-  /* the island's scale over the hero (0.86 at 950 px of height, 0.7 to 0.86) and docked (0.62: 37 + 114 = 151 px) */
-  --fit-s: tan(atan2(100vw - 24px, 420px));
-  --hero-s: min(var(--fit-s), clamp(0.7, tan(atan2(100svh, 1100px)), 0.86));
+  /* the island's scale over the hero (0.86 at 950 px of height, 0.7 to 0.86) and docked (0.62: 37 + 114 = 151 px). Its
+     inputs, --fit-s and --tall-s (and the phone's --phone-s), are written on <html> before paint by lib/scale.ts; these are
+     the fallback without script, clamped because WebKit on iOS reads atan2's degrees as radians for a relative length,
+     which drew the island as a sliver or wider than the screen */
+  --fit-s: clamp(0.5, tan(atan2(100vw - 24px, 420px)), 4);
+  --tall-s: clamp(0.5, tan(atan2(100svh, 1100px)), 1);
+  --hero-s: min(var(--fit-s), clamp(0.7, var(--tall-s), 0.86));
   --compact-s: min(0.62, var(--fit-s));
   --top-dock: calc(var(--bar-h) + 184px * var(--compact-s));
   /* the h1 holds `Your Mac, by voice`, the stop's breath and the blob on one line: 8.88 em, so the cap is 145.5 px (the
@@ -73,7 +77,7 @@
 .top-band::before, .top-band::after { content: ""; position: absolute; top: 0; width: calc(var(--e) + var(--e1)); height: calc(var(--e) + 4px); }
 .top-band::before { right: calc(100% - var(--e1)); background: radial-gradient(circle at 0 100%, transparent calc(var(--e) - 0.75px), var(--jh-desk-notch) var(--e)); }
 .top-band::after { left: calc(100% - var(--e1)); background: radial-gradient(circle at 100% 100%, transparent calc(var(--e) - 0.75px), var(--jh-desk-notch) var(--e)); }
-.top-probe { position: absolute; left: 0; top: 0; width: 0; visibility: hidden; }
+.top-probe { position: absolute; left: 0; top: 0; width: 0; visibility: hidden; transition-property: none; }
 .top-probe--hero { height: calc(184px * var(--hero-s)); }
 .top-probe--dock { height: calc(184px * var(--compact-s)); }
 .top-fade { position: absolute; left: 0; right: 0; top: var(--bar-h); z-index: 0; height: calc(184px * var(--compact-s) + 48px); overflow: hidden; opacity: 0; transition: opacity var(--jh-base) var(--jh-ease-out); }
@@ -302,7 +306,7 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
   /* the h1's 8.88 em (the stop's breath and the blob) fits the wrap from 600 to 720 */
   /* the island never leaves less than a 40 px status item, its 4 px from the edge and 4 px from the ear beside it
      (--phone-s: 2 × (4 + 40 + 4 + --ear)); at 580 px and under the bar is the band and the island hangs under it */
-  :root { --bar-h: 44px; --ear: 8px; --phone-s: tan(atan2(100vw - 112px, 420px)); --hero-s: min(var(--phone-s), clamp(0.6, tan(atan2(100svh, 1100px)), 0.86));
+  :root { --bar-h: 44px; --ear: 8px; --phone-s: clamp(0.5, tan(atan2(100vw - 112px, 420px)), 4); --hero-s: min(var(--phone-s), clamp(0.6, var(--tall-s), 0.86));
     --compact-s: min(0.6, var(--phone-s)); --h1: calc((100vw - 2 * var(--pad)) / 8.95); --h2: clamp(28px, 7.8vw, 42px); }
   .bar { padding: 0 6px 0 12px; }
   .bar-l { gap: 10px; }
@@ -319,6 +323,9 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
   .glass { --key-h: 72px; }
   .glass-cap { padding: 0 18px; gap: 14px; }
   .glass-l2 { font-size: 12px; }
+  /* under 347 px the key's second line no longer fits on one at 12 px: it steps down and, at the narrowest, wraps, balanced,
+     rather than lose its last word (InstallKey's mask follows each line) */
+  @media (max-width: 346px) { .glass-cap { padding: 0 14px; gap: 12px; } .glass-l2 { font-size: 11.5px; line-height: 1.25; white-space: normal; text-wrap: balance; } }
   .source { height: 56px; justify-content: center; }
   .sec-in { padding-top: calc(var(--top-dock) + 40px); padding-bottom: 64px; min-height: 0; }
   /* one sentence a line as on the desk (Hands' three steps on three), at a size the longest, Say's first, fits from 360 up */
@@ -338,7 +345,7 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
    face and words read at (only a 12 px gutter each side). The band is then just the join under the bar, and its ears
    sit where the body leaves the bar's foot, concave, so the bar pours into the island. */
 @media (max-width: 580px) {
-  :root { --hero-s: min(var(--fit-s), clamp(0.6, tan(atan2(100svh, 1100px)), 0.86)); --compact-s: min(0.6, var(--fit-s)); }
+  :root { --hero-s: min(var(--fit-s), clamp(0.6, var(--tall-s), 0.86)); --compact-s: min(0.6, var(--fit-s)); }
   .bar { background: var(--jh-desk-notch); border-bottom-color: transparent; color: var(--jh-screen-fg-2); }
   .bar-apple, .bar-app { color: var(--jh-paper); }
   .bar-item { color: var(--jh-screen-fg-2); }

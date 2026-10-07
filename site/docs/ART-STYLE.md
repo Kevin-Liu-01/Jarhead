@@ -230,7 +230,8 @@ so neither half of the h2 wins; the faces say what the gate does without a secon
 ### Worked example · Threads 03 (acting) · the Console window, not an art drawing
 
 The Threads section shows the app's own rows, so its picture is the Console window drawn with the kit at the app's density
-(560 × 420, scaled as one to a 4:3 frame by `tan(atan2(100cqw, 560px))`, stacked under 520 cqw): the Threads group (Slack
+(560 × 420 in a 4:3 frame, stacked under 520 cqw; not scaled by `tan(atan2(100cqw, 560px))`, which WebKit on iOS
+computes wrong, see DESIGN.md "The island"): the Threads group (Slack
 asks, Spotify and Notes done), Pinned, Today, Yesterday, Older, then Agents with the Claude Code sessions and the Codex and
 Cursor folds (`content/rail.ts`). It is real text inside an `aria-hidden` window with one deck alt on its frame.
 

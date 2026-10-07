@@ -1,6 +1,7 @@
 import localFont from "next/font/local";
 import type { ReactNode } from "react";
 import { ARRIVE_BOOT } from "@/lib/motion";
+import { SCALE_BOOT } from "@/lib/scale";
 import { themeBoot } from "@/lib/theme";
 import { token } from "@/lib/tokens";
 import "./globals.css";
@@ -52,8 +53,9 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
   return (
     <html lang="en" className={`${inter.variable} ${news.variable} ${newsItalic.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
-        {/* Before paint: the theme (a stored choice, else the system), then whether the hero's blob arrives (motion allowed). */}
-        <script dangerouslySetInnerHTML={{ __html: themeBoot({ light: token("--jh-ground"), dark: token("--jh-ground", "dark") }) + ARRIVE_BOOT }} />
+        {/* Before paint: the theme (a stored choice, else the system), whether the hero's blob arrives (motion allowed), and
+            the island's scale inputs from the viewport itself (lib/scale.ts). */}
+        <script dangerouslySetInnerHTML={{ __html: themeBoot({ light: token("--jh-ground"), dark: token("--jh-ground", "dark") }) + ARRIVE_BOOT + SCALE_BOOT }} />
       </head>
       <body>{children}</body>
     </html>

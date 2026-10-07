@@ -520,8 +520,10 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     let raf = 0;
     // the probes' exact heights (offsetHeight rounds to whole px), so the script's scale is the CSS one the server painted
     const measure = () => {
-      s.s0 = (probeHero.current?.getBoundingClientRect().height ?? ISL_H) / ISL_H || 1;
-      s.s1 = Math.min(s.s0, (probeDock.current?.getBoundingClientRect().height ?? ISL_H * 0.62) / ISL_H || 0.62);
+      // floored as lib/scale.ts floors its inputs: a probe that reads a sliver (a WebKit's stale or wrong ratio) never
+      // draws the island as one
+      s.s0 = Math.max(0.3, (probeHero.current?.getBoundingClientRect().height ?? ISL_H) / ISL_H || 1);
+      s.s1 = Math.min(s.s0, Math.max(0.3, (probeDock.current?.getBoundingClientRect().height ?? ISL_H * 0.62) / ISL_H || 0.62));
     };
     const apply = () => {
       raf = 0;
@@ -585,6 +587,20 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
           })
         : null;
     if (ro && bar) for (const item of bar.querySelectorAll<HTMLElement>(".bar-r > *, .bar-menus")) ro.observe(item);
+    // The scale follows its probes, not only the window's resize: lib/scale.ts also rewrites the inputs on orientationchange
+    // and pageshow, which fire no resize here, and a probe can settle after the resize event that moved it. A probe that
+    // changes height measures, fits and applies again. (The probes carry no transition, site.css: under reduced motion the
+    // global 0.01 ms one lagged them about three frames behind a rotation.)
+    const probes =
+      typeof ResizeObserver === "function"
+        ? new ResizeObserver(() => {
+            const h0 = s.s0;
+            const h1 = s.s1;
+            measure();
+            if (s.s0 !== h0 || s.s1 !== h1) onResize();
+          })
+        : null;
+    for (const p of [probeHero.current, probeDock.current]) if (probes && p) probes.observe(p);
     const offTheme = subscribeTheme(() => {
       tl.current.paper = null;
       paintMeters();
@@ -603,6 +619,7 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       offTheme();
       offDpr();
       ro?.disconnect();
+      probes?.disconnect();
       if (refit) cancelAnimationFrame(refit);
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onResize);

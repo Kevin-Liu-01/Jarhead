@@ -172,6 +172,12 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   faceCv.className = "desk-blob-face";
   // the face is on the field's cells: upscaled the same way, never smoothed
   faceCv.style.imageRendering = "pixelated";
+  // no size until alloc() gives them one: at a canvas's default 300×150 the install heading's blob reached past a phone's
+  // right edge for a frame, and WebKit kept the page that wide (537 px at 393), so it panned sideways
+  for (const cv of [field, faceCv]) {
+    cv.width = 0;
+    cv.height = 0;
+  }
   host.append(field, faceCv);
   const g = field.getContext("2d");
   const fg = faceCv.getContext("2d");

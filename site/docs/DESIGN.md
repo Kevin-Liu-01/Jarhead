@@ -141,7 +141,10 @@ its face never under 32 px.
   foot's Console · Sleep pair came within 1.6 px of the curve).
 - **The island** is the app's open island at 1:1 (420 × 184), the body under the band, square where it meets it and 24 px
   at its bottom corners, scaled as one from its top edge: over the hero at `--hero-s`, then its foot rises with the scroll
-  until it docks at `--compact-s` (0.62: 37 + 114 = 151 px). It never folds. Every word in it takes `max(its size, a floor
+  until it docks at `--compact-s` (0.62: 37 + 114 = 151 px). Both scales come from ratios of the viewport that
+  `lib/scale.ts` measures and writes on `<html>` before paint; no scale on the page is a `tan(atan2())` of a relative
+  length, because WebKit on iOS reads atan2's degrees as radians there (2026-10-06: the island a sliver at 430 px, wider
+  than the screen at 375 and 420). It never folds. Every word in it takes `max(its size, a floor
   / --top-s)` by its role, so docking keeps the app's hierarchy instead of flattening it to one size: the hero never under
   13.5 px on screen, the phase word, the buttons and the Say box never under 10.5, the head, the foot and the tiles never
   under 9.5 (`--isl-hero`, `--isl-word`, `--isl-small`), the hero at least 1.4 times the quiet lines. The hero is the app's

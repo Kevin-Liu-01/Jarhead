@@ -51,6 +51,34 @@ const GLANCE_MS = 1300;
 
 interface Spring { x: number; v: number; to: number; readonly k: number; readonly z: number }
 const spring = (k: number, z: number, x = 0): Spring => ({ x, v: 0, to: x, k, z });
+/**
+ * A label's rendered lines, each with its text and the box its glyphs sit in. One line for a label that does not wrap; under
+ * 347 px the second line wraps in two (styles/site.css), and the mask must follow each line, or the light runs into the
+ * words. A label that is not one text node is read as one line.
+ */
+function labelLines(el: HTMLElement): { text: string; left: number; top: number; height: number }[] {
+  const text = el.textContent ?? "";
+  const node = el.firstChild;
+  const whole = (): { text: string; left: number; top: number; height: number }[] => {
+    const r = el.getBoundingClientRect();
+    return [{ text, left: r.left, top: r.top, height: r.height }];
+  };
+  if (el.childNodes.length !== 1 || !node || node.nodeType !== Node.TEXT_NODE) return whole();
+  const range = document.createRange();
+  const lines: { start: number; text: string; left: number; top: number; height: number }[] = [];
+  for (const m of text.matchAll(/\S+/g)) {
+    const end = m.index + m[0].length;
+    range.setStart(node, m.index);
+    range.setEnd(node, end);
+    const r = range.getBoundingClientRect();
+    const cur = lines[lines.length - 1];
+    if (cur && Math.abs(r.top - cur.top) < 1) cur.text = text.slice(cur.start, end);
+    else lines.push({ start: m.index, text: m[0], left: r.left, top: r.top, height: r.height });
+  }
+  // one line: the element's own box, as the mask was always drawn
+  return lines.length > 1 ? lines : whole();
+}
+
 function step(s: Spring, dt: number): void {
   const c = 2 * s.z * Math.sqrt(s.k);
   s.v += (s.k * (s.to - s.x) - c * s.v) * dt;
@@ -243,23 +271,23 @@ export function InstallKey({ href, l1, l2 }: { readonly href: string; readonly l
       c.lineJoin = "round";
       c.lineCap = "round";
       for (const el of cap!.querySelectorAll<HTMLElement>(".glass-l1, .glass-l2")) {
-        const text = el.textContent ?? "";
-        const r = el.getBoundingClientRect();
         const cs = getComputedStyle(el);
         c.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
         if ("letterSpacing" in c) c.letterSpacing = cs.letterSpacing === "normal" ? "0px" : cs.letterSpacing;
         c.textBaseline = "alphabetic";
-        const mt = c.measureText(text);
-        // The baseline where CSS sets it: the font's ascent and descent centred in the line box.
-        const x = r.left - ox;
-        const y = r.top - oy + (r.height - (mt.fontBoundingBoxAscent + mt.fontBoundingBoxDescent)) / 2 + mt.fontBoundingBoxAscent;
-        for (const [w, al] of LABEL.moats) {
-          c.globalAlpha = al;
-          c.lineWidth = w;
-          c.strokeText(text, x, y);
+        for (const line of labelLines(el)) {
+          const mt = c.measureText(line.text);
+          // The baseline where CSS sets it: the font's ascent and descent centred in the line's box.
+          const x = line.left - ox;
+          const y = line.top - oy + (line.height - (mt.fontBoundingBoxAscent + mt.fontBoundingBoxDescent)) / 2 + mt.fontBoundingBoxAscent;
+          for (const [w, al] of LABEL.moats) {
+            c.globalAlpha = al;
+            c.lineWidth = w;
+            c.strokeText(line.text, x, y);
+          }
+          c.globalAlpha = 1;
+          c.fillText(line.text, x, y);
         }
-        c.globalAlpha = 1;
-        c.fillText(text, x, y);
       }
       const vb = mark!.viewBox.baseVal;
       if (vb && vb.width > 0) {
