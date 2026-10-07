@@ -42,7 +42,7 @@ test("modelsLines: the header counts the chat models, the tool-capable ones and 
   assert.equal(lines[0], "  Ollama 0.34.0 @ 127.0.0.1:11434 · 2 models · 1 with tools · 1 embedding · 128 GiB on this Mac");
   assert.match(lines[1]!, /^ {2}qwen3\.5:27b\s+17 GB\s+256k\s+tools vision thinking\s+good\s+loaded\s+← brain$/);
   assert.match(lines[2]!, /^ {2}gemma3:27b\s+17 GB\s+128k\s+vision\s+good$/, "tools-less: no badge for tools, no mark");
-  assert.match(lines[3]!, /^ {2}embeddinggemma:latest\s+—\s+—\s+embedding\s+—\s+← memory$/, "the row discovery never lists: size and window are not in the status");
+  assert.match(lines[3]!, /^ {2}embeddinggemma:latest\s+\?\s+\?\s+embedding\s+\?\s+← memory$/, "the row discovery never lists: size and window are not in the status");
   assert.equal(lines.length, 4, "a list with a tool-capable model prints no pull line");
   assert.ok(lines.every((l) => !/cloud/.test(l)), "no cloud rows: discovery drops cloud tags before the status");
   // No embedding model pulled: no row, no count.
@@ -59,18 +59,18 @@ test("modelsLines: the header counts the chat models, the tool-capable ones and 
 test("modelsLines: nothing tool-capable prints the pull to run for this Mac on Ollama, and says to load one on LM Studio / llama.cpp (their models are not pulled with `ollama pull`); nothing answering says where it looked; a pinned root is named", () => {
   const noTools: LocalServerStatus = { ...omit(status, "picked", "embedModel"), models: [model("gemma3:27b", { capabilities: ["completion", "vision"] })], suggested: { id: "qwen3.5:27b", sizeBytes: 17e9, command: "ollama pull qwen3.5:27b" } };
   const lines = modelsLines(noTools);
-  assert.equal(lines.at(-1), "  no models with tools — ollama pull qwen3.5:27b (17 GB; fits this Mac's 128 GiB)");
-  assert.deepEqual(modelsLines({ reachable: false, baseUrl: "", models: [], ramBytes: 128 * GIB, checkedAt: 1 }), ["  nothing on 127.0.0.1:11434 / :1234 / :8080 — open Ollama, or see docs/LOCAL.md"]);
-  assert.deepEqual(modelsLines({ reachable: false, baseUrl: "http://10.0.0.5:11434", models: [], ramBytes: 128 * GIB, checkedAt: 1 }), ["  nothing on 10.0.0.5:11434 — open Ollama, or see docs/LOCAL.md"]);
+  assert.equal(lines.at(-1), "  no models with tools: ollama pull qwen3.5:27b (17 GB; fits this Mac's 128 GiB)");
+  assert.deepEqual(modelsLines({ reachable: false, baseUrl: "", models: [], ramBytes: 128 * GIB, checkedAt: 1 }), ["  nothing on 127.0.0.1:11434 / :1234 / :8080. Open Ollama, or see docs/LOCAL.md"]);
+  assert.deepEqual(modelsLines({ reachable: false, baseUrl: "http://10.0.0.5:11434", models: [], ramBytes: 128 * GIB, checkedAt: 1 }), ["  nothing on 10.0.0.5:11434. Open Ollama, or see docs/LOCAL.md"]);
   // A tools-less list without a suggestion still names the pull (the RAM tier's).
   const bare = modelsLines(omit(noTools, "suggested"));
-  assert.match(bare.at(-1)!, /^ {2}no models with tools — ollama pull \S+ \(\d+ GB; fits this Mac's 128 GiB\)$/);
+  assert.match(bare.at(-1)!, /^ {2}no models with tools: ollama pull \S+ \(\d+ GB; fits this Mac's 128 GiB\)$/);
   // Discovery sets `suggested` (an `ollama pull`) for every flavour; the table does not repeat it for a server that is not Ollama.
   const lmStudio = modelsLines({ ...omit(noTools, "version"), flavor: "lmstudio", baseUrl: "http://127.0.0.1:1234", models: [] });
   assert.equal(lmStudio[0], "  LM Studio @ 127.0.0.1:1234 · 0 models · 0 with tools · 128 GiB on this Mac");
-  assert.equal(lmStudio.at(-1), "  no models with tools — load a model that can call tools in LM Studio");
+  assert.equal(lmStudio.at(-1), "  no models with tools. Load a model that can call tools in LM Studio");
   const llamaCpp = modelsLines({ ...omit(noTools, "version"), flavor: "llamacpp", baseUrl: "http://127.0.0.1:8080" });
-  assert.equal(llamaCpp.at(-1), "  no models with tools — load a model that can call tools in llama.cpp");
+  assert.equal(llamaCpp.at(-1), "  no models with tools. Load a model that can call tools in llama.cpp");
   for (const l of [...lmStudio, ...llamaCpp]) assert.doesNotMatch(l, /ollama pull/);
 });
 
@@ -94,7 +94,7 @@ test("runModels: one discovery call (the pinned root when --server is given), th
 test("localStatusLine: flavor · version · N models (M fit), then `brain <the setting or the pick>` only under the local brain — under another kind brainModel is that backend's (cloud) model, so the line says the server is not the brain; none when nothing answers", () => {
   assert.equal(localStatusLine(status, "local", ""), "  local      ollama 0.34.0 · 2 models (1 fit) · brain qwen3.5:27b");
   assert.equal(localStatusLine(status, "local", "gemma3:27b"), "  local      ollama 0.34.0 · 2 models (1 fit) · brain gemma3:27b", "the setting wins over the pick");
-  assert.equal(localStatusLine(omit(status, "picked"), "local", ""), "  local      ollama 0.34.0 · 2 models (1 fit) · brain —");
+  assert.equal(localStatusLine(omit(status, "picked"), "local", ""), "  local      ollama 0.34.0 · 2 models (1 fit) · brain none");
   // Brain openai-compatible with brainModel llama-3.3-70b and Ollama up: the cloud id is not a local brain.
   assert.equal(localStatusLine(omit(status, "picked"), "openai-compatible", "llama-3.3-70b"), "  local      ollama 0.34.0 · 2 models (1 fit) · not the brain (settings: openai-compatible)");
   assert.equal(localStatusLine(omit(status, "picked"), "codex", ""), "  local      ollama 0.34.0 · 2 models (1 fit) · not the brain (settings: codex)");
@@ -132,7 +132,7 @@ test("brainLines: the setting (best fit named), what runs, and the four data-pat
   const lines = brainLines(snapshotOf({ resolved: "local" }));
   assert.deepEqual(lines, [
     "  setting    local · model best fit (qwen3.5:27b)",
-    "  running    local · ready — Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools",
+    "  running    local · ready: Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools",
     "  leaves the Mac",
     "    voice   cloud  OpenAI gpt-live-1 — every word heard and said; billed per second of open session",
     "    brain   mac    qwen3.5:27b on Ollama 0.34.0 — nothing leaves",
@@ -141,7 +141,7 @@ test("brainLines: the setting (best fit named), what runs, and the four data-pat
   ]);
   const pinned = brainLines(snapshotOf({ brainModel: "qwen3.5:27b", brainBaseUrl: "http://10.0.0.5:11434", resolved: "openai-responses", ready: true }));
   assert.equal(pinned[0], "  setting    local · model qwen3.5:27b · server http://10.0.0.5:11434");
-  assert.equal(pinned[1], "  running    openai-responses · ready — Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools");
+  assert.equal(pinned[1], "  running    openai-responses · ready: Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools");
   // No rows from the daemon: computed here from the same function (@jarhead/core dataPaths).
   const computed = brainLines(snapshotOf({ resolved: "local", dataPaths: [] }));
   assert.deepEqual(computed.slice(3), lines.slice(3), "one function, the same four rows");
@@ -226,7 +226,7 @@ test("runBrain local <model>: reads the snapshot before, sends the patch through
   // What printed is what landed, not the codex brain the stale snapshot still carried.
   assert.equal(out[1], "  sent brain local qwen3.5:27b");
   assert.ok(out.includes("  setting    local · model qwen3.5:27b"), out.join("\n"));
-  assert.ok(out.includes("  running    local · ready — Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools"), out.join("\n"));
+  assert.ok(out.includes("  running    local · ready: Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools"), out.join("\n"));
   assert.ok(out.every((l) => !/codex/i.test(l)), `the pre-restart brain never prints: ${out.join("\n")}`);
   assert.ok(out.some((l) => /^ {4}brain {3}mac {4}qwen3\.5:27b on Ollama/.test(l)));
   // The predicate handed to the daemon is landedAfter's: the stale snapshot alone never ends the wait.

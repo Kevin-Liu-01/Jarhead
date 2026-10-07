@@ -175,7 +175,7 @@ recent). It fires so you hear it.
 
 ```
 pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|failed|done|trashed|all]
-    automations 6 (5 armed · 1 paused) · next 07:10 Wake up, Kevin (in 6 h) · ringing: —
+    automations 6 (5 armed · 1 paused) · next 07:10 Wake up, Kevin (in 6 h) · ringing: none
     ⏰ Wake up, Kevin           weekdays 07:10             chime + say          auto_… · next in 6 h
 pnpm jarhead automations add "<words>"      the clock ladder, parsed by core's parseWhen without a brain:
     "at 7:10 weekdays chime 'Wake up'" · "in 12m chime pasta" · "weekdays 09:00 open Notes" · "tomorrow 15:00 say 'call mum'"
@@ -189,7 +189,7 @@ pnpm jarhead automations trash <id|name> · restore <id>      Move to Trash / Re
 pnpm jarhead recipes [list] · add <name> "<command>" [--cwd DIR] [--timeout 120] · trash <name> · restore <name>
     add prints the shell gate's verdict first; a confirm-tier command saves with `asks` and is never armable
     trash is Move to Trash (the recipe keeps its row with `trashedAt`; list folds it under Trash); restore brings it back
-pnpm jarhead status                         … automations 6 (5 armed · 1 paused) · next 07:10 Wake up, Kevin · ringing: —
+pnpm jarhead status                         … automations 6 (5 armed · 1 paused) · next 07:10 Wake up, Kevin · ringing: none
 ```
 
 Every verb is one `EngineCommand` over the daemon socket (`automation.set · snooze · done · skip
@@ -219,14 +219,14 @@ rows; the Console's Recipes list and `jarhead recipes` fold trashed recipes unde
 ```
 automations   enabled          ok    6 set · 5 armed · next 07:10 Wake up, Kevin (in 6 h)
               journal          ok    ~/.jarhead/automations/jobs.ndjson · 6 live · 41 rows
-              daemon           warn  nothing fires while Jarhead is quit — Open at login is off      (fix: Settings › Automations › Open at login)
-              banners          warn  Notifications not granted — the island and the chime still fire     (fix: pnpm jarhead cmd request-permission notifications)
+              daemon           warn  nothing fires while Jarhead is quit. Open at login is off      (fix: Settings › Automations › Open at login)
+              banners          warn  Notifications not granted. The island and the chime still fire     (fix: pnpm jarhead cmd request-permission notifications)
               wake for 07:10   warn  a closed lid sleeps through 07:10 …   (fix: copy (root; never run by Jarhead): sudo pmset repeat wakeorpoweron MTWRF 07:05:00)
               quiet hours      ok    23:00–07:00 · alarms override; chime/say show silently; acting kinds wait
               missed           ok    0 in 7 days                                       warn: 2 missed in 7 days · the Mac slept
-              brain budget     ok    wake-brain unused · 0 of 5 min used today          warn: spent — 5 of 5 min used today
+              brain budget     ok    wake-brain unused · 0 of 5 min used today          warn: spent: 5 of 5 min used today
               recipes          ok    3 · 2 run-tier · 1 asks (vpn-up: would need a yes when it runs)
-              time-sensitive   warn  entitlement absent — alarm banners honour Focus like any banner
+              time-sensitive   warn  entitlement absent. Alarm banners honour Focus like any banner
               folder grant     warn  watching ~/Downloads needs the Downloads folder grant     (fix: Ask)
 ```
 

@@ -18,10 +18,10 @@ import { LIST_STATES, ROW_VERBS, automationLine, landedAutomation, automationsLi
 import { PERMISSION_KINDS, type Automation, type AutomationState, type PermissionKind, type ShellRecipe } from "@jarhead/protocol";
 
 const HELP = `
-jarhead — voice-first computer use for your Mac
+jarhead: voice-first computer use for your Mac
 
   pnpm jarhead doctor                 keys, brain, hands, permissions, audio (voice processing · hears · speaks · other mic clients · recording · released at sleep · leak), local (server · model · embeddings), memory, privacy (where words go), agents, app (signing, wake word), toolchain
-  pnpm jarhead doctor --test-audio    also run apps/mac/Scripts/audio-probe.sh --test --json: the graph as the app builds it, a 1 s chime through the player, the leak figure — refused while Jarhead is awake; nothing paid
+  pnpm jarhead doctor --test-audio    also run apps/mac/Scripts/audio-probe.sh --test --json: the graph as the app builds it, a 1 s chime through the player, the leak figure. Refused while Jarhead is awake; nothing paid
   pnpm jarhead live                   headless session in this terminal (ffmpeg mic, ffplay speaker)
   pnpm jarhead probe "<utterance>"    synthesize the utterance, run it through the whole stack, print the timeline
   pnpm jarhead agents                 list the agent sessions on this Mac (Claude Code, Codex, …)
@@ -35,7 +35,7 @@ jarhead — voice-first computer use for your Mac
                                       The daemon reads 32 MB of day files a request; the search asks again from where the last page stopped
   pnpm jarhead ledger --speed [--days N]   where the time went over the last N days (1): acting steps followed by a screenshot, results carrying the now: line,
                                       tool round trips by class (read-only target p95 ≤ 80 ms), generation gaps by what came before, first action, threads
-  pnpm jarhead reflex-miss [--days N]  the short commands you said that the grammar did not catch, grouped by head word (7 days) — the grammar grows from these
+  pnpm jarhead reflex-miss [--days N]  the short commands you said that the grammar did not catch, grouped by head word (7 days). The grammar grows from these
   pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] [--limit N]   what Jarhead durably knows about you: one sentence per item, over the daemon (50 by default, 200 at most)
   pnpm jarhead memory search "<words>" [--limit N]   the items closest to the words. Embeddings while memory is on with an embedder (an OpenAI key or a local model);
                                       keywords otherwise, or when the words hold a secret, and then nothing leaves the Mac
@@ -49,27 +49,27 @@ jarhead — voice-first computer use for your Mac
   pnpm jarhead brain                    the brain setting, what runs now, and where words go (the four data-path rows)
   pnpm jarhead brain local [<model>] [--server URL]   pick a local model as the brain through the running daemon (memory follows); empty model = best fit; prints the status line when it lands
   pnpm jarhead brain <auto|codex|claude-code|anthropic-api|openai-responses|openai-compatible> [<model>] [--server URL]
-  pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|failed|done|trashed|all]   what is set to fire while Jarhead is asleep, over the daemon: one row each —
+  pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|failed|done|trashed|all]   what is set to fire while Jarhead is asleep, over the daemon, one row each:
                                       glyph · name · when · actions · id · next fire (or snoozed / paused / failed: why); nothing is billed for any of it
   pnpm jarhead automations add "<words>"   arm one from the clock ladder, parsed by core's parseWhen without a brain: "at 7:10 weekdays chime 'Wake up'", "in 12m chime pasta",
                                       "weekdays 09:00 open Notes", "tomorrow 15:00 say 'call mum'". Free kinds only (chime · say · notify · open); run recipe, press and wake the brain
                                       are set up by voice or in the Console, where the yes is heard. The policy judges the draft before it is armed; a refusal comes back as a toast
   pnpm jarhead automations snooze <id|name> [--minutes 10] · done · skip · pause · resume · rename <id|name> "<name>"
-  pnpm jarhead automations run <id|name>   fire it now so you hear it — the daemon refuses unless you are there (a session open, or presence recent)
+  pnpm jarhead automations run <id|name>   fire it now so you hear it. The daemon refuses unless you are there (a session open, or presence recent)
   pnpm jarhead automations trash <id|name> · restore <id|name>   Move to Trash / Restore (the newest eight trashed rows are under --state trashed; an older one restores by its id). Nothing is deleted
   pnpm jarhead recipes [list]         the approved shell recipes: name · the gate's word (run · asks · refused · fronts) · command · approved · cwd · timeout
-  pnpm jarhead recipes add <name> "<command>" [--cwd DIR] [--timeout 120]   save one (through the daemon; it writes settings.json) and print the shell gate's verdict first —
-                                      a confirm-tier command saves with \`asks\` and can never be armed: nobody is there to say yes when it runs
+  pnpm jarhead recipes add <name> "<command>" [--cwd DIR] [--timeout 120]   save one (through the daemon; it writes settings.json) and print the shell gate's verdict first.
+                                      A confirm-tier command saves with \`asks\` and can never be armed: nobody is there to say yes when it runs
   pnpm jarhead recipes trash <name>   Move to Trash (kept in Settings with trashedAt; a recipe.trashed row); a row that names it fails at its next fire and says so
   pnpm jarhead recipes restore <name> Restore it from the Trash (a recipe.restored row); nothing is ever deleted
-  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (phase, session, brain, the local server and whether it is the brain; --permissions: every grant as a row; agents by status —
+  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (phase, session, brain, the local server and whether it is the brain; --permissions: every grant as a row; agents by status:
                                       working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; threads N (M live): the lines of work
                                       with name · status · lane · steps · id; memory: counts and the last learn; automations N (M armed) · next · ringing;
                                       audio: voice processing and its knobs, the rung, what the graph hears and speaks through with the rate that tells hands-free from
-                                      full quality, the echo guard's counters — from the app's read-back; with no app connected, system_profiler's defaults (skipped with --no-levels))
+                                      full quality, the echo guard's counters, from the app's read-back; with no app connected, system_profiler's defaults (skipped with --no-levels))
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <go|pause|resume|stop|interrupt|mute|unmute|agent.refresh>   send a command to the running daemon (go opens the session)
-  pnpm jarhead cmd request-permission <kind|all>   ask the app to put up the system prompt for one grant (notifications, screenRecording, …) — the doctor's banners row names it; you answer macOS yourself
+  pnpm jarhead cmd request-permission <kind|all>   ask the app to put up the system prompt for one grant (notifications, screenRecording, …). The doctor's banners row names it; you answer macOS yourself
   pnpm jarhead cmd sleep [cause]      go to sleep: return to the notch and close the session (cause: said|idle|pause-decayed|brain-changed|dock|command|stop|shutdown; default command)
   pnpm jarhead cmd thread.stop <id|name>   stop one thread (its id or name from \`jarhead status\`; "main" parks the main turn); the others and the session carry on
   pnpm jarhead cmd thread.pause <id|name> | thread.resume <id|name>   hold one thread's brain turn and release its screen; run its continuation turn
@@ -91,12 +91,12 @@ flags
   --fake-hands   (bench) answer the helper's requests in-process instead of the Swift helper
   --no-gate      (bench) do not exit non-zero when the ear's p95 to dispatch is over 250 ms with the real helper
   --no-duck      (bench) skip the Swift duck probe
-  --effort E     (bench --brain) run the brain at effort low|medium|high|xhigh|max (default: the configured effort) — one flag for an A/B
-  --observe off  (bench --brain) run with Settings.observe off: acting results without the now: line — the A/B for the observation lever
+  --effort E     (bench --brain) run the brain at effort low|medium|high|xhigh|max (default: the configured effort). One flag for an A/B
+  --observe off  (bench --brain) run with Settings.observe off: acting results without the now: line. The A/B for the observation lever
   --compare F    (bench --brain) print median deltas per command against a previous --out report
   --days N       (ledger --speed, reflex-miss) how many day files back, today included
   --no-reflex    (bench --brain) skip the reflexes-on phase: brain path only
-  --allow-api-spend  (bench --brain) run even when Codex is not signed in — the auto brain then costs REAL API dollars; off by default the bench refuses
+  --allow-api-spend  (bench --brain) run even when Codex is not signed in. The auto brain then costs REAL API dollars; off by default the bench refuses
   --only a,b     (bench --brain) restrict to these command ids (wiki-search, open-safari, whats-on-screen, click-search-type, scroll-down)
   --out FILE     (bench --brain) also write the JSON report to FILE
   --json         (bench) print the table as JSON; (bench --brain) print the whole report as JSON
@@ -155,7 +155,7 @@ function printEvent(e: EngineEvent, seenSteps: Set<string>, seenItems: Map<strin
     if (d.status !== "running" && !seenSteps.has(key)) {
       seenSteps.add(key);
       const t = d.timings;
-      console.log(`  ■ ${d.status} in ${(t.doneAt ?? 0) - t.delegatedAt}ms (thinking@${t.firstThinkingAt ? t.firstThinkingAt - t.delegatedAt : "-"} commentary@${t.firstCommentaryAt ? t.firstCommentaryAt - t.delegatedAt : "-"})${d.summary ? ` — ${d.summary}` : ""}`);
+      console.log(`  ■ ${d.status} in ${(t.doneAt ?? 0) - t.delegatedAt}ms (thinking@${t.firstThinkingAt ? t.firstThinkingAt - t.delegatedAt : "-"} commentary@${t.firstCommentaryAt ? t.firstCommentaryAt - t.delegatedAt : "-"})${d.summary ? `: ${d.summary}` : ""}`);
     }
   }
 }
@@ -210,7 +210,7 @@ async function live(): Promise<void> {
       }
     });
     await engine.ready();
-    console.log(`\n  brain: ${engine.brainInfo.kind} — ${engine.brainInfo.detail}`);
+    console.log(`\n  brain: ${engine.brainInfo.kind} (${engine.brainInfo.detail})`);
     await engine.wake();
     const stopMic = mic((pcm) => engine.feedMic(pcm));
     console.log("  listening. talk to it; Ctrl-C to quit.\n");
@@ -243,7 +243,7 @@ async function probe(text: string): Promise<void> {
     engine.on("event", (e) => printEvent(e, seenSteps, seenItems));
     if (out) engine.on("audio", (pcm2) => out.write(pcm2));
     await engine.ready();
-    console.log(`  brain: ${engine.brainInfo.kind} — ${engine.brainInfo.detail}`);
+    console.log(`  brain: ${engine.brainInfo.kind} (${engine.brainInfo.detail})`);
     const t0 = Date.now();
     await engine.wake();
     console.log(`  session up in ${Date.now() - t0}ms; streaming audio`);
@@ -275,7 +275,7 @@ async function agents(): Promise<void> {
   console.log("");
   if (list.length === 0) console.log("  no agents right now\n");
   // `detail` carries no relative time any more; the hint says why a row reads as it does (archived, quiet, ended, unseen …).
-  for (const a of list) console.log(`  ${a.id.padEnd(28)} ${a.status.padEnd(8)} ${a.name}${a.cwd ? `  (${a.cwd})` : ""}${a.hint ? `  [${a.hint}]` : ""}${a.detail ? `  — ${a.detail}` : ""}`);
+  for (const a of list) console.log(`  ${a.id.padEnd(28)} ${a.status.padEnd(8)} ${a.name}${a.cwd ? `  (${a.cwd})` : ""}${a.hint ? `  [${a.hint}]` : ""}${a.detail ? `  (${a.detail})` : ""}`);
   console.log("");
 }
 
@@ -350,7 +350,7 @@ async function ledgerCommand(rest: string[]): Promise<void> {
       return;
     }
     default:
-      throw new Error(`unknown ledger verb: ${verb} — a day (YYYY-MM-DD), or trash | restore | sweep | search`);
+      throw new Error(`unknown ledger verb: ${verb} (a day as YYYY-MM-DD, or trash | restore | sweep | search)`);
   }
 }
 
@@ -472,7 +472,7 @@ async function memoryCommand(rest: string[]): Promise<void> {
       await sendCommand({ type: "memory.run" }, 3000);
       return;
     default:
-      throw new Error(`unknown memory verb: ${verb} — list | search | forget | restore | add | run`);
+      throw new Error(`unknown memory verb: ${verb} (list | search | forget | restore | add | run)`);
   }
 }
 
@@ -520,7 +520,7 @@ function printMemoryItems(items: readonly MemoryItem[], empty: string, tail: str
 
 async function memoryList(state: MemoryState | "all", limit: number): Promise<void> {
   const items = await memoryItems({ type: "memory.list", state, limit });
-  printMemoryItems(items, state === "live" ? "nothing remembered yet — Jarhead learns after a conversation closes" : `nothing under ${state}`, `${items.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""} · forget <id> hides one (nothing is deleted); restore <id> brings it back`);
+  printMemoryItems(items, state === "live" ? "nothing remembered yet. Jarhead learns after a conversation closes" : `nothing under ${state}`, `${items.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""} · forget <id> hides one (nothing is deleted); restore <id> brings it back`);
 }
 
 async function memorySearch(query: string, limit: number): Promise<void> {
@@ -544,7 +544,7 @@ async function daemon(): Promise<DaemonClient> {
   try {
     await client.connect({ pid: process.pid, audio: false });
   } catch {
-    throw new Error(`no daemon on ${cfg.socketPath} — start Jarhead.app or \`pnpm jarheadd\``);
+    throw new Error(`no daemon on ${cfg.socketPath}. Start Jarhead.app or \`pnpm jarheadd\``);
   }
   return client;
 }
@@ -712,12 +712,12 @@ async function automationsCommand(rest: string[]): Promise<void> {
       for (const t of toasts) console.log(`  ${t}`);
       const row = snapshot ? landedAutomation(snapshot.automations ?? [], draft.name, sentAt) : undefined;
       if (row) console.log(automationLine(row, Date.now()));
-      else if (toasts.length === 0) console.log(`  the daemon did not show the row within ${AUTOMATION_WAIT_MS / 1000} s — \`jarhead automations\` lists what is set`);
+      else if (toasts.length === 0) console.log(`  the daemon did not show the row within ${AUTOMATION_WAIT_MS / 1000} s. \`jarhead automations\` lists what is set`);
       console.log("");
       return;
     }
     default: {
-      if (!(ROW_VERBS as readonly string[]).includes(verb)) throw new Error(`unknown automations verb: ${verb} — list | add | ${ROW_VERBS.join(" | ")}`);
+      if (!(ROW_VERBS as readonly string[]).includes(verb)) throw new Error(`unknown automations verb: ${verb} (list | add | ${ROW_VERBS.join(" | ")})`);
       const arg = args[0];
       if (!arg) throw new Error(`usage: jarhead automations ${verb} <id|name>${verb === "snooze" ? " [--minutes 10]" : verb === "rename" ? ' "<name>"' : ""}  (both are on \`jarhead automations\`${verb === "restore" ? "; `--state trashed` lists the newest eight, an older row by its id" : ""})`);
       await automationVerb(verb as RowVerb, arg, args.slice(1).join(" ").trim());
@@ -777,19 +777,19 @@ async function recipesCommand(rest: string[]): Promise<void> {
     case "add": {
       const recipe = parseRecipeArgs(args[0], args.slice(1).join(" "), flagValue("cwd"), flagValue("timeout"), Date.now());
       const v = recipeVerdict(recipe);
-      console.log(`\n  shell gate: ${v.word} — ${v.reason}`);
+      console.log(`\n  shell gate: ${v.word}, ${v.reason}`);
       if (v.word !== "run") console.log(`  saved with \`asks\`: a row that names it is refused at set-up and fails at fire; nobody is there to say yes`);
       const { snapshot, toasts } = await commandThenSnapshot({ type: "recipe.set", recipe }, (s) => recipesOf(s).some((r) => r.name === recipe.name && r.command === recipe.command), AUTOMATION_WAIT_MS);
       console.log(`  sent recipe.set ${recipe.name}`);
       for (const t of toasts) console.log(`  ${t}`);
       if (snapshot) for (const line of recipesLines(recipesOf(snapshot).filter((r) => r.name === recipe.name), Date.now())) console.log(line);
-      else if (toasts.length === 0) console.log(`  the daemon did not show the recipe within ${AUTOMATION_WAIT_MS / 1000} s — \`jarhead recipes\` lists what is saved`);
+      else if (toasts.length === 0) console.log(`  the daemon did not show the recipe within ${AUTOMATION_WAIT_MS / 1000} s. \`jarhead recipes\` lists what is saved`);
       console.log("");
       return;
     }
     case "trash": {
       const name = args[0];
-      if (!name) throw new Error("usage: jarhead recipes trash <name>  (Move to Trash; the recipe stays in Settings with trashedAt and `recipes restore <name>` brings it back — nothing is deleted)");
+      if (!name) throw new Error("usage: jarhead recipes trash <name>  (Move to Trash; the recipe stays in Settings with trashedAt and `recipes restore <name>` brings it back. Nothing is deleted.)");
       await sendCommand({ type: "recipe.trash", name }, 800);
       return;
     }
@@ -800,7 +800,7 @@ async function recipesCommand(rest: string[]): Promise<void> {
       return;
     }
     default:
-      throw new Error(`unknown recipes verb: ${verb} — list | add | trash | restore`);
+      throw new Error(`unknown recipes verb: ${verb} (list | add | trash | restore)`);
   }
 }
 
@@ -965,7 +965,7 @@ try {
         await sendCommand({ type: "request-permission", which: arg as PermissionKind | "all" }, 800);
         break;
       }
-      if (!sub || !["go", "pause", "resume", "stop", "interrupt", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|resume|stop|interrupt|sleep [cause]|mute|unmute|agent.refresh|thread.stop <id|name>|thread.pause <id|name>|thread.resume <id|name>>  (stop closes the voice session — the meter stops; interrupt cancels the work but keeps listening)");
+      if (!sub || !["go", "pause", "resume", "stop", "interrupt", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|resume|stop|interrupt|sleep [cause]|mute|unmute|agent.refresh|thread.stop <id|name>|thread.pause <id|name>|thread.resume <id|name>>  (stop closes the voice session: the meter stops; interrupt cancels the work but keeps listening)");
       await sendCommand({ type: sub });
       break;
     }

@@ -511,11 +511,11 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
   };
 
   const load = loadavg().map((v) => v.toFixed(1)).join(" ");
-  log(`\n  bench: ${opts.runs} run(s); hands: ${useFakeHands ? "fake (in-process)" : `Swift helper at ${base.handsBin}`}; brain: ${opts.codex ? "real Codex (one tiny turn per run — this uses your ChatGPT login)" : "stand-in"}; load average ${load}`);
+  log(`\n  bench: ${opts.runs} run(s); hands: ${useFakeHands ? "fake (in-process)" : `Swift helper at ${base.handsBin}`}; brain: ${opts.codex ? "real Codex (one tiny turn per run, on your ChatGPT login)" : "stand-in"}; load average ${load}`);
   const t0 = Date.now();
   await engine.start();
   await engine.ready();
-  log(`  engine ready in ${Date.now() - t0} ms; brain: ${engine.brainInfo.kind} — ${engine.brainInfo.detail}`);
+  log(`  engine ready in ${Date.now() - t0} ms; brain: ${engine.brainInfo.kind} (${engine.brainInfo.detail})`);
   if (opts.codex && engine.brainInfo.kind !== "codex") {
     console.error(`  Codex is not available (${engine.brainInfo.detail}); run without --codex for the stand-in`);
     await engine.stop();
@@ -573,7 +573,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       add("delegation → first commentary", rel(t.firstCommentaryAt));
       add("delegation → done", rel(t.doneAt));
       if (t.toolRoundTripMs) for (const ms of t.toolRoundTripMs) add("tool round trip (in delegation)", ms);
-      log(`  run ${i}: ${d.status} in ${rel(t.doneAt)} ms — eyes ${t.eyesMs ?? "-"} ms, first tool @${rel(t.firstToolAt)}, first action @${rel(t.firstActionAt)}, said @${rel(t.firstCommentaryAt)}${d.summary ? ` — "${d.summary.slice(0, 80)}"` : ""}`);
+      log(`  run ${i}: ${d.status} in ${rel(t.doneAt)} ms, eyes ${t.eyesMs ?? "-"} ms, first tool @${rel(t.firstToolAt)}, first action @${rel(t.firstActionAt)}, said @${rel(t.firstCommentaryAt)}${d.summary ? ` ("${d.summary.slice(0, 80)}")` : ""}`);
       await new Promise((r) => setTimeout(r, 50));
     }
 
@@ -786,7 +786,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       brainState.mode = "answer";
       extras["threads"] = { live: before.length, names: before.map((t) => t.name), splitResults: brainState.splitResults };
       if (before.length < 2) {
-        log(`  threads: could not get two live threads (${before.map((t) => `${t.name}:${t.status}`).join(", ") || "none"}); ${brainState.splitResults.join(" | ") || "no thread_start answer"} — status reflex and targeted stop not measured`);
+        log(`  threads: could not get two live threads (${before.map((t) => `${t.name}:${t.status}`).join(", ") || "none"}); ${brainState.splitResults.join(" | ") || "no thread_start answer"}. Status reflex and targeted stop not measured`);
       } else {
         log(`  threads: ${before.map((t) => `${t.name} ${t.status} (${t.id})`).join(", ")} live`);
         // Status reflex: the spoken line's time and the generations it cost.
@@ -837,7 +837,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       for (const ms of probe.report.heldRestoreMs ?? []) add("barge-in: no confirmation, still speaking → back to unity", ms);
       if (probe.note) log(`  barge-in: ${probe.note}`);
       else {
-        const med = (v: readonly number[] | undefined): string => (v && v.length ? `${median(v).toFixed(0)} ms` : "—");
+        const med = (v: readonly number[] | undefined): string => (v && v.length ? `${median(v).toFixed(0)} ms` : "none");
         log(`  barge-in: probe ok; confirmed by Live's transcript ${med(probe.report.liveConfirmMs)} after the duck (modelled at +${probe.report.liveModelledMs ?? "?"} ms from onset), by the ear's words ${med(probe.report.earConfirmMs)}; ${probe.report.refusedEchoPartials ?? 0} partial(s) of Jarhead's own words refused as confirmation`);
         if (probe.report.ranked?.length) log(`  barge-in: mic ranking on this Mac (auto): ${probe.report.ranked.join(" › ")}`);
       }

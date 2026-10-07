@@ -941,7 +941,7 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
   const probe = standIn ? undefined : (opts.probe ?? (await probeCodex({ bin: base.codexBin })));
   const useCodex = probe !== undefined && probe.bin !== undefined && probe.signedIn;
   if (!standIn && !useCodex && !opts.allowApiSpend) {
-    throw new Error(`Codex is not available (${probe?.detail ?? "no probe"}); bench --brain runs on your ChatGPT plan only — the auto brain would spend API dollars. Pass --allow-api-spend to run on it anyway.`);
+    throw new Error(`Codex is not available (${probe?.detail ?? "no probe"}); bench --brain runs on your ChatGPT plan only. The auto brain would spend API dollars. Pass --allow-api-spend to run on it anyway.`);
   }
   const dir = mkdtempSync(join(tmpdir(), "jh-bb-"));
   // The user's keys stay out (bench.ts `benchConfig`): Codex runs on its own login, a stand-in on
@@ -1004,7 +1004,7 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
 
   const load = loadavg().map((v) => v.toFixed(1)).join(" ");
   say(`bench --brain: ${runs} run(s) per command on the brain path${opts.noReflex ? " (reflexes off throughout)" : ", after the reflex path"}; effort ${effort}; load average ${load}`);
-  say(`brain: ${opts.brain ? `stand-in (${brain?.kind ?? "?"})` : useCodex ? "REAL Codex through the product's resident app-server — the turns run on your ChatGPT login and cost your ChatGPT plan, not dollars" : `auto (Codex is not available here: ${probe?.detail ?? "?"}) — --allow-api-spend given: the turns cost REAL API DOLLARS on whatever brain auto picks`}`);
+  say(`brain: ${opts.brain ? `stand-in (${brain?.kind ?? "?"})` : useCodex ? "REAL Codex through the product's resident app-server. The turns run on your ChatGPT login and cost your ChatGPT plan, not dollars" : `auto (Codex is not available here: ${probe?.detail ?? "?"}). --allow-api-spend given: the turns cost REAL API DOLLARS on whatever brain auto picks`}`);
   say(`hands: canned (Safari in front on ${WIKI_TITLE}; screen ${screen.source === FIXTURE_PNG ? "fixture" : screen.source}, ${pngSize(screen.png).width}x${pngSize(screen.png).height}); Live: stand-in (no socket, no billing); nothing on this Mac is touched; blocked tools: ${[...BLOCKED_TOOLS].join(", ")}`);
 
   const meta: Record<string, unknown> = {
@@ -1025,14 +1025,14 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
   const t0 = Date.now();
   await engine.start();
   await engine.ready();
-  say(`engine ready in ${Date.now() - t0} ms; brain: ${engine.brainInfo.kind} — ${engine.brainInfo.detail}`);
+  say(`engine ready in ${Date.now() - t0} ms; brain: ${engine.brainInfo.kind} (${engine.brainInfo.detail})`);
   meta["brainKind"] = engine.brainInfo.kind;
   meta["brainDetailAtReady"] = engine.brainInfo.detail;
   // The second gate, after the engine chose: only Codex (or a stand-in) runs without --allow-api-spend,
   // whatever the probe said a moment ago.
   if (!standIn && !opts.allowApiSpend && (engine.brainInfo.kind !== "codex" || !engine.brainInfo.ready)) {
     await Promise.race([engine.stop(), new Promise((r) => setTimeout(r, 8000))]);
-    throw new Error(`Codex is not available (${engine.brainInfo.detail}; probe: ${codexDetail || probe?.detail || "?"}); bench --brain runs on your ChatGPT plan only — pass --allow-api-spend to run on the ${engine.brainInfo.kind} brain (API dollars).`);
+    throw new Error(`Codex is not available (${engine.brainInfo.detail}; probe: ${codexDetail || probe?.detail || "?"}); bench --brain runs on your ChatGPT plan only. Pass --allow-api-spend to run on the ${engine.brainInfo.kind} brain (API dollars).`);
   }
   // The thread the last turn went out on: the start thread first; a run whose turn/start names another is a rollover.
   let lastThreadId: string | undefined;
@@ -1105,8 +1105,8 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
       const rec = analyzeRun({ phase, cmd, run, liveId, delegation: d, timedOut, t0: start, t1: end, wire: wire.slice(wireBefore), runnerCalls: runnerCalls.slice(callsBefore), logLines: logLines.slice(logBefore).filter((l) => l.scope !== "bench"), commentary: live.commentary.slice(commentaryBefore), prevThreadId: lastThreadId });
       if (rec.threadId !== undefined) lastThreadId = rec.threadId;
       const f = (v: number | undefined): string => (v === undefined ? "-" : String(Math.round(v)));
-      if (rec.delegationRequest !== undefined && rec.delegationRequest !== cmd.text) say(`  ${liveId}: WARNING the delegation carried "${rec.delegationRequest}" — utterances merged; the row is not this command alone`);
-      say(`  ${liveId}: ${rec.status}${timedOut ? " (timed out)" : ""} in ${f(rec.t.done)} ms — thinking@${f(rec.t.firstThinking)} tool@${f(rec.t.firstModelTool)} action@${f(rec.t.firstAction)} said@${f(rec.t.firstCommentary)}; ${rec.generations} model step(s), ${rec.toolCount} tool call(s): ${rec.toolNames.join(", ") || "-"}${rec.rollovers ? `; ${rec.rollovers} rollover(s)` : ""}${rec.bootstrap.calls.length ? `; bootstrap×${rec.bootstrap.calls.length}` : ""}${rec.bootstrap.noSuchFile.length ? `; no-such-file×${rec.bootstrap.noSuchFile.length}` : ""}${rec.summary ? ` — "${rec.summary.slice(0, 100)}"` : ""}`);
+      if (rec.delegationRequest !== undefined && rec.delegationRequest !== cmd.text) say(`  ${liveId}: WARNING the delegation carried "${rec.delegationRequest}". Utterances merged; the row is not this command alone`);
+      say(`  ${liveId}: ${rec.status}${timedOut ? " (timed out)" : ""} in ${f(rec.t.done)} ms, thinking@${f(rec.t.firstThinking)} tool@${f(rec.t.firstModelTool)} action@${f(rec.t.firstAction)} said@${f(rec.t.firstCommentary)}; ${rec.generations} model step(s), ${rec.toolCount} tool call(s): ${rec.toolNames.join(", ") || "-"}${rec.rollovers ? `; ${rec.rollovers} rollover(s)` : ""}${rec.bootstrap.calls.length ? `; bootstrap×${rec.bootstrap.calls.length}` : ""}${rec.bootstrap.noSuchFile.length ? `; no-such-file×${rec.bootstrap.noSuchFile.length}` : ""}${rec.summary ? ` ("${rec.summary.slice(0, 100)}")` : ""}`);
       return rec;
     };
 
@@ -1169,7 +1169,7 @@ export function renderReport(report: BrainBenchReport): string[] {
   const pad = (s: string, n: number): string => s.padEnd(n);
   const cell = (s: Stat): string => `${sec(s.median).padStart(6)} /${sec(s.p95).padStart(6)}`;
   out.push("");
-  out.push(`  brain path — seconds after the delegation, median / p95 (n runs per command); "1st action" is the first acting tool that returned ok`);
+  out.push(`  brain path: seconds after the delegation, median / p95 (n runs per command); "1st action" is the first acting tool that returned ok`);
   out.push(`  ${pad("command", 20)}${"n".padStart(3)}  ${pad("1st thinking", 15)}${pad("1st tool", 15)}${pad("1st action", 15)}${pad("done", 15)}${pad("steps", 8)}tools`);
   for (const c of [...summary.brainPath.perCommand, summary.brainPath.overall]) {
     const m = c.metrics;
@@ -1177,11 +1177,11 @@ export function renderReport(report: BrainBenchReport): string[] {
   }
   const g = summary.generationGapMs;
   out.push("");
-  out.push(`  model step gap (>${GENERATION_GAP_MIN_MS} ms between consecutive model events): median ${sec(g.median)} s, p95 ${sec(g.p95)} s, max ${sec(g.max)} s (n=${g.n}) — the per-generation cost`);
+  out.push(`  model step gap (>${GENERATION_GAP_MIN_MS} ms between consecutive model events): median ${sec(g.median)} s, p95 ${sec(g.p95)} s, max ${sec(g.max)} s (n=${g.n}). The per-generation cost`);
   out.push(`  tool round trip inside the runner: median ${ms(summary.toolRoundTripMs.median)} ms, p95 ${ms(summary.toolRoundTripMs.p95)} ms (n=${summary.toolRoundTripMs.n})`);
   out.push(`  context rollovers ${summary.rollovers}; wiki-bootstrap calls ${summary.bootstrapCalls}; npm run status in ${summary.npmRunStatusRuns} run(s); no-such-file errors ${summary.noSuchFile}; narration before the first tool in ${summary.narrationFirst} run(s); timed out ${summary.timedOut}`);
   const pctOf = (v: number): string => `${Math.round(v * 100)} %`;
-  out.push(`  generations per command: median ${ms(summary.generationsPerCommand.median)}, p95 ${ms(summary.generationsPerCommand.p95)} (target p95 ≤ 4); acting calls followed by a verifying shot ${summary.verificationShots.shots}/${summary.verificationShots.acting} (${pctOf(summary.verificationShots.share)}, target ≤ 15 %); acting results carrying a now: line ${summary.observedResults.withLine}/${summary.observedResults.acting} (${pctOf(summary.observedResults.share)}; observe ${meta["observe"] === false ? "OFF — the A/B" : "on"})`);
+  out.push(`  generations per command: median ${ms(summary.generationsPerCommand.median)}, p95 ${ms(summary.generationsPerCommand.p95)} (target p95 ≤ 4); acting calls followed by a verifying shot ${summary.verificationShots.shots}/${summary.verificationShots.acting} (${pctOf(summary.verificationShots.share)}, target ≤ 15 %); acting results carrying a now: line ${summary.observedResults.withLine}/${summary.observedResults.acting} (${pctOf(summary.observedResults.share)}; observe ${meta["observe"] === false ? "OFF, the A/B" : "on"})`);
   if (report.compare) {
     const c = report.compare;
     out.push("");
@@ -1191,11 +1191,11 @@ export function renderReport(report: BrainBenchReport): string[] {
     for (const r of c.rows) out.push(`  ${pad(r.cmd, 20)}${pad(signed(r.firstActionMs, "s"), 14)}${pad(signed(r.doneMs, "s"), 14)}${signed(r.generations, "")}`);
     out.push(`  generations p95 ${ms(c.generationsP95.before)} → ${ms(c.generationsP95.after)}; verifying-shot share ${c.verificationShare.before === undefined ? "-" : pctOf(c.verificationShare.before)} → ${pctOf(c.verificationShare.after)}`);
   }
-  if (summary.speechToDelegationMs.n) out.push(`  speech end → delegation: median ${ms(summary.speechToDelegationMs.median)} ms (n=${summary.speechToDelegationMs.n}) — the stand-in Live delegates the moment the utterance ends, so ≈ 0 here; on the real path this is Live's own transcription and decision time (the ledger has it)`);
+  if (summary.speechToDelegationMs.n) out.push(`  speech end → delegation: median ${ms(summary.speechToDelegationMs.median)} ms (n=${summary.speechToDelegationMs.n}). The stand-in Live delegates the moment the utterance ends, so ≈ 0 here; on the real path this is Live's own transcription and decision time (the ledger has it)`);
   if (summary.reflexPath.length) {
     out.push("");
-    out.push("  reflex path (reflexes on; the product path for these — no model turn)");
-    for (const r of summary.reflexPath) out.push(`  ${pad(r.cmd, 20)} ${r.status.padEnd(8)} done in ${ms(r.doneMs)} ms${r.firstActionMs !== undefined ? `, action@${ms(r.firstActionMs)} ms` : ""}${r.summary ? ` — "${r.summary}"` : ""}`);
+    out.push("  reflex path (reflexes on; the product path for these: no model turn)");
+    for (const r of summary.reflexPath) out.push(`  ${pad(r.cmd, 20)} ${r.status.padEnd(8)} done in ${ms(r.doneMs)} ms${r.firstActionMs !== undefined ? `, action@${ms(r.firstActionMs)} ms` : ""}${r.summary ? ` ("${r.summary}")` : ""}`);
   }
   out.push("");
   out.push(`  brain: ${String(meta["brainDetailEnd"] ?? meta["brainDetailAtReady"] ?? "?")}`);

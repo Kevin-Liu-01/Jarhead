@@ -146,7 +146,7 @@ test("status · the fallback rung says so; a stopped graph says the graph is dow
   assert.equal(lingering[1], "             recording off · guard off · voice processing still on after stop");
   assert.deepEqual(audioStatusLines(undefined, { recording: false }), ["  audio      no app connected"]);
   assert.deepEqual(audioStatusLines(undefined, { recording: true }), ["  audio      no app connected · recording on"]);
-  assert.deepEqual(audioStatusLines(undefined, undefined, PROFILER), ["  audio      no app connected — defaults: in Kevin's AirPods Pro 24000 Hz · out Kevin's AirPods Pro 48000 Hz"]);
+  assert.deepEqual(audioStatusLines(undefined, undefined, PROFILER), ["  audio      no app connected. Defaults: in Kevin's AirPods Pro 24000 Hz · out Kevin's AirPods Pro 48000 Hz"]);
 });
 
 test("profiler: names, rates, transports, the default pair and the built-in input; garbage is undefined", () => {
@@ -174,12 +174,12 @@ test("doctor · Kevin's Mac today: voice processing ok, hears and speaks warn (a
   assert.ok(checks.every((c) => c.group === "audio" && !c.required), "advisory throughout");
   assert.equal(row(checks, "voice processing").detail, "on · duck min advanced · agc on · bypass off · rung 2 input-rate");
   assert.equal(row(checks, "hears").detail, "Kevin's AirPods Pro · 24000 Hz ×1 · bluetooth · follows the system default");
-  assert.equal(row(checks, "hears").fix, "a headset mic drops every app's sound to hands-free while held — make MacBook Pro Microphone the default in System Settings › Sound, or turn Recording on");
+  assert.equal(row(checks, "hears").fix, "a headset mic drops every app's sound to hands-free while held. Make MacBook Pro Microphone the default in System Settings › Sound, or turn Recording on");
   assert.equal(row(checks, "speaks").detail, "Kevin's AirPods Pro · 16000 Hz ×2 · bluetooth · narrowed while the headset mic is held");
   assert.equal(row(checks, "default input").detail, "Kevin's AirPods Pro · held by Jarhead (the unit follows it)");
   assert.equal(row(checks, "other mic clients").detail, "none");
   assert.equal(row(checks, "recording").detail, "off · Settings › Audio, ⌃⌥R");
-  assert.equal(row(checks, "leak").detail, "not measured — apps/mac/Scripts/audio-probe.sh (no session; needs the mic grant)");
+  assert.equal(row(checks, "leak").detail, "not measured: apps/mac/Scripts/audio-probe.sh (no session; needs the mic grant)");
   const { text } = render(checks);
   assert.ok(text.includes("  audio\n    ✔ voice processing             on · duck min advanced"), text);
   assert.ok(text.includes("    ! hears                        Kevin's AirPods Pro · 24000 Hz ×1 · bluetooth · follows the system default"), text);
@@ -195,7 +195,7 @@ test("doctor · Recording on: voice processing ok (off, recording), hears fine o
   assert.equal(row(checks, "hears").detail, "MacBook Pro Microphone · 48000 Hz ×1 · built-in · shared with QuickTime Player");
   assert.equal(row(checks, "speaks").status, "warn");
   assert.match(row(checks, "speaks").fix ?? "", /Bluetooth output buffers lengthen the guard tail/);
-  assert.equal(row(checks, "default input").detail, "unknown (no system_profiler read) · not held — the plain graph uses MacBook Pro Microphone");
+  assert.equal(row(checks, "default input").detail, "unknown (no system_profiler read) · not held (the plain graph uses MacBook Pro Microphone)");
   assert.equal(row(checks, "other mic clients").status, "ok");
   assert.equal(row(checks, "other mic clients").detail, "QuickTime Player · sharing the plain mic");
   assert.equal(row(checks, "recording").status, "warn");
@@ -232,13 +232,13 @@ test("doctor · released at sleep is judged asleep: the graph down with the unit
   const up = audioChecks({ state: AEC_ON_AIRPODS, settings: { recording: false }, phase: "asleep", profiler: undefined, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(up, "released at sleep").status, "warn");
   assert.equal(row(up, "released at sleep").detail, "the graph is still up while asleep");
-  assert.equal(row(ok, "hears").detail, "nothing — the graph is down");
+  assert.equal(row(ok, "hears").detail, "nothing (the graph is down)");
 });
 
 test("doctor · no app connected: one warning row, then recording from settings.json and the leak row from the file — never a device row", () => {
   const checks = audioChecks({ state: undefined, settings: { recording: true }, phase: undefined, profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.deepEqual(checks.map((c) => [c.name, c.status]), [["audio state", "warn"], ["recording", "warn"], ["leak", "warn"]]);
-  assert.equal(row(checks, "audio state").detail, "app not running — the graph's read-back needs Jarhead.app connected");
+  assert.equal(row(checks, "audio state").detail, "app not running. The graph's read-back needs Jarhead.app connected");
   assert.equal(row(checks, "recording").detail, "on · Settings › Audio, ⌃⌥R");
   const bare = audioChecks({ state: undefined, settings: undefined, phase: undefined, profiler: undefined, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(bare, "recording").detail, "off · Settings › Audio, ⌃⌥R", "no settings.json: the default");
@@ -262,14 +262,14 @@ test("probe file: one run, { runs }, or a record keyed by mode; the leak row pre
   assert.equal(ok.detail, "residual -62 dBFS · tail 420 ms · recording · 1 h ago");
   const fail = leakCheck(keyed, undefined, NOW);
   assert.equal(fail.status, "fail");
-  assert.equal(fail.detail, "residual -40 dBFS · tail 300 ms · recording · 1 h ago — above -50 dBFS");
-  assert.equal(fail.fix, "the guard is not holding on this hardware — use headphones for Recording, or leave it off");
+  assert.equal(fail.detail, "residual -40 dBFS · tail 300 ms · recording · 1 h ago, above -50 dBFS");
+  assert.equal(fail.fix, "the guard is not holding on this hardware. Use headphones for Recording, or leave it off");
   const stale = leakCheck(one, at + 1, NOW);
   assert.equal(stale.status, "warn");
   assert.match(stale.detail, /measured before this app build/);
   const noFigure = leakCheck(parseAudioProbe(JSON.stringify({ at, mode: "aec" }), "/x"), undefined, NOW);
   assert.equal(noFigure.status, "warn");
-  assert.equal(noFigure.detail, "1 run (aec) — none measured the guard's residual");
+  assert.equal(noFigure.detail, "1 run (aec). None measured the guard's residual");
 });
 
 test("leak row: the tail leak is judged before the residual — recorder-probe's residual is the zero-filled floor (−120) whatever the guard leaks after a hold", () => {
@@ -278,7 +278,7 @@ test("leak row: the tail leak is judged before the residual — recorder-probe's
   assert.equal(leaking?.runs[0]?.tailLeakDbfs, -38);
   const fail = leakCheck(leaking, undefined, NOW);
   assert.equal(fail.status, "fail");
-  assert.equal(fail.detail, "tail leak -38 dBFS · tail 420 ms · recording · 1 min ago — above -50 dBFS");
+  assert.equal(fail.detail, "tail leak -38 dBFS · tail 420 ms · recording · 1 min ago, above -50 dBFS");
   const tight = leakCheck(parseAudioProbe(JSON.stringify({ recording: { at, residualDbfs: -120, tailLeakDbfs: -61 } }), "/x"), undefined, NOW);
   assert.equal(tight.status, "ok");
   assert.equal(tight.detail, "tail leak -61 dBFS · recording · 1 min ago");
@@ -310,7 +310,7 @@ test("--test-audio: the script missing, Jarhead awake, nothing printed, a refusa
   };
   const missing = audioTestCheck({ scriptExists: false, phase: "asleep", run: spawn });
   assert.equal(missing.status, "warn");
-  assert.equal(missing.detail, "apps/mac/Scripts/audio-probe.sh missing — nothing played");
+  assert.equal(missing.detail, "apps/mac/Scripts/audio-probe.sh missing. Nothing played");
   const awake = audioTestCheck({ scriptExists: true, phase: "listening", run: spawn });
   assert.equal(awake.status, "warn");
   assert.equal(awake.detail, "Jarhead is awake; sleep it first (two voice-processing clients cut each other)");
@@ -319,18 +319,18 @@ test("--test-audio: the script missing, Jarhead awake, nothing printed, a refusa
   assert.equal(audioTestCheck({ ...asleep, run: () => 'probe: building\n{"refused":"Jarhead.app holds the graph"}\n' }).detail, "Jarhead.app holds the graph");
   const dry = audioTestCheck({ ...asleep, run: () => '{"dryRun":true,"note":"would play a 1 s -12 dBFS 1 kHz chime through the player node"}' });
   assert.equal(dry.status, "ok");
-  assert.equal(dry.detail, "dry run — would play a 1 s -12 dBFS 1 kHz chime through the player node");
+  assert.equal(dry.detail, "dry run: would play a 1 s -12 dBFS 1 kHz chime through the player node");
   const good = audioTestCheck({ ...asleep, run: () => '{"leakDb":-58.2,"gated":9,"chunks":30,"rung":1,"mode":"recording"}' });
   assert.equal(good.status, "ok");
   assert.equal(good.detail, "leak -58.2 dB · guard would gate 9 of 30 · rung 1 · recording");
   const bad = audioTestCheck({ ...asleep, run: () => '{"leakDb":-31}' });
   assert.equal(bad.status, "fail");
-  assert.equal(bad.detail, "leak -31 dB — above -50 dB");
+  assert.equal(bad.detail, "leak -31 dB, above -50 dB");
   assert.equal(audioTestCheck({ ...asleep, run: () => "garbage\n" }).detail, "unreadable: garbage");
   // The tail leak is judged first: while the chime plays the wire is zero-filled (leakDb reads the floor).
   const tail = audioTestCheck({ ...asleep, run: () => '{"leakDb":-120,"tailLeakDbfs":-31,"mode":"recording"}' });
   assert.equal(tail.status, "fail");
-  assert.equal(tail.detail, "tail leak -31 dB · recording — above -50 dB");
+  assert.equal(tail.detail, "tail leak -31 dB · recording, above -50 dB");
 });
 
 test("--test-audio: the script's non-zero exits (3 refused, 1 a FAIL) throw out of execFileSync with the JSON on the error's stdout — probeStdout hands it to the row", () => {
@@ -342,7 +342,7 @@ test("--test-audio: the script's non-zero exits (3 refused, 1 a FAIL) throw out 
   const failed = Object.assign(new Error("Command failed"), { status: 1, stdout: Buffer.from('{"leakDb":-120,"tailLeakDbfs":-33,"gated":9,"chunks":30,"rung":1,"mode":"recording"}\nprobe exit 1\n') });
   const check = audioTestCheck({ ...asleep, run: () => probeStdout(failed) });
   assert.equal(check.status, "fail");
-  assert.equal(check.detail, "tail leak -33 dB · guard would gate 9 of 30 · rung 1 · recording — above -50 dB");
+  assert.equal(check.detail, "tail leak -33 dB · guard would gate 9 of 30 · rung 1 · recording, above -50 dB");
   // A timeout or a signal: no stdout worth reading → the row's "printed nothing" branch, as before.
   assert.equal(probeStdout(Object.assign(new Error("ETIMEDOUT"), { status: null, stdout: "" })), undefined);
   assert.equal(probeStdout(new Error("spawn bash ENOENT")), undefined);

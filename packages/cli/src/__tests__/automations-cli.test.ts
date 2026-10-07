@@ -78,7 +78,7 @@ test("inWords: seconds, minutes, hours, days — and `now` for an instant behind
 
 test("automationsLines: the summary line, then one row each — glyph · name · when · actions · id · what it waits for; the states count in vocabulary order", () => {
   assert.equal(byStateWords(table), "3 armed · 1 paused · 1 done · 1 failed");
-  assert.equal(automationsSummary(table, pointers, NOW), "  automations 6 (3 armed · 1 paused · 1 done · 1 failed) · next 12:00 pasta (in 4 min)".replace("12:00", clock(pasta.nextAt ?? 0)) + " · ringing: —");
+  assert.equal(automationsSummary(table, pointers, NOW), "  automations 6 (3 armed · 1 paused · 1 done · 1 failed) · next 12:00 pasta (in 4 min)".replace("12:00", clock(pasta.nextAt ?? 0)) + " · ringing: none");
   assert.deepEqual(automationsLines(table, pointers, NOW), [
     automationsSummary(table, pointers, NOW),
     "    ⏳ pasta                    in 12 min                  chime                auto_2 · next in 4 min",
@@ -90,7 +90,7 @@ test("automationsLines: the summary line, then one row each — glyph · name ·
   ]);
   const ringing = { ...pointers, ringing: { id: "auto_1", kind: "alarm" as const, name: "Wake up, Kevin", line: "07:10 · Wake up, Kevin", at: NOW, presses: [], more: 1 } };
   assert.match(automationsSummary(table, ringing, NOW), / · ringing: 07:10 · Wake up, Kevin \(\+1 more\)$/);
-  assert.equal(automationsSummary([], {}, NOW), "  automations 0 · next — · ringing: —");
+  assert.equal(automationsSummary([], {}, NOW), "  automations 0 · next none · ringing: none");
 });
 
 test("automationsLines: --state filters; an empty table says how to set one; an empty filter names the states present", () => {
@@ -102,16 +102,16 @@ test("automationsLines: --state filters; an empty table says how to set one; an 
   assert.deepEqual(filterByState([...table, binned], "trashed").map((a) => a.id), ["auto_9"]);
   assert.equal(automationsSummary([...table, binned], pointers, NOW), automationsSummary(table, pointers, NOW));
   assert.equal(automationsLines([binned], {}, NOW)[1], automationsLines([], {}, NOW)[1], "only the Trash: nothing is set");
-  assert.equal(automationsLines([binned], {}, NOW)[2], "    1 in the Trash — jarhead automations list --state trashed · restore <id>", "…and the Trash is named");
+  assert.equal(automationsLines([binned], {}, NOW)[2], "    1 in the Trash: jarhead automations list --state trashed · restore <id>", "…and the Trash is named");
   assert.equal(automationsLines([binned], {}, NOW).length, 3);
   assert.deepEqual(automationsLines([binned], {}, NOW, "trashed"), [automationsSummary([binned], {}, NOW), automationLine(binned, NOW)], "--state trashed lists the tail with nothing live");
   assert.deepEqual(automationsLines([...table, binned], pointers, NOW, "trashed").slice(1), [automationLine(binned, NOW)], "…and beside live rows");
-  assert.equal(automationsLines([...table, binned], pointers, NOW, "snoozed")[1], "    nothing snoozed — set: 3 armed · 1 paused · 1 done · 1 failed", "an empty filter counts the live rows, never the Trash");
+  assert.equal(automationsLines([...table, binned], pointers, NOW, "snoozed")[1], "    nothing snoozed (set: 3 armed · 1 paused · 1 done · 1 failed)", "an empty filter counts the live rows, never the Trash");
   assert.deepEqual(resolveAutomation([...table, binned], "old alarm").id, "auto_9", "Restore by name reaches the tail");
-  assert.deepEqual(automationsLines(table, pointers, NOW, "snoozed"), [automationsSummary(table, pointers, NOW), "    nothing snoozed — set: 3 armed · 1 paused · 1 done · 1 failed"]);
+  assert.deepEqual(automationsLines(table, pointers, NOW, "snoozed"), [automationsSummary(table, pointers, NOW), "    nothing snoozed (set: 3 armed · 1 paused · 1 done · 1 failed)"]);
   const empty = automationsLines([], {}, NOW);
   assert.equal(empty.length, 2);
-  assert.match(empty[1] ?? "", /nothing set — say "wake me at 7:10 on weekdays", or: jarhead automations add/);
+  assert.match(empty[1] ?? "", /nothing set\. Say "wake me at 7:10 on weekdays", or: jarhead automations add/);
 });
 
 test("parseClockAutomation: the three ladder phrases become drafts with a name, the free action, the quiet clause by kind and the echo line", () => {
@@ -160,13 +160,13 @@ test("parseClockAutomation: the asking kinds are refused by name with where the 
   assert.match(error("daily 18:00 press cmd+s"), /^press is set up by voice/);
   assert.match(error("daily 18:00 wake 'summarise'"), /^wake is set up by voice/);
   assert.match(error("weekdays 09:00 file ~/Papers"), /^file is set up by voice/);
-  assert.match(error("at 7:10 weekdays"), /didn't catch what it does — say when, then what/);
-  assert.match(error("chime 'Wake up'"), /^say when first/);
+  assert.match(error("at 7:10 weekdays"), /didn't catch what it does\. Say when, then what/);
+  assert.match(error("chime 'Wake up'"), /^say when first\. Say when, then what/);
   assert.match(error("at 7:10 chime"), /^chime needs a line: chime 'Wake up'$/);
   assert.match(error("at 7:10 open"), /^open needs an app, an https URL or a path$/);
   assert.match(error("at sevenish chime hi"), /didn't catch "sevenish"/);
   assert.match(error("the 3rd of the month chime hi"), /not yet — say the date/);
-  assert.match(error(""), /^say when, then what/);
+  assert.match(error(""), /^Say when, then what/);
 });
 
 test("resolveAutomation: an id is sent as it is; a name finds the LIVE row before a lingering done one, whatever the case; any auto_… passes through (Restore names a trashed row the snapshot does not list); unknown throws naming what is set", () => {
@@ -201,7 +201,7 @@ test("recipeVerdict: the shell gate's word — run for a plain script, asks for 
   assert.equal(recipeVerdict(recipe("backup", "~/bin/backup.sh"), HOME).word, "run");
   const rm = recipeVerdict(recipe("clean", "rm -rf ~/Downloads/old"), HOME);
   assert.equal(rm.word, "asks");
-  assert.match(rm.reason, /would need a yes when it runs; nobody is there then$/);
+  assert.match(rm.reason, / \(would need a yes when it runs; nobody is there then\)$/);
   assert.equal(recipeVerdict(recipe("nuke", "rm -rf ~"), HOME).word, "refused");
   const fronts = recipeVerdict(recipe("notes", "open -a Notes"), HOME);
   assert.equal(fronts.word, "fronts");
@@ -213,9 +213,9 @@ test("recipesLines: one row per recipe with the gate's word; the count line says
   const lines = recipesLines([recipe("tests", "pnpm test", { cwd: "~/jarvis" }), recipe("clean", "rm -rf ~/Downloads/old", { approvedAt: NOW - 90_000 })], NOW, HOME);
   assert.equal(lines.length, 3);
   assert.equal(lines[0], "  tests                    run      pnpm test                                                    · approved 3 d ago · cwd ~/jarvis · 120 s");
-  assert.match(lines[1] ?? "", /^  clean                    asks     rm -rf ~\/Downloads\/old {38} · approved 2 min ago · 120 s · .*would need a yes when it runs; nobody is there then$/);
+  assert.match(lines[1] ?? "", /^  clean                    asks     rm -rf ~\/Downloads\/old {38} · approved 2 min ago · 120 s · .* \(would need a yes when it runs; nobody is there then\)$/);
   assert.equal(lines[2], "  2 recipes · 1 run-tier · 1 cannot fire unattended (edit the command, or Move to Trash)");
-  assert.match(recipesLines([], NOW, HOME)[0] ?? "", /^  no recipes — jarhead recipes add/);
+  assert.match(recipesLines([], NOW, HOME)[0] ?? "", /^  no recipes: jarhead recipes add/);
 });
 
 test("recipesLines: a trashed recipe (trashedAt set) leaves the live rows and the count, and folds under Trash with the Restore verb — hidden, never deleted", () => {
@@ -227,7 +227,7 @@ test("recipesLines: a trashed recipe (trashedAt set) leaves the live rows and th
   assert.equal(lines[2], "  Trash 1 · jarhead recipes restore <name>");
   assert.equal(lines[3], `    vpn-up                   trashed  ${"sudo wg-quick up wg0".padEnd(60)} · 2 h ago`);
   const only = recipesLines([trashed], NOW, HOME);
-  assert.match(only[0] ?? "", /^  no recipes — jarhead recipes add/, "a Trash with nothing live still says how to add one");
+  assert.match(only[0] ?? "", /^  no recipes: jarhead recipes add/, "a Trash with nothing live still says how to add one");
   assert.equal(only[1], "  Trash 1 · jarhead recipes restore <name>");
 });
 
@@ -281,7 +281,7 @@ test("doctor automations: a healthy Mac — every row ok but the two pass-1 note
   assert.equal(r["recipes"]!.status, "ok");
   assert.equal(r["recipes"]!.detail, "2 · 2 run-tier");
   assert.equal(r["time-sensitive"]!.status, "warn");
-  assert.match(r["time-sensitive"]!.detail, /entitlement absent — alarm banners honour Focus like any banner/);
+  assert.match(r["time-sensitive"]!.detail, /entitlement absent\. Alarm banners honour Focus like any banner/);
   assert.equal(r["folder grant"]!.status, "ok");
   assert.equal(r["folder grant"]!.detail, "watching ~/Downloads · the Downloads folder grant is on");
   assert.deepEqual(spawned, [], "the doctor's automations rows spawn nothing — pmset is text, never a command it runs");
@@ -301,26 +301,26 @@ test("doctor automations: the trouble rows — Open at login off, banners denied
   });
   const r = byName(trouble);
   assert.equal(r["daemon"]!.status, "warn");
-  assert.equal(r["daemon"]!.detail, "nothing fires while Jarhead is quit — Open at login is off");
+  assert.equal(r["daemon"]!.detail, "nothing fires while Jarhead is quit. Open at login is off");
   assert.equal(r["daemon"]!.fix, "Settings › Automations › Open at login");
   assert.equal(r["banners"]!.status, "warn");
-  assert.equal(r["banners"]!.detail, "Notifications not granted — the island and the chime still fire");
+  assert.equal(r["banners"]!.detail, "Notifications not granted. The island and the chime still fire");
   assert.match(r["banners"]!.fix ?? "", /^pnpm jarhead cmd request-permission notifications/);
   const wake = r[`wake for ${clock(wakeUp.nextAt ?? 0)}`]!;
   assert.equal(wake.status, "warn");
-  assert.match(wake.detail, /^a closed lid sleeps through \d\d:\d\d — the alarm rings late \(within 15 min\) or is missed; the Mac is never woken by Jarhead$/);
+  assert.match(wake.detail, /^a closed lid sleeps through \d\d:\d\d\. The alarm rings late \(within 15 min\) or is missed; the Mac is never woken by Jarhead$/);
   assert.equal(wake.fix, "copy (root; never run by Jarhead): sudo pmset repeat wakeorpoweron MTWRF 07:05:00");
-  assert.equal(r["quiet hours"]!.detail, "none set — everything fires as set");
+  assert.equal(r["quiet hours"]!.detail, "none set. Everything fires as set");
   assert.equal(r["missed"]!.status, "warn");
   assert.equal(r["missed"]!.detail, "2 missed in 7 days · the Mac slept");
   assert.match(r["missed"]!.fix ?? "", /^Run now on the row/);
   assert.equal(r["brain budget"]!.status, "warn");
-  assert.match(r["brain budget"]!.detail, /^spent — 5 of 5 min used today; wake-brain rows fail until midnight \(a failed row, never a question\)$/);
+  assert.match(r["brain budget"]!.detail, /^spent: 5 of 5 min used today; wake-brain rows fail until midnight \(a failed row, never a question\)$/);
   assert.equal(r["recipes"]!.status, "warn");
   assert.equal(r["recipes"]!.detail, "3 · 1 run-tier · 2 ask (vpn-up: would need a yes when it runs; notes: the recipe fronts an app (open / osascript); use the open action instead)");
   assert.match(r["recipes"]!.fix ?? "", /fails at fire; edit it so the gate says run/);
   assert.equal(r["folder grant"]!.status, "warn");
-  assert.equal(r["folder grant"]!.detail, "watching ~/Downloads needs the Downloads folder grant (not read) — a denied read is the automation.watch problem, never a silent watcher");
+  assert.equal(r["folder grant"]!.detail, "watching ~/Downloads needs the Downloads folder grant (not read). A denied read is the automation.watch problem, never a silent watcher");
   assert.equal(r["folder grant"]!.fix, "Ask (the automation.watch problem's button; Setup › Permissions)");
   assert.deepEqual(spawned, []);
 });
@@ -328,17 +328,17 @@ test("doctor automations: the trouble rows — Open at login off, banners denied
 test("doctor automations: the switch off, no daemon, no journal yet, brain minutes 0 — honest rows, no wake row without an alarm, no folder row without rows", () => {
   const off = byName(automationChecks({ ...healthy, settings: { ...healthy.settings, enabled: false } }));
   assert.equal(off["enabled"]!.status, "warn");
-  assert.equal(off["enabled"]!.detail, "off (Settings › Automations) — nothing fires; every row stays (6 set)");
+  assert.equal(off["enabled"]!.detail, "off (Settings › Automations). Nothing fires; every row stays (6 set)");
   const quiet = automationChecks({ ...healthy, rows: undefined, nextFire: undefined, notifications: undefined, journal: { path: "/x/jobs.ndjson", missing: true }, settings: { ...healthy.settings, wakeBudgetMinutesPerDay: 0, recipes: [] } });
   const q = byName(quiet);
   assert.deepEqual(quiet.map((r) => r.name), ["enabled", "journal", "daemon", "banners", "quiet hours", "missed", "brain budget", "recipes", "time-sensitive"]);
-  assert.equal(q["enabled"]!.detail, "on · no daemon answering — the rows and the next fire come from a running daemon");
+  assert.equal(q["enabled"]!.detail, "on · no daemon answering. The rows and the next fire come from a running daemon");
   assert.equal(q["journal"]!.detail, "no journal yet at /x/jobs.ndjson (it appears with the first automation)");
-  assert.equal(q["banners"]!.detail, "Notifications not read (no daemon answering) — the island and the chime still fire");
-  assert.equal(q["brain budget"]!.detail, "wake-brain off (Brain minutes 0) — no automation wakes the brain; nothing is billed asleep");
-  assert.equal(q["recipes"]!.detail, "none — a recipe is a shell command you approved once; the gate re-judges it at every fire");
+  assert.equal(q["banners"]!.detail, "Notifications not read (no daemon answering). The island and the chime still fire");
+  assert.equal(q["brain budget"]!.detail, "wake-brain off (Brain minutes 0). No automation wakes the brain; nothing is billed asleep");
+  assert.equal(q["recipes"]!.detail, "none. A recipe is a shell command you approved once; the gate re-judges it at every fire");
   const empty = byName(automationChecks({ ...healthy, rows: [], nextFire: undefined }));
-  assert.match(empty["enabled"]!.detail, /^on · nothing set — say "wake me at 7:10 on weekdays"/);
+  assert.match(empty["enabled"]!.detail, /^on · nothing set\. Say "wake me at 7:10 on weekdays"/);
   assert.equal(empty["folder grant"]!.detail, "no guarded folder watched");
   const torn = byName(automationChecks({ ...healthy, journal: { path: "/x/jobs.ndjson", error: "EACCES" } }));
   assert.equal(torn["journal"]!.status, "fail");

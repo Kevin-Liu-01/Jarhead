@@ -182,13 +182,13 @@ export function ledgerSpeed(ledger: Ledger, days: number): SpeedReport {
 const ms = (v: number): string => (Number.isFinite(v) ? String(Math.round(v)) : "-");
 const sec = (v: number): string => (Number.isFinite(v) ? (v / 1000).toFixed(1) : "-");
 const pct = (v: number): string => `${Math.round(v * 100)} %`;
-const cell = (s: Stat): string => (s.n ? `median ${ms(s.median)} ms · p95 ${ms(s.p95)} ms (n=${s.n})` : "—");
+const cell = (s: Stat): string => (s.n ? `median ${ms(s.median)} ms · p95 ${ms(s.p95)} ms (n=${s.n})` : "none");
 
 /** The report as lines, with the targets the levers were built to. */
 export function renderSpeed(r: SpeedReport): string[] {
   const out: string[] = [];
   out.push(`  speed over ${r.days.length ? r.days.join(", ") : "the given rows"}: ${r.delegations} delegation${r.delegations === 1 ? "" : "s"} (${r.finished} finished)`);
-  out.push(`  acting step → screenshot next   ${r.acting.thenShot}/${r.acting.steps} (${pct(r.acting.shotShare)})   target ≤ 15 % — the observation line makes the verifying shot unnecessary`);
+  out.push(`  acting step → screenshot next   ${r.acting.thenShot}/${r.acting.steps} (${pct(r.acting.shotShare)})   target ≤ 15 % (the observation line makes the verifying shot unnecessary)`);
   out.push(`  acting results with a now: line ${r.observed.withLine}/${r.observed.steps} (${pct(r.observed.share)})   target ≥ 95 % with Settings.observe on`);
   out.push(`  bare-yes delegations            ${r.yesDelegations} (each costs a generation today)`);
   const left = r.negative.firstAction || r.negative.speechToAction ? `   left out: ${r.negative.firstAction} negative after delegation, ${r.negative.speechToAction} negative after speech end` : "";
