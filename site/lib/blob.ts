@@ -1,7 +1,9 @@
 /**
  * The live blob: the icon's dithered material (ORB_STOPS, five bands, rim, gleam) on the desktop
- * blob's live harmonic outline, with its drawn face (lib/eyes.ts: ink ovals with a star and a dot for
- * catchlights, and the lines that close them) and its dithered halo in the phase colour. Its eyes
+ * blob's live harmonic outline, with its face dithered on the same cells (lib/eyes.ts faceCells: ink
+ * ovals with a star and a dot for catchlights, the star's glow scattered through the Bayer tile on the
+ * pupil, and the lines that close them, the tile at their edges) and its dithered halo in the phase
+ * colour. Its eyes
  * sparkle (lib/eyes.ts TWINKLE): the catchlights breathe, and a star flares now and then (the hero
  * every 2 to 4.6 s, every other blob every 3 to 6 s, the page's faces taking turns), as the eyes open,
  * as what it loves lights up and out of a squint of joy; the happy sparkle pops in and pulses. When
@@ -9,10 +11,11 @@
  * and while it is lit one more now and then (SPARK). Calm: whole catchlights, one star when lit.
  * Sim from UI/Orb/BlobField.swift through facts-orb.md §1.6, §2, §3, §5, §6; design.md §5.
  *
- * Two canvases in the host: the field (one buffer pixel per 1.5 CSS px cell, image-rendering:
- * pixelated) and the face (full DPR, the eyes stay crisp). The sim steps every rAF tick; the raster
- * runs at the phase's fps (60 through a blink and its reopening, 24 while anything is live); a flare
- * or a pop alone redraws only the face, at 60.
+ * Two canvases in the host, one buffer pixel per 1.5 CSS px cell each (image-rendering: pixelated),
+ * cell for cell: the field and the face over it, the eyes in the ink, the glow and the paper on the
+ * field's own grid (each eye snapped to a cell corner and dithered in its own space, the cell held
+ * through the body's wobble, so the eyes move whole and never crawl or flicker). The sim steps every rAF tick; the raster runs at the phase's fps (60 through a blink
+ * and its reopening, 24 while anything is live); a flare or a pop alone redraws only the face, at 60.
  * Per-cell caches carry the geometry whenever the body is not stretched. The loop is paused
  * offscreen, on a hidden tab and after 20 s of static sleep; `destroy()` releases all.
  *
@@ -21,7 +24,7 @@
  * (thinking wears the accent blue: no violet anywhere on the orb).
  */
 import { BAYER8, ORB_STOPS, QUIET_STOPS, cellCss, clamp01, lut, mix3, parseColor, smoothstep, watchDpr, type RGB } from "@/lib/dither";
-import { EYES, TWINKLE, drawFace, flareSize, popSize, type FacePose } from "@/lib/eyes";
+import { EYES, FaceHold, HOLD, TONE, TWINKLE, asleepPair, faceCells, flareSize, popSize, type FaceCells, type FacePose } from "@/lib/eyes";
 import { glintTurn } from "@/lib/live";
 import { cssVar, type Theme } from "@/lib/theme";
 import type { Phase } from "@/lib/phase";
@@ -142,6 +145,14 @@ function advance(m: Mode, dt: number): void {
   m.x = x < -m.cap ? -m.cap : x > m.cap ? m.cap : x;
 }
 
+/** An opaque colour as an ImageData pixel (little-endian ABGR). */
+function pixel(c: RGB): number {
+  return (255 << 24) | ((Math.round(c[2]) & 255) << 16) | ((Math.round(c[1]) & 255) << 8) | (Math.round(c[0]) & 255);
+}
+
+/** How far the halo's tone is lifted toward the paper before it lights the eyes' glow (so it reads as light on the ink). */
+const GLOW_LIFT = 0.3;
+
 /** The halo's colour: the phase's own token, but the orb's blue while thinking (no violet in anything orb-like). */
 function phaseColor(p: Phase): RGB {
   const v = cssVar(p === "thinking" ? "--jh-accent" : `--jh-${p}`);
@@ -149,7 +160,6 @@ function phaseColor(p: Phase): RGB {
 }
 
 export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
-  let dpr = 1;
   const stillMode = !!o.still || (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
   let size = o.size;
   let cell = cellCss(1.5);
@@ -160,12 +170,18 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   const faceCv = document.createElement("canvas");
   field.className = "desk-blob-field";
   faceCv.className = "desk-blob-face";
+  // the face is on the field's cells: upscaled the same way, never smoothed
+  faceCv.style.imageRendering = "pixelated";
   host.append(field, faceCv);
   const g = field.getContext("2d");
   const fg = faceCv.getContext("2d");
   if (!g || !fg) throw new Error("blob: no 2d context");
   let img: ImageData = g.createImageData(1, 1);
   let px: Uint32Array = new Uint32Array(1);
+  let faceImg: ImageData = fg.createImageData(1, 1);
+  let facePx: Uint32Array = new Uint32Array(1);
+  /** The cells the last face covered (cleared before the next is drawn), as [col, row, w, h]. */
+  let faceBox: readonly [number, number, number, number] = [0, 0, 0, 0];
   // Per-cell caches (rebuilt on resize; the polar pair when the squash moves).
   let PX = new Float32Array(0);
   let PY = new Float32Array(0);
@@ -181,8 +197,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
 
   function alloc(sz: number): void {
     size = sz;
-    // Read here, not once: a new display or a browser zoom re-allocs at the new ratio (watchDpr below).
-    dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+    // The cell is read here, not once: a new display or a browser zoom re-allocs at the new ratio (watchDpr below).
     const rect = host.getBoundingClientRect();
     const scale = !o.ignoreScale && rect.width > 0 && host.clientWidth > 0 ? rect.width / host.clientWidth : 1;
     cell = cellCss(1.5) / (scale > 0 ? scale : 1);
@@ -193,12 +208,16 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     field.height = n;
     field.style.width = `${n * cell}px`;
     field.style.height = `${n * cell}px`;
-    faceCv.width = Math.round(size * dpr);
-    faceCv.height = Math.round(size * dpr);
-    faceCv.style.width = `${size}px`;
-    faceCv.style.height = `${size}px`;
+    faceCv.width = n;
+    faceCv.height = n;
+    faceCv.style.width = `${n * cell}px`;
+    faceCv.style.height = `${n * cell}px`;
     img = g!.createImageData(n, n);
     px = new Uint32Array(img.data.buffer);
+    faceImg = fg!.createImageData(n, n);
+    facePx = new Uint32Array(faceImg.data.buffer);
+    faceBox = [0, 0, 0, 0];
+    faceHold.reset();
     PX = new Float32Array(n * n);
     PY = new Float32Array(n * n);
     TH = new Float32Array(n * n);
@@ -236,8 +255,10 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let theme: Theme = o.theme;
   let backing: RGB | null = null;
   let under: RGB = [11, 12, 16];
-  let eyeInk = "rgb(11 12 16)";
-  let eyeLight = "rgb(255 255 255)";
+  /** The face's tones as pixels (ABGR): the blob's ink, the paper of its catchlights, and the glow between (drawEyes). */
+  let eyeInk = 0;
+  let eyeLight = 0;
+  let eyeGlow = 0;
   let eyePaper: RGB = [255, 255, 255];
   let Lfrom: RGB[] = lut(P.quiet ? QUIET_STOPS : ORB_STOPS, 5);
   let Lto: RGB[] = Lfrom;
@@ -284,10 +305,17 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let lastSlot = -1;
   // The face as the last full frame drew it, so a flare or a pop alone redraws only the face canvas.
   let facePair = P.face;
+  /** Where the last full frame put the face, in the field's px (its grid's corner at 0, 0). */
   let faceCx = 0;
   let faceCy = 0;
   let faceR = 0;
+  /**
+   * The face's turn as drawn: the look's sideways part in tenths, held until the look is HOLD of a tenth past it (as the
+   * island's), so an easing look re-draws the narrowing eye only as it steps, never every frame.
+   */
   let faceTurn = 0;
+  /** The cell the face keeps through the body's wobble and the look (lib/eyes.ts FaceHold). */
+  const faceHold = new FaceHold();
   // This frame's stars on the field's cells: the centre cell, the arms' reach in cells (plus a half), what is left of it.
   const SX = new Int32Array(SPARK.most + 2);
   const SY = new Int32Array(SPARK.most + 2);
@@ -318,8 +346,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     // The eyes: the blob's own ink with a paper catchlight, the same in both themes (they sit on the body, not the page).
     const paperCss = cssVar("--jh-paper");
     const paper: RGB = paperCss ? parseColor(paperCss) : [255, 255, 255];
-    eyeInk = `rgb(${under[0] | 0} ${under[1] | 0} ${under[2] | 0})`;
-    eyeLight = `rgb(${paper[0] | 0} ${paper[1] | 0} ${paper[2] | 0})`;
+    eyeInk = pixel(under);
+    eyeLight = pixel(paper);
     eyePaper = paper;
   }
   resolveTheme();
@@ -618,8 +646,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     if (faceOverride) {
       // the demo's face holds; it still blinks shut on a round pair
     } else if (phase === "asleep" && !stillMode) {
-      const b = t % 8;
-      if (b > 3.2 && b < 4.8) base = "~~";
+      base = asleepPair(t);
     } else if (phase === "thinking" && !stillMode) {
       if (t % 1.7 < 0.567) base = "~~";
     }
@@ -770,13 +797,14 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       }
     }
     g!.putImageData(img, 0, 0);
-    // The face (lib/eyes.ts): it turns with the look and leans into a stretch. The happy sparkle pops as `^ ^` appears
-    // (a pop playing is never started over).
+    // The face (lib/eyes.ts): it turns with the look and leans into a stretch, on the field's cells (the body's centre is
+    // the field's middle, c cells in). Its size is the resting body's, never the breath's or the stretch's, so its edges
+    // hold still while it moves. The happy sparkle pops as `^ ^` appears (a pop playing is never started over).
     facePair = pairNow();
-    faceCx = size / 2 + look[0] * EYES.look[0] * R + sx * str * 0.39 * R;
-    faceCy = size / 2 + EYES.row * Rb * sq + look[1] * EYES.look[1] * R + sy * str * 0.39 * R;
-    faceR = Rb * (phase === "muted" ? 0.9 : 1);
-    faceTurn = look[0];
+    faceCx = c * cell + look[0] * EYES.look[0] * R + sx * str * 0.39 * R;
+    faceCy = c * cell + EYES.row * Rb * sq + look[1] * EYES.look[1] * R + sy * str * 0.39 * R;
+    faceR = R * (phase === "muted" ? 0.9 : 1);
+    if (Math.abs(look[0] * 10 - faceTurn * 10) > HOLD) faceTurn = Math.round(look[0] * 10) / 10;
     const happy = facePair[0] === "^";
     if (happy && !wasHappy && t >= joyAt + TWINKLE.pop) joyAt = t;
     wasHappy = happy;
@@ -789,8 +817,6 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
    * star (the second eye TWINKLE.lag after the first), the happy sparkle pops and pulses with each flare. Calm: at rest.
    */
   function drawEyes(): void {
-    fg!.setTransform(dpr, 0, 0, dpr, 0, 0);
-    fg!.clearRect(0, 0, size, size);
     let pose: FacePose = { open, sparkle: lit, turn: faceTurn };
     if (!stillMode) {
       const u = (t - flare.at) / TWINKLE.flare;
@@ -802,7 +828,33 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         spark: popSize((t - joyAt) / TWINKLE.pop) * (1 + 0.4 * flareSize(u)),
       };
     }
-    drawFace(fg!, facePair, faceCx, faceCy, faceR, pose, { ink: eyeInk, light: eyeLight });
+    const f = faceCells(facePair, faceCx, faceCy, faceR, pose, { cell, x: 0, y: 0 }, { hold: faceHold });
+    // the glow: the ink lit by the halo's tone (toward the paper, as the body's light is), half way
+    eyeGlow = pixel(mix3(under, mix3(halo, eyePaper, GLOW_LIFT), 0.5));
+    // clear the last face's cells, write this one's, and put back only the cells either covered
+    const [ox, oy, ow, oh] = faceBox;
+    for (let y = Math.max(0, oy); y < Math.min(n, oy + oh); y++) facePx.fill(0, y * n + Math.max(0, ox), y * n + Math.min(n, ox + ow));
+    paintFace(f);
+    const x0 = Math.max(0, Math.min(ox, f.col));
+    const y0 = Math.max(0, Math.min(oy, f.row));
+    const x1 = Math.min(n, Math.max(ox + ow, f.col + f.w));
+    const y1 = Math.min(n, Math.max(oy + oh, f.row + f.h));
+    faceBox = [f.col, f.row, f.w, f.h];
+    if (x1 > x0 && y1 > y0) fg!.putImageData(faceImg, 0, 0, x0, y0, x1 - x0, y1 - y0);
+  }
+
+  /** The face's cells into the face buffer: the ink, the glow and the paper (the blob's eyes wear no rim). */
+  function paintFace(f: FaceCells): void {
+    for (let j = 0; j < f.h; j++) {
+      const y = f.row + j;
+      if (y < 0 || y >= n) continue;
+      for (let i = 0; i < f.w; i++) {
+        const x = f.col + i;
+        const tone = f.tone[j * f.w + i];
+        if (x < 0 || x >= n || !tone) continue;
+        facePx[y * n + x] = tone === TONE.light ? eyeLight : tone === TONE.glow ? eyeGlow : eyeInk;
+      }
+    }
   }
 
   /** A star at field cell (x, y): 1 its middle, 2 an arm, 0 none; solid in its middle, a Bayer scatter toward its tips and as it fades. */

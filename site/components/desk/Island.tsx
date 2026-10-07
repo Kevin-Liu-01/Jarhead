@@ -3,16 +3,17 @@ import { useEffect, useRef, useState, type ReactElement, type RefObject } from "
 import { Icon } from "@/components/icons/Icon";
 import { ISLAND } from "@/content/island";
 import { upTo } from "@/lib/cut";
-import { faceMarks, flareSize, type FacePose } from "@/lib/eyes";
+import { REST, TONE, faceCells, type FaceCells, type FaceHold, type FacePose } from "@/lib/eyes";
+import { inkPixels } from "@/lib/island";
 import type { Show, Tile } from "@/lib/live";
 import type { DeskKind } from "@/lib/phase";
 
 /**
- * The island's face per kind, the app's own pairs (BlobField.swift renderEyes): the gate's small still eyes asleep (its ear
- * open for "jarhead", Kevin's island), round eyes listening, the lowered lids thinking (churning to `~ ~`, Top.tsx), `o o`
- * acting and while a ring is up, `^ ^` speaking.
+ * The island's face per kind, the app's own pairs (BlobField.swift renderEyes): asleep the blob's own sleeping lids (its ear
+ * open for "jarhead" or not, turning `~ ~` at the top of a breath, Top.tsx), round eyes listening, the lowered lids
+ * thinking (churning to `~ ~`), `o o` acting and while a ring is up, `^ ^` speaking.
  */
-export const ISLAND_FACE: Record<DeskKind, string> = { listening: "O O", thinking: "- -", acting: "o o", speaking: "^ ^", asleep: ". .", alarm: "o o" };
+export const ISLAND_FACE: Record<DeskKind, string> = { listening: "O O", thinking: "- -", acting: "o o", speaking: "^ ^", asleep: "- -", alarm: "o o" };
 
 /**
  * The foot asleep, the app's asleep row (NotchPanel.swift drawAsleepRow): the crescent, `asleep` as its noun, then the next
@@ -31,54 +32,100 @@ export interface IslandRefs {
   clock: RefObject<HTMLSpanElement | null>;
   tiles: RefObject<HTMLDivElement | null>;
   eyes: RefObject<HTMLDivElement | null>;
-  face: RefObject<SVGSVGElement | null>;
 }
 
-/** The face's box in the anchor band, centred on the anchor point, and the body its eyes are drawn for (lib/eyes.ts R). */
-const FACE_W = 80;
-const FACE_H = 56;
+/** The face: the body its eyes are drawn for (lib/eyes.ts R) and its centre in the anchor band, in island px. */
 const FACE_R = 52;
-/** The light rim round every shape of the face, in island px: wide enough to hold docked, where it is under 1.3 px on screen. */
+const FACE_X = 57;
+const FACE_Y = 40;
+/** The paper rim round the pupils, in island px (whole cells, one at least). */
 const FACE_RIM = 1.9;
-/**
- * The ink halo round every light mark, in island px: at rest just enough to part a star's tip from the pupil's light rim,
- * and grown with a flare so the star crossing that rim keeps its points.
- */
-const GLINT_HALO = 1.5;
-const GLINT_REST = 0.6;
-/** The halos show only over the rims (an alpha mask of the rims themselves): off the face a flare's tip is paper alone. */
-const RIM_MASK = "desk-face-rim";
-/** The island's smallest scale on screen (docked on a phone), so the sparkle's 0.7 px floor is judged in screen px. */
-const FACE_UNIT = 0.6;
-const REST: FacePose = { open: 1, sparkle: 0, turn: 0 };
+/** The island's height: its ink hangs from its bottom edge (styles/desk.css .desk-ink), so its grid is counted from there. */
+const ISLAND_H = 184;
 
 /**
- * The island's face: the blob's own eyes (lib/eyes.ts) as SVG paths, so they stay crisp at every island scale. The same ink
- * pupils with their paper star and dot, the same ink lines and the happy arcs' own sparkle. The ink is rimmed in the
- * phase-tinted paper (the SVG's colour, styles/desk.css) so the face reads on the island's dark; every light mark sits on
- * a thin ink halo (`.halo`, all drawn before any light fill, shown only over the rims), the rim turned inside out, so a
- * flaring star that crosses a pupil's rim keeps its points. `pair` is the app's, one glyph per eye with a space between.
+ * The island's face on the ink's own cells (lib/eyes.ts faceCells on the grid lib/island.ts lays the ink on, `cell` island
+ * px, counted from the island's bottom edge): the blob's own eyes dithered, every edge cell and the star's glow decided by
+ * the Bayer tile, the pupils' rims ramping from the phase-tinted paper to the phase's tone at their foot, and the lines
+ * (lids, arcs) lit in that paper as the island is always dark. Asleep it is the blob's own sleeping lids. `look` carries
+ * the face (island px; it snaps to the cells, `hold` keeping its cell as it hovers). `pair` is the app's, one glyph per eye.
  */
-export function islandFace(pair: string, pose: FacePose = REST): string {
-  const marks = faceMarks(pair.replace(/\s+/g, ""), FACE_W / 2, FACE_H / 2, FACE_R, pose, { ink: "ink", light: "glint" }, FACE_UNIT);
-  let rims = "";
-  let face = "";
-  let halos = "";
-  let glints = "";
-  const f = Math.max(flareSize(pose.flare?.[0] ?? 0), flareSize(pose.flare?.[1] ?? 0));
-  const halo = (2 * (GLINT_REST + (GLINT_HALO - GLINT_REST) * Math.min(1, f * 2.5))).toFixed(2);
-  for (const m of marks) {
-    if (m.paint === "glint") {
-      halos += `<path class="halo" d="${m.d}" stroke-width="${halo}"/>`;
-      glints += `<path class="glint" d="${m.d}"/>`;
-      continue;
+export function islandFace(pair: string, pose: FacePose = REST, cell = 1.5, look: readonly [number, number] = [0, 0], hold?: FaceHold): FaceCells {
+  const grid = { cell, x: 0, y: ISLAND_H - Math.ceil(ISLAND_H / cell) * cell };
+  return faceCells(pair, FACE_X + look[0], FACE_Y + look[1], FACE_R, pose, grid, { rim: FACE_RIM, lit: true, ramp: true, hold });
+}
+
+/**
+ * The face's tones as ImageData pixels (little-endian ABGR): the rim's foot (the phase's tone), the rim's tinted paper,
+ * the island's ink, the star's glow on it, the catchlights' paper.
+ */
+export interface FaceTones {
+  readonly foot: number;
+  readonly rim: number;
+  readonly ink: number;
+  readonly glow: number;
+  readonly light: number;
+}
+
+/**
+ * The face drawn into the island's ink canvas itself, so it is one picture with the ink, cell for cell and crisp the same
+ * way (one buffer pixel a cell, pixelated): the ink as lib/island.ts last drew it is kept (`take`, once per scale, copied
+ * from the ink's own buffer, never read back from the canvas), each face is written over it and the cells the last one
+ * covered are given back, and only the cells either covers are put.
+ */
+export class InkFace {
+  private g: CanvasRenderingContext2D | null = null;
+  private img: ImageData | null = null;
+  private px: Uint32Array | null = null;
+  private base: Uint32Array | null = null;
+  private box: readonly [number, number, number, number] = [0, 0, 0, 0];
+
+  /** The ink as it was just drawn (its buffers kept across scales, made again only when its size changes). */
+  take(canvas: HTMLCanvasElement): void {
+    const g = canvas.getContext("2d");
+    const ink = inkPixels(canvas);
+    const n = canvas.width;
+    const m = canvas.height;
+    if (!g || !ink || !n || !m || ink.length !== n * m) return;
+    if (!this.img || this.img.width !== n || this.img.height !== m || !this.px || !this.base) {
+      this.img = g.createImageData(n, m);
+      this.px = new Uint32Array(this.img.data.buffer);
+      this.base = new Uint32Array(n * m);
     }
-    const line = m.fill ? "" : " line";
-    rims += `<path class="rim${line}" d="${m.d}" stroke-width="${(m.width + 2 * FACE_RIM).toFixed(2)}"/>`;
-    face += m.fill ? `<path class="ink" d="${m.d}"/>` : `<path class="ink line" d="${m.d}" stroke-width="${m.width.toFixed(2)}"/>`;
+    this.g = g;
+    this.base.set(ink);
+    this.px.set(ink);
+    this.box = [0, 0, 0, 0];
   }
-  const parted = halos ? `<mask id="${RIM_MASK}" mask-type="alpha">${rims}</mask><g mask="url(#${RIM_MASK})">${halos}</g>` : "";
-  return rims + face + parted + glints;
+
+  paint(f: FaceCells, tones: FaceTones): void {
+    const { g, img, px, base } = this;
+    if (!g || !img || !px || !base) return;
+    const n = img.width;
+    const m = img.height;
+    const [ox, oy, ow, oh] = this.box;
+    for (let y = Math.max(0, oy); y < Math.min(m, oy + oh); y++) {
+      const a = y * n + Math.max(0, ox);
+      const b = y * n + Math.min(n, ox + ow);
+      if (b > a) px.set(base.subarray(a, b), a);
+    }
+    for (let j = 0; j < f.h; j++) {
+      const y = f.row + j;
+      if (y < 0 || y >= m) continue;
+      for (let i = 0; i < f.w; i++) {
+        const x = f.col + i;
+        const t = f.tone[j * f.w + i];
+        if (!t || x < 0 || x >= n) continue;
+        px[y * n + x] = t === TONE.light ? tones.light : t === TONE.glow ? tones.glow : t === TONE.ink ? tones.ink : t === TONE.rim ? tones.rim : tones.foot;
+      }
+    }
+    const x0 = Math.max(0, Math.min(ox, f.col));
+    const y0 = Math.max(0, Math.min(oy, f.row));
+    const x1 = Math.min(n, Math.max(ox + ow, f.col + f.w));
+    const y1 = Math.min(m, Math.max(oy + oh, f.row + f.h));
+    this.box = [f.col, f.row, f.w, f.h];
+    if (x1 > x0 && y1 > y0) g.putImageData(img, 0, 0, x0, y0, x1 - x0, y1 - y0);
+  }
 }
 
 /**
@@ -140,13 +187,11 @@ function tileWord(t: Tile): string | null {
  * quieter clause, the figures or the next thing armed; then the app's Console · Sleep tiles). No line runs along its
  * contour and nothing bar-shaped rides its head or its foot: the phase tone is the eyes' tint, the Go ring and the head's
  * one glyph while it asks or rings, every instrument the paper. It wears all six kinds open, all in the one blue ink:
- * asleep is the app's island (the gate's small still eyes, its words as the hero, set calm, `☾ asleep · next Alarm 07:10`
+ * asleep is the app's island (the blob's sleeping lids, its words as the hero, set calm, `☾ asleep · next Alarm 07:10`
  * in the foot), the alarm rings over it. Every control and tile icon is Phosphor Fill (components/icons), the site's one
  * family. A drawing of the app, so aria-hidden: the menu bar names its state in words.
  */
 export function Island({ kind, swap, refs, show }: IslandProps): ReactElement {
-  // The face the server draws (the top engine writes every later one straight to the DOM): the kind's own pair.
-  const [face] = useState(() => islandFace(ISLAND_FACE[kind]));
   const sleeping = kind === "asleep" || kind === "alarm";
   // The island asks only its own question, and only when a demo says so (Threads' Slack, Rails' send); any other spoken
   // line (a reason, "night.", a reading) is said without Allow and Deny.
@@ -169,9 +214,8 @@ export function Island({ kind, swap, refs, show }: IslandProps): ReactElement {
     <div className="desk-island" data-kind={kind} aria-hidden="true">
       <canvas ref={refs.ink} className="desk-ink" />
       <div className="desk-anchor">
-        <div ref={refs.eyes} className="desk-eyes">
-          <svg ref={refs.face} className="desk-face" width={FACE_W} height={FACE_H} viewBox={`0 0 ${FACE_W} ${FACE_H}`} dangerouslySetInnerHTML={{ __html: face }} />
-        </div>
+        {/* the face's anchor point (57, 40): the face itself is drawn into the ink (InkFace) */}
+        <div ref={refs.eyes} className="desk-eyes" />
         <div className="desk-word">
           <WordCrossfade text={ISLAND.word[kind]} />
         </div>

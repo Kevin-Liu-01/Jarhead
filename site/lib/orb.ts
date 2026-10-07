@@ -2,13 +2,15 @@
  * The still ramp orb: the disc on the diagonal ORB ramp in five dithered bands, the rim shade,
  * the glassy gleam, the three-level glow spilling onto a ground, and the face the live blob draws
  * (lib/eyes.ts: `O O` ink ovals with a paper star and dot for catchlights, `^ ^` ink arcs with their own small star and
- * dot, `- -` closed lids), antialiased per pixel.
- * Threshold per CELL, geometry per PIXEL, so the disc's edge stays crisp while the pattern stays chunky.
+ * dot, the star's glow dithered on the pupil, `- -` closed lids), on the same cells as the disc's pattern (faceCells: one
+ * tone a cell, the Bayer tile at its edges and in the glow).
+ * Threshold per CELL, geometry per PIXEL, so the disc's edge stays crisp while the pattern stays chunky; the face is
+ * per cell, as the live blob's is.
  * Sources: facts-orb.md §1.4–1.5, §1.9 (scripts/dither.ts:107-346, UI/Console/BrandMarks.swift:446-466).
  * Used by Mark and the blob's stills (lib/still.ts). Pure: no DOM, runs in Node.
  */
 import { BAYER8, ORB_STOPS, clamp01, lut, quantise, rampAt, smoothstep, mix3, type RGB, type Stops } from "./dither";
-import { faceField } from "./eyes";
+import { EYES, REST, TONE, faceCells, toneAt } from "./eyes";
 
 export type Face = "^^" | "OO" | "--" | null;
 
@@ -82,6 +84,10 @@ function paintOrb(img: OrbImage, o: PaintOrbOptions): void {
   const y1 = Math.min(H, Math.ceil(cy + reach));
   const ga = halo ? 0.16 + 0.34 * halo.glow : 0;
   const ba = halo && halo.backing ? 0.14 + 0.18 * halo.glow : 0;
+  // the face on the pattern's own cells (its grid at the image's corner, as the threshold's is); its glow is the ink lit
+  // half way by the halo's tone (the live blob's: lifted toward the paper), or by the ramp's pale end with no halo
+  const eyes = face ? faceCells(face, cx, cy + EYES.row * R, R, REST, { cell, x: 0, y: 0 }) : null;
+  const glowCol = mix3(INK, halo ? mix3(halo.color, PAPER, 0.3) : rampAt(stops, 0.25), 0.5);
   for (let y = y0; y < y1; y++) {
     const cy8 = ((y / cell) | 0) & 7;
     const ny = (y + 0.5 - cy) / R;
@@ -96,14 +102,12 @@ function paintOrb(img: OrbImage, o: PaintOrbOptions): void {
         const rim = smoothstep(0.55, 1, d) * clamp01(0.5 + (nx + ny) / 2) * ORB.rimDarken;
         col = mix3(col, ORB.rimTone, quantise(rim, ORB.rimLevels, t));
         col = mix3(col, PAPER, quantise(gleamLift(gleam, nx, ny), ORB.highlightLevels, t));
-        // The face, only near the eyes (and the happy sparkle off the right one): ink, then the catchlights, each covering
-        // by its distance (one pixel of antialias).
-        if (face && nx > -0.62 && nx < 0.7 && ny > -0.42 && ny < 0.2) {
-          const f = faceField(nx, ny, face);
-          const ink = clamp01(0.5 - f.ink * R);
-          if (ink > 0) col = mix3(col, INK, ink);
-          const glint = clamp01(0.5 - f.glint * R);
-          if (glint > 0) col = mix3(col, PAPER, glint);
+        // The face: its cell's tone, the ink, the star's glow or the paper of a catchlight.
+        if (eyes) {
+          const tone = toneAt(eyes, (x / cell) | 0, (y / cell) | 0);
+          if (tone === TONE.ink) col = INK;
+          else if (tone === TONE.glow) col = glowCol;
+          else if (tone === TONE.light) col = PAPER;
         }
         data[i] = col[0];
         data[i + 1] = col[1];

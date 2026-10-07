@@ -1,10 +1,10 @@
 "use client";
 import { animate } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
-import { ISLAND_FACE, Island, islandFace, type IslandRefs } from "@/components/desk/Island";
+import { ISLAND_FACE, InkFace, Island, islandFace, type FaceTones, type IslandRefs } from "@/components/desk/Island";
 import { ISLAND } from "@/content/island";
-import { BAYER8, cellCss, parseColor, type RGB } from "@/lib/dither";
-import { TWINKLE, flareSize, popSize, type FacePose } from "@/lib/eyes";
+import { BAYER8, cellCss, mix3, parseColor, watchDpr, type RGB } from "@/lib/dither";
+import { FaceHold, HOLD, TWINKLE, asleepPair, flareSize, popSize, type FacePose } from "@/lib/eyes";
 import { renderIslandInk, renderLevelTrace, renderSweep } from "@/lib/island";
 import { getLive, glintTurn, resolveShow, setLive, subscribeLive, type Show } from "@/lib/live";
 import { SPRING, useCalm } from "@/lib/motion";
@@ -17,24 +17,71 @@ const SWAP_MS = 160; // --jh-quick
 const ISL_H = 184;
 
 /**
- * The faces that blink, as the app's do (BlobField.swift renderEyes `blinkable`): listening and acting. The gate's small
- * eyes asleep hold still, thinking's lids are already low, a ring opens them wide.
+ * The faces that blink, as the app's do (BlobField.swift renderEyes `blinkable`): listening and acting. Asleep the lids are
+ * shut already, thinking's are low, a ring opens them wide.
  */
 const BLINKS = new Set<DeskKind>(["listening", "acting"]);
-/** A blink: the open eyes squash shut and back (lib/eyes.ts's blink), run by the compositor so it always ends open. */
+/**
+ * A blink: the open eyes squash shut and back (lib/eyes.ts's lids), shut at 45 % of BLINK_MS, drawn frame by frame on the
+ * cells and read from the clock, so a late frame never leaves them shut.
+ */
 const BLINK_MS = 140;
-const BLINK: Keyframe[] = [{ transform: "scaleY(1)" }, { transform: "scaleY(0.12)", offset: 0.45 }, { transform: "scaleY(1)" }];
-/** A face that can glint (catchlights, or the happy sparkle that pulses), and one with open eyes (the gate's beads rest). */
+function blinkLid(ms: number): number {
+  const u = ms / BLINK_MS;
+  if (!(u > 0 && u < 1)) return 1;
+  const e = (x: number): number => x * x * (3 - 2 * x);
+  return u < 0.45 ? 1 - 0.88 * e(u / 0.45) : 0.12 + 0.88 * e((u - 0.45) / 0.55);
+}
+/** A face that can glint (catchlights, or the happy sparkle that pulses), and one with open eyes. */
 const GLINTS = /[Oo^]/;
 const OPEN = /[Oo]/;
 /**
  * Thinking, as the app's face thinks: it looks up and away (the look the pointer otherwise gives, ±8 / ±5 island px, held
  * at the app's -0.7, -0.75) and its lowered lids churn to `~ ~` for one beat in three of THINK_BEAT seconds.
  */
-const THINK_LOOK = "translate(-5.6px, -3.8px)";
+const THINK_LOOK: readonly [number, number] = [-5.6, -3.8];
 const THINK_BEAT = 1.7;
 function thinkingPair(t: number): string {
   return Math.floor(t / THINK_BEAT) % 3 === 2 ? "~ ~" : ISLAND_FACE.thinking;
+}
+/** The face a kind wears at `t` s: asleep the lids turn wavy at the top of a breath (as the blob's), thinking churns. */
+function kindPair(kind: DeskKind, t: number): string {
+  return kind === "thinking" ? thinkingPair(t) : kind === "asleep" ? asleepPair(t, " ") : ISLAND_FACE[kind];
+}
+/** How fast the look follows the pointer (s): the face is carried cell by cell, eased. */
+const LOOK_TAU = 0.06;
+/**
+ * The face's tones from the kind's tone, eased over --jh-drift to a new kind's: the rim the paper with RIM_TONE of it
+ * (--desk-eye-ink), its foot FOOT_TONE of it, the star's glow the ink lit GLOW_TONE of the way to it.
+ */
+const RIM_TONE = 0.15;
+const FOOT_TONE = 0.65;
+const GLOW_TONE = 0.5;
+const DRIFT_MS = 600;
+/** The face's tones (FaceTones) for a kind's tone over the theme's paper and the island's ink. */
+function faceTones(tone: RGB, paper: RGB, ink: RGB): FaceTones {
+  return { foot: pixel(mix3(paper, tone, FOOT_TONE)), rim: pixel(mix3(paper, tone, RIM_TONE)), ink: pixel(ink), glow: pixel(mix3(ink, tone, GLOW_TONE)), light: pixel(paper) };
+}
+/** A cheap key for a face as drawn: its box, its tones and its cells (FNV-1a), so an unchanged frame is never put. */
+function faceKey(col: number, row: number, cells: Uint8Array, tones: FaceTones): number {
+  let h = 2166136261;
+  const mixIn = (v: number): void => {
+    h = Math.imul(h ^ (v & 0xffff), 16777619);
+    h = Math.imul(h ^ (v >>> 16), 16777619);
+  };
+  mixIn(col + 32768);
+  mixIn(row + 32768);
+  mixIn(cells.length);
+  mixIn(tones.foot);
+  mixIn(tones.rim);
+  mixIn(tones.glow);
+  mixIn(tones.light);
+  for (let i = 0; i < cells.length; i++) h = Math.imul(h ^ cells[i]!, 16777619);
+  return h >>> 0;
+}
+/** An opaque colour as an ImageData pixel (little-endian ABGR). */
+function pixel(c: RGB): number {
+  return ((255 << 24) | ((Math.round(c[2]) & 255) << 16) | ((Math.round(c[1]) & 255) << 8) | (Math.round(c[0]) & 255)) >>> 0;
 }
 /** The island's sparkle in ms (lib/eyes.ts TWINKLE): a flare's life with its second eye's lag, the happy sparkle's pop. */
 const FLARE_MS = (TWINKLE.flare + TWINKLE.lag) * 1000;
@@ -172,9 +219,9 @@ function paintFade(cv: HTMLCanvasElement, foot: number): void {
  * blob's claim over the hero, then the claim of the demo in view (its kind, its line, its question, its tiles, the
  * foot's figures), or that section's own kind. A new kind fades the content out over --jh-quick and lands with the body
  * settling on the spring out of the band. Its ink is still (one image per scale, every kind's); its trace and sweep
- * tick, its face blinks (on the compositor) and turns to the pointer (thinking looks up and away), at 8 fps while the
- * tab is visible; its sparkle breathes with them and
- * flares and pops on frames of its own. Calm (reduced motion, `#still`): one pose per change (the
+ * tick, its face (drawn on the ink's own cells) blinks and is carried by the pointer (thinking looks up and away), at 8
+ * fps while the tab is visible; its sparkle breathes with them and the blink, the look, a flare and a pop run on frames of
+ * their own. Calm (reduced motion, `#still`): one pose per change (the
  * sparkle at rest) and a stepped scale.
  */
 export function Top({ stars }: { readonly stars: number | null }): ReactElement {
@@ -195,7 +242,6 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       clock: { current: null },
       tiles: { current: null },
       eyes: { current: null },
-      face: { current: null },
     }),
     [],
   );
@@ -206,10 +252,14 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     want: { kind: "asleep" } as Show,
     since: 0,
     inkScale: 0,
+    /** The cell the ink was last drawn in (island px): the face is drawn on that grid, the buffer it is written into. */
+    inkCell: 0,
     /** The scale the instruments were last drawn at (they repaint whenever it is not the scale's, C8). */
     meterScale: 0,
     blinkAt: 0,
     blinkUntil: 0,
+    /** When the blink drawing now started (performance.now ms). */
+    blinkFrom: -1e9,
     /**
      * The sparkle: the breath (the 8 fps loop's), the flare playing (its start and first eye), when the next is due, when
      * the happy sparkle popped, the frames they run on (rAF, so the loop never steps them), the pose setEyes last drew and
@@ -221,9 +271,12 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     flareNext: 0,
     popAt: -1e9,
     sparkRaf: 0,
+    /** The last frame the face's own frames drew (ms), for the look's easing. */
+    faceAt: 0,
     pair: ISLAND_FACE.asleep,
-    lid: 1,
     kindPair: ISLAND_FACE.asleep,
+    /** The kind the kind effect last saw (asleep's pair is thinking's, so leaving thinking is told by the kind). */
+    kindWas: "asleep" as DeskKind,
     shown: "asleep" as DeskKind,
     kind: "asleep" as DeskKind,
     docked: false,
@@ -231,8 +284,24 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     s0: 1,
     s1: 0.62,
     pointerNear: false,
+    /** The look: where the face is carried (island px) and how far it is turned, as drawn and as wanted. */
+    look: [0, 0] as [number, number],
+    lookTo: [0, 0] as [number, number],
     turn: 0,
-    face: "",
+    turnTo: 0,
+    /** The turn as drawn, in tenths, held until the look is HOLD of a tenth past it (a fast sweep steps it once). */
+    turnQ: 0,
+    face: -1,
+    /** The face drawn into the ink (Island.tsx InkFace), the cell it keeps, and its tone: from, to, since (ms). */
+    ink: new InkFace(),
+    hold: new FaceHold(),
+    toneFrom: null as RGB | null,
+    toneTo: null as RGB | null,
+    toneAt: -1e9,
+    /** The tokens the tones are mixed from (read once per theme) and the tones at rest for `toneTo`. */
+    eyePaper: null as RGB | null,
+    eyeInk: null as RGB | null,
+    tones: null as FaceTones | null,
     paper: null as RGB | null,
     levels: stillTrace(),
     /** Where the working sweep's lit run is along its strip (0 at the left end … 1 at the right; calm holds it in the middle). */
@@ -302,6 +371,87 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     };
   }, [commit, still]);
 
+  // The island's eyes: the kind's own face (lib/eyes.ts on the ink's own cells), carried and turned by the look, drawn
+  // into the ink canvas itself (no re-render per frame) and only when its cells or its tint change. `live`: a face with
+  // catchlights or the happy sparkle breathes, flares and pops and a blink is drawn; without it, as under calm, it rests
+  // whole.
+  const setEyes = useCallback(
+    (pair: string, live = false) => {
+      const s = tl.current;
+      s.pair = pair;
+      if (!refs.ink.current) return;
+      const now = performance.now();
+      // the turn in tenths, so a slow look re-draws the narrowing eye only as it steps, and a fast one steps it once
+      if (Math.abs(s.turn * 10 - s.turnQ * 10) > HOLD) s.turnQ = Math.round(s.turn * 10) / 10;
+      let pose: FacePose = { open: live ? blinkLid(now - s.blinkFrom) : 1, sparkle: 0, turn: s.turnQ };
+      if (live && GLINTS.test(pair)) {
+        const u = (now - s.flareAt) / (TWINKLE.flare * 1000);
+        const v = u - TWINKLE.lag / TWINKLE.flare;
+        const flare = (s.flareLead < 0 ? [u, v] : [v, u]) as [number, number];
+        const spark = popSize((now - s.popAt) / POP_MS) * (1 + 0.4 * flareSize(u));
+        pose = { ...pose, twinkle: s.breath, flare, spark };
+      }
+      // on the ink's own cells as it was last drawn (a new device pixel ratio repaints the ink first)
+      const f = islandFace(pair, pose, s.inkCell || islandCell(s.inkScale || s.scale || 1), s.look, s.hold);
+      // the tones: read from the tokens once per theme and kind, eased from the last kind's while the drift plays
+      if (!s.eyePaper || !s.eyeInk || !s.toneTo) {
+        s.eyePaper = parseColor(cssVar("--jh-paper"));
+        s.eyeInk = parseColor(cssVar("--jh-desk-notch"));
+        s.toneTo = parseColor(cssVar(ISLAND_TONE[s.kind]));
+        s.tones = null;
+      }
+      const k = s.toneFrom ? Math.min(1, Math.max(0, (now - s.toneAt) / DRIFT_MS)) : 1;
+      if (k >= 1) s.toneFrom = null;
+      let tones = s.tones;
+      if (s.toneFrom) tones = faceTones(mix3(s.toneFrom, s.toneTo, live ? k * k * (3 - 2 * k) : 1), s.eyePaper, s.eyeInk);
+      else if (!tones) tones = s.tones = faceTones(s.toneTo, s.eyePaper, s.eyeInk);
+      const key = faceKey(f.col, f.row, f.tone, tones);
+      if (s.face === key) return;
+      s.face = key;
+      s.ink.paint(f, tones);
+    },
+    [refs.ink],
+  );
+  // The face's own frames: while a blink, a flare or a pop plays or the look is on its way, each frame eases the look and
+  // draws the pose; the last draws it at rest.
+  const animateFace = useCallback(() => {
+    const s = tl.current;
+    if (s.sparkRaf) return;
+    s.faceAt = 0;
+    const tick = () => {
+      const now = performance.now();
+      const dt = s.faceAt ? Math.min(0.05, (now - s.faceAt) / 1000) : 0;
+      s.faceAt = now;
+      const k = 1 - Math.exp(-dt / LOOK_TAU);
+      s.look[0] += (s.lookTo[0] - s.look[0]) * k;
+      s.look[1] += (s.lookTo[1] - s.look[1]) * k;
+      s.turn += (s.turnTo - s.turn) * k;
+      const settled = Math.abs(s.lookTo[0] - s.look[0]) < 0.05 && Math.abs(s.lookTo[1] - s.look[1]) < 0.05 && Math.abs(s.turnTo - s.turn) < 0.01;
+      if (settled) {
+        s.look = [s.lookTo[0], s.lookTo[1]];
+        s.turn = s.turnTo;
+      }
+      setEyes(s.pair, true);
+      const more = !settled || now < s.blinkFrom + BLINK_MS || now < s.flareAt + FLARE_MS || now < s.popAt + POP_MS || now < s.toneAt + DRIFT_MS;
+      s.sparkRaf = more ? requestAnimationFrame(tick) : 0;
+    };
+    s.sparkRaf = requestAnimationFrame(tick);
+  }, [setEyes]);
+  /** Where the face looks: carried there on its own frames, or at once under calm. */
+  const lookAt = useCallback(
+    (to: readonly [number, number], turn: number, calm: boolean) => {
+      const s = tl.current;
+      s.lookTo = [to[0], to[1]];
+      s.turnTo = turn;
+      if (calm) {
+        s.look = [to[0], to[1]];
+        s.turn = turn;
+        setEyes(s.pair);
+      } else animateFace();
+    },
+    [animateFace, setEyes],
+  );
+
   // The island's ink at the scale it is drawn at, in the app's 1.5 pt cells (1.5 island px, whole device px on screen), so
   // its grain is the same share of the island docked as open. It covers the body to its edges and the body's own rounded
   // clip trims it, so no black frames the ink; once it is down the body's own black goes (data-inked), so the contour
@@ -313,9 +463,15 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     const s = tl.current;
     const sc = s.scale || 1;
     s.inkScale = sc;
-    renderIslandInk(cv, { width: 420, height: ISL_H, cell: islandCell(sc) });
+    s.inkCell = islandCell(sc);
+    renderIslandInk(cv, { width: 420, height: ISL_H, cell: s.inkCell });
     cv.parentElement?.setAttribute("data-inked", "");
-  }, [refs.ink]);
+    // the face is drawn into the ink: keep the fresh ink under it and draw the face again on the new grid
+    s.ink.take(cv);
+    s.hold.reset();
+    s.face = -1;
+    setEyes(s.pair, s.running);
+  }, [refs.ink, setEyes]);
   useEffect(() => {
     paintInk();
   }, [paintInk]);
@@ -371,7 +527,10 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       raf = 0;
       const y = Math.max(0, window.scrollY);
       const travel = ISL_H * (s.s0 - s.s1);
-      const sc = still ? (y < travel / 2 ? s.s0 : s.s1) : Math.max(s.s1, s.s0 - y / ISL_H);
+      // the scale as CSS takes it (four places), so the ink's cells are drawn for the scale the island is shown at and land
+      // on whole device pixels (an unrounded cell drew the ink a hair off its shown size, 687.97 device px for 688 at the
+      // hero's 0.818, so the compositor resampled it)
+      const sc = Math.round((still ? (y < travel / 2 ? s.s0 : s.s1) : Math.max(s.s1, s.s0 - y / ISL_H)) * 1e4) / 1e4;
       s.scale = sc;
       el.style.setProperty("--top-s", sc.toFixed(4));
       const docked = sc <= s.s1 + 0.001 && y > 0;
@@ -405,6 +564,13 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     void document.fonts?.ready.then(fit);
     apply();
     inkFade();
+    // a new device pixel ratio (a browser zoom, another display) redraws the ink, the face on it and the instruments in
+    // the new ratio's cells, as lib/blob.ts re-allocs its field
+    const offDpr = watchDpr(() => {
+      paintInk();
+      paintMeters();
+      inkFade();
+    });
     // An item that changes width after mount (the star count arriving, the phase word) refits the bar, once a frame at
     // most: fitBar clears and reapplies to the same widths, so its own drops settle without a loop.
     let refit = 0;
@@ -423,123 +589,106 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       tl.current.paper = null;
       paintMeters();
       inkFade();
+      // the face's tones are the tokens': read again
+      const s = tl.current;
+      s.toneFrom = null;
+      s.toneTo = null;
+      s.eyePaper = null;
+      s.face = -1;
+      setEyes(s.pair, s.running);
     });
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onResize);
     return () => {
       offTheme();
+      offDpr();
       ro?.disconnect();
       if (refit) cancelAnimationFrame(refit);
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onResize);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [paintInk, paintMeters, still]);
+  }, [paintInk, paintMeters, setEyes, still]);
 
   // The instruments when the shown kind or its line changes.
   useEffect(() => {
     paintMeters();
   }, [view.kind, view.line, paintMeters]);
 
-  // The island's eyes: the kind's own face (lib/eyes.ts, as SVG), turned with the pointer, written
-  // straight to the DOM (no re-render per frame) and only when the pose changes. `live`: a face with catchlights or the
-  // happy sparkle breathes, flares and pops (the loop's and the sparkle's frames); without it, as under calm, it rests whole.
-  const setEyes = useCallback(
-    (pair: string, open = 1, live = false) => {
-      const svg = refs.face.current;
-      if (!svg) return;
-      const s = tl.current;
-      s.pair = pair;
-      s.lid = open;
-      let pose: FacePose = { open, sparkle: 0, turn: s.turn };
-      let key = `${pair}|${open}|${s.turn}`;
-      if (live && GLINTS.test(pair)) {
-        const now = performance.now();
-        const u = (now - s.flareAt) / (TWINKLE.flare * 1000);
-        const v = u - TWINKLE.lag / TWINKLE.flare;
-        const flare = (s.flareLead < 0 ? [u, v] : [v, u]) as [number, number];
-        const spark = popSize((now - s.popAt) / POP_MS) * (1 + 0.4 * flareSize(u));
-        pose = { ...pose, twinkle: s.breath, flare, spark };
-        const at = (w: number) => (w > 0 && w < 1 ? w.toFixed(2) : "-");
-        key += `|${s.breath.toFixed(2)}|${at(flare[0])}|${at(flare[1])}|${spark.toFixed(2)}`;
-      }
-      if (s.face === key) return;
-      s.face = key;
-      svg.innerHTML = islandFace(pair, pose);
-    },
-    [refs.face],
-  );
-  // The sparkle's own frames: while a flare or a pop plays, each frame draws the pose the loop last set with them, and the
-  // last draws it at rest.
-  const sparkle = useCallback(() => {
-    const s = tl.current;
-    if (s.sparkRaf) return;
-    const tick = () => {
-      const now = performance.now();
-      setEyes(s.pair, s.lid, true);
-      s.sparkRaf = now < s.flareAt + FLARE_MS || now < s.popAt + POP_MS ? requestAnimationFrame(tick) : 0;
-    };
-    s.sparkRaf = requestAnimationFrame(tick);
-  }, [setEyes]);
   useEffect(() => {
     const s = tl.current;
     const was = s.kindPair;
+    const wasKind = s.kindWas;
     const pair = ISLAND_FACE[kind];
     s.kindPair = pair;
+    s.kindWas = kind;
+    // calm rests on the kind's own pair (no loop runs to bring a breath's `~ ~` or thinking's churn back to it)
+    s.pair = still ? pair : kindPair(kind, performance.now() / 1000);
+    // the face's tone eases from the last kind's to this one's (at once under calm), read from the token once per kind
+    const to = parseColor(cssVar(ISLAND_TONE[kind]));
+    if (s.toneTo && !still) {
+      const k = Math.min(1, Math.max(0, (performance.now() - s.toneAt) / DRIFT_MS));
+      s.toneFrom = s.toneFrom ? mix3(s.toneFrom, s.toneTo, k * k * (3 - 2 * k)) : s.toneTo;
+      s.toneAt = performance.now();
+    } else s.toneFrom = null;
+    s.toneTo = to;
+    s.tones = null;
     // Thinking looks up and away whatever the pointer does; any other kind is the pointer's again from its next move.
-    const eyes = refs.eyes.current;
-    if (kind === "thinking") {
-      s.turn = -0.7;
-      if (eyes) eyes.style.transform = THINK_LOOK;
-    } else if (was === ISLAND_FACE.thinking) {
-      s.turn = 0;
+    if (kind === "thinking") lookAt(THINK_LOOK, -0.7, still);
+    else if (wasKind === "thinking") {
       s.pointerNear = false;
-      if (eyes) eyes.style.transform = "";
+      lookAt([0, 0], 0, still);
     }
-    setEyes(pair, 1, !still);
+    setEyes(s.pair, !still);
     if (still) return;
     // `^ ^` arrives with its sparkle popping; eyes opening from a closed face catch the light soon after
     if (pair.startsWith("^") && !was.startsWith("^")) {
       // a pop playing is never started over
       if (performance.now() >= s.popAt + POP_MS) s.popAt = performance.now();
-      sparkle();
+      animateFace();
     } else if (OPEN.test(pair) && !OPEN.test(was)) s.flareNext = performance.now() + TWINKLE.wake * 1000;
-  }, [kind, refs.eyes, setEyes, sparkle, still]);
+    if (s.toneFrom) animateFace();
+  }, [kind, animateFace, lookAt, setEyes, still]);
 
-  // The pointer turns the island's eyes by ±8 / ±5 px; away from it, and once calm, they rest centred. Thinking keeps its
-  // own look (up and away), as the app's face does.
+  // The pointer carries the island's eyes by ±8 / ±5 px and turns them, cell by cell; away from it (out of reach or out
+  // of the window) they ease back to rest centred, and once calm they rest there at once. Thinking keeps its own look (up
+  // and away), as the app's face does.
   useEffect(() => {
     if (still) return;
+    const away = () => {
+      const s = tl.current;
+      if (!s.pointerNear || s.kind === "thinking") return;
+      s.pointerNear = false;
+      lookAt([0, 0], 0, false);
+    };
+    const out = (e: PointerEvent) => {
+      if (!e.relatedTarget) away();
+    };
     const move = (e: PointerEvent) => {
       const eyes = refs.eyes.current;
-      if (!eyes || tl.current.kind === "thinking") return;
+      const s = tl.current;
+      if (!eyes || s.kind === "thinking") return;
       const r = eyes.getBoundingClientRect();
-      const sc = tl.current.scale || 1;
+      const sc = s.scale || 1;
       const x = (e.clientX - r.left) / sc;
       const y = (e.clientY - r.top) / sc;
       const l = Math.hypot(x, y);
-      const s = tl.current;
       if (l < 900 && l > 1) {
         const m = Math.min(1, l / 160);
-        eyes.style.transform = `translate(${((x / l) * m * 8).toFixed(1)}px, ${((y / l) * m * 5).toFixed(1)}px)`;
         s.pointerNear = true;
-        s.turn = Math.round((x / l) * m * 10) / 10;
-      } else if (s.pointerNear) {
-        s.pointerNear = false;
-        s.turn = 0;
-        eyes.style.transform = "";
-      }
+        lookAt([(x / l) * m * 8, (y / l) * m * 5], (x / l) * m, false);
+      } else away();
     };
     window.addEventListener("pointermove", move, { passive: true });
+    document.addEventListener("pointerout", out, { passive: true });
     return () => {
       window.removeEventListener("pointermove", move);
-      tl.current.pointerNear = false;
-      if (tl.current.kind !== "thinking") {
-        tl.current.turn = 0;
-        if (refs.eyes.current) refs.eyes.current.style.transform = "";
-      }
+      document.removeEventListener("pointerout", out);
+      const s = tl.current;
+      s.pointerNear = false;
+      if (s.kind !== "thinking") lookAt([0, 0], 0, true);
     };
-  }, [refs.eyes, still]);
+  }, [refs.eyes, lookAt, still]);
 
   // The loop: 8 fps for the level trace, the working sweep, Working's clock, thinking's churn and the blink's clock; the
   // ink only if the scale came to rest between its steps. Each tick waits 125 ms, then takes the next frame,
@@ -570,9 +719,12 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
           });
         }
       }
-      // A blink every 3 to 6 s: the compositor squashes the open eyes shut and back, so a slow frame never leaves them shut.
+      // A blink every 3 to 6 s, drawn on the face's own frames from the clock, so a slow frame never leaves the eyes shut.
       if (BLINKS.has(s.kind) && now >= s.blinkAt) {
-        if (s.blinkAt > 0) refs.face.current?.animate(BLINK, { duration: BLINK_MS, easing: "ease-in-out" });
+        if (s.blinkAt > 0) {
+          s.blinkFrom = now;
+          animateFace();
+        }
         s.blinkUntil = now + BLINK_MS;
         s.blinkAt = now + 3000 + Math.random() * 3000;
       }
@@ -580,7 +732,7 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       // turned to first (else the other eye from last time), never inside a blink, one playing never cut off, and only
       // when it is the page's turn (lib/live.ts glintTurn). A face that cannot glint just lets the clock move on.
       s.breath = 0.5 + 0.5 * Math.sin((2 * Math.PI * t) / TWINKLE.period);
-      const face = s.kind === "thinking" ? thinkingPair(t) : ISLAND_FACE[s.kind];
+      const face = kindPair(s.kind, t);
       if (now >= s.flareNext) {
         const busy = now < s.blinkUntil || now < s.flareAt + FLARE_MS + TWINKLE.gap * 1000;
         if (!GLINTS.test(face)) s.flareNext = now + (TWINKLE.rest[0] + Math.random() * TWINKLE.rest[1]) * 1000;
@@ -589,10 +741,10 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
           s.flareAt = now;
           s.flareLead = Math.abs(s.turn) > 0.3 ? (s.turn > 0 ? 1 : -1) : s.flareLead === 1 ? -1 : 1;
           s.flareNext = now + (TWINKLE.rest[0] + Math.random() * TWINKLE.rest[1]) * 1000;
-          sparkle();
+          animateFace();
         }
       }
-      setEyes(face, 1, true);
+      setEyes(face, true);
       next();
     };
     const next = () => {
@@ -626,10 +778,11 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
       s.sparkRaf = 0;
       s.flareAt = -1e9;
       s.popAt = -1e9;
+      s.blinkFrom = -1e9;
       paintInk();
       setEyes(ISLAND_FACE[s.kind]);
     };
-  }, [paintInk, paintMeters, refs, setEyes, sparkle, still]);
+  }, [animateFace, paintInk, paintMeters, refs, setEyes, still]);
 
   return (
     <header ref={top} className="top desk" style={style} data-still={still ? "" : undefined} data-kind={kind}>

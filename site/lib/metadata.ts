@@ -23,7 +23,7 @@ export const DESCRIPTION = `${FOOTER.line1} ${first(HERO.lead, 1)} ${parts(HERO.
  * X, LinkedIn, Slack, Facebook and iMessage cache a card's picture by its URL, and `/og.png` already served the launch
  * card. Bump this whenever `public/og.png` changes, so feeds fetch the new picture instead of the one they hold.
  */
-const OG_VERSION = 2;
+const OG_VERSION = 3;
 const OG_IMAGE = { url: `/og.png?v=${OG_VERSION}`, width: 1200, height: 630, alt: ALT.og, type: "image/png" } as const;
 
 export const metadata: Metadata = {

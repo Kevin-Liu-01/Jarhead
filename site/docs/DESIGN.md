@@ -36,26 +36,42 @@ The real blob (`lib/blob.ts` on `lib/orb.ts`'s material, `components/desk/Charac
 in every awake phase, quiet titanium asleep, its halo the phase tone (never violet; thinking wears the accent blue), and
 its face never under 32 px.
 
-- **The face** (`lib/eyes.ts`): drawn as shapes, never type. Open eyes are ink ovals (the blob's own ink) that catch the
-  light as a paper four-point star toward its gleam and a small paper dot across from it, set low, close and round (just
-  above the body's middle, 0.31 R from it each side); the other faces are round-capped lines in the same ink: `- -` a
-  soft lid, `^ ^` an arc drawn a touch bolder, `u u` a deep cup, `_ _` flat, `x x`, `> <` squeezed shut, `~ ~` a soft
-  ripple. The lids are a spring: a blink squashes the oval shut, the
+- **The face** (`lib/eyes.ts`): drawn as shapes, never type, and dithered: every shape is rasterised on the cells of the
+  world it sits on (the blob's 1.5 px field, the island's ink cells, the still's 3 px), the 8×8 Bayer tile deciding each
+  edge cell, so the eyes are part of the same dithered picture as the body and never smooth vectors laid over it. Open
+  eyes are ink ovals (the blob's own ink) that catch the light as a paper four-point star toward its gleam and a small
+  paper dot across from it, set low, close and round (just above the body's middle, 0.31 R from it each side); on a
+  pupil nine cells tall or more the star blooms, its glow (the ink lit half way by the phase's tone) scattered round it
+  through the tile and never within a cell and a half of the pupil's edge. The other faces are lines in the same ink:
+  `- -` a soft lid, `^ ^` an arc drawn a touch bolder, `u u` a deep cup, `_ _` flat, `x x`, `> <` squeezed shut, `~ ~` a
+  thin sleepy ripple a little wider than the lid. Under ten cells across a lid is laid level on the cells with its middle
+  a row lower (`######` over `.####.`, never the cup's walls) and the ripple is a pixel tilde (`.##..#` over `#..##.`). Asleep it is always the shut lids (`- -`, `~ ~` at the top of a breath),
+  on the blob, the island and the app's peek and lip alike: no bead, nothing that stares. On the grid each eye snaps to a
+  cell corner (the pair together, a whole number of cells apart, held on its cell through a wobble until the place asked
+  for is 0.75 of a cell away) and is dithered in its own space, so a face that moves moves whole: drift and gaze re-draw
+  no cell. Radii and line widths are whole cells, an oval nine cells across or more takes a wider dither band on its
+  diagonals so it reads round (a smaller one keeps the edge band: on the wide band a six-cell pupil came out a battery),
+  and at rest every catchlight keeps to its pupil's inner cells (its arms shortened a quarter cell at a time), so no
+  light nicks the edge; a star is a plus or a single cell, never a dash, at rest and in every frame of a blink. The lids are a spring: a blink squashes the oval shut, the
   body dips with it, and the eye reopens a touch taller before it settles; a happy squint (`^ ^`) comes now and then while
   it listens; the face travels with the look (0.19 R sideways, 0.13 R up and down) and the far eye narrows. Small blobs
   grow their eyes (40 % at a 32 px body) and no line goes under 1.75 px.
 - **The sparkle** (`lib/eyes.ts` `TWINKLE`, `lib/blob.ts` `SPARK`): the star's sides are four quadratics, so it reads as a
-  star from a 32 px body up; star and dot are solid paper and sit inside the pupil (fitted to 0.96 of its radii, the far
-  eye's star narrowed with it). They breathe in size only (a 3.2 s cycle: the star swells as the dot ebbs). A star
-  flares for 0.38 s: it twists out and back upright as it rises, stretches into a long thin glint whose top arm reaches
-  past the pupil, and shrinks back upright (out-cubic up to its peak at 35 %, in-quad down), the second eye 90 ms after
-  the first, and the dot gives way while it does. The hero flares every 2 to 4.6 s, every other blob every 3 to 6 s, and
+  star from a 32 px body up; star and dot are solid paper and sit inside the pupil (fitted to 0.96 of its radii and then
+  to its inner cells, the far eye's star narrowed with it; its spine lit along its arms once one reaches two cells). They
+  breathe in size only (a 3.2 s cycle: the star swells as the dot ebbs). A star flares for 0.38 s: it twists out and back
+  upright as it rises, stretches into a long thin glint whose top arm reaches past the pupil, bursting there into a
+  four-point star of cells that thins tips first through the tile as it falls, and shrinks back upright (out-cubic up
+  to its peak at 35 %, in-quad down), the second eye 90 ms after the first, and the dot gives way while it does. On a
+  pupil under nine cells tall (the phone hero, InstallBlob, the satellites, the app's peek) a glint would split the
+  pupil, a stem through it and a cross over it: there a flare only swells the star inside the pupil and the dot goes out
+  for its top, a twinkle, never a glint. The hero flares every 2 to 4.6 s, every other blob every 3 to 6 s, and
   1.1 to 1.9 s while lit; also 0.32 s after the eyes open from a closed face (the arrival, a demo blob waking), in the
   eye nearer the key as the Install key lights, and as a squint of joy ends while lit. Never two on one face within
   0.5 s, a flare playing is never cut off, and the page's faces (every blob and the island) take turns, 0.6 s apart. Lit
   (starstruck), the dot sharpens through a diamond into a small star of its own. The happy arcs (`^ ^`) wear their own
   small star and dot off the right eye's outer top: they pop in past their size as the face appears (0.32 s) and pulse
-  40 % larger with each flare. When joy starts (a squint of joy, the key lighting up) two stars of field cells pop
+  40 % larger with each flare, the star bursting as it overshoots. When joy starts (a squint of joy, the key lighting up) two stars of field cells pop
   round the head 0.12 s apart, then while lit one more every 1.2 to 2 s; never for a happy face it only keeps. Each is
   a four-point star in the blob's own ramp (on ink a paper middle and light arms, on paper a light middle and blue arms,
   paper where the body swells into it), solid in its middle and a Bayer scatter toward its tips, that pops up in
@@ -63,14 +79,19 @@ its face never under 32 px.
   The face canvas alone redraws at 60 fps through a flare or a pop; the clock runs only on a face that can show it.
   No mark draws under 0.7 screen px at its resting size, so none drops out a frame early in a blink. Calm: the
   catchlights rest whole, nothing flares or pops, and a lit blob keeps one whole star by its head.
-  The stills (`lib/orb.ts` `faceField`) rasterise the same geometry: `O O` with its stars and dots, `^ ^` with its
-  sparkle, and the quiet still's `- -`, the stars a touch larger so a small still keeps them. The stills' URLs carry the
-  face's version (`Character.tsx`, `eyes-3`). The island draws the same face as SVG paths (`faceMarks`, `components/desk/Island.tsx` `islandFace`, crisp
-  at every island scale, the floor judged at its docked 0.6): the ink pupils with their paper star and dot and the ink
-  lines, the ink rimmed in the phase-tinted paper so it reads on the island's dark, every light mark on a thin ink halo
-  shown only over the rims (grown with a flare), so a glint crossing a pupil's rim keeps its points; it blinks shut for
-  one tick, the far eye narrows as it turns to the pointer, its sparkle breathes with the 8 fps loop and flares and pops
-  on frames of its own (whole under calm).
+  The stills (`lib/orb.ts`, `faceCells` on the still's own 3 px cells) draw the same raster: `O O` with its stars, dots
+  and glow, `^ ^` with its sparkle, and the quiet still's `- -`. The stills' URLs carry the face's version
+  (`Character.tsx`, `eyes-6`). The island draws the same face into its ink canvas, on the ink's own cells
+  (`components/desk/Island.tsx` `islandFace`, `InkFace`; crisp at every island scale): the ink pupils with their glow and
+  their paper star and dot, rimmed in whole cells of the phase-tinted paper that ramp through the tile to a foot of the
+  phase's tone (lit from above, as the body is), and the lines (lids, arcs) lit in that paper, since the island is always
+  dark, ramping the same way over their own rows (a lid's ends paper, its sag the foot; the thin `~` stays plain), so a
+  shut eye is dithered as an open one's rim is; a light that flares out over a rim is parted from it by a cell of ink.
+  Calm, the island rests on its kind's own face (`- -` asleep, never a breath's `~ ~` caught when the kind changed); the
+  face is drawn on the cells the ink was last painted in, and a new device pixel ratio repaints both. A blink is drawn from the clock (140 ms,
+  its shut lid ink in its rim, so it never flashes), the face is carried by the pointer cell by cell and eased back when
+  the pointer leaves, its turn held in tenths, its sparkle breathes with the 8 fps loop and flares and pops on frames of
+  its own (whole under calm). The app draws it the same, cell for cell (Eyes.swift).
 
 - **The hero** (`components/site/HeroCharacter.tsx`): the h1's full stop is a dot of ink on arrival; the blob, asleep and
   the size of the dot, takes its place, wakes, turns blue and springs up to stand on the baseline (`SPRING_CHAR`), glances
@@ -150,11 +171,13 @@ its face never under 32 px.
   docked). While it rings the clause is `· nothing billed`, and the hero is the app's ring: `07:10` in the mono, ` · Wake
   up, Kevin` in the sans, a calm second line at 0.72. Awake the foot is `12:37 · 7.2 min · $0.36`, every ` · ` one word
   space. The alarm offers Snooze 10 and Done (the app's other presets show only on hover, which a drawing has none of).
-- **Its face** (`lib/eyes.ts` as SVG, the app's Eyes.swift the same table): the app's own pair per kind, drawn. Asleep the
-  wake gate's beads (`. .`: a small round pupil with one point of light, still, the installed app's dots drawn); listening
-  `O O`, blinking every 3 to 6 s; thinking its lowered lids `- -`, churning to `~ ~` one beat in three, looking up and away
-  whatever the pointer does; acting `o o`, blinking; speaking `^ ^` with its sparkle; ringing `o o`. A blink is a
-  compositor squash of the open eyes, so a slow frame never leaves them shut.
+- **Its face** (`lib/eyes.ts` dithered into the ink, the app's Eyes.swift the same raster): the app's own pair per kind,
+  drawn. Asleep the blob's own sleeping lids (`- -`, turning `~ ~` at the top of every 8 s breath), as the app's lip and
+  peek show them whether or not the wake gate listens; listening `O O`, blinking every 3 to 6 s; thinking its lowered lids
+  `- -`, churning to `~ ~` one beat in three, looking up and away whatever the pointer does; acting `o o`, blinking;
+  speaking `^ ^` with its sparkle; ringing `o o`. A blink is drawn on the cells from the clock, so a slow frame never
+  leaves the eyes shut. In the app, Touch ID asking opens the eyes (`O O`, drawn `o o` in the 12 pt lip so they sit whole)
+  and glances them down to the key for most of each 2.4 s beat, blinking; nothing stares from the menu bar.
 - **Its ink** (`lib/island.ts`, NotchInk.swift's math, cell for cell): the app's poured island, calmed. The orb's blue
   pours out of the band's black, deepest under the notch (to 0.76 of the height under its 185 px) and falling away
   diagonally over the wings to 0.26 at the island's ends, so the black reads as poured into the blue, never as a strip
@@ -272,7 +295,7 @@ turns back with a squint of joy and a burst of stars), 100 frames at 50 ms, the 
 lit frame for a reader with animated images off. They are the site's art. The README says what the app is and never shows these eyes as
 the app's.
 
-- **Metadata** (`lib/metadata.ts`): `og:image` is the static `/og.png?v=2`, 1200 × 630, its alt `ALT.og` (the deck); the
+- **Metadata** (`lib/metadata.ts`): `og:image` is the static `/og.png?v=3`, 1200 × 630, its alt `ALT.og` (the deck); the
   Twitter card is `summary_large_image` with the same picture. Nothing is rendered at build. Feeds cache a picture by its
   URL for days, and `/og.png` first served the launch card, so the URL carries a version (`OG_VERSION`): bump it whenever
   `og.png` changes. After the deploy, re-scrape the home page in LinkedIn's Post Inspector and Facebook's Sharing Debugger;
