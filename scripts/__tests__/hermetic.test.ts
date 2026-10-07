@@ -507,8 +507,9 @@ test("the preload fences what a wrapper runs: env (-S too), xargs, timeout, nohu
   // As in the agent case: the child's os.tmpdir() is <root>/tmp, so <root>/bin and <root>/lib are outside it. Every
   // stand-in prints "the real … ran" and exits 0, so a fence that fails shows without running anything real. macOS has
   // no timeout, so a GNU-like one stands in on PATH: it skips its flags and the duration, then execs the rest. The
-  // desktop payload is the harmless `return "re" & "al"`: the real osascript prints `real`. The app paths do not exist.
-  // An entry may carry stdin, a folder to run in and env to add.
+  // desktop payload is the harmless `return "re" & "al"`: the real osascript prints `real`. Each run that carries it
+  // reaches the desktop's stub, so the child exits 1 and names those calls at exit; the agent and app stubs write
+  // nothing down. The app paths do not exist. An entry may carry stdin, a folder to run in and env to add.
   const root = mkdtempSync(join(tmpdir(), "jh-hermetic-wrappers-"));
   try {
     for (const dir of ["tmp", "bin"]) mkdirSync(join(root, dir));
@@ -686,7 +687,12 @@ test("the preload fences what a wrapper runs: env (-S too), xargs, timeout, nohu
       console.log(JSON.stringify({ runs, worker, fakes, plain: plainRuns }));
     `;
     type Run = { status: number; out: string; err: string };
-    const r = out<{ runs: Record<string, Run>; worker: { status: number | string; out: string; err?: string }; fakes: Record<string, Run>; plain: Record<string, Run> }>(child(script, env));
+    const c = child(script, env);
+    const r = out<{ runs: Record<string, Run>; worker: { status: number | string; out: string; err?: string }; fakes: Record<string, Run>; plain: Record<string, Run> }>(c, 1);
+    const desktop = Object.values(runs).filter(([, args]) => args.includes(osa[1]!)).length;
+    assert.equal(desktop, 3, "env -i osascript, env /usr/bin/osascript, nice -n 5 osascript");
+    assert.match(c.stderr, /a test here reached the desktop, so this file fails/);
+    assert.equal(c.stderr.match(/^ {2}osascript "return \\"re\\" & \\"al\\""$/gm)?.length, desktop, c.stderr);
     assert.equal(Object.keys(r.runs).length, Object.keys(runs).length + Object.keys(lines).length + 5);
     for (const [name, run] of Object.entries(r.runs)) {
       assert.notEqual(run.status, 0, `${name}: the fenced program exited 0 (${JSON.stringify(run)})`);

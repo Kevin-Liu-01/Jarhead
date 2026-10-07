@@ -30,9 +30,10 @@
 //   keystrokes types them into whatever app is in front. osascript's stub answers the one script
 //   with no effect at all, a lone `return` of a string literal or of whole numbers added and taken
 //   away (`return 2 + 2` prints 4), so the runner's plumbing stays testable; it refuses anything else.
-// - A test that reaches the desktop fails. Each stub writes what it refused into the fence, and when
-//   the process exits the preload names every call on stderr and exits 1, so the file fails whatever
-//   its asserts said, as an off-Mac fetch fails under JARHEAD_TEST_NET=strict. Without this, the test
+// - A test that reaches the desktop fails. Each of the seven stubs above writes what it refused into
+//   the fence, and when the process exits the preload names every call on stderr and exits 1, so the
+//   file fails whatever its asserts said, as an off-Mac fetch fails under JARHEAD_TEST_NET=strict.
+//   The agent and app stubs below refuse without writing anything down. Without this, the test
 //   passes on a refusal it never meant to meet, after a spawn a loaded Mac can make slower than the
 //   test's wait. A test that runs the applescript tool through a real ToolRunner hands it a fake
 //   (RunnerOptions.runAppleScript); a lone `return` the osascript stub answers fails nothing.
