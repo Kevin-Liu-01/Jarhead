@@ -74,7 +74,7 @@ test("a pick while asleep opens nothing; a pick while awake opens no new session
     assert.equal(engine.transportState, "asleep");
     assert.equal(live.currentState, "idle", "no session opened by a pick");
     assert.equal(live.config === undefined, true, "no config was ever built for it");
-    assert.ok(!events.some((e) => e.type === "toast" && /heard at the next wake/.test(e.text)), "asleep, nothing to say");
+    assert.ok(!events.some((e) => e.type === "toast" && /heard at the next wake/i.test(e.text)), "asleep, nothing to say");
     await engine.wake("test");
     assert.equal(lives.length, 1);
     assert.equal(live.config?.audio?.output?.voice, "marin");
@@ -172,7 +172,7 @@ test("voice.reopen while a delegation runs opens nothing and cancels nothing; wh
     assert.equal(lives.length, 1, "no session opened");
     assert.equal(brain.cancels, 0, "the task was not cancelled");
     assert.equal(engine.snapshot().delegations[0]!.status, "running");
-    assert.ok(events.some((e) => e.type === "toast" && e.text === "busy — heard at the next wake"));
+    assert.ok(events.some((e) => e.type === "toast" && e.text === "Busy. Heard at the next wake."));
     assert.equal(rows<Pause>(w, "pause").length, 0);
     brain.resolve?.({ status: "done", summary: "found it" });
     await settle();
@@ -388,7 +388,7 @@ test("set_voice typed while PAUSED costs no start: 'switch voice to marin' in th
   }
 });
 
-test("set_voice typed while ASLEEP: with typedWakes off the pick is saved and toasted ('heard at the next Go'), no 'asleep — press Go', nothing opened; with typedWakes on the line wakes Jarhead ONCE, on the new voice, and the reflex is not run again", async () => {
+test("set_voice typed while ASLEEP: with typedWakes off the pick is saved and toasted ('heard at the next Go'), no 'Asleep. Press Go.', nothing opened; with typedWakes on the line wakes Jarhead ONCE, on the new voice, and the reflex is not run again", async () => {
   const w = world();
   const { engine, live, lives, events } = w;
   try {
@@ -419,7 +419,7 @@ test("set_voice typed while ASLEEP: with typedWakes off the pick is saved and to
     events.length = 0;
     await engine.command({ type: "say-text", text: "open safari" });
     assert.equal(live.config === undefined, true);
-    assert.deepEqual(events.filter((e) => e.type === "toast").map((e) => e.text), ["asleep — press Go"]);
+    assert.deepEqual(events.filter((e) => e.type === "toast").map((e) => e.text), ["Asleep. Press Go."]);
     // typedWakes on: the pick is saved first, so the ONE wake opens on Marin; the reflex is handled, not run again on the new session.
     engine.updateSettings({ typedWakes: true });
     events.length = 0;

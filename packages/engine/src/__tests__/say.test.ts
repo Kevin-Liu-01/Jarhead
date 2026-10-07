@@ -20,7 +20,7 @@ const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
 
 type HeardRow = Extract<LedgerRow, { type: "heard" }>;
 
-test("typed while ASLEEP is refused by default: no Live session is opened (the FakeLive is never started), one toast 'asleep — press Go', no instruction, nothing on the record — the text stays in the composer; with Settings.typedWakes the same line wakes Jarhead and reaches the new session as the typed instruction", async () => {
+test("typed while ASLEEP is refused by default: no Live session is opened (the FakeLive is never started), one toast 'Asleep. Press Go.', no instruction, nothing on the record — the text stays in the composer; with Settings.typedWakes the same line wakes Jarhead and reaches the new session as the typed instruction", async () => {
   const w = world();
   const { engine, live, lives, events, hands } = w;
   try {
@@ -36,7 +36,7 @@ test("typed while ASLEEP is refused by default: no Live session is opened (the F
     assert.equal(engine.transportState, "asleep");
     assert.deepEqual(
       events.filter((e) => e.type === "toast").map((e) => (e.type === "toast" ? `${e.tone}:${e.text}` : "")),
-      ["warn:asleep — press Go"],
+      ["warn:Asleep. Press Go."],
       "one toast, and the words are the composer's to keep",
     );
     assert.equal(live.instructions.length, 0);

@@ -1285,7 +1285,7 @@ export class Automations implements AutomationSource {
         // the socket saying `by: "cli"`) is never a yes: its free kinds arm at once and a confirm-tier row is refused, not asked.
         const by: ArmOrigin = cmd.by === "cli" ? "cli" : "console";
         const r = this.arm(cmd.automation as AutomationSetInput, by, by === "console", {});
-        if (r.kind === "confirm") return toast(by === "cli" ? `not armed: ${r.question} — that needs a yes, and the CLI hears none; set it up by voice or in the Console` : `needs a yes: ${r.question}`, "warn");
+        if (r.kind === "confirm") return toast(by === "cli" ? `not armed: ${r.question} (that needs a yes, and the CLI hears none; set it up by voice or in the Console)` : `needs a yes: ${r.question}`, "warn");
         toast(r.kind === "armed" ? r.text : `not armed: ${r.reason}`, r.kind === "armed" ? "info" : "warn");
         return;
       }

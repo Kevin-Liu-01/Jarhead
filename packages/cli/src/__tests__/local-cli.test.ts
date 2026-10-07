@@ -117,9 +117,9 @@ function snapshotOf(over: { brain?: Snapshot["settings"]["brain"]; brainModel?: 
       secrets: { openai: true, anthropic: false, brainApiKey: false },
       ...(over.noLocal ? ({} as { local: LocalServerStatus }) : { local: over.local ?? status }),
       dataPaths: over.dataPaths ?? [
-        { what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session" },
-        { what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0 — nothing leaves" },
-        { what: "memory", where: "mac", detail: "embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b — nothing leaves" },
+        { what: "voice", where: "cloud", detail: "OpenAI gpt-live-1. Every word heard and said; billed per second of open session." },
+        { what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0. Nothing leaves." },
+        { what: "memory", where: "mac", detail: "embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b. Nothing leaves." },
         { what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)" },
       ],
     },
@@ -134,9 +134,9 @@ test("brainLines: the setting (best fit named), what runs, and the four data-pat
     "  setting    local · model best fit (qwen3.5:27b)",
     "  running    local · ready — Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools",
     "  leaves the Mac",
-    "    voice   cloud  OpenAI gpt-live-1 — every word heard and said; billed per second of open session",
-    "    brain   mac    qwen3.5:27b on Ollama 0.34.0 — nothing leaves",
-    "    memory  mac    embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b — nothing leaves",
+    "    voice   cloud  OpenAI gpt-live-1. Every word heard and said; billed per second of open session.",
+    "    brain   mac    qwen3.5:27b on Ollama 0.34.0. Nothing leaves.",
+    "    memory  mac    embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b. Nothing leaves.",
     "    web     cloud  the sites you ask for (web_fetch, web_search)",
   ]);
   const pinned = brainLines(snapshotOf({ brainModel: "qwen3.5:27b", brainBaseUrl: "http://10.0.0.5:11434", resolved: "openai-responses", ready: true }));

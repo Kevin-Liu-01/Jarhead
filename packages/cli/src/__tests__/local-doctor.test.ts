@@ -131,8 +131,8 @@ test("privacy rows equal dataPaths(): one ok row per path, name = what, detail =
     rows.map((r) => r.detail),
     paths.map((p) => `${p.where} · ${p.detail}`),
   );
-  assert.equal(rows[1]!.detail, "mac · qwen3.5:27b on Ollama 0.34.0 — nothing leaves");
-  assert.equal(rows[2]!.detail, "mac · embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b — nothing leaves");
+  assert.equal(rows[1]!.detail, "mac · qwen3.5:27b on Ollama 0.34.0. Nothing leaves.");
+  assert.equal(rows[2]!.detail, "mac · embeddings embeddinggemma:latest 768 dims · extractor qwen3.5:27b. Nothing leaves.");
   assert.match(render(rows).text, /\n {2}privacy\n {4}✔ voice {24}cloud · OpenAI gpt-live-1/);
 });
 
@@ -183,24 +183,24 @@ test("privacy › memory with no daemon: the summary the engine would report is 
   assert.deepEqual(localDown, { enabled: true, embeddings: "keyword" });
   const rowDown = privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: down, memory: localDown, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!;
   assert.equal(rowDown.name, "memory");
-  assert.equal(rowDown.detail, "mac · keywords · rules — nothing leaves");
+  assert.equal(rowDown.detail, "mac · keywords · rules. Nothing leaves.");
   // Brain local, server up with an embedding model: local embeddings, the extractor the pick.
   const localUp = memorySummaryWithoutDaemon({ enabled: true, brain: "local", local: up, hasOpenAIKey: true });
   assert.deepEqual(localUp, { enabled: true, embeddings: "local", embeddingModel: "embeddinggemma:latest" });
-  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "qwen3.5:27b", brainDetail: "", local: up, memory: localUp, hasOpenAIKey: true, liveModel: "gpt-live-1" }))[2]!.detail, "mac · embeddings embeddinggemma:latest · extractor qwen3.5:27b — nothing leaves");
+  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "qwen3.5:27b", brainDetail: "", local: up, memory: localUp, hasOpenAIKey: true, liveModel: "gpt-live-1" }))[2]!.detail, "mac · embeddings embeddinggemma:latest · extractor qwen3.5:27b. Nothing leaves.");
   // Server up without an embedding model: keywords.
   assert.equal(memorySummaryWithoutDaemon({ enabled: true, brain: "local", local: omit(up, "embedModel"), hasOpenAIKey: true }).embeddings, "keyword");
   // A cloud brain with a key: OpenAI embeddings — item text and closed conversations leave, and the row says so instead of "off".
   const codexKey = memorySummaryWithoutDaemon({ enabled: true, brain: "codex", local: up, hasOpenAIKey: true });
   assert.deepEqual(codexKey, { enabled: true, embeddings: "openai" });
-  assert.equal(privacyChecks(dataPaths({ brain: "codex", brainModel: "", brainResolved: "codex", brainDetail: "Codex", local: up, memory: codexKey, hasOpenAIKey: true, liveModel: "gpt-live-1" }))[2]!.detail, "cloud · text-embedding-3-small + a mini model — item text and closed conversations leave");
+  assert.equal(privacyChecks(dataPaths({ brain: "codex", brainModel: "", brainResolved: "codex", brainDetail: "Codex", local: up, memory: codexKey, hasOpenAIKey: true, liveModel: "gpt-live-1" }))[2]!.detail, "cloud · text-embedding-3-small + a mini model. Item text and closed conversations leave.");
   // A cloud brain without a key: keywords and rules on the Mac. An embedding model on a server the brain does not use is not memory's.
   assert.deepEqual(memorySummaryWithoutDaemon({ enabled: true, brain: "codex", local: up, hasOpenAIKey: false }), { enabled: true, embeddings: "keyword" });
   // Memory off in settings: the row says off, and only then.
   const off = memorySummaryWithoutDaemon({ enabled: false, brain: "local", local: up, hasOpenAIKey: false });
-  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: up, memory: off, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!.detail, "off · memory is off — nothing is read or kept");
+  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: up, memory: off, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!.detail, "off · Memory is off. Nothing is read or kept.");
   // The hole this closes: no summary at all reads as off.
-  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: up, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!.detail, "off · memory is off — nothing is read or kept");
+  assert.equal(privacyChecks(dataPaths({ brain: "local", brainModel: "", brainDetail: "", local: up, hasOpenAIKey: false, liveModel: "gpt-live-1" }))[2]!.detail, "off · Memory is off. Nothing is read or kept.");
 });
 
 test("local › daemon: a daemon whose snapshot has no setup.local (a build before the local brain) is one warn row with the restart fix; no row without a daemon or with a current one", () => {

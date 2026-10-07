@@ -79,7 +79,6 @@ const HELP_COPY = "apps/mac/Sources/Jarhead/UI/HelpCopy.swift";
 const DOCTOR = "packages/cli/src/doctor.ts";
 const ENGINE = "packages/engine/src/engine.ts";
 const CRASH_GUARD = "apps/mac/Sources/Jarhead/App/CrashGuard.swift";
-const PRIVACY = "packages/core/src/privacy.ts";
 
 const KEPT: readonly Kept[] = [
   { text: "Hand back the mic, guard the echo — apps keep their sound", source: HELP_COPY },
@@ -94,23 +93,14 @@ const KEPT: readonly Kept[] = [
   { text: "Notifications not granted — the island and the chime still fire", source: DOCTOR, sourceHas: ["`Notifications ${", '"not granted"', "} — the island and the chime still fire`"] },
   { text: "spent — 5 of 5 min used today", source: DOCTOR, sourceHas: ["`spent — ${usedMin} of ${cap} min used today"] },
   { text: "entitlement absent — alarm banners honour Focus like any banner", source: DOCTOR },
-  { text: "asleep — press Go", source: ENGINE },
   { text: 'Last task: "<request>" — <status>: <summary>', source: ENGINE, sourceHas: ["`Last task: \"${", "}\" — ${last.status}: ${last.summary}`"] },
-  { text: "— defaults import failed (1)", source: ENGINE, sourceHas: ["skipped ? `${text} — ${skipped}` : text"] },
-  { text: "Two Jarhead tiles in the Dock — Dock not restarted", source: ENGINE, sourceHas: ['"Two Jarhead tiles in the Dock"', "`${stood} — Dock not restarted`"] },
-  { text: "Dock written, not restarted — press Fix the Dock again", source: ENGINE },
   { text: "then: signal SIGABRT (6) — the runtime's abort after the exception above", source: CRASH_GUARD, sourceHas: ['"\\nthen: signal "', "\" — the runtime's abort after the exception above\\n\""] },
   { text: "relaunch: no — 4 crashes in 10 minutes; staying down until you open Jarhead yourself", source: CRASH_GUARD, sourceHas: ['"relaunch: no — "', '" crashes in 10 minutes; staying down until you open Jarhead yourself\\n"'] },
   { text: "relaunch: no — 4 crashes in 10 minutes", source: CRASH_GUARD, sourceHas: ['"relaunch: no — "', '" crashes in 10 minutes;'] },
   { text: "Spotify is thinking — 0 seconds in", source: "packages/engine/src/threads/lines.ts", sourceHas: ['`${name} is ${phrase ?? "thinking"} — ${s} seconds in`'] },
   { text: "not yet — say the date", source: "packages/core/src/schedule.ts" },
-  // docs/LOCAL.md: the four "Leaves the Mac" rows and the Console's local-brain lines.
-  { text: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session", source: PRIVACY, sourceHas: ["`OpenAI ${i.liveModel} — every word heard and said; billed per second of open session`"] },
-  { text: "qwen3.5:27b on Ollama 0.34.0 — nothing leaves", source: PRIVACY, sourceHas: ["`${model} on ${server} — nothing leaves`"] },
-  { text: "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves", source: PRIVACY, sourceHas: ['`embeddings ${m.embeddingModel ?? "local"}${dims} · ${reads}`', "`${how} — nothing leaves`"] },
-  { text: "Open Ollama, or install it — see docs/LOCAL.md.", source: ENGINE },
+  // docs/LOCAL.md: the Console's local-brain lines.
   { text: "qwen3 is ambiguous here: qwen3:8b, qwen3:32b — pick one", source: "packages/brain/src/local.ts", sourceHas: ['is ambiguous here: ${byName.map((m) => m.id).join(", ")} — pick one`'] },
-  { text: "using the OpenAI backend instead — until it is back, the brain's work goes to OpenAI too. Memory stays local.", source: ENGINE },
 ];
 
 /** A quote may wrap across lines in the doc: any run of whitespace matches any run. */
@@ -172,8 +162,8 @@ test("C3: the docs checked are every Markdown file, the ones C3 rewrote among th
 });
 
 test("C3: the em dash check catches prose and spares a kept quote", () => {
-  assert.deepEqual(strayDashes(`one ${EM} two\n\`asleep ${EM} press Go\`\n`), [`1: one ${EM} two`]);
-  assert.deepEqual(strayDashes(`toast "asleep\n${EM} press Go" kept`), []);
+  assert.deepEqual(strayDashes(`one ${EM} two\n\`not yet ${EM} say the date\`\n`), [`1: one ${EM} two`]);
+  assert.deepEqual(strayDashes(`error "not yet\n${EM} say the date" kept`), []);
 });
 
 test("D8: Go / Pause stays ⌥⇧Space, the one hotkey whose combo types a character; the docs and the check say so", () => {

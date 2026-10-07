@@ -54,9 +54,9 @@ rows, from one function (`dataPaths()` in `@jarhead/core`):
 
 | row | where | detail |
 |---|---|---|
-| voice | cloud | OpenAI gpt-live-1 — every word heard and said; billed per second of open session |
-| brain | mac | qwen3.5:27b on Ollama 0.34.0 — nothing leaves (`lan` when the pinned root is not loopback) |
-| memory | mac | embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves (or keywords) |
+| voice | cloud | OpenAI gpt-live-1. Every word heard and said; billed per second of open session. |
+| brain | mac | qwen3.5:27b on Ollama 0.34.0. Nothing leaves. (`lan` when the pinned root is not loopback) |
+| memory | mac | embeddings embeddinggemma 768 dims · extractor qwen3.5:27b. Nothing leaves. (or keywords) |
 | web | cloud | the sites you ask for (web_fetch, web_search) |
 
 Memory follows the *setting*, not the running brain: if the local server is down and the brain
@@ -114,7 +114,7 @@ process, so the picker has one entry.
 
 | line | do |
 |---|---|
-| `Local brain: nothing answers on this Mac (127.0.0.1:11434, :1234, :8080). Open Ollama, or install it — see docs/LOCAL.md.` | open `Ollama.app` or `brew services start ollama`; the row clears within 60 s on its own |
+| `Local brain: nothing answers on this Mac (127.0.0.1:11434, :1234, :8080). Open Ollama, or install it (see docs/LOCAL.md).` | open `Ollama.app` or `brew services start ollama`; the row clears within 60 s on its own |
 | `Local brain: Ollama 0.34.0 is up but nothing on it can call tools. In a terminal: ollama pull qwen3.5:27b (17 GB, fits this Mac).` | Copy, run it, wait for the pull, Retry |
 | `Local brain: qwen3.5:27b is not on Ollama 0.34.0 (it has qwen3.5:9b, gemma4:26b). Pull it, or pick another.` | pull it, or pick a listed model |
 | `qwen3 is ambiguous here: qwen3:8b, qwen3:32b — pick one` | pick the full tag |
@@ -122,7 +122,7 @@ process, so the picker has one entry.
 | `gemma3:27b cannot call tools; pick a model with the tools badge (pnpm jarhead models)` | a model with tools |
 | `Local brain: qwen3.5:4b's window is 8k tokens; Jarhead's tools alone are ~11k. Pick a larger model.` | informational; a larger model |
 | `Local brain on 10.0.0.5:11434: leaves this Mac for your network` | informational; you pinned a LAN root |
-| `Local brain unavailable (…); using the OpenAI backend instead — until it is back, the brain's work goes to OpenAI too. Memory stays local.` | the loud fallback; fix the server and it heals within 60 s |
+| `Local brain unavailable (…); using the OpenAI backend instead. Until it is back, the brain's work goes to OpenAI too. Memory stays local.` | the loud fallback; fix the server and it heals within 60 s |
 | `the local model went quiet for 60 s` | spoken by the delegator; the server stalled, so check `~/.ollama/logs/server.log` |
 | `the request did not fit qwen3.5:27b's 65536 context; say it in fewer steps` | spoken by the delegator; a smaller ask, or a model with a larger trained window |
 

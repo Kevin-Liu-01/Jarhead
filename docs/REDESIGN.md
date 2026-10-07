@@ -1363,7 +1363,7 @@ One transport, four states, no session in any state but two:
   awake and listening. A spoken "stop" / "cancel" / "never mind" is this, through
   the ear's and the Delegator's `onStop`.
 - **`resume`**: go-if-paused (otherwise a word: "not paused" /
-  "asleep — press Go"); **`sleep {cause?, phrase?}`**: a graceful close to asleep, from paused
+  "Asleep. Press Go."); **`sleep {cause?, phrase?}`**: a graceful close to asleep, from paused
   too, with its cause on the `sleep` row (§18).
 
 `recomputePhase` decides `paused` first, before "no session → asleep" (it was the
@@ -1855,14 +1855,14 @@ or two pins, is the row **"Two Jarhead tiles in the Dock"** (the count past two)
 `repairDock`, the Dock half of `pnpm jarhead dock --fix`, factored out of
 `runHygiene` so both paths are one code: re-export and compare `mod-count`, `defaults
 import`, `killall Dock` only when something was written. Then a re-read clears the
-row (or keeps it with the reason, `— defaults import failed (1)`), a toast says what
+row (or keeps it with the reason, `Defaults import failed (1)`), a toast says what
 was done, and `tick()` reads once more ten seconds later (`DOCK_RECHECK_MS`) in case
 the relaunched Dock rewrote its domain with the tile back. Two things the review
 caught: an import whose `killall Dock` failed is *not* a fix: cfprefsd holds the clean
 document while the Dock process still draws both tiles and will write its copy back
 on its next event, so the re-read is not the truth. That case keeps the row as
-"Two Jarhead tiles in the Dock — Dock not restarted", toasts a warn
-("Dock written, not restarted — press Fix the Dock again"), arms no recheck, keeps the row through a
+"Two Jarhead tiles in the Dock. Dock not restarted.", toasts a warn
+("Dock written, not restarted. Press Fix the Dock again."), arms no recheck, keeps the row through a
 clean audit (`dockRestartOwed`), and the next press runs only `restartDock`, the
 `killall Dock` factored out of `repairDock` so both are one code. And a press whose
 read fails toasts "Could not read the Dock: …" instead of silently doing nothing.
@@ -3140,7 +3140,7 @@ utterance (emitted `final`, as `push` does), then adds one item `{source: "typed
 true, startMs = endMs = nowMs}` and emits it once as `final`, so the `heard` row is
 written, the request window and `isYes` read typed words as speech, and a typed "open
 safari" runs the reflex within 300 ms. Typed while ASLEEP is REFUSED with the toast
-"asleep — press Go" and the text kept (`Settings.typedWakes`, default false: a stray Return must
+"Asleep. Press Go." and the text kept (`Settings.typedWakes`, default false: a stray Return must
 never open a paid session). Typed while paused resumes (as before). `agent.send` echoes one
 `pending: true` row before the await and toasts "Sent to <name> · queued | resumed" or "Not
 sent · <reason>"; `AgentInfo.send {ok, reason?, mode?}` is TYPED from the same evidence
