@@ -48,3 +48,9 @@
 @media (max-width: 720px) {
   .kit-btn { height: max(var(--kit-h), 40px); }
 }
+
+/* MIT's mark (components/kit/MitMark.tsx): the bars at cap height in the line's colour, sat on the baseline as a capital
+   is; the word laid over them, transparent and selectable, so a selection across the mark lights it and a copy reads MIT */
+.mit { position: relative; display: inline-block; height: 0.73em; aspect-ratio: 1360 / 720; vertical-align: baseline; }
+.mit-bars { display: block; width: 100%; height: 100%; }
+.mit-word { position: absolute; inset: 0; overflow: hidden; color: transparent; font-size: 0.8em; line-height: 0.92; letter-spacing: -0.04em; text-align: center; white-space: nowrap; }

@@ -33,9 +33,10 @@ Earlier the same day, on the web island:
 4. **It meshes with the bar** the way the app's island meets the real menu bar: hung from the bar's bottom edge under the
    notch, with the notch's fillets and the island's rounded top corners, and no hairline across the island's span. The
    bar's items never run under the notch or the island at any width.
-5. **The licence.** thesvg.org has no MIT logo (checked: @thesvg/react 3.3.12's 22,287 files and thesvg.org's sitemap),
-   and MIT's bars are the university's, not the licence's. The hero's terms line uses thesvg's Open Source Initiative
-   keyhole, mono, in the line's colour, before the word MIT.
+5. **The licence.** MIT's bars, the mark Kevin's Glyphfield sets for its MIT licence (2026-10-07, Kevin), in the line's
+   colour, in the hero's terms line and the footer. The word MIT lies over the bars as transparent, selectable text, so a
+   selection lights "MIT" and a copy gives it (components/kit/MitMark.tsx). It replaced thesvg's Open Source Initiative
+   keyhole, which stood before the word MIT.
 6. **One Jarhead.** Exactly one instance of the app and one Dock tile, ever. The app hands off to a running instance and
    quits. Nothing we build or run (the probes, the harnesses, the build-only stages) ever shows another Jarhead in the
    Dock.
@@ -71,7 +72,7 @@ What that changes here:
    place, on purpose: on the page the island hangs from a band as wide as itself over the page's own bar, while the app's
    open island keeps the notch's column with concave fillets under the real menu bar, whose status items are the user's.
 2. **Items 2 to 6 stand**, and GROWN keeps them: no line along any edge, nothing bar-shaped in the head or the foot (the foot
-   is one line of words), the drawn eyes on both sides, the band meshing with the bar, the OSI keyhole, one Jarhead. (The
+   is one line of words), the drawn eyes on both sides, the band meshing with the bar, the licence mark, one Jarhead. (The
    gate's beads that stood in for the installed dots are gone since 2026-10-06: see "The eyes, dithered" below.)
 3. **The constraints stand**, with the one silhouette difference above as the exception to "the site shows nothing the app
    does not draw".

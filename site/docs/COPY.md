@@ -116,8 +116,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 05 · Rails  `id="rails"`
 
 - eyebrow: `Speaking` · `It is talking. Say stop to interrupt.` · `^ ^`
-- h2, line 1: `One table sorts each call:` (README:74, README:413)
-- h2, line 2 *grey*: `run, confirm or refuse.` (README:74, README:413). Rails.tsx cuts the three verdicts from it; `.rail-word` capitalises them.
+- h2, line 1: `It knows what to just do` (Kevin, 2026-10-07: the judgment, not the mechanism; README:74)
+- h2, line 2 *grey*: `and when to ask first.` (README:74, run and confirm; the demo shows refuse). Rails.tsx cuts run, confirm and refuse from the lead.
 - lead: `Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.` (README:361)
 - line 1: `A spoken yes covers one action once.` (README:362)
 - line 2: `Your key or click holds it 1.5 s.` (README:63, README:353; scroll is in Numbers figure 12)
@@ -422,7 +422,7 @@ Kevin: one sentence each, black into grey, never "blah blah. blah blah.". Say's 
 - Wake `Asleep, it wakes on a word. / Touch ID opens it.` → `It wakes up to its name / “Hey, jarhead.”` (2026-10-07, Kevin)
 - Threads `Several things at once. / Each with its own brain.` → `Tasks run side by side, / each with its own brain.`
 - Hands `Label first. Click second. / Screenshots when they help.` → `It finds the label, clicks it / and checks a screenshot.`
-- Rails `One policy table. / Run, confirm or refuse.` → `One table sorts each call: / run, confirm or refuse.`
+- Rails `One policy table. / Run, confirm or refuse.` → `It knows what to just do / and when to ask first.` (2026-10-07, Kevin asked for something better than the mechanism)
 - Sleep `Say good night. / Alarms still ring.` → `You say it once, / it never forgets.` (2026-10-07, Kevin)
 - Numbers `Measured on one Mac. / Written down.` → `Measured on one Mac / and logged with dates.`
 - Costs `Five cents a minute. / The voice costs nothing asleep.` → `It's five cents a minute / and nothing asleep.`

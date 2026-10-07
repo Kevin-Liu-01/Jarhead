@@ -51,9 +51,9 @@ if (!RUNS.startsWith(`"${CLICK_SAVE}"`)) throw new Error("Rails: the Run sentenc
  * and the blob frowns.
  */
 const ROWS: ReadonlyArray<{ readonly id: Verdict; readonly word: string; readonly icon: IconName; readonly tag?: string; readonly why?: string; readonly said?: string }> = [
-  { id: "run", word: part(RAILS.h2[1], "run"), icon: "playCircle", said: nth(SAY.lines[0], 1) },
-  { id: "confirm", word: part(RAILS.h2[1], "confirm"), icon: "handPalm", tag: part(NEVER_LINE, "ask every time"), why: nth(NEVER_LINE, 1), said: RAILS.lines[0] },
-  { id: "refuse", word: part(RAILS.h2[1], "refuse"), icon: "prohibit", tag: RAILS.never.label },
+  { id: "run", word: part(RAILS.lead, "run"), icon: "playCircle", said: nth(SAY.lines[0], 1) },
+  { id: "confirm", word: part(RAILS.lead, "confirm"), icon: "handPalm", tag: part(NEVER_LINE, "ask every time"), why: nth(NEVER_LINE, 1), said: RAILS.lines[0] },
+  { id: "refuse", word: part(RAILS.lead, "refuse"), icon: "prohibit", tag: RAILS.never.label },
 ];
 const EVERY_CALL = part(RAILS.lead, "Every call");
 /** The call the demo sorts by itself when the plate first comes into view, and the still it rests on. */

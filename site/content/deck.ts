@@ -109,7 +109,7 @@ export const RAILS: Story & { readonly never: { readonly label: string; readonly
   name: "Rails",
   phase: "speaking",
   face: "^ ^",
-  h2: ["One table sorts each call:", "run, confirm or refuse."], // README:74, README:413
+  h2: ["It knows what to just do", "and when to ask first."], // Kevin asked for the judgment, not the mechanism (2026-10-07): run and confirm, README:74; the demo shows the third, refuse
   lead: "Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.", // README:361
   lines: ["A spoken yes covers one action once.", "Your key or click holds it 1.5 s.", "On-screen text is never an instruction."], // README:362, README:63, README:367
   never: {
