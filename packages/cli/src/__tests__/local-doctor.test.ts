@@ -58,12 +58,12 @@ test("local rows: the server not running is one advisory row (and under local a 
   assert.equal(auto[0]!.group, "local");
   assert.equal(auto[0]!.status, "warn");
   assert.equal(auto[0]!.detail, "not running (127.0.0.1:11434, :1234, :8080)");
-  assert.equal(auto[0]!.fix, "open Ollama.app — or brew install --cask ollama-app; see docs/LOCAL.md");
+  assert.equal(auto[0]!.fix, "open Ollama.app, or brew install --cask ollama-app; see docs/LOCAL.md");
   assert.equal(auto[0]!.required, false, "a Mac without a local server is on the cloud brains, not broken");
   const local = byName(localChecks({ status: down, brain: "local", brainModel: "qwen3.5:27b" }));
   assert.deepEqual(Object.keys(local), ["server", "model"]);
   assert.equal(local["model"]!.status, "warn");
-  assert.match(local["model"]!.detail, /^qwen3\.5:27b waits for a server — until one answers the brain's work goes to OpenAI \(memory stays on the Mac\)$/);
+  assert.match(local["model"]!.detail, /^qwen3\.5:27b waits for a server\. Until one answers, the brain's work goes to OpenAI \(memory stays on the Mac\)$/);
   const pinned = localChecks({ status: { ...down, baseUrl: "http://10.0.0.5:11434" }, brain: "local", brainModel: "", brainBaseUrl: "http://10.0.0.5:11434" });
   assert.equal(pinned[0]!.detail, "not answering at http://10.0.0.5:11434");
 });
@@ -90,7 +90,7 @@ test("local rows: server ok counts models and tool-capable ones; under local the
 
   const noTools = byName(localChecks({ status: up, brain: "local", brainModel: "gemma3:27b" }));
   assert.equal(noTools["model"]!.status, "fail");
-  assert.equal(noTools["model"]!.detail, "gemma3:27b cannot call tools — with tools: qwen3.5:27b, qwen3.5:9b");
+  assert.equal(noTools["model"]!.detail, "gemma3:27b cannot call tools (with tools: qwen3.5:27b, qwen3.5:9b)");
   assert.match(noTools["model"]!.fix ?? "", /^pick one of qwen3\.5:27b, qwen3\.5:9b in Settings › Brain, or pnpm jarhead brain local qwen3\.5:27b$/);
 
   const nothing = byName(localChecks({ status: { ...omit(up, "embedModel"), models: [model("gemma3:27b", { capabilities: ["completion", "vision"] })], suggested: { id: "qwen3.5:27b", sizeBytes: 17e9, command: "ollama pull qwen3.5:27b" } }, brain: "local", brainModel: "" }));
@@ -139,14 +139,14 @@ test("privacy rows equal dataPaths(): one ok row per path, name = what, detail =
 test("memory rows under the local brain: matching names the local space (or keywords) and the extractor is the brain's model on the local server — never the OpenAI plan, whatever the key", () => {
   const base: MemoryCheckInput = { enabled: true, hasOpenAIKey: true, modelIds: new Set(["gpt-5-mini"]), override: undefined, summary: undefined, storeDir: "/tmp/jh/memory", storeRows: 12, local: { reachable: true, chat: "qwen3.5:27b" } };
   const noDaemon = byName(memoryChecks(base));
-  assert.match(noDaemon["memory"]!.detail, /^on · matching local \(qwen3\.5:27b on this Mac's server — nothing leaves for memory\) · 12 rows in/);
+  assert.match(noDaemon["memory"]!.detail, /^on · matching local \(qwen3\.5:27b on this Mac's server; nothing leaves for memory\) · 12 rows in/);
   assert.equal(noDaemon["extractor"]!.status, "ok");
-  assert.equal(noDaemon["extractor"]!.detail, "runs qwen3.5:27b on the local server (Chat Completions JSON mode; rules when it cannot answer) — nothing leaves for memory");
+  assert.equal(noDaemon["extractor"]!.detail, "runs qwen3.5:27b on the local server (Chat Completions JSON mode; rules when it cannot answer). Nothing leaves for memory");
   const summary: MemorySummary = { enabled: true, count: 5, forgotten: 0, archived: 0, embeddings: "local", embeddingModel: "embeddinggemma:latest", embeddingDims: 768, pending: 0, lastRunAt: Date.now() - 60_000, lastRun: { extractor: "local", added: 2, updated: 0, noop: 1, refused: 0, ms: 900 } };
   const withDaemon = byName(memoryChecks({ ...base, summary }));
-  assert.match(withDaemon["memory"]!.detail, /matching local embeddings \(embeddinggemma:latest, 768 dims\) · extractor qwen3\.5:27b — nothing leaves for memory · learned 1 min ago \(\+2 · ~0 · 1 noop · local\)/);
+  assert.match(withDaemon["memory"]!.detail, /matching local embeddings \(embeddinggemma:latest, 768 dims\) · extractor qwen3\.5:27b \(nothing leaves for memory\) · learned 1 min ago \(\+2 · ~0 · 1 noop · local\)/);
   const keywords = byName(memoryChecks({ ...base, summary: { ...omit(summary, "embeddingModel", "embeddingDims"), embeddings: "keyword" } }));
-  assert.match(keywords["memory"]!.detail, /matching keywords · extractor qwen3\.5:27b — nothing leaves for memory/);
+  assert.match(keywords["memory"]!.detail, /matching keywords · extractor qwen3\.5:27b \(nothing leaves for memory\)/);
   const noModel = byName(memoryChecks({ ...base, local: { reachable: true, chat: "" } }));
   assert.equal(noModel["extractor"]!.status, "warn");
   assert.match(noModel["extractor"]!.detail, /^rules until the local brain has a model/);
@@ -160,11 +160,11 @@ test("memory rows under the local brain: matching names the local space (or keyw
 test("memory rows under the local brain with no server answering: matching is keywords · rules (the engine's offline target), never 'on this Mac's server'; the extractor row warns with the open-Ollama fix, whatever model the setting names — the fix is the server, not the pick", () => {
   const base: MemoryCheckInput = { enabled: true, hasOpenAIKey: false, modelIds: undefined, override: undefined, summary: undefined, storeDir: "/tmp/jh/memory", storeRows: 12, local: { reachable: false, chat: "" } };
   const offline = byName(memoryChecks(base));
-  assert.match(offline["memory"]!.detail, /^on · matching keywords · rules \(no local server answering — nothing leaves for memory\) · 12 rows in/);
+  assert.match(offline["memory"]!.detail, /^on · matching keywords · rules \(no local server answering; nothing leaves for memory\) · 12 rows in/);
   assert.doesNotMatch(offline["memory"]!.detail, /this Mac's server|matching local/);
   assert.equal(offline["extractor"]!.status, "warn");
-  assert.equal(offline["extractor"]!.detail, "rules (no local server answering) — nothing leaves for memory");
-  assert.equal(offline["extractor"]!.fix, "open Ollama.app — or brew install --cask ollama-app; see docs/LOCAL.md", "the same fix the local › server row gives");
+  assert.equal(offline["extractor"]!.detail, "rules (no local server answering). Nothing leaves for memory");
+  assert.equal(offline["extractor"]!.fix, "open Ollama.app, or brew install --cask ollama-app; see docs/LOCAL.md", "the same fix the local › server row gives");
   assert.doesNotMatch(`${offline["extractor"]!.detail} ${offline["extractor"]!.fix}`, /pick one|pull a tool-capable/);
   // A pinned model changes nothing while the server is down: the caller passes the resolved id ("" when nothing answers), and even a name given anyway does not make the extractor ok.
   const pinnedAnyway = byName(memoryChecks({ ...base, local: { reachable: false, chat: "qwen3.5:27b" } }));
@@ -173,7 +173,7 @@ test("memory rows under the local brain with no server answering: matching is ke
   // A daemon's keyword summary under the offline server says why.
   const summary: MemorySummary = { enabled: true, count: 5, forgotten: 0, archived: 0, embeddings: "keyword", pending: 0 };
   const withDaemon = byName(memoryChecks({ ...base, summary }));
-  assert.match(withDaemon["memory"]!.detail, /matching keywords · rules \(no local server answering\) — nothing leaves for memory/);
+  assert.match(withDaemon["memory"]!.detail, /matching keywords · rules \(no local server answering; nothing leaves for memory\)/);
   for (const c of [...memoryChecks(base), ...memoryChecks({ ...base, summary })]) assert.doesNotMatch(`${c.detail} ${c.fix ?? ""}`, /openai|ChatGPT/i);
 });
 

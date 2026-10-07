@@ -58,7 +58,7 @@ test("doctor app rows: two Dock tiles and stale records warn with `pnpm jarhead 
   assert.equal(rows["dock"]!.detail, "1 pinned, 1 recent — two tiles");
   assert.equal(rows["dock"]!.fix, "pnpm jarhead dock --fix");
   assert.equal(rows["launch services"]!.status, "warn");
-  assert.match(rows["launch services"]!.detail, /^4 Jarhead records — also .*\.Trash\/Jarhead\.app.*open -a Jarhead can pick one of them/);
+  assert.match(rows["launch services"]!.detail, /^4 Jarhead records: also .*\.Trash\/Jarhead\.app.*open -a Jarhead can pick one of them/);
   assert.equal(rows["launch services"]!.fix, "pnpm jarhead dock --fix");
 
   const bad = byName(installChecks({ exec: exec({ verifyCode: 1, dump: CLEAN_DUMP }), probe: () => dir, uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
@@ -167,7 +167,7 @@ test("doctor app rows: not installed → both rows say pnpm build:mac; a symlink
 
   const link = byName(installChecks({ exec: exec({ dump: CLEAN_DUMP }), probe: () => ({ exists: true, isSymlink: true, isDirectory: false, uid: 501, inode: 3, linkTarget: "/Users/kevinliu/jarvis/build/stage/Jarhead.app" }), uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));
   assert.equal(link["install"]!.status, "warn");
-  assert.match(link["install"]!.detail, /is a symlink to .*build\/stage\/Jarhead\.app.*the next pnpm build:mac refuses/);
+  assert.match(link["install"]!.detail, /is a symlink to .*build\/stage\/Jarhead\.app.*\. The next pnpm build:mac refuses/);
   assert.match(link["install"]!.fix ?? "", /move it to the Trash/);
 
   const root = byName(installChecks({ exec: exec({ dump: CLEAN_DUMP }), probe: () => ({ ...dir, uid: 0 }), uid: 501, staleRoots: ROOTS, exists: () => true, linkTarget: INSTALLED }));

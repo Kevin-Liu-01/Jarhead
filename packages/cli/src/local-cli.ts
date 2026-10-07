@@ -12,16 +12,16 @@ import { BRAIN_KINDS, LOCAL_NONE, type BrainKind, type EngineCommand, type Local
 
 const GIB = 1024 ** 3;
 
-/** "17 GB", "0.6 GB", "—" when the server does not say. */
+/** "17 GB", "0.6 GB", "?" when the server does not say. */
 export function gbWords(bytes: number | undefined): string {
-  if (bytes === undefined) return "—";
+  if (bytes === undefined) return "?";
   const gb = bytes / 1e9;
   return gb >= 10 ? `${Math.round(gb)} GB` : `${gb.toFixed(1)} GB`;
 }
 
-/** "256k", "8k", "—". */
+/** "256k", "8k", "?". */
 export function ctxWords(ctx: number | undefined): string {
-  return ctx === undefined ? "—" : `${Math.round(ctx / 1024)}k`;
+  return ctx === undefined ? "?" : `${Math.round(ctx / 1024)}k`;
 }
 
 /** The badges after the size and window: tools · vision · thinking · embedding, in that order; "no tools" for a completion-only model. */
@@ -50,7 +50,7 @@ function markWords(id: string, marks: { readonly brain?: string | undefined; rea
  * looked. Nothing here pulls, loads or deletes anything.
  */
 export function modelsLines(status: LocalServerStatus, marks: { readonly brain?: string | undefined; readonly memory?: string | undefined } = {}): string[] {
-  if (!status.reachable) return [`  nothing on ${status.baseUrl ? status.baseUrl.replace(/^https?:\/\//, "") : LOCAL_ROOTS_WORDS} — open Ollama, or see docs/LOCAL.md`];
+  if (!status.reachable) return [`  nothing on ${status.baseUrl ? status.baseUrl.replace(/^https?:\/\//, "") : LOCAL_ROOTS_WORDS}. Open Ollama, or see docs/LOCAL.md`];
   const server = serverLabel(status);
   const models = status.models;
   const withTools = models.filter((m) => m.capabilities.includes("tools"));
@@ -61,13 +61,13 @@ export function modelsLines(status: LocalServerStatus, marks: { readonly brain?:
   for (const m of models) {
     lines.push(`  ${m.id.padEnd(width)}  ${gbWords(m.sizeBytes).padStart(7)}  ${ctxWords(m.contextLength).padStart(5)}  ${badgeWords(m).padEnd(24)} ${m.fit.padEnd(7)} ${m.loaded ? "loaded " : "        "}${markWords(m.id, marks)}`.trimEnd());
   }
-  if (embedRow) lines.push(`  ${embedRow.padEnd(width)}  ${"—".padStart(7)}  ${"—".padStart(5)}  ${"embedding".padEnd(24)} ${"—".padEnd(7)}         ${markWords(embedRow, marks)}`.trimEnd());
+  if (embedRow) lines.push(`  ${embedRow.padEnd(width)}  ${"?".padStart(7)}  ${"?".padStart(5)}  ${"embedding".padEnd(24)} ${"?".padEnd(7)}         ${markWords(embedRow, marks)}`.trimEnd());
   if (withTools.length === 0) {
     if (status.flavor === "ollama") {
       const s = status.suggested ?? suggestedPull(status.ramBytes);
-      lines.push(`  no models with tools — ${s.command} (${Math.round(s.sizeBytes / 1e9)} GB; fits this Mac's ${Math.round(status.ramBytes / GIB)} GiB)`);
+      lines.push(`  no models with tools: ${s.command} (${Math.round(s.sizeBytes / 1e9)} GB; fits this Mac's ${Math.round(status.ramBytes / GIB)} GiB)`);
     } else {
-      lines.push(`  no models with tools — load a model that can call tools in ${server}`);
+      lines.push(`  no models with tools. Load a model that can call tools in ${server}`);
     }
   }
   return lines;
@@ -105,7 +105,7 @@ export async function runModels(o: RunModelsOptions): Promise<void> {
 export function localStatusLine(local: LocalServerStatus | undefined, brain: BrainKind | undefined, brainModel: string): string {
   if (!local?.reachable) return "  local      none";
   const fit = local.models.filter((m) => !m.cloud && m.capabilities.includes("tools") && m.fit !== "no").length;
-  const who = brain === "local" ? ` · brain ${brainModel.trim() || local.picked || "—"}` : brain ? ` · not the brain (settings: ${brain})` : "";
+  const who = brain === "local" ? ` · brain ${brainModel.trim() || local.picked || "none"}` : brain ? ` · not the brain (settings: ${brain})` : "";
   return `  local      ${local.flavor ?? "server"}${local.version ? ` ${local.version}` : ""} · ${local.models.length} model${local.models.length === 1 ? "" : "s"} (${fit} fit)${who}`;
 }
 
@@ -122,7 +122,7 @@ export function brainLines(s: BrainSnapshot): string[] {
   // A daemon from a build before the fields answers without `local` and `dataPaths`: the lines still print.
   const local = setup.local ?? LOCAL_NONE;
   const lines = [`  setting    ${settings.brain}${settings.brainModel ? ` · model ${settings.brainModel}` : settings.brain === "local" ? ` · model best fit${local.picked ? ` (${local.picked})` : ""}` : ""}${settings.brainBaseUrl ? ` · server ${settings.brainBaseUrl}` : ""}`];
-  lines.push(`  running    ${setup.brainResolved ?? "none"} · ${s.brainReady ? "ready" : "not ready"} — ${setup.brainDetail}`);
+  lines.push(`  running    ${setup.brainResolved ?? "none"} · ${s.brainReady ? "ready" : "not ready"}: ${setup.brainDetail}`);
   const daemonPaths = setup.dataPaths ?? [];
   const paths =
     daemonPaths.length > 0
@@ -144,7 +144,7 @@ export function brainLines(s: BrainSnapshot): string[] {
 }
 
 /** Said when the daemon on the socket answers without `setup.local`: a build from before the local brain, which would take a `local` pick and land on Responses without a word. */
-export const DAEMON_PREDATES_LOCAL = "predates this build (its snapshot has no setup.local) — quit and reopen Jarhead so the bundled daemon runs";
+export const DAEMON_PREDATES_LOCAL = "predates this build (its snapshot has no setup.local). Quit and reopen Jarhead so the bundled daemon runs";
 
 /** What `jarhead brain <kind> [<model>] [--server URL]` asks for. */
 export interface BrainPick {
@@ -158,7 +158,7 @@ export function parseBrainArgs(rest: readonly string[], server: string | undefin
   const [kind, model, extra] = rest;
   if (kind === undefined) return undefined;
   if (!(BRAIN_KINDS as readonly string[]).includes(kind)) throw new Error(`usage: jarhead brain [${BRAIN_KINDS.join("|")}] [<model>] [--server URL]  (got ${kind})`);
-  if (extra !== undefined) throw new Error("usage: jarhead brain <kind> [<model>] [--server URL] — one model id, then flags");
+  if (extra !== undefined) throw new Error("usage: jarhead brain <kind> [<model>] [--server URL] (one model id, then flags)");
   return { kind: kind as BrainKind, model: model ?? "", server: server?.trim() || undefined };
 }
 
@@ -182,7 +182,7 @@ export interface BrainDaemon {
 }
 
 /** The refusal when no daemon answers: settings.json is the daemon's, never written from here. */
-export const NO_DAEMON_FOR_BRAIN = "no daemon answering — start Jarhead (or jarheadd) first; the daemon owns settings.json";
+export const NO_DAEMON_FOR_BRAIN = "no daemon answering. Start Jarhead (or jarheadd) first; the daemon owns settings.json";
 
 /** Does the snapshot carry the pick as its setting? */
 function carries(s: BrainSnapshot, pick: BrainPick): boolean {
@@ -240,7 +240,7 @@ export async function runBrain(rest: readonly string[], server: string | undefin
     out("");
     out(`  sent brain ${pick.kind}${pick.model ? ` ${pick.model}` : pick.kind === "local" ? " (best fit)" : ""}${pick.server ? ` --server ${pick.server}` : ""}`);
     if (!snap) {
-      out(`  the daemon did not report the new brain within ${BRAIN_WAIT_MS / 1000} s — \`jarhead brain\` prints what it landed on`);
+      out(`  the daemon did not report the new brain within ${BRAIN_WAIT_MS / 1000} s. \`jarhead brain\` prints what it landed on`);
       out("");
       return;
     }

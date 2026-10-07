@@ -106,13 +106,13 @@ type Pointers = Pick<Snapshot, "nextFire" | "ringing">;
 export function automationsSummary(all: readonly Automation[], pointers: Pointers, now: number): string {
   const rows = all.filter((a) => a.state !== "trashed");
   const states = byStateWords(rows);
-  const next = pointers.nextFire ? `${clockOf(pointers.nextFire.at)} ${pointers.nextFire.name} (${inWords(pointers.nextFire.at, now)})` : "—";
+  const next = pointers.nextFire ? `${clockOf(pointers.nextFire.at)} ${pointers.nextFire.name} (${inWords(pointers.nextFire.at, now)})` : "none";
   return `  automations ${rows.length}${states ? ` (${states})` : ""} · next ${next} · ringing: ${ringWords(pointers.ringing)}`;
 }
 
-/** The ring as one phrase: the line, `+N more`; "—" when nothing rings. */
+/** The ring as one phrase: the line, `+N more`; "none" when nothing rings. */
 export function ringWords(ring: RingLine | undefined): string {
-  if (!ring) return "—";
+  if (!ring) return "none";
   return `${ring.line}${ring.more > 0 ? ` (+${ring.more} more)` : ""}`;
 }
 
@@ -131,12 +131,12 @@ export function automationsLines(rows: readonly Automation[], pointers: Pointers
   }
   const trashed = rows.filter((a) => a.state === "trashed");
   if (trashed.length === rows.length) {
-    lines.push("    nothing set — say \"wake me at 7:10 on weekdays\", or: jarhead automations add \"at 7:10 weekdays chime 'Wake up'\"");
-    if (trashed.length > 0) lines.push(`    ${trashed.length} in the Trash — jarhead automations list --state trashed · restore <id>`);
+    lines.push("    nothing set. Say \"wake me at 7:10 on weekdays\", or: jarhead automations add \"at 7:10 weekdays chime 'Wake up'\"");
+    if (trashed.length > 0) lines.push(`    ${trashed.length} in the Trash: jarhead automations list --state trashed · restore <id>`);
     return lines;
   }
   const live = rows.filter((a) => a.state !== "trashed");
-  lines.push(`    nothing ${state} — set: ${byStateWords(live)}`);
+  lines.push(`    nothing ${state} (set: ${byStateWords(live)})`);
   return lines;
 }
 
@@ -197,7 +197,7 @@ export function landedAutomation(rows: readonly Automation[], name: string, sent
   return rows.find((a) => a.name.toLowerCase() === wanted && a.createdBy.by === "cli" && (a.state === "armed" || a.state === "snoozed") && a.createdAt >= sentAt);
 }
 
-const USAGE = "say when, then what: chime 'Wake up' · say 'call mum' · notify 'stand-up' · open Notes — e.g. \"at 7:10 weekdays chime 'Wake up'\", \"in 12m chime pasta\", \"weekdays 09:00 open Notes\"";
+const USAGE = "Say when, then what: chime 'Wake up' · say 'call mum' · notify 'stand-up' · open Notes (e.g. \"at 7:10 weekdays chime 'Wake up'\", \"in 12m chime pasta\", \"weekdays 09:00 open Notes\")";
 
 /**
  * `jarhead automations add "<words>"`: `<when> <chime|say|notify|open> <what>`, the when
@@ -212,11 +212,11 @@ export function parseClockAutomation(words: string, now: number): ParsedAutomati
   const toks = tokens(words.trim());
   if (toks.length === 0) return { error: USAGE };
   const verbAt = toks.findIndex((t) => FREE_VERBS.has(t.toLowerCase()) || ASKING_VERBS.has(t.toLowerCase()));
-  if (verbAt < 0) return { error: `didn't catch what it does — ${USAGE}` };
+  if (verbAt < 0) return { error: `didn't catch what it does. ${USAGE}` };
   const verb = (toks[verbAt] ?? "").toLowerCase();
   if (ASKING_VERBS.has(verb)) return { error: `${verb} is set up by voice or in the Console, where the yes is heard; the CLI arms chime · say · notify · open` };
   const whenPhrase = toks.slice(0, verbAt).join(" ");
-  if (!whenPhrase) return { error: `say when first — ${USAGE}` };
+  if (!whenPhrase) return { error: `say when first. ${USAGE}` };
   const when = parseWhen(whenPhrase, now);
   if ("error" in when) return when;
   const what = toks.slice(verbAt + 1).join(" ").trim();
@@ -282,7 +282,7 @@ export function recipeVerdict(recipe: Pick<ShellRecipe, "command" | "cwd">, home
   const d = classifyAction({ kind: "run_shell", text: recipe.command, confirmed: false, ...(home ? { home } : {}), ...(recipe.cwd ? { cwd: recipe.cwd } : {}) });
   if (d.verdict === "run") return { word: "run", reason: d.reason };
   if (d.verdict === "refuse") return { word: "refused", reason: d.reason };
-  return { word: "asks", reason: `${d.reason.replace(/; ask first$/, "")} — would need a yes when it runs; nobody is there then` };
+  return { word: "asks", reason: `${d.reason.replace(/; ask first$/, "")} (would need a yes when it runs; nobody is there then)` };
 }
 
 /** "3 d ago" · "just now" — for a recipe's approval. */
@@ -306,7 +306,7 @@ export function recipesLines(recipes: readonly RecipeRow[], now: number, home?: 
   const live = recipes.filter((r) => r.trashedAt === undefined);
   const trashed = recipes.filter((r) => r.trashedAt !== undefined);
   const lines: string[] = [];
-  if (live.length === 0) lines.push("  no recipes — jarhead recipes add <name> \"<command>\" [--cwd DIR] [--timeout 120]; a recipe runs unattended only when the shell gate says run");
+  if (live.length === 0) lines.push("  no recipes: jarhead recipes add <name> \"<command>\" [--cwd DIR] [--timeout 120]; a recipe runs unattended only when the shell gate says run");
   for (const r of live) {
     const v = recipeVerdict(r, home);
     lines.push(`  ${cut(r.name, 24).padEnd(24)} ${v.word.padEnd(8)} ${cut(r.command, 60).padEnd(60)} · approved ${agoShort(r.approvedAt, now)}${r.cwd ? ` · cwd ${r.cwd}` : ""} · ${r.timeoutSeconds} s${v.word === "run" ? "" : ` · ${v.reason}`}`);
