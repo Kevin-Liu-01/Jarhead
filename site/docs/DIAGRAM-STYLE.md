@@ -233,7 +233,7 @@ against these briefs. Install is the one left in its earlier form.
   Reading order top to bottom: the orb says `"night."` and goes quiet (`Asleep`, `closes the session`); the card lists
   the lead's four kinds with the island's own examples: Alarms lit (`07:10 · Wake up, Kevin`, tag `weekdays`), timers
   (`11:56 · pasta`), watchers, routines.
-- **Costs** (`Costs.tsx`, split, listening, 600 × 312). Subject: `The voice is five cents a minute while it is on.`
+- **Costs** (`Costs.tsx`, split, listening, 600 × 312). Subject: `It's five cents a minute and nothing asleep.`
   Reading order along time: while `Listening` the cost climbs at `$0.05` `per minute of open session` (the slope, its area filling in the
   meter's dither) to `$3` `an hour of talking`; `Asleep` the line goes flat, `$0`. The island's own reading `7.2 min ·
   $0.36` is marked on the slope and dropped to the time axis. A guard checks $0.05 × 60 = $3.

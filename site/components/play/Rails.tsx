@@ -218,7 +218,7 @@ export function Rails(): ReactElement {
                   data-verdict={r.id}
                   data-lit={lit === r.id ? "" : undefined}
                   role="group"
-                  aria-label={r.word}
+                  aria-label={r.word.charAt(0).toUpperCase() + r.word.slice(1)}
                 >
                   <div className="rail-head">
                     <Icon name={r.icon} size={20} />

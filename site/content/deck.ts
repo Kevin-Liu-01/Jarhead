@@ -109,7 +109,7 @@ export const RAILS: Story & { readonly never: { readonly label: string; readonly
   name: "Rails",
   phase: "speaking",
   face: "^ ^",
-  h2: ["One table sorts calls into", "run, confirm or refuse."], // README:74, README:413
+  h2: ["One table sorts each call:", "run, confirm or refuse."], // README:74, README:413
   lead: "Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.", // README:361
   lines: ["A spoken yes covers one action once.", "Your key or click holds it 1.5 s.", "On-screen text is never an instruction."], // README:362, README:63, README:367
   never: {
@@ -145,7 +145,7 @@ export const SAY_BADGE = "7.0 s";
 export const NUMBERS = {
   id: "numbers",
   name: "Numbers",
-  h2: ["Every latency here has its n", "and the date it was taken."] as const, // README:356, "written down with its n and its date"; true of the third-party Agora row too
+  h2: ["Measured on one Mac", "and logged with dates."] as const, // README:356, "measured on this Mac, except the one row marked third party, and written down with its n and its date"; the notes credit the Agora row
   lead: "Measured on the author's Mac and written down. The harnesses are in the repo. Every latency carries its n and date.", // README:331, facts:388
   display: { value: "3 ms", label: "ear final to hands dispatch, median", tip: "6 ms p95 · real helper · n = 50 · 2026-09-11 · rerun under load 2026-10-06: 8 ms median, 58 ms p95, n = 30" } satisfies Figure, // README:337, facts:308; the rerun: pnpm jarhead bench on the real helper on the F5 branch (merged at 48aa9a9), load average 105
   figures: [
@@ -171,7 +171,7 @@ export const NUMBERS = {
 export const COSTS = {
   id: "costs",
   name: "Costs",
-  h2: ["The voice is five cents", "a minute while it is on."] as const, // README:637: billed per second of open session, muted or not; Pause and Stop close it, and so does sleep (README:79). The voice is the subject, so the brain and memory reads are not called free
+  h2: ["It's five cents a minute", "and nothing asleep."] as const, // README:637: billed per second of open session, muted or not; asleep there is no session (README:79). The brain and memory reads are the lead's and the lines', not this sentence's
   lead: "The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.", // README:551
   figures: [
     { value: "$0.05", label: "per minute of open session", tip: "billed per second, muted or not" }, // README:551

@@ -116,7 +116,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 05 · Rails  `id="rails"`
 
 - eyebrow: `Speaking` · `It is talking. Say stop to interrupt.` · `^ ^`
-- h2, line 1: `One table sorts calls into` (README:74, README:413)
+- h2, line 1: `One table sorts each call:` (README:74, README:413)
 - h2, line 2 *grey*: `run, confirm or refuse.` (README:74, README:413). Rails.tsx cuts the three verdicts from it; `.rail-word` capitalises them.
 - lead: `Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.` (README:361)
 - line 1: `A spoken yes covers one action once.` (README:362)
@@ -152,8 +152,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## Numbers  `id="numbers"`
 
 - label: `the ledger`
-- h2, line 1: `Every latency here has its n` (README:356)
-- h2, line 2 *grey*: `and the date it was taken.` (README:356). True of every latency on the plate, the third-party Agora row included; the old `Measured on one Mac.` was not.
+- h2, line 1: `Measured on one Mac` (README:356; the notes credit the one third-party row, Agora)
+- h2, line 2 *grey*: `and logged with dates.` (README:356)
 - lead: `Measured on the author's Mac and written down. The harnesses are in the repo. Every latency carries its n and date.` (README:331, facts:388)
 - lead figure: `3 ms` · `ear final to hands dispatch, median` · tooltip `6 ms p95 · real helper · n = 50 · 2026-09-11 · rerun under load 2026-10-06: 8 ms median, 58 ms p95, n = 30` (README:337, facts:308)
 
@@ -184,8 +184,8 @@ Figures, value · label · tooltip:
 ## Costs  `id="costs"`
 
 - label: `what it bills`
-- h2, line 1: `The voice is five cents` (README:637)
-- h2, line 2 *grey*: `a minute while it is on.` (README:637: billed per second of open session, muted or not; Pause, Stop and sleep close it). The voice is the subject, so the brain and memory reads are never called free. Line 1 names the slider (Costs.tsx).
+- h2, line 1: `It's five cents a minute` (README:637)
+- h2, line 2 *grey*: `and nothing asleep.` (README:637: billed per second of open session, muted or not, asleep there is no session, README:79). The brain and memory reads are the lead's and the lines'.
 - lead: `The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.` (README:551)
 - figures, value · label · tooltip:
   - `$0.05` · `per minute of open session` · `billed per second, muted or not` (README:551)
@@ -422,8 +422,8 @@ Kevin: one sentence each, black into grey, never "blah blah. blah blah.". Say's 
 - Wake `Asleep, it wakes on a word. / Touch ID opens it.` → `It wakes up to its name / and Touch ID opens it.`
 - Threads `Several things at once. / Each with its own brain.` → `Tasks run side by side, / each with its own brain.`
 - Hands `Label first. Click second. / Screenshots when they help.` → `It finds the label, clicks it / and checks a screenshot.`
-- Rails `One policy table. / Run, confirm or refuse.` → `One table sorts calls into / run, confirm or refuse.`
+- Rails `One policy table. / Run, confirm or refuse.` → `One table sorts each call: / run, confirm or refuse.`
 - Sleep `Say good night. / Alarms still ring.` → `Your alarms still ring / after you say good night.`
-- Numbers `Measured on one Mac. / Written down.` → `Every latency here has its n / and the date it was taken.`
-- Costs `Five cents a minute. / The voice costs nothing asleep.` → `The voice is five cents / a minute while it is on.`
+- Numbers `Measured on one Mac. / Written down.` → `Measured on one Mac / and logged with dates.`
+- Costs `Five cents a minute. / The voice costs nothing asleep.` → `It's five cents a minute / and nothing asleep.`
 - Install `Four commands. / Then say jarhead.` → `It takes four commands, / then you say jarhead.`
