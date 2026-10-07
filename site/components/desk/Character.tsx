@@ -11,7 +11,7 @@ import { useCalm } from "@/lib/motion";
  * The query names the face's drawing: when the eyes change, it changes, so a returning visitor never sees a still cached
  * under the old face (the stills keep an hour's max-age).
  */
-const FACE_V = "eyes-5";
+const FACE_V = "eyes-6";
 const STILL: Record<"awake" | "happy" | "quiet", string> = {
   awake: `/stills/awake.png?v=${FACE_V}`,
   happy: `/stills/happy.png?v=${FACE_V}`,

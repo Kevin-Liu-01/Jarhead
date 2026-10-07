@@ -19,7 +19,8 @@ import QuartzCore
 //    site/lib/eyes.ts) — ink pupils with a paper star and dot, happy arcs with their
 //    own sparkle, sleepy lids — sized to the body as the site sizes them (R the body's
 //    radius, the pair 0.31 R either side of the middle, just above it), on 1.5 pt dither
-//    cells (the halo's and the notch ink's grain, the Bayer tile at their edges), rimmed
+//    cells (the halo's and the notch ink's grain, the halo's pixels on the face's own grid,
+//    the Bayer tile at their edges), rimmed
 //    in whole cells of the phase-tinted paper so they read on the glyphs and on any
 //    desktop. The expression is still a glyph pair (`- -` asleep, the wake gate's ear
 //    open or not, `O O` listening, `^ ^` talking or pleased, `o o` at work turning
@@ -31,10 +32,12 @@ import QuartzCore
 //    display rate, the field re-renders at 10–24 fps) and stops entirely
 //    when nothing moves, when muted, when fast asleep, or when the panel is hidden.
 //  * Glyphs are drawn with CGContext.showGlyphs — one call per font per pass — and
-//    the glow is the halo mask, refined on the CPU to a 108×60 image and scaled the
-//    rest of the way by the render server as a CALayer's contents (`BlobHaloView`),
-//    so a frame costs about a millisecond and stays crisp on Retina. No blur
-//    anywhere: a Gaussian per frame was half the CPU of the first port.
+//    the glow is the halo mask, refined on the CPU to an image of one pixel per dither
+//    cell (1.5 pt square at 2x: 108×105 for the main field) and scaled the rest of the
+//    way by the render server as a CALayer's contents (`BlobHaloView`), its corner on the
+//    face's grid, so the eyes sit on the halo's own grain; a frame costs about a
+//    millisecond and stays crisp on Retina. No blur anywhere: a Gaussian per frame was
+//    half the CPU of the first port.
 
 // MARK: - Colour
 
@@ -543,6 +546,10 @@ final class BlobSim {
     /// (`O`, `o`, `.`) keeps its glyph through a blink and its lid squashes the oval.
     private(set) var faceDrawn = Face("-")
     private(set) var faceLookX = 0.0, faceLookY = 0.0
+    /// The face's turn as drawn (`facePose`): the look's sideways part in tenths, held until the
+    /// look is `Eyes.hold` of a tenth past it (as the site's blob and island hold it), so an
+    /// easing look re-draws the narrowing eye only as it steps, never every frame.
+    private(set) var faceTurn = 0.0
     /// The body's radius (pt) the face is drawn for, as the site sizes its blob's (lib/blob.ts:
     /// the resting body's, never the breath's, the voice's or a drag's, so the eyes' cells hold
     /// still while the body swells under them; the pen's smaller body, in quarter steps of the
@@ -1768,6 +1775,7 @@ final class BlobSim {
         lookY += (wantY - lookY) * lk
         faceLookX = lookX
         faceLookY = lookY
+        if abs(lookX * 10 - faceTurn * 10) > Eyes.hold { faceTurn = Eyes.jround(lookX * 10) / 10 }
 
         // At work the pair turns toward what it follows: a strong sideways look is `> >` / `< <`.
         if aimed, pair.left == "o", abs(lookX) > 0.45, abs(lookX) > abs(lookY) * 1.2 {
@@ -1979,7 +1987,7 @@ final class BlobSim {
     /// flares and pop on the sim's clock; at rest under Reduce Motion.
     func facePose(open: (left: Double, right: Double)? = nil) -> FacePose {
         let o = open ?? faceOpen
-        return sparkle.pose(t: t, open: o.left, openRight: o.right, turn: faceLookX, reduced: reducedMotion)
+        return sparkle.pose(t: t, open: o.left, openRight: o.right, turn: faceTurn, reduced: reducedMotion)
     }
 
     /// The tone the face's paper rim is tinted with: the colour drawn this frame, but the
@@ -2121,17 +2129,20 @@ final class BlobFieldView: NSView {
     /// fresh halo image every rendered frame. Nil in a bare view: glyphs only.
     weak var halo: BlobHaloView?
 
-    /// The halo is refined from the sim's mask (27×15, or a satellite's 19×11) to this
-    /// many pixels per cell (bilinear, then a box blur half a cell wide); the render
-    /// server scales it the rest of the way on the GPU. CG resampling it here cost a
-    /// millisecond a frame, and CG left to itself drew the raw mask as row-sized stair-steps.
-    private static let haloScale = 4
-    private let haloW: Int
-    private let haloH: Int
-    private var haloFine: [Float]
-    private var haloTmp: [Float]
+    /// The halo is refined from the sim's mask (27×15, or a satellite's 19×11) to one pixel
+    /// per dither cell (`haloPt`: `Dither.cellPixels` at the window's scale, 1.5 pt square at
+    /// 2x — the face's cell, so the eyes and the glow round them share one grain), bilinear,
+    /// then a box blur half a glyph cell wide; the render server scales it the rest of the way
+    /// on the GPU. CG resampling it here cost a millisecond a frame, and CG left to itself
+    /// drew the raw mask as row-sized stair-steps. Sized on the first frame and again when the
+    /// scale changes.
+    private var haloW = 0
+    private var haloH = 0
+    private var haloPt: Double = 0
+    private var haloFine: [Float] = []
+    private var haloTmp: [Float] = []
     /// Scratch RGBA for the halo image, rebuilt per frame.
-    private var haloPixels: [UInt8]
+    private var haloPixels: [UInt8] = []
 
     /// Set while the panel is ordered out: no ticks at all.
     var paused = false {
@@ -2158,11 +2169,6 @@ final class BlobFieldView: NSView {
     init(frame: NSRect, grid: BlobGrid = .main, driven: Bool = false) {
         sim = BlobSim(grid: grid)
         self.driven = driven
-        haloW = grid.cols * Self.haloScale
-        haloH = grid.rows * Self.haloScale
-        haloFine = [Float](repeating: 0, count: haloW * haloH)
-        haloTmp = [Float](repeating: 0, count: haloW * haloH)
-        haloPixels = [UInt8](repeating: 0, count: haloW * haloH * 4)
         skip = [Bool](repeating: false, count: grid.cellCount)
         super.init(frame: frame)
         wantsLayer = true
@@ -2399,7 +2405,23 @@ final class BlobFieldView: NSView {
     /// and fades with the glow — a 58% disc turned the blob into a grey blot on paper.
     private func updateHalo() {
         guard let halo else { return }
-        refineHalo()
+        let scale = window?.backingScaleFactor ?? layer?.contentsScale ?? 2
+        let s = scale.isFinite ? max(1, scale) : 2
+        let pt = Double(Dither.cellPixels(scale: s)) / Double(s)
+        let field = BlobMetrics.fieldSize(sim.grid)
+        if pt != haloPt {
+            haloPt = pt
+            haloW = max(1, Int((Double(field.width) / pt - 1e-6).rounded(.up)))
+            haloH = max(1, Int((Double(field.height) / pt - 1e-6).rounded(.up)))
+            haloFine = [Float](repeating: 0, count: haloW * haloH)
+            haloTmp = [Float](repeating: 0, count: haloW * haloH)
+            haloPixels = [UInt8](repeating: 0, count: haloW * haloH * 4)
+            halo.pixels = (haloW, haloH, CGFloat(pt))
+        }
+        // the halo's corner is the face's grid corner (`draw`): the field's origin on a device pixel
+        let origin = CGPoint(x: (bounds.width - field.width) / 2, y: (bounds.height - field.height) / 2)
+        let snapped = CGPoint(x: (origin.x * s).rounded() / s, y: (origin.y * s).rounded() / s)
+        refineHalo(offset: (Float(snapped.x - origin.x), Float(snapped.y - origin.y)))
         let glow = sim.glow
         halo.imageLayer.contents = haloImage(glow: sim.displayColor,
                                              glowAlpha: glow > 0.01 ? 0.16 + 0.34 * glow : 0,
@@ -2407,25 +2429,28 @@ final class BlobFieldView: NSView {
     }
 
     /// 27×15 cell coverage → haloW×haloH smooth coverage: bilinear between cell
-    /// centres, then a separable box blur half a cell wide to melt the creases. This is a
-    /// smoothing of the coverage MASK before `haloImage` quantises and dithers it — not a
-    /// visible blur; the drawn halo is the ramp's five banded steps. Row 0 is the top, as
-    /// CALayer.contents expects.
-    private func refineHalo() {
+    /// centres (each halo pixel's centre `offset` pt from the field's corner plus its own
+    /// place), then a separable box blur half a glyph cell wide each way to melt the creases.
+    /// This is a smoothing of the coverage MASK before `haloImage` quantises and dithers it —
+    /// not a visible blur; the drawn halo is the ramp's five banded steps. Row 0 is the top,
+    /// as CALayer.contents expects.
+    private func refineHalo(offset: (x: Float, y: Float)) {
         let cols = sim.grid.cols, rows = sim.grid.rows
-        let s = Self.haloScale, w = haloW, h = haloH
+        let w = haloW, h = haloH
+        guard w > 0, h > 0, haloTmp.count == w * h else { return }
         let halo = sim.halo
-        let inv = 1 / Float(s)
+        let pt = Float(haloPt)
+        let cw = Float(BlobMetrics.cellWidth), rh = Float(BlobMetrics.rowHeight)
         haloTmp.withUnsafeMutableBufferPointer { out in
             for py in 0..<h {
-                let v = (Float(py) + 0.5) * inv - 0.5
+                let v = (offset.y + (Float(py) + 0.5) * pt) / rh - 0.5
                 let y0 = max(0, min(rows - 1, Int(v.rounded(.down))))
                 let y1 = min(rows - 1, y0 + 1)
                 let fy = max(0, min(1, v - Float(y0)))
                 let rowA = y0 * cols, rowB = y1 * cols
                 let dst = py * w
                 for px in 0..<w {
-                    let u = (Float(px) + 0.5) * inv - 0.5
+                    let u = (offset.x + (Float(px) + 0.5) * pt) / cw - 0.5
                     let x0 = max(0, min(cols - 1, Int(u.rounded(.down))))
                     let x1 = min(cols - 1, x0 + 1)
                     let fx = max(0, min(1, u - Float(x0)))
@@ -2435,9 +2460,11 @@ final class BlobFieldView: NSView {
                 }
             }
         }
-        // Box blur, horizontal then vertical, radius s/2.
-        let r = s / 2
+        // Box blur, horizontal then vertical, half a glyph cell each way.
+        let r = max(1, Int(cw / pt / 2))
+        let rv = max(1, Int(rh / pt / 2))
         let norm = 1 / Float(2 * r + 1)
+        let normV = 1 / Float(2 * rv + 1)
         haloFine.withUnsafeMutableBufferPointer { out in
             haloTmp.withUnsafeBufferPointer { src in
                 for y in 0..<h {
@@ -2455,10 +2482,10 @@ final class BlobFieldView: NSView {
             haloFine.withUnsafeBufferPointer { src in
                 for x in 0..<w {
                     var acc: Float = 0
-                    for y in -r...r { acc += src[max(0, min(h - 1, y)) * w + x] }
+                    for y in -rv...rv { acc += src[max(0, min(h - 1, y)) * w + x] }
                     for y in 0..<h {
-                        out[y * w + x] = acc * norm
-                        acc += src[min(h - 1, y + r + 1) * w + x] - src[max(0, y - r) * w + x]
+                        out[y * w + x] = acc * normV
+                        acc += src[min(h - 1, y + rv + 1) * w + x] - src[max(0, y - rv) * w + x]
                     }
                 }
             }
@@ -2470,6 +2497,7 @@ final class BlobFieldView: NSView {
     /// over the dark backing, both with the mask as coverage.
     private func haloImage(glow: RGB, glowAlpha: Double, backingAlpha: Double) -> CGImage? {
         let w = haloW, h = haloH
+        guard w > 0, h > 0, haloFine.count == w * h else { return nil }
         let ground = OrbPalette.ground
         let backingAlpha = Float(min(max(backingAlpha, 0), 1))
         let gr = Float(glow.r), gg = Float(glow.g), gb = Float(glow.b), ga = Float(glowAlpha)
@@ -2477,7 +2505,7 @@ final class BlobFieldView: NSView {
         // Kevin's rule: every shaded surface is dithered. The halo's smooth falloff (the
         // refined mask above) is quantised to the ramp's five steps (`Dither.bands`) with
         // the shared 8×8 Bayer tile (UI/Dither.swift), the way the icon and the notch island
-        // are — one cell is one halo pixel, a quarter of a 1.5 pt cell at the field; the
+        // are — one halo pixel is one dither cell (1.5 pt at 2x, on the face's grid); the
         // layer magnifies it with nearest sampling so the pattern stays a pattern at the
         // field's size instead of blurring back into a gradient.
         let levels: Float = Float(Dither.bands)
@@ -2521,6 +2549,11 @@ final class BlobHaloView: NSView {
     let imageLayer = CALayer()
     /// The field this glow sits under (its size centres the image layer).
     var grid: BlobGrid = .main
+    /// The image's pixels across and down and each one's side in pt (the field view's
+    /// `updateHalo`): the layer is that many square dither cells, its corner on the face's grid.
+    var pixels: (w: Int, h: Int, pt: CGFloat) = (0, 0, 0) {
+        didSet { placeImage() }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -2541,8 +2574,20 @@ final class BlobHaloView: NSView {
 
     override func layout() {
         super.layout()
+        placeImage()
+    }
+
+    /// The image layer over the field: its top-left corner at the field's, on a device pixel
+    /// (where the face's grid starts, BlobFieldView `draw`), and its pixels square dither cells.
+    private func placeImage() {
         let field = BlobMetrics.fieldSize(grid)
-        imageLayer.frame = CGRect(x: (bounds.width - field.width) / 2, y: (bounds.height - field.height) / 2, width: field.width, height: field.height)
+        let s = max(1, window?.backingScaleFactor ?? layer?.contentsScale ?? 2)
+        let x = ((bounds.width - field.width) / 2 * s).rounded() / s
+        let top = ((bounds.height - field.height) / 2 * s).rounded() / s
+        let w = pixels.w > 0 ? CGFloat(pixels.w) * pixels.pt : field.width
+        let h = pixels.h > 0 ? CGFloat(pixels.h) * pixels.pt : field.height
+        // the view is not flipped: the layer's y is from the bottom
+        imageLayer.frame = CGRect(x: x, y: bounds.height - top - h, width: w, height: h)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }

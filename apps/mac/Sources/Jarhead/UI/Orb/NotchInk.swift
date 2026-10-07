@@ -247,13 +247,19 @@ enum NotchInk {
         let exact: Bool
     }
 
-    /// The key for an island of `size` (points) at `scale`: the size rounded UP to 2 pt
-    /// so the image covers the island (the excess is clipped away) and the spring's
-    /// dozen sizes fall into a handful of buckets; whole device pixels either way.
+    /// The key for an island of `size` (points) at `scale`: the height rounded UP to 2 pt and
+    /// the width, with a device pixel to spare each side, UP to whole pairs of dither cells
+    /// (`Dither.cellPixels` × 2: 3 pt at 2x, 4 pt at 1x), so the image covers the island
+    /// wherever its snapped edges fall (the excess is clipped away) and, centred on the notch's
+    /// snapped middle (NotchView), its cells keep one phase at every width — the peek breathing
+    /// with the voice never shifts the grain or the face by a pixel; the spring's dozen sizes
+    /// fall into a handful of buckets. Whole device pixels either way.
     static func key(size: CGSize, notchWidth: CGFloat, scale: CGFloat) -> Key {
         let s = max(1, scale)
-        let w2 = (size.width / 2).rounded(.up) * 2, h2 = (size.height / 2).rounded(.up) * 2
-        return Key(width: max(1, Int((w2 * s).rounded())), height: max(1, Int((h2 * s).rounded())),
+        let pair = 2 * Dither.cellPixels(scale: s)
+        let wpx = (Int((size.width * s + 2 - 1e-6).rounded(.up)) + pair - 1) / pair * pair
+        let h2 = (size.height / 2).rounded(.up) * 2
+        return Key(width: max(pair, wpx), height: max(1, Int((h2 * s).rounded())),
                    notchWidth: Int((notchWidth * s).rounded()), scale100: Int((s * 100).rounded()))
     }
 

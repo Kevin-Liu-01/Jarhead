@@ -4,6 +4,7 @@ import { Icon } from "@/components/icons/Icon";
 import { ISLAND } from "@/content/island";
 import { upTo } from "@/lib/cut";
 import { REST, TONE, faceCells, type FaceCells, type FaceHold, type FacePose } from "@/lib/eyes";
+import { inkPixels } from "@/lib/island";
 import type { Show, Tile } from "@/lib/live";
 import type { DeskKind } from "@/lib/phase";
 
@@ -68,8 +69,9 @@ export interface FaceTones {
 
 /**
  * The face drawn into the island's ink canvas itself, so it is one picture with the ink, cell for cell and crisp the same
- * way (one buffer pixel a cell, pixelated): the ink as lib/island.ts last drew it is kept (`take`, once per scale), each
- * face is written over it and the cells the last one covered are given back, and only the cells either covers are put.
+ * way (one buffer pixel a cell, pixelated): the ink as lib/island.ts last drew it is kept (`take`, once per scale, copied
+ * from the ink's own buffer, never read back from the canvas), each face is written over it and the cells the last one
+ * covered are given back, and only the cells either covers are put.
  */
 export class InkFace {
   private g: CanvasRenderingContext2D | null = null;
@@ -78,14 +80,21 @@ export class InkFace {
   private base: Uint32Array | null = null;
   private box: readonly [number, number, number, number] = [0, 0, 0, 0];
 
-  /** The ink as it was just drawn. */
+  /** The ink as it was just drawn (its buffers kept across scales, made again only when its size changes). */
   take(canvas: HTMLCanvasElement): void {
     const g = canvas.getContext("2d");
-    if (!g || !canvas.width || !canvas.height) return;
+    const ink = inkPixels(canvas);
+    const n = canvas.width;
+    const m = canvas.height;
+    if (!g || !ink || !n || !m || ink.length !== n * m) return;
+    if (!this.img || this.img.width !== n || this.img.height !== m || !this.px || !this.base) {
+      this.img = g.createImageData(n, m);
+      this.px = new Uint32Array(this.img.data.buffer);
+      this.base = new Uint32Array(n * m);
+    }
     this.g = g;
-    this.img = g.getImageData(0, 0, canvas.width, canvas.height);
-    this.px = new Uint32Array(this.img.data.buffer);
-    this.base = this.px.slice();
+    this.base.set(ink);
+    this.px.set(ink);
     this.box = [0, 0, 0, 0];
   }
 

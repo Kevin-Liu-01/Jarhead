@@ -119,6 +119,14 @@ export function renderIslandInk(canvas: HTMLCanvasElement, o: IslandInkOptions):
   b.g.putImageData(b.img, 0, 0);
 }
 
+/**
+ * The ink's pixels as renderIslandInk last drew them on `canvas` (little-endian ABGR, row-major, the canvas's own size),
+ * or null before it has: the face drawn over the ink keeps its own copy from these, never reading the canvas back.
+ */
+export function inkPixels(canvas: HTMLCanvasElement): Uint32Array | null {
+  return bufs.get(canvas)?.px ?? null;
+}
+
 /** Little-endian ABGR with alpha, for a Uint32 view of ImageData. */
 function rgba(c: RGB, a: number): number {
   return ((Math.round(clamp01(a) * 255) << 24) | (Math.round(c[2]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[0])) >>> 0;

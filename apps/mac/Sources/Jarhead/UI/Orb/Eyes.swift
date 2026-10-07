@@ -99,9 +99,12 @@ struct FacePose {
     var flare: (left: Double, right: Double)?
     /// The happy sparkle's size: 1 at rest, past 1 in a pop or a pulse, 0 hides it.
     var spark: Double?
+    /// Where the eyes look within themselves, −1…1 each way (`Eyes.gaze`): the catchlights move toward it.
+    var gaze: (x: Double, y: Double)?
 
     init(open: Double = 1, openRight: Double? = nil, sparkle: Double = 0, turn: Double = 0,
-         twinkle: Double? = nil, flare: (left: Double, right: Double)? = nil, spark: Double? = nil) {
+         twinkle: Double? = nil, flare: (left: Double, right: Double)? = nil, spark: Double? = nil,
+         gaze: (x: Double, y: Double)? = nil) {
         self.open = open
         self.openRight = openRight ?? open
         self.sparkle = sparkle
@@ -109,6 +112,7 @@ struct FacePose {
         self.twinkle = twinkle
         self.flare = flare
         self.spark = spark
+        self.gaze = gaze
     }
 
     static let rest = FacePose()
@@ -248,8 +252,13 @@ enum Eyes {
     /// Starstruck (lit): the dot becomes a small star, its arms these times its radius.
     static let struck = (ax: 1.1, ay: 1.55)
     /// A flare at its peak: the star's arms reach this much further, its sides pulled in
-    /// to `sharp`, twisting out by `spin` rad and back, upright at its peak.
-    static let flare = (ax: 0.1, ay: 0.8, sharp: 0.12, spin: 0.45)
+    /// to `sharp`, twisting out by `spin` rad and back, upright at its peak. On a pupil under
+    /// `bloom.cells` tall a glint would split the pupil: there a flare only swells the resting
+    /// star by `swell`, kept inside the pupil (a twinkle, never a glint).
+    static let flare = (ax: 0.1, ay: 0.8, sharp: 0.12, spin: 0.45, swell: 0.35)
+    /// Where the eyes look within themselves (`FacePose.gaze`): the catchlights move this much
+    /// of the pupil's radii toward it, kept inside the pupil (the lip's face glances to Touch ID).
+    static let gaze = 0.45
     /// How far a catchlight's tips may reach toward the pupil's edge: only a flare goes past it.
     static let fit = 0.96
     /// The happy arcs' own sparkle, from the right eye's centre: a small star (`a` its arms
@@ -263,8 +272,9 @@ enum Eyes {
     /// (happy) or above (content), and the sweep either side of straight up or down (× π).
     static let arc = (r: 0.128, drop: 0.07, sweep: 0.4)
     static let cup = (r: 0.112, lift: 0.07, sweep: 0.46)
-    /// The closed lid: its ends a touch above the eye's line, its middle sagging below it.
-    static let lid = (ends: -0.008, sag: 0.035)
+    /// The closed lid: its ends a touch above the eye's line, its middle sagging below it; a
+    /// lid under `small` cells across is laid level on the cells, its middle a row lower.
+    static let lid = (ends: -0.008, sag: 0.035, small: 10.0)
     /// The sleepy `~`: one ripple `span` times the lid's half width either side, `amp` deep
     /// (half a cell at least), its line `weight` of the lid's: a dream, never a lumpy cloud.
     static let dream = (amp: 0.03, span: 1.2, weight: 0.4)
@@ -281,14 +291,17 @@ enum Eyes {
     static let burst = (arm: 0.2, across: 0.8, glee: 1.3, cells: 2.5)
     /// The raster (lib/eyes.ts `DITHER`): the samples a side of an edge cell; the middle of
     /// its coverage stretched over the threshold (`edge`; `corner` on a large oval's diagonal
-    /// edges, `diag` of the normal off the axes, an oval `round` cells across); a star's spine
+    /// edges, `diag` of the normal off the axes, an oval `round` cells across: a smaller one
+    /// on the wide band came out a battery, its top corners gone and its sides square); a star's spine
     /// lit from `cross` cells (upright within `upright` rad) to `spine` of a cell short of its
     /// tips; a round dot under `dot` cells lights no corner cell; a diagonal drawn `lean` of a
     /// cell under its whole width; a light's arms held to 1/`quant` of a cell; the fit's step.
-    static let dither = (samples: 4, edge: 0.4, corner: 0.8, diag: 0.38, round: 5.0, cross: 2.0, upright: 0.2,
+    static let dither = (samples: 4, edge: 0.4, corner: 0.8, diag: 0.38, round: 9.0, cross: 2.0, upright: 0.2,
                          dot: 1.6, lean: 0.3, quant: 8.0, fit: 0.25, spine: 0.75)
-    /// The rim's ramp (lib/eyes.ts `RAMP`): paper under `from`, the foot past `to`, tilted `tilt` away from the light.
-    static let ramp = (from: 0.16, to: 0.68, tilt: 0.12)
+    /// The rim's ramp (lib/eyes.ts `RAMP`): paper under `from`, the foot past `to`, tilted `tilt`
+    /// away from the light; a lit line ramps over its own rows from `lineFrom` to `lineTo` (its
+    /// top row paper, its lowest the foot; the `~` stays plain).
+    static let ramp = (from: 0.16, to: 0.68, tilt: 0.12, lineFrom: 0.35, lineTo: 0.85)
     /// How far (in cells) a face's place may stray from the cell it holds before it hops.
     static let hold = 0.75
     /// The smallest catchlight drawn, in cells at its resting size.
@@ -341,10 +354,10 @@ enum Eyes {
     // MARK: the shapes of one eye, in its own points (its centre at 0, 0, y down)
 
     /// An ink shape: a filled oval, or a stroked polyline (round caps and joins) of width `w`;
-    /// `keep` keeps a line in ink even lit (a blink's shut lid).
+    /// `keep` keeps a line in ink even lit (a blink's shut lid); `plain`, a lit line never ramped (the `~`).
     fileprivate enum Ink {
         case oval(rx: Double, ry: Double, y: Double)
-        case line(pts: [Double], w: Double, keep: Bool)
+        case line(pts: [Double], w: Double, keep: Bool, plain: Bool)
     }
 
     /// A light as asked for (lib/eyes.ts `Light`): its centre on a cell centre, its arms at
@@ -426,15 +439,33 @@ enum Eyes {
         let dx = rx.map(at) ?? 0
         var out = pts
         for i in out.indices { out[i] += i % 2 == 1 ? dy : dx }
-        return .line(pts: out, w: n * c, keep: keep)
+        return .line(pts: out, w: n * c, keep: keep, plain: false)
     }
 
     /// The closed lid, `w` either side of the eye's middle: a soft sag in whole cells, one at
-    /// least once the lid spans three, so a sleeping face is curved at every size. `keep`: a blink's.
-    fileprivate static func lidMark(_ w: Double, _ Rk: Double, _ lw: Double, _ c: Double, keep: Bool = false) -> Ink {
+    /// least once the lid spans three, so a sleeping face is curved at every size. Under
+    /// `lid.small` cells across the curve's raised ends would read as the content cup's walls:
+    /// a small lid is laid on the cells, its line level across its span (a row less than the
+    /// line is wide, one at least) over a row inset a cell each side (`######` over `.####.`).
+    /// `keep`: a blink's.
+    fileprivate static func lidMark(_ w: Double, _ Rk: Double, _ lw: Double, _ c: Double, keep: Bool = false) -> [Ink] {
         let mid = (lid.ends + lid.sag) / 2 * Rk
-        let dip = cells((lid.sag - lid.ends) / 2 * Rk, c, least: 2 * w >= 3 * c ? 1 : 0)
-        return strokeLine(quad(-w, mid - dip, 0, mid + dip, w, mid - dip), lw, c, ry: mid, keep: keep)
+        let n = max(1, jround(lw / c))
+        // its half span in cells: the line's ends and caps, as the curve would reach
+        let m = max(2, jround((w + n * c / 2) / c))
+        if 2 * m >= lid.small {
+            let dip = cells((lid.sag - lid.ends) / 2 * Rk, c, least: 2 * w >= 3 * c ? 1 : 0)
+            return [strokeLine(quad(-w, mid - dip, 0, mid + dip, w, mid - dip), lw, c, ry: mid, keep: keep)]
+        }
+        // the rows, centred on the lid's line: the level run (its ends' cells centred on the span's end cells), then the sag
+        let rows = max(2, n)
+        let r0 = jround(mid / c - rows / 2)
+        let top = rows - 1
+        let yb = (r0 + top / 2) * c
+        let ys = (r0 + top + 0.5) * c
+        let xe = (m - 0.5) * c
+        return [.line(pts: [-xe, yb, xe, yb], w: top * c, keep: keep, plain: false),
+                .line(pts: [-(xe - c), ys, xe - c, ys], w: c, keep: keep, plain: false)]
     }
 
     /// One eye's shapes (its centre at 0, 0): the glyph on side `side` (−1 the left eye) of a
@@ -454,7 +485,7 @@ enum Eyes {
             let ry = shape.ry * Rk * grow
             if o < 0.22 {
                 // shut: the closed lid, as wide as the open eye, in ink within its rim
-                ink.append(lidMark(rx * 1.05, Rk, lw, c, keep: true))
+                ink.append(contentsOf: lidMark(rx * 1.05, Rk, lw, c, keep: true))
                 return
             }
             // the blink: the oval squashes, widens a little and its top comes down; reopening it
@@ -474,7 +505,7 @@ enum Eyes {
         let w = half * Rk * narrow
         switch kind {
         case .closed, .open, .small:
-            ink.append(lidMark(w, Rk, lw, c))
+            ink.append(contentsOf: lidMark(w, Rk, lw, c))
         case .happy:
             let r = arc.r * Rk
             let cy = arc.drop * Rk
@@ -491,8 +522,8 @@ enum Eyes {
             let n = max(1, jround(0.066 * Rk / c))
             let W = min(max(1, jround(lw / c)), diagonal(n))
             let d = (n + Double(Int(W) % 2) / 2) * c
-            ink.append(.line(pts: [-d, -d, d, d], w: (W - dither.lean) * c, keep: false))
-            ink.append(.line(pts: [d, -d, -d, d], w: (W - dither.lean) * c, keep: false))
+            ink.append(.line(pts: [-d, -d, d, d], w: (W - dither.lean) * c, keep: false, plain: false))
+            ink.append(.line(pts: [d, -d, -d, d], w: (W - dither.lean) * c, keep: false, plain: false))
         case .inward:
             // `>` on the left eye, `<` on the right: a true 45° chevron, its point on a cell
             let dir = -side
@@ -501,11 +532,22 @@ enum Eyes {
             let o = Double(Int(W) % 2) / 2
             let px = (jround(n / 2) + o) * dir * c
             let py = o * c
-            ink.append(.line(pts: [px - dir * n * c, py - n * c, px, py, px - dir * n * c, py + n * c], w: (W - dither.lean) * c, keep: false))
+            ink.append(.line(pts: [px - dir * n * c, py - n * c, px, py, px - dir * n * c, py + n * c], w: (W - dither.lean) * c, keep: false, plain: false))
         case .wavy:
             // the sleepy ripple: one wave a little wider than the lid, thin, swinging half a cell at
-            // least each way so it steps a row up and a row down, its crest on a cell
+            // least each way so it steps a row up and a row down, its crest on a cell; under
+            // `lid.small` cells across (a sampled wave there is a step with a stray cell) a pixel
+            // tilde on the lid's two rows, the same turned about its middle (`.##..#` over `#..##.`)
             let span = dream.span * w
+            let m = max(2, jround((span + c / 2) / c))
+            if 2 * m < lid.small {
+                let r0 = jround((lid.ends + lid.sag) / 2 * Rk / c - 1)
+                let yt = (r0 + 0.5) * c, yb = (r0 + 1.5) * c
+                func at(_ i: Double) -> Double { (i - m + 0.5) * c }
+                func run(_ a: Double, _ b: Double, _ y: Double) -> Ink { .line(pts: [at(a), y, at(b), y], w: c, keep: false, plain: true) }
+                ink.append(contentsOf: [run(0, 0, yb), run(1, m - 1, yt), run(m, 2 * m - 2, yb), run(2 * m - 1, 2 * m - 1, yt)])
+                return
+            }
             let amp = max(dream.amp * Rk, 0.5 * c)
             var pts: [Double] = []
             pts.reserveCapacity(34)
@@ -513,7 +555,9 @@ enum Eyes {
                 pts.append(-span + 2 * span * Double(i) / 16)
                 pts.append(amp * sin(Double(i) / 16 * 2 * .pi))
             }
-            ink.append(strokeLine(pts, lw * dream.weight, c, ry: -amp))
+            if case let .line(p, lw2, keep, _) = strokeLine(pts, lw * dream.weight, c, ry: -amp) {
+                ink.append(.line(pts: p, w: lw2, keep: keep, plain: true))
+            }
         }
     }
 
@@ -528,23 +572,29 @@ enum Eyes {
         let u = pose.flare.map { side < 0 ? $0.left : $0.right } ?? 0
         let f = flareSize(u)
         let across = jround(rx / c), tall = jround(ry / c)
+        // a pupil tall enough to bloom glints (stretched, twisted, bursting); a smaller one twinkles, its star swelling inside it
+        let glints = 2 * ry >= bloom.cells * c
+        let g = glints ? f : 0
+        // the gaze: the catchlights' centres toward where the eyes look, in fractions of the pupil's radii
+        let gx = pose.gaze.map { gaze * $0.x } ?? 0
+        let gy = pose.gaze.map { gaze * $0.y } ?? 0
         let ax0 = star.ax * s * narrow
         if ax0 >= minCell * c, across >= 1, tall >= 2 {
-            let (mx, my) = fitArms(rx, ry, star.x, star.y)
-            let glow = 2 * ry >= bloom.cells * c ? a * (bloom.amp * (1 + bloom.lit * lit) + bloom.flare * f) : 0
-            light.append(Light(x: snapMid(rx * star.x, c), y: snapMid(y + ry * star.y, c),
+            let (mx, my) = fitArms(rx, ry, star.x + gx, star.y + gy)
+            let glow = glints ? a * (bloom.amp * (1 + bloom.lit * lit) + bloom.flare * f) : 0
+            light.append(Light(x: snapMid(rx * (star.x + gx), c), y: snapMid(y + ry * (star.y + gy), c),
                                ax: min(ax0 * (1 + 0.24 * lit), mx), ay: min(star.ay * s * (1 + 0.15 * lit), my),
-                               k: swell * a, sx: 1 + flare.ax * f, sy: 1 + flare.ay * f,
-                               full: star.full + (flare.sharp - star.full) * f, full0: star.full, rot: -side * flareTwist(u),
-                               dot: false, fit: true, bloom: glow, burst: burst.arm * s * f, bf: f, tip: true))
+                               k: swell * a * (glints ? 1 : 1 + flare.swell * f), sx: 1 + flare.ax * g, sy: 1 + flare.ay * g,
+                               full: star.full + (flare.sharp - star.full) * g, full0: star.full, rot: glints ? -side * flareTwist(u) : 0,
+                               dot: false, fit: true, bloom: glow, burst: burst.arm * s * g, bf: g, tip: true))
         }
-        // the dot, starstruck while lit; it gives way to a flare
+        // the dot, starstruck while lit; it gives way to a flare (on a small pupil it goes out for the flare's top)
         let r0 = dot.r * s * (1 + 0.4 * lit)
-        if r0 >= minCell * c, across >= 3 {
+        if r0 >= minCell * c, across >= 3, glints || f < 0.5 {
             let round = lit < 0.02
-            let (mx, my) = fitArms(rx, ry, dot.x, dot.y)
+            let (mx, my) = fitArms(rx, ry, dot.x + gx, dot.y + gy)
             let full = roundControl + (star.full - roundControl) * lit
-            light.append(Light(x: snapMid(rx * dot.x, c), y: snapMid(y + ry * dot.y, c),
+            light.append(Light(x: snapMid(rx * (dot.x + gx), c), y: snapMid(y + ry * (dot.y + gy), c),
                                ax: round ? r0 : min(r0 * (1 + (struck.ax - 1) * lit), mx),
                                ay: round ? r0 : min(r0 * (1 + (struck.ay - 1) * lit), my),
                                k: ebb * a * (1 - 0.5 * f), sx: 1, sy: 1, full: full, full0: full, rot: 0,
@@ -770,6 +820,10 @@ enum Eyes {
             while n < out.count { if out[n] == I, out[n + 1] == J { return }; n += 2 }
             out.append(I); out.append(J)
         }
+        // a plus at least once both arms reach a cell (the tile may light one arm's cells and not the other's: a dash)
+        if upright, ax >= c, ay >= c {
+            add(mi - 1, mj); add(mi + 1, mj); add(mi, mj - 1); add(mi, mj + 1)
+        }
         // its spine: once an arm reaches `cross` cells, the cells along each arm a cell long or more out
         // to `spine` of a cell short of its tips, one at least (a plus, never a dash)
         let cross = upright && max(ax, ay) >= dither.cross * c
@@ -914,12 +968,14 @@ enum Eyes {
         }
         var oval: Oval?
         var strokes: [Stroke] = []
+        var plain = false
         for s in ink {
             switch s {
             case let .oval(rx, ry, y):
                 oval = (rx, ry, y)
                 grow(-rx - rim, y - ry - rim, rx + rim, y + ry + rim)
-            case let .line(pts, lw, keep):
+            case let .line(pts, lw, keep, isPlain):
+                if isPlain { plain = true }
                 let p = lw / 2
                 var bx0 = Double.infinity, by0 = Double.infinity, bx1 = -Double.infinity, by1 = -Double.infinity
                 var i = 0
@@ -1058,8 +1114,13 @@ enum Eyes {
             }
             // as it is now: the breath, the lids or the pop (under its fit), a flare's stretch; held to the grid's steps
             let kq = jround(l.k * 64) / 64
-            let ax = step((l.fit ? min(l.ax * kq, capX) : l.ax * kq) * l.sx, c, dither.quant)
-            let ay = step((l.fit ? min(l.ay * kq, capY) : l.ay * kq) * l.sy, c, dither.quant)
+            var ax = step((l.fit ? min(l.ax * kq, capX) : l.ax * kq) * l.sx, c, dither.quant)
+            var ay = step((l.fit ? min(l.ay * kq, capY) : l.ay * kq) * l.sy, c, dither.quant)
+            // and as drawn, a star with no arms one way is one cell, never a dash (a blink's reopening shrinks both at once)
+            if !l.dot {
+                if ax < c { ay = min(ay, 0.5 * c) }
+                if ay < c { ax = min(ax, 0.5 * c) }
+            }
             put(lightCells(x, l.y, ax, ay, full: l.full, rot: l.rot, dot: l.dot, c: c))
             if l.bloom > 0 { blooms.append((x, l.y, capX, capY, jround(l.bloom * 64) / 64)) }
             if l.burst > 0 {
@@ -1125,25 +1186,30 @@ enum Eyes {
                 }
             }
             if rampOn {
-                // the ramp: down the rim's rows from its paper to its foot, tilted away from the light, through the eye's tile
-                var top = h, bot = -1, lef = w, rig = -1
-                for j in ja..<jb {
-                    for i in ia..<ib where ring[j * w + i] != 0 {
-                        top = min(top, j); bot = max(bot, j); lef = min(lef, i); rig = max(rig, i)
+                // the ramp: down the rim's rows from its paper to its foot, tilted away from the light, through the eye's
+                // tile; and down a lit line's rows the same way (a lid's ends paper, its sag the foot), so a shut eye is
+                // dithered as an open one's rim is, never a flat cut-out of paper
+                func ramped(_ on: (Int) -> Bool, from: Double, to: Double) {
+                    var top = h, bot = -1, lef = w, rig = -1
+                    for j in ja..<jb {
+                        for i in ia..<ib where on(j * w + i) {
+                            top = min(top, j); bot = max(bot, j); lef = min(lef, i); rig = max(rig, i)
+                        }
                     }
-                }
-                if bot >= top {
+                    guard bot >= top else { return }
                     let mid = Double(lef + rig) / 2
                     let halfW = max(1, Double(rig - lef + 1) / 2)
                     for j in top...bot {
-                        for i in lef...rig where ring[j * w + i] != 0 {
+                        for i in lef...rig where on(j * w + i) {
                             let p = (Double(j - top) + 0.5) / Double(bot - top + 1) + ramp.tilt * (Double(i) - mid) / halfW
-                            if p >= ramp.to || (p > ramp.from && (p - ramp.from) / (ramp.to - ramp.from) > tileAt(i0 + i, j0 + j)) {
+                            if p >= to || (p > from && (p - from) / (to - from) > tileAt(i0 + i, j0 + j)) {
                                 tone[j * w + i] = Tone.foot
                             }
                         }
                     }
                 }
+                ramped({ ring[$0] != 0 }, from: ramp.from, to: ramp.to)
+                if !plain { ramped({ lines[$0] != 0 && tone[$0] == Tone.rim }, from: ramp.lineFrom, to: ramp.lineTo) }
             }
         }
         return EyeRaster(i0: i0, j0: j0, w: w, h: h, tone: tone)
@@ -1162,7 +1228,7 @@ enum Eyes {
         for s in ink {
             switch s {
             case let .oval(rx, ry, y): key += [-1, rx, ry, y]
-            case let .line(pts, lw, keep): key += [-2, lw, keep ? 1 : 0, Double(pts.count)]; key += pts
+            case let .line(pts, lw, keep, isPlain): key += [-2, lw, keep ? 1 : 0, isPlain ? 1 : 0, Double(pts.count)]; key += pts
             }
         }
         for l in light {
@@ -1241,7 +1307,7 @@ enum Eyes {
         for s in ink {
             switch s {
             case let .oval(rx, ry, y): box = box.union(CGRect(x: -rx, y: y - ry, width: 2 * rx, height: 2 * ry).insetBy(dx: -rim, dy: -rim))
-            case let .line(pts, w, _):
+            case let .line(pts, w, _, _):
                 var i = 0
                 while i + 1 < pts.count {
                     box = box.union(CGRect(x: pts[i], y: pts[i + 1], width: 0, height: 0).insetBy(dx: -(w / 2 + rim), dy: -(w / 2 + rim)))

@@ -3,7 +3,7 @@ import { animate } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
 import { ISLAND_FACE, InkFace, Island, islandFace, type FaceTones, type IslandRefs } from "@/components/desk/Island";
 import { ISLAND } from "@/content/island";
-import { BAYER8, cellCss, mix3, parseColor, type RGB } from "@/lib/dither";
+import { BAYER8, cellCss, mix3, parseColor, watchDpr, type RGB } from "@/lib/dither";
 import { FaceHold, HOLD, TWINKLE, asleepPair, flareSize, popSize, type FacePose } from "@/lib/eyes";
 import { renderIslandInk, renderLevelTrace, renderSweep } from "@/lib/island";
 import { getLive, glintTurn, resolveShow, setLive, subscribeLive, type Show } from "@/lib/live";
@@ -252,6 +252,8 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     want: { kind: "asleep" } as Show,
     since: 0,
     inkScale: 0,
+    /** The cell the ink was last drawn in (island px): the face is drawn on that grid, the buffer it is written into. */
+    inkCell: 0,
     /** The scale the instruments were last drawn at (they repaint whenever it is not the scale's, C8). */
     meterScale: 0,
     blinkAt: 0,
@@ -273,6 +275,8 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     faceAt: 0,
     pair: ISLAND_FACE.asleep,
     kindPair: ISLAND_FACE.asleep,
+    /** The kind the kind effect last saw (asleep's pair is thinking's, so leaving thinking is told by the kind). */
+    kindWas: "asleep" as DeskKind,
     shown: "asleep" as DeskKind,
     kind: "asleep" as DeskKind,
     docked: false,
@@ -387,7 +391,8 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
         const spark = popSize((now - s.popAt) / POP_MS) * (1 + 0.4 * flareSize(u));
         pose = { ...pose, twinkle: s.breath, flare, spark };
       }
-      const f = islandFace(pair, pose, islandCell(s.inkScale || s.scale || 1), s.look, s.hold);
+      // on the ink's own cells as it was last drawn (a new device pixel ratio repaints the ink first)
+      const f = islandFace(pair, pose, s.inkCell || islandCell(s.inkScale || s.scale || 1), s.look, s.hold);
       // the tones: read from the tokens once per theme and kind, eased from the last kind's while the drift plays
       if (!s.eyePaper || !s.eyeInk || !s.toneTo) {
         s.eyePaper = parseColor(cssVar("--jh-paper"));
@@ -458,7 +463,8 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     const s = tl.current;
     const sc = s.scale || 1;
     s.inkScale = sc;
-    renderIslandInk(cv, { width: 420, height: ISL_H, cell: islandCell(sc) });
+    s.inkCell = islandCell(sc);
+    renderIslandInk(cv, { width: 420, height: ISL_H, cell: s.inkCell });
     cv.parentElement?.setAttribute("data-inked", "");
     // the face is drawn into the ink: keep the fresh ink under it and draw the face again on the new grid
     s.ink.take(cv);
@@ -558,6 +564,13 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     void document.fonts?.ready.then(fit);
     apply();
     inkFade();
+    // a new device pixel ratio (a browser zoom, another display) redraws the ink, the face on it and the instruments in
+    // the new ratio's cells, as lib/blob.ts re-allocs its field
+    const offDpr = watchDpr(() => {
+      paintInk();
+      paintMeters();
+      inkFade();
+    });
     // An item that changes width after mount (the star count arriving, the phase word) refits the bar, once a frame at
     // most: fitBar clears and reapplies to the same widths, so its own drops settle without a loop.
     let refit = 0;
@@ -588,6 +601,7 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     window.addEventListener("resize", onResize);
     return () => {
       offTheme();
+      offDpr();
       ro?.disconnect();
       if (refit) cancelAnimationFrame(refit);
       window.removeEventListener("scroll", onScroll);
@@ -604,9 +618,12 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
   useEffect(() => {
     const s = tl.current;
     const was = s.kindPair;
+    const wasKind = s.kindWas;
     const pair = ISLAND_FACE[kind];
     s.kindPair = pair;
-    s.pair = kindPair(kind, performance.now() / 1000);
+    s.kindWas = kind;
+    // calm rests on the kind's own pair (no loop runs to bring a breath's `~ ~` or thinking's churn back to it)
+    s.pair = still ? pair : kindPair(kind, performance.now() / 1000);
     // the face's tone eases from the last kind's to this one's (at once under calm), read from the token once per kind
     const to = parseColor(cssVar(ISLAND_TONE[kind]));
     if (s.toneTo && !still) {
@@ -618,7 +635,7 @@ export function Top({ stars }: { readonly stars: number | null }): ReactElement 
     s.tones = null;
     // Thinking looks up and away whatever the pointer does; any other kind is the pointer's again from its next move.
     if (kind === "thinking") lookAt(THINK_LOOK, -0.7, still);
-    else if (was === ISLAND_FACE.thinking) {
+    else if (wasKind === "thinking") {
       s.pointerNear = false;
       lookAt([0, 0], 0, still);
     }

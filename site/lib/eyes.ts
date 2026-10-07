@@ -89,9 +89,16 @@ export const EYES = {
   struck: { ax: 1.1, ay: 1.55 },
   /**
    * A flare at its peak: the star's arms reach this much further across and up and down, its sides pulled in to `sharp`
-   * (a long thin glint), and on the way up it twists out by `spin` rad and back, upright at its peak.
+   * (a long thin glint), and on the way up it twists out by `spin` rad and back, upright at its peak. On a pupil under
+   * GLOW.bloom.cells cells tall a glint would split the pupil (a stem through it, a cross over it): there a flare only
+   * swells the resting star by `swell`, kept inside the pupil, a twinkle, never a glint.
    */
-  flare: { ax: 0.1, ay: 0.8, sharp: 0.12, spin: 0.45 },
+  flare: { ax: 0.1, ay: 0.8, sharp: 0.12, spin: 0.45, swell: 0.35 },
+  /**
+   * Where the eyes look within themselves (FacePose `gaze`): the catchlights move this much of the pupil's radii toward
+   * it, kept inside the pupil, so a face with no room to move (the app's lip) still glances.
+   */
+  gaze: 0.45,
   /** How far a catchlight's tips may reach toward the pupil's edge (a fraction of its radii): only a flare goes past it. */
   fit: 0.96,
   /**
@@ -110,8 +117,12 @@ export const EYES = {
    */
   arc: { r: 0.128, drop: 0.07, sweep: 0.4 },
   cup: { r: 0.112, lift: 0.07, sweep: 0.46 },
-  /** The closed lid: its ends a touch above the eye's line and its middle sagging below it (a quadratic's control). */
-  lid: { ends: -0.008, sag: 0.035 },
+  /**
+   * The closed lid: its ends a touch above the eye's line and its middle sagging below it (a quadratic's control). A lid
+   * under `small` cells across is drawn level on the cells, its ends on its top row and its middle a row lower (a lid,
+   * never the content cup's walls).
+   */
+  lid: { ends: -0.008, sag: 0.035, small: 10 },
   /**
    * The sleepy `~`: one ripple `span` times the lid's half width either side (a little wider than the lid, so it waves a
    * cell at a time), `amp` deep (half a cell at least), its line `weight` of the lid's: a dream, never a lumpy cloud.
@@ -142,20 +153,23 @@ export const GLOW = {
  * edge cell); the middle `edge` of that range is stretched over the Bayer threshold (coverage under 0.5 − edge / 2 is
  * never inked, over 0.5 + edge / 2 always), so only the cells the edge truly splits are dithered and no lone cell of ink
  * stands off an eye; an oval at least `round` cells across takes the wider `corner` band where its edge runs diagonal, so
- * its corners round off through the tile; a star's spine is always lit once an arm reaches `cross` cells (upright within
+ * its corners round off through the tile (a smaller one keeps the edge band: on the wide band a pupil six cells across
+ * lost its top corners and kept its square sides, a battery, never an eye); a star's spine is always lit once an arm reaches `cross` cells (upright within
  * `upright` rad), out to `spine` of a cell short of its tips; a round dot under `dot` cells lights no corner cell; a
  * diagonal is drawn `lean` of a cell under its whole width, so the cells beside its steps (half covered at full width)
  * stay clear and its staircase is clean; the fit shortens a catchlight's arms `fit` of a cell at a time; a catchlight's
  * arms and how much of them shows are held to 1/`quant` of a cell and 1/64, so a breath steps and a face that only moves
  * is drawn from the eye's cache (its ink, its fit and its lights kept apart, so a breath re-draws only the light).
  */
-export const DITHER = { samples: 4, edge: 0.4, corner: 0.8, diag: 0.38, round: 5, cross: 2, upright: 0.2, dot: 1.6, lean: 0.3, quant: 8, fit: 0.25, spine: 0.75 } as const;
+export const DITHER = { samples: 4, edge: 0.4, corner: 0.8, diag: 0.38, round: 9, cross: 2, upright: 0.2, dot: 1.6, lean: 0.3, quant: 8, fit: 0.25, spine: 0.75 } as const;
 
 /**
  * The rim's ramp (`ramp`): over the rim's rows (0 its top, 1 its foot), tilted `tilt` toward the side away from the light,
  * a rim cell is the rim's paper while the ramp is under `from`, the foot's tone past `to`, dithered between on the eye's tile.
+ * A lit line ramps the same way over its own rows, later (`lineFrom` to `lineTo`): its top row stays paper and its lowest
+ * takes the foot, so a lid reads lit from above, never a tinted smear (the wavy `~` stays plain: it is one cell thin).
  */
-export const RAMP = { from: 0.16, to: 0.68, tilt: 0.12 } as const;
+export const RAMP = { from: 0.16, to: 0.68, tilt: 0.12, lineFrom: 0.35, lineTo: 0.85 } as const;
 
 /** How far (in cells) a face's place may stray from the cell it holds before it hops (FaceHold). */
 export const HOLD = 0.75;
@@ -244,6 +258,8 @@ export interface FacePose {
   readonly flare?: readonly [number, number];
   /** The happy sparkle's size: 1 at rest, past 1 in a pop or a pulse, 0 hides it. Absent, 1. */
   readonly spark?: number;
+  /** Where the eyes look within themselves, -1 to 1 each way (EYES.gaze): the catchlights move toward it. Absent, ahead. */
+  readonly gaze?: readonly [number, number];
 }
 
 export const REST: FacePose = { open: 1, sparkle: 0, turn: 0 };
@@ -317,9 +333,12 @@ export class FaceHold {
 
 /**
  * An ink shape: a filled oval, or a stroked polyline (round caps and joins) of width `w`; `keep` keeps a line in ink even
- * lit (a blink's shut lid: an open eye in its rim, closing, never a lit flash).
+ * lit (a blink's shut lid: an open eye in its rim, closing, never a lit flash); `plain`, a lit line never ramped (the `~`).
  */
-type Ink = { readonly oval: true; readonly rx: number; readonly ry: number; readonly y: number } | { readonly oval: false; readonly pts: readonly number[]; readonly w: number; readonly keep: boolean };
+type Ink =
+  | { readonly oval: true; readonly rx: number; readonly ry: number; readonly y: number }
+  | { readonly oval: false; readonly pts: readonly number[]; readonly w: number; readonly keep: boolean; readonly plain?: boolean };
+type Line = Extract<Ink, { readonly oval: false }>;
 
 /**
  * A light as asked for: its centre (x, y) on a cell centre; its arms at rest (`ax` across, `ay` up and down; a dot's
@@ -404,7 +423,7 @@ function diagonal(n: number): number {
  * through that point then has its edges on cell edges (crisp), and only its curved parts have edge cells for the Bayer
  * tile to decide; never a straight edge split down the middle of its cells, which would dither the whole run.
  */
-function stroke(pts: number[], w: number, c: number, ry: number, rx?: number, keep = false): Ink {
+function stroke(pts: number[], w: number, c: number, ry: number, rx?: number, keep = false): Line {
   const n = Math.max(1, Math.round(w / c));
   const at = (v: number): number => (n % 2 ? (Math.floor(v / c) + 0.5) * c : Math.round(v / c) * c) - v;
   const dy = at(ry);
@@ -415,12 +434,31 @@ function stroke(pts: number[], w: number, c: number, ry: number, rx?: number, ke
 /**
  * The closed lid, `w` either side of the eye's middle: a soft sag, its middle lower than its ends by EYES.lid in whole
  * cells, and by one cell at least once the lid spans three, so a sleeping face is curved (˘ ˘) at every size, never flat
- * dashes. `keep`: a blink's, inked even lit.
+ * dashes. Under EYES.lid.small cells across the curve's raised ends would read as the content cup's walls, so a small
+ * lid is laid on the cells: its line level across its whole span (one row less than the line is wide, one at least), and
+ * under it a row inset a cell each side, so its middle hangs lowest (`######` over `.####.`). `keep`: a blink's, inked
+ * even lit.
  */
-function lid(w: number, Rk: number, lw: number, c: number, keep = false): Ink {
+function lid(w: number, Rk: number, lw: number, c: number, keep = false): Ink[] {
   const mid = ((EYES.lid.ends + EYES.lid.sag) / 2) * Rk;
-  const dip = cells(((EYES.lid.sag - EYES.lid.ends) / 2) * Rk, c, 2 * w >= 3 * c ? 1 : 0);
-  return stroke(quad(-w, mid - dip, 0, mid + dip, w, mid - dip), lw, c, mid, undefined, keep);
+  const n = Math.max(1, Math.round(lw / c));
+  // its half span in cells: the line's ends and caps, as the curve would reach
+  const m = Math.max(2, Math.round((w + (n * c) / 2) / c));
+  if (2 * m >= EYES.lid.small) {
+    const dip = cells(((EYES.lid.sag - EYES.lid.ends) / 2) * Rk, c, 2 * w >= 3 * c ? 1 : 0);
+    return [stroke(quad(-w, mid - dip, 0, mid + dip, w, mid - dip), lw, c, mid, undefined, keep)];
+  }
+  // the rows, centred on the lid's line: the level run (its ends' cells centred on the span's end cells), then the sag
+  const rows = Math.max(2, n);
+  const r0 = Math.round(mid / c - rows / 2);
+  const top = rows - 1;
+  const yb = (r0 + top / 2) * c;
+  const ys = (r0 + top + 0.5) * c;
+  const xe = (m - 0.5) * c;
+  return [
+    { oval: false, pts: [-xe, yb, xe, yb], w: top * c, keep },
+    { oval: false, pts: [-(xe - c), ys, xe - c, ys], w: c, keep },
+  ];
 }
 
 /**
@@ -441,7 +479,7 @@ function eyeShapes(kind: EyeKind, side: number, R: number, pose: FacePose, c: nu
     const ry = shape.ry * Rk * grow;
     if (o < 0.22) {
       // shut: the closed lid, as wide as the open eye, in ink within its rim (the oval's own, closed)
-      ink.push(lid(rx * 1.05, Rk, lw, c, true));
+      ink.push(...lid(rx * 1.05, Rk, lw, c, true));
       return;
     }
     // the blink: the oval squashes, widens a little, and its top comes down; reopening, it overshoots a touch taller
@@ -460,7 +498,7 @@ function eyeShapes(kind: EyeKind, side: number, R: number, pose: FacePose, c: nu
   const w = EYES.half * Rk * narrow;
   switch (kind) {
     case "closed":
-      ink.push(lid(w, Rk, lw, c));
+      ink.push(...lid(w, Rk, lw, c));
       return;
     case "happy": {
       const r = EYES.arc.r * Rk;
@@ -502,12 +540,24 @@ function eyeShapes(kind: EyeKind, side: number, R: number, pose: FacePose, c: nu
     }
     case "wavy": {
       // the sleepy ripple: one wave a little wider than the lid, thin, swinging half a cell at least each way so it steps a
-      // row up and a row down on the cells, its crest on a cell
+      // row up and a row down on the cells, its crest on a cell; under EYES.lid.small cells across, where a sampled wave is
+      // a step with a stray cell, it is laid on the cells as a pixel tilde on the lid's two rows, the same turned about its
+      // middle (`.##..#` over `#..##.`)
       const span = EYES.dream.span * w;
+      const m = Math.max(2, Math.round((span + c / 2) / c));
+      if (2 * m < EYES.lid.small) {
+        const r0 = Math.round((((EYES.lid.ends + EYES.lid.sag) / 2) * Rk) / c - 1);
+        const yt = (r0 + 0.5) * c;
+        const yb = (r0 + 1.5) * c;
+        const at = (i: number): number => (i - m + 0.5) * c;
+        const run = (a: number, b: number, y: number): Ink => ({ oval: false, pts: [at(a), y, at(b), y], w: c, keep: false, plain: true });
+        ink.push(run(0, 0, yb), run(1, m - 1, yt), run(m, 2 * m - 2, yb), run(2 * m - 1, 2 * m - 1, yt));
+        return;
+      }
       const amp = Math.max(EYES.dream.amp * Rk, 0.5 * c);
       const pts: number[] = [];
       for (let i = 0; i <= 16; i++) pts.push(-span + (2 * span * i) / 16, amp * Math.sin((i / 16) * TAU));
-      ink.push(stroke(pts, lw * EYES.dream.weight, c, -amp));
+      ink.push({ ...stroke(pts, lw * EYES.dream.weight, c, -amp), plain: true });
       return;
     }
   }
@@ -516,8 +566,9 @@ function eyeShapes(kind: EyeKind, side: number, R: number, pose: FacePose, c: nu
 /**
  * An open eye's catchlights on its pupil (radii rx, ry, centred `y` below the eye's centre): the star and the dot, `s`
  * their scale (R·k) and `a` how far the lids have let them back (0 to 1). Lit, the star grows as far as the pupil holds it
- * and the dot turns into a small star; a flare stretches the star's arms past the pupil, twists it upright at its peak and
- * bursts at its tip; the breath trades the star's size for the dot's; a tall pupil blooms round its star. Each mark's
+ * and the dot turns into a small star; on a tall pupil a flare stretches the star's arms past the pupil, twists it upright
+ * at its peak and bursts at its tip, and on a small one only swells it (EYES.flare.swell); the breath trades the star's
+ * size for the dot's; a tall pupil blooms round its star; the gaze moves both toward where the eyes look. Each mark's
  * floor is judged at its resting size, so none drops out early in a blink.
  */
 function catchlights(rx: number, ry: number, y: number, s: number, a: number, narrow: number, pose: FacePose, side: number, c: number, light: Light[]): void {
@@ -531,40 +582,47 @@ function catchlights(rx: number, ry: number, y: number, s: number, a: number, na
   // cell of light in a small eye reads as its glint; two read as a slash)
   const across = Math.round(rx / c);
   const tall = Math.round(ry / c);
+  const B = GLOW.bloom;
+  // a pupil tall enough to bloom glints (stretched, twisted, bursting); a smaller one twinkles, its star swelling inside it
+  const glints = 2 * ry >= B.cells * c;
+  const g = glints ? f : 0;
+  // the gaze: the catchlights' centres toward where the eyes look, in fractions of the pupil's radii
+  const gx = pose.gaze ? EYES.gaze * pose.gaze[0] : 0;
+  const gy = pose.gaze ? EYES.gaze * pose.gaze[1] : 0;
   // the star: narrowed with its eye, fitted inside the pupil, then a flare's reach past it
   const ax0 = EYES.star.ax * s * narrow;
   if (ax0 >= MIN_CELL * c && across >= 1 && tall >= 2) {
-    const [mx, my] = fitArms(rx, ry, EYES.star.x, EYES.star.y);
-    const B = GLOW.bloom;
+    const [mx, my] = fitArms(rx, ry, EYES.star.x + gx, EYES.star.y + gy);
     light.push({
-      x: snapMid(rx * EYES.star.x, c),
-      y: snapMid(y + ry * EYES.star.y, c),
+      x: snapMid(rx * (EYES.star.x + gx), c),
+      y: snapMid(y + ry * (EYES.star.y + gy), c),
       ax: Math.min(ax0 * (1 + 0.24 * lit), mx),
       ay: Math.min(EYES.star.ay * s * (1 + 0.15 * lit), my),
-      k: swell * a,
-      sx: 1 + EYES.flare.ax * f,
-      sy: 1 + EYES.flare.ay * f,
-      full: EYES.star.full + (EYES.flare.sharp - EYES.star.full) * f,
+      k: swell * a * (glints ? 1 : 1 + EYES.flare.swell * f),
+      sx: 1 + EYES.flare.ax * g,
+      sy: 1 + EYES.flare.ay * g,
+      full: EYES.star.full + (EYES.flare.sharp - EYES.star.full) * g,
       full0: EYES.star.full,
-      rot: -side * flareTwist(u),
+      rot: glints ? -side * flareTwist(u) : 0,
       dot: false,
       fit: true,
-      bloom: 2 * ry >= B.cells * c ? a * (B.amp * (1 + B.lit * lit) + B.flare * f) : 0,
-      burst: GLOW.burst.arm * s * f,
-      bf: f,
+      bloom: glints ? a * (B.amp * (1 + B.lit * lit) + B.flare * f) : 0,
+      burst: GLOW.burst.arm * s * g,
+      bf: g,
       tip: true,
     });
   }
   // the dot, starstruck while lit (a circle that sharpens through a diamond into a small star); it gives way to a flare,
-  // so the light gathers in the glint and never runs into it
+  // so the light gathers in the glint and never runs into it (on a small pupil, whose star cannot grow, it goes out for
+  // the flare's top: the twinkle shows as the light gathering in the star)
   const r0 = EYES.dot.r * s * (1 + 0.4 * lit);
-  if (r0 >= MIN_CELL * c && across >= 3) {
+  if (r0 >= MIN_CELL * c && across >= 3 && (glints || f < 0.5)) {
     const round = lit < 0.02;
-    const [mx, my] = fitArms(rx, ry, EYES.dot.x, EYES.dot.y);
+    const [mx, my] = fitArms(rx, ry, EYES.dot.x + gx, EYES.dot.y + gy);
     const full = ROUND + (EYES.star.full - ROUND) * lit;
     light.push({
-      x: snapMid(rx * EYES.dot.x, c),
-      y: snapMid(y + ry * EYES.dot.y, c),
+      x: snapMid(rx * (EYES.dot.x + gx), c),
+      y: snapMid(y + ry * (EYES.dot.y + gy), c),
       ax: round ? r0 : Math.min(r0 * (1 + (EYES.struck.ax - 1) * lit), mx),
       ay: round ? r0 : Math.min(r0 * (1 + (EYES.struck.ay - 1) * lit), my),
       k: ebb * a * (1 - 0.5 * f),
@@ -786,6 +844,13 @@ function lightRaster(x: number, y: number, ax: number, ay: number, full: number,
     for (let n = 0; n < out.length; n += 2) if (out[n] === I && out[n + 1] === J) return;
     out.push(I, J);
   };
+  // a plus at least once both arms reach a cell (the tile may light one arm's cells and not the other's: a dash)
+  if (upright && ax >= c && ay >= c) {
+    add(mi - 1, mj);
+    add(mi + 1, mj);
+    add(mi, mj - 1);
+    add(mi, mj + 1);
+  }
   // its spine: once an arm reaches DITHER.cross cells, the cells along each arm a cell long or more out to DITHER.spine of
   // a cell short of its tips, one at least (a plus, never a dash)
   const cross = upright && Math.max(ax, ay) >= DITHER.cross * c;
@@ -1010,6 +1075,7 @@ function eyeCells(ink: readonly Ink[], light: readonly Light[], c: number, rim: 
   const loose = new Uint8Array(w * h);
   const lines = new Uint8Array(w * h);
   const inkLines = !lit || strokes.some((s) => s.keep);
+  const plain = ink.some((s) => !s.oval && !!s.plain);
   const tileAt = (I: number, J: number): number => BAYER8[((J < 0 ? -1 - J : J) & 7) * 8 + ((I < 0 ? -1 - I : I) & 7)]!;
   // the ink's box in the eye's cells, a cell of margin each way (none when there is no ink)
   const ia = inkBox[2] > inkBox[0] ? Math.max(0, Math.floor(inkBox[0] / c) - 1 - i0) : 0;
@@ -1108,8 +1174,13 @@ function eyeCells(ink: readonly Ink[], light: readonly Light[], c: number, rim: 
     }
     // as it is now: the breath, the lids or the pop (under its fit), a flare's stretch; held to the grid's steps
     const kq = Math.round(l.k * 64) / 64;
-    const ax = step((l.fit ? Math.min(l.ax * kq, capX) : l.ax * kq) * l.sx, c, DITHER.quant);
-    const ay = step((l.fit ? Math.min(l.ay * kq, capY) : l.ay * kq) * l.sy, c, DITHER.quant);
+    let ax = step((l.fit ? Math.min(l.ax * kq, capX) : l.ax * kq) * l.sx, c, DITHER.quant);
+    let ay = step((l.fit ? Math.min(l.ay * kq, capY) : l.ay * kq) * l.sy, c, DITHER.quant);
+    // and as drawn, a star with no arms one way is one cell, never a dash (a blink's reopening shrinks both at once)
+    if (!l.dot) {
+      if (ax < c) ay = Math.min(ay, 0.5 * c);
+      if (ay < c) ax = Math.min(ax, 0.5 * c);
+    }
     put(lightCells(x, l.y, ax, ay, l.full, l.rot, l.dot, c));
     if (l.bloom > 0) blooms.push({ x, y: l.y, ax: capX, ay: capY, amp: Math.round(l.bloom * 64) / 64 });
     if (l.burst > 0) {
@@ -1186,30 +1257,37 @@ function eyeCells(ink: readonly Ink[], light: readonly Light[], c: number, rim: 
       }
     }
     if (ramp) {
-      // the ramp: down the rim's rows from its paper to its foot, tilted away from the light, through the eye's tile
-      let top = h;
-      let bot = -1;
-      let lef = w;
-      let rig = -1;
-      for (let j = ja; j < jb; j++) {
-        for (let i = ia; i < ib; i++) {
-          if (!ring[j * w + i]) continue;
-          top = Math.min(top, j);
-          bot = Math.max(bot, j);
-          lef = Math.min(lef, i);
-          rig = Math.max(rig, i);
+      // the ramp: down the rim's rows from its paper to its foot, tilted away from the light, through the eye's tile; and
+      // down a lit line's rows the same way (a lid's ends paper, its sag the foot), so a shut eye is dithered as an open
+      // one's rim is, never a flat cut-out of paper
+      const ramped = (on: (k: number) => boolean, from: number, to: number): void => {
+        let top = h;
+        let bot = -1;
+        let lef = w;
+        let rig = -1;
+        for (let j = ja; j < jb; j++) {
+          for (let i = ia; i < ib; i++) {
+            if (!on(j * w + i)) continue;
+            top = Math.min(top, j);
+            bot = Math.max(bot, j);
+            lef = Math.min(lef, i);
+            rig = Math.max(rig, i);
+          }
         }
-      }
-      const mid = (lef + rig) / 2;
-      const half = Math.max(1, (rig - lef + 1) / 2);
-      for (let j = top; j <= bot; j++) {
-        for (let i = lef; i <= rig; i++) {
-          const k = j * w + i;
-          if (!ring[k]) continue;
-          const p = (j - top + 0.5) / (bot - top + 1) + (RAMP.tilt * (i - mid)) / half;
-          if (p >= RAMP.to || (p > RAMP.from && (p - RAMP.from) / (RAMP.to - RAMP.from) > tileAt(i0 + i, j0 + j))) tone[k] = TONE.foot;
+        if (bot < top) return;
+        const mid = (lef + rig) / 2;
+        const half = Math.max(1, (rig - lef + 1) / 2);
+        for (let j = top; j <= bot; j++) {
+          for (let i = lef; i <= rig; i++) {
+            const k = j * w + i;
+            if (!on(k)) continue;
+            const p = (j - top + 0.5) / (bot - top + 1) + (RAMP.tilt * (i - mid)) / half;
+            if (p >= to || (p > from && (p - from) / (to - from) > tileAt(i0 + i, j0 + j))) tone[k] = TONE.foot;
+          }
         }
-      }
+      };
+      ramped((k) => ring[k] === 1, RAMP.from, RAMP.to);
+      if (!plain) ramped((k) => lines[k] === 1 && tone[k] === TONE.rim, RAMP.lineFrom, RAMP.lineTo);
     }
   }
   return { i0, j0, w, h, tone };
@@ -1223,7 +1301,7 @@ const FIT_CACHE = new Map<string, { readonly kept: boolean; readonly x: number; 
 
 function eyeKey(ink: readonly Ink[], light: readonly Light[], c: number, rim: number, lit: boolean, ramp: boolean): string {
   let key = `${c}|${rim}|${lit ? 1 : 0}${ramp ? 1 : 0}`;
-  for (const s of ink) key += s.oval ? `|o${s.rx},${s.ry},${s.y}` : `|l${s.w},${s.keep ? 1 : 0},${s.pts.join(",")}`;
+  for (const s of ink) key += s.oval ? `|o${s.rx},${s.ry},${s.y}` : `|l${s.w},${s.keep ? 1 : 0}${s.plain ? 1 : 0},${s.pts.join(",")}`;
   for (const l of light) key += `|L${l.x},${l.y},${l.ax},${l.ay},${Math.round(l.k * 64)},${l.sx},${l.sy},${l.full},${l.full0},${l.rot},${l.dot ? 1 : 0}${l.fit ? 1 : 0}${l.tip ? 1 : 0},${Math.round(l.bloom * 64)},${l.burst},${l.bf}`;
   return key;
 }

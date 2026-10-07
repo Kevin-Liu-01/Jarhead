@@ -24,7 +24,7 @@
  * (thinking wears the accent blue: no violet anywhere on the orb).
  */
 import { BAYER8, ORB_STOPS, QUIET_STOPS, cellCss, clamp01, lut, mix3, parseColor, smoothstep, watchDpr, type RGB } from "@/lib/dither";
-import { EYES, FaceHold, TONE, TWINKLE, asleepPair, faceCells, flareSize, popSize, type FaceCells, type FacePose } from "@/lib/eyes";
+import { EYES, FaceHold, HOLD, TONE, TWINKLE, asleepPair, faceCells, flareSize, popSize, type FaceCells, type FacePose } from "@/lib/eyes";
 import { glintTurn } from "@/lib/live";
 import { cssVar, type Theme } from "@/lib/theme";
 import type { Phase } from "@/lib/phase";
@@ -309,6 +309,10 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let faceCx = 0;
   let faceCy = 0;
   let faceR = 0;
+  /**
+   * The face's turn as drawn: the look's sideways part in tenths, held until the look is HOLD of a tenth past it (as the
+   * island's), so an easing look re-draws the narrowing eye only as it steps, never every frame.
+   */
   let faceTurn = 0;
   /** The cell the face keeps through the body's wobble and the look (lib/eyes.ts FaceHold). */
   const faceHold = new FaceHold();
@@ -800,7 +804,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     faceCx = c * cell + look[0] * EYES.look[0] * R + sx * str * 0.39 * R;
     faceCy = c * cell + EYES.row * Rb * sq + look[1] * EYES.look[1] * R + sy * str * 0.39 * R;
     faceR = R * (phase === "muted" ? 0.9 : 1);
-    faceTurn = look[0];
+    if (Math.abs(look[0] * 10 - faceTurn * 10) > HOLD) faceTurn = Math.round(look[0] * 10) / 10;
     const happy = facePair[0] === "^";
     if (happy && !wasHappy && t >= joyAt + TWINKLE.pop) joyAt = t;
     wasHappy = happy;
