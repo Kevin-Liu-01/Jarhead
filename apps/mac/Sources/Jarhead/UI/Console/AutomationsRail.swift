@@ -142,7 +142,7 @@ enum AutomationWords {
     // a11y
     static func row(_ name: String, _ kind: String, _ state: String) -> String { "\(kind) \(name), \(state)" }
     static func ring(_ line: String) -> String { "Ringing: \(line)" }
-    static let dismissRing = "Done — stops the ring"
+    static let dismissRing = "Done. Stops the ring"
     static let enabledLabel = "Automations on or off"
     static let loginLabel = "Open Jarhead at login"
     static let snoozeLabel = "Snooze minutes"

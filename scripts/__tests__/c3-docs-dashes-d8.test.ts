@@ -75,17 +75,11 @@ interface Kept {
   sourceHas?: readonly string[];
 }
 
-const HELP_COPY = "apps/mac/Sources/Jarhead/UI/HelpCopy.swift";
 const DOCTOR = "packages/cli/src/doctor.ts";
 const ENGINE = "packages/engine/src/engine.ts";
-const CRASH_GUARD = "apps/mac/Sources/Jarhead/App/CrashGuard.swift";
 const PRIVACY = "packages/core/src/privacy.ts";
 
 const KEPT: readonly Kept[] = [
-  { text: "Hand back the mic, guard the echo — apps keep their sound", source: HELP_COPY },
-  { text: "Stopped — nothing running", source: HELP_COPY },
-  { text: "Recording — mic shared, echo guarded", source: HELP_COPY },
-  { text: "heard himself · muted — Recording off?", source: "apps/mac/Sources/Jarhead/Model/AppState.swift" },
   { text: "tap is pre-duck — measure at the device", source: "apps/mac/Scripts/DuckLeakProbeMain.swift" },
   { text: "would need a yes when it runs; nobody is there then — notify instead", source: "packages/core/src/policy.ts" },
   { text: "this wakes the brain — not the voice — while Jarhead is asleep", source: "apps/mac/Sources/Jarhead/UI/Console/AutomationsRail.swift" },
@@ -99,9 +93,6 @@ const KEPT: readonly Kept[] = [
   { text: "— defaults import failed (1)", source: ENGINE, sourceHas: ["skipped ? `${text} — ${skipped}` : text"] },
   { text: "Two Jarhead tiles in the Dock — Dock not restarted", source: ENGINE, sourceHas: ['"Two Jarhead tiles in the Dock"', "`${stood} — Dock not restarted`"] },
   { text: "Dock written, not restarted — press Fix the Dock again", source: ENGINE },
-  { text: "then: signal SIGABRT (6) — the runtime's abort after the exception above", source: CRASH_GUARD, sourceHas: ['"\\nthen: signal "', "\" — the runtime's abort after the exception above\\n\""] },
-  { text: "relaunch: no — 4 crashes in 10 minutes; staying down until you open Jarhead yourself", source: CRASH_GUARD, sourceHas: ['"relaunch: no — "', '" crashes in 10 minutes; staying down until you open Jarhead yourself\\n"'] },
-  { text: "relaunch: no — 4 crashes in 10 minutes", source: CRASH_GUARD, sourceHas: ['"relaunch: no — "', '" crashes in 10 minutes;'] },
   { text: "Spotify is thinking — 0 seconds in", source: "packages/engine/src/threads/lines.ts", sourceHas: ['`${name} is ${phrase ?? "thinking"} — ${s} seconds in`'] },
   { text: "not yet — say the date", source: "packages/core/src/schedule.ts" },
   // docs/LOCAL.md: the four "Leaves the Mac" rows and the Console's local-brain lines.

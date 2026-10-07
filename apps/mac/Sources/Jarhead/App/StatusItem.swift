@@ -143,7 +143,7 @@ final class StatusItem: NSObject {
         let phase = state.phase
         item.button?.image = StatusItem.glyph(for: phase)
         item.button?.appearsDisabled = !state.connected
-        item.button?.toolTip = state.connected ? "Jarhead — \(StatusItem.label(for: phase))" : "Jarhead — daemon \(state.daemonDetail)"
+        item.button?.toolTip = state.connected ? "Jarhead: \(StatusItem.label(for: phase))" : "Jarhead: daemon \(state.daemonDetail)"
         item.menu = buildMenu()
     }
 
@@ -196,7 +196,7 @@ final class StatusItem: NSObject {
         let paused = phase == .paused
         let connected = state.connected
 
-        let title = NSMenuItem(title: connected ? "Jarhead — \(StatusItem.label(for: phase))" : "Jarhead — \(state.daemonDetail)", action: nil, keyEquivalent: "")
+        let title = NSMenuItem(title: connected ? "Jarhead: \(StatusItem.label(for: phase))" : "Jarhead: \(state.daemonDetail)", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
 
@@ -237,12 +237,12 @@ final class StatusItem: NSObject {
             snooze.keyEquivalentModifierMask = Hotkeys.Action.snooze.keyEquivalent.1
             snooze.target = self
             snooze.image = StatusItem.symbol("bell.fill")
-            snooze.toolTip = "Snooze — rings again in \(minutes) min (\(Hotkeys.Action.snooze.glyph))"
+            snooze.toolTip = "Snooze. Rings again in \(minutes) min (\(Hotkeys.Action.snooze.glyph))"
             menu.addItem(snooze)
             let done = NSMenuItem(title: "Done", action: #selector(doDoneRing), keyEquivalent: "")
             done.target = self
             done.image = StatusItem.symbol("checkmark.circle.fill")
-            done.toolTip = "Done — stops the \(ring.kind)"
+            done.toolTip = "Done. Stops the \(ring.kind)"
             menu.addItem(done)
         } else if let next = state.nextFire {
             let row = NSMenuItem(title: StatusItem.nextLabel(next), action: nil, keyEquivalent: "")
@@ -278,7 +278,7 @@ final class StatusItem: NSObject {
         stop.target = self
         stop.isEnabled = true
         stop.image = StatusItem.symbol(ConsoleGlyph.stop)
-        stop.toolTip = "Stop everything — close the session, sleep (⌥⎋)"
+        stop.toolTip = "Stop everything: close the session, sleep (⌥⎋)"
         if phase == .asleep { stop.attributedTitle = StatusItem.spentTitle(StatusWords.stopped) }
         menu.addItem(stop)
 
@@ -307,7 +307,7 @@ final class StatusItem: NSObject {
         let automations = NSMenuItem(title: "Automations…", action: #selector(doOpenAutomations), keyEquivalent: "")
         automations.target = self
         automations.image = StatusItem.symbol("alarm.fill")
-        automations.toolTip = "What is set to fire while Jarhead sleeps — the Console's Automations section"
+        automations.toolTip = "What is set to fire while Jarhead sleeps (the Console's Automations section)"
         menu.addItem(automations)
 
         menu.addItem(.separator())
@@ -486,7 +486,7 @@ final class StatusItem: NSObject {
     /// "Crashed 2 min ago — Failed to create tap due to format mismatch", the reason cut to a menu's width.
     static func crashLabel(_ crash: CrashNotice, now: Date = Date()) -> String {
         let reason = crash.reason.count > 64 ? String(crash.reason.prefix(63)) + "…" : crash.reason
-        return "Crashed \(CrashNotice.ago(crash.at, now: now)) — \(reason)"
+        return "Crashed \(CrashNotice.ago(crash.at, now: now)): \(reason)"
     }
 
     // MARK: - permissions row
@@ -521,15 +521,15 @@ final class StatusItem: NSObject {
     /// (WakeGate.heard) — so the row says so, and names the other way back.
     static func gateLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, paused: Bool = false) -> String {
         switch g {
-        case .off(let reason): return "Wake word off — \(reason)"
+        case .off(let reason): return GateWords.off(reason)
         case .listening:
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
             if paused { return "paused · say “\(phrase)” or press Go" }
-            return "Listening for “\(phrase)”" + (auth == .none ? " — no authentication" : "")
+            return "Listening for “\(phrase)”" + (auth == .none ? GateWords.noAuth : "")
         case .heard: return "Heard you"
         case .authenticating(let method): return "Waiting for \(method)"
         case .granted: return paused ? "Resuming…" : "Waking…"
-        case .denied(let reason): return "Not this time — \(reason)"
+        case .denied(let reason): return GateWords.denied(reason)
         case .lockedOut(let until): return "Locked for \(max(1, Int(until.timeIntervalSinceNow.rounded()))) s"
         }
     }

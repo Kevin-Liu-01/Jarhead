@@ -1153,6 +1153,32 @@ public enum WakeGateState: Equatable {
     public var isAuthenticating: Bool { if case .authenticating = self { return true } else { return false } }
 }
 
+/// The gate's words around its reason, one spelling for the status menu, the Console and the
+/// orb: "Wake word off. Microphone not granted." The reason arrives as a lowercase phrase and
+/// is set as its own sentence.
+public enum GateWords {
+    public static func off(_ reason: String) -> String {
+        let why = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The plain switch-off's reason is itself "wake word off": said once.
+        if why.isEmpty || why.lowercased() == "wake word off" { return "Wake word off" }
+        return "Wake word off. " + sentence(why)
+    }
+
+    public static func denied(_ reason: String) -> String { "Not this time. " + sentence(reason) }
+
+    /// After "Listening for “jarhead”" when the word alone opens the session.
+    public static let noAuth = " (no authentication)"
+
+    /// "microphone not granted" reads "Microphone not granted."
+    public static func sentence(_ text: String) -> String {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = t.first else { return t }
+        let body = first.uppercased() + t.dropFirst()
+        guard let last = body.last, !".?!…".contains(last) else { return body }
+        return body + "."
+    }
+}
+
 /// What the UI can ask the gate to do. Filled in by the gate at launch.
 public struct WakeActions {
     /// Enrol (or replace) the passphrase. Returns false when it is too short.
@@ -1239,7 +1265,7 @@ public struct Toast: Identifiable, Equatable {
 
 /// The echo fuse's one line (design12); in Model so the bench compiles without UI/.
 public enum AudioFuseWords {
-    public static let heardHimself = "heard himself · muted — Recording off?"
+    public static let heardHimself = "heard himself · muted. Recording off?"
 }
 
 // MARK: - Transport
@@ -1288,9 +1314,9 @@ extension AppState {
     /// Sites append their own key: "(⌘P)" in the Console, "(⌥⇧Space)" elsewhere.
     public nonisolated static func transportLabel(for phase: Phase) -> (symbol: String, help: String) {
         switch transportPress(for: phase) {
-        case .go: return phase == .paused ? ("play.fill", "Go — resume with the context") : ("play.fill", "Go")
-        case .pause: return ("pause.fill", "Pause — the meter stops, the conversation is kept")
-        case .stop: return ("ellipsis", "Connecting — press to stop")
+        case .go: return phase == .paused ? ("play.fill", "Go. Resume with the context") : ("play.fill", "Go")
+        case .pause: return ("pause.fill", "Pause. The meter stops, the conversation is kept")
+        case .stop: return ("ellipsis", "Connecting. Press to stop")
         }
     }
 

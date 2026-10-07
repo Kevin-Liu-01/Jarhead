@@ -2167,7 +2167,7 @@ come back. Fourteen daemon respawns in the hour Kevin was using it, and the
   system's `.ips` (with `lastExceptionBacktrace`) is still written. The
   uncaught-exception handler chains to AppKit's, whose abort reaches the signal
   handler again and appends one line
-  (`then: signal SIGABRT (6) — the runtime's abort after the exception above`). Should AppKit swallow the exception and
+  (`then: signal SIGABRT (6), the runtime's abort after the exception above`). Should AppKit swallow the exception and
   keep running (it can, inside its event loop), a 1.5 s follow-up notes
   `survived:` in the report and re-arms the guard.
 - **Coming back.** The handler `posix_spawn`s `/bin/sh` in its own session
@@ -2177,7 +2177,7 @@ come back. Fourteen daemon respawns in the hour Kevin was using it, and the
   seconds), bails if it is not, and otherwise `open -a Jarhead.app` (or exec's
   the dev binary). The crash files are the counter: three relaunches in ten
   minutes, then
-  `relaunch: no — 4 crashes in 10 minutes; staying down until you open Jarhead yourself`.
+  `relaunch: no (4 crashes in 10 minutes; staying down until you open Jarhead yourself)`.
   `JARHEAD_NO_RELAUNCH=1` turns it off.
 - **Telling Kevin.** On the next launch a report younger than ten minutes
   becomes `AppState.lastCrash` (`CrashNotice`): one 28pt line under the Console
@@ -2240,7 +2240,7 @@ so the next OOM is read against a trend.
   after the death, the system `.ips` written 55 s later. `=exception`: exit 134,
   report with `then: signal SIGABRT (6)`, one relaunch, `.ips` with
   `lastExceptionBacktrace`. Four crashes in a row: `1 of 3`, `2 of 3`, `3 of 3`,
-  then `relaunch: no — 4 crashes in 10 minutes` and no new process. The
+  then `relaunch: no` (4 crashes in 10 minutes) and no new process. The
   relaunched run's ring carries `the previous run crashed`: the notice path.
 - `jarheadd` under a fake app that drops its pipes without a bye
   (`JARHEAD_LINGER_MS=8000`): `the app's pipes are gone; appending to daemon.log

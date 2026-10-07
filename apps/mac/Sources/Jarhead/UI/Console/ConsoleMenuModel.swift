@@ -229,11 +229,11 @@ extension HelpCopy {
     /// no protocol change.
     static func effort(_ level: String) -> String? {
         switch level {
-        case "low": return "Fast — a short think, the cheapest turn"
-        case "medium": return "Balanced — the everyday setting"
-        case "high": return "Deeper — slower, more careful"
-        case "xhigh": return "Slow — a long think before every step"
-        case "max": return "Slowest — everything the model has"
+        case "low": return "Fast: a short think, the cheapest turn"
+        case "medium": return "Balanced: the everyday setting"
+        case "high": return "Deeper: slower, more careful"
+        case "xhigh": return "Slow: a long think before every step"
+        case "max": return "Slowest: everything the model has"
         default: return nil
         }
     }

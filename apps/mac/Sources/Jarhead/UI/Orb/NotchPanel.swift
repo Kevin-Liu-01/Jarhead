@@ -2500,7 +2500,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let c = content
         if c.marking {
             let figure = "Circle something · Esc"
-            list.append(Chip(kind: .marking, glyph: "pencil.and.outline", tint: Self.markTone, figure: figure, tooltip: "Circling — draw around something, Esc to cancel", alpha: 0.72, width: measure("scope", figure)))
+            list.append(Chip(kind: .marking, glyph: "pencil.and.outline", tint: Self.markTone, figure: figure, tooltip: "Circling. Draw around something, Esc to cancel", alpha: 0.72, width: measure("scope", figure)))
         } else {
             if let r = c.ring {
                 list.append(Chip(kind: .ring, glyph: "bell.fill", tint: Self.markTone, figure: r.chip, tooltip: Self.ringTooltip(r), alpha: 0.72, width: measure("bell.fill", r.chip)))
@@ -2514,7 +2514,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             let pending = c.pendingMarks
             if pending > 0 {
                 let figure = "\(pending)"
-                list.append(Chip(kind: .marks, glyph: "scope", tint: Self.markTone, figure: figure, tooltip: "\(pending) circled — waiting for the next task", alpha: 0.72, width: measure("scope", figure)))
+                list.append(Chip(kind: .marks, glyph: "scope", tint: Self.markTone, figure: figure, tooltip: "\(pending) circled, waiting for the next task", alpha: 0.72, width: measure("scope", figure)))
             }
             if c.awake, let t = c.timer {
                 // The figure is redrawn live (`timerFigure`); the width is a mono-digit figure's, measured once here.
@@ -2612,7 +2612,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         RingWords.body(of: r.line) + (r.offersSnooze ? " · Snooze ⌃⌥S" : " · Done")
     }
     /// The chip's and the pill's tooltip: the whole line, then the way to answer it.
-    static func ringTooltip(_ r: DockContent.RingRow) -> String { r.line + (r.offersSnooze ? " — Snooze ⌃⌥S" : " — Done") }
+    static func ringTooltip(_ r: DockContent.RingRow) -> String { r.line + (r.offersSnooze ? " · Snooze ⌃⌥S" : " · Done") }
     /// "pasta · 4:12" under the lip; "4:12" on the chip.
     static func timerFigure(_ t: DockContent.TimerRow) -> String { OrbStyle.mmss(max(0, t.until.timeIntervalSinceNow)) }
     static func timerPillText(_ t: DockContent.TimerRow) -> String { "\(t.name) · \(timerFigure(t))" }
@@ -2936,7 +2936,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
         Self.drawText(figure, at: NSPoint(x: dx, y: midY - 6), Self.lipChipAttrs)
         NSGraphicsContext.restoreGraphicsState()
-        chipRects.append((NSRect(x: x, y: midY - 6, width: dx - x + 12, height: 12), "\(content.pendingMarks) circled — waiting for the next task"))
+        chipRects.append((NSRect(x: x, y: midY - 6, width: dx - x + 12, height: 12), "\(content.pendingMarks) circled, waiting for the next task"))
     }
 
     /// The glance chips on the peek, right of the dots: glyph 10 pt semibold (tinted) +
@@ -4122,14 +4122,14 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         case .face: return ""
         case .circle:
             if c.marking { return "Cancel circling (Esc)" }
-            if !c.screenRecordingGranted { return "Circle something — needs Screen Recording (Request below)" }
+            if !c.screenRecordingGranted { return "Circle something. Needs Screen Recording (Request below)" }
             let n = c.pendingMarks
-            return n > 0 ? "Circle something — \(n) waiting · ⌃⌥C" : "Circle something · ⌃⌥C"
+            return n > 0 ? "Circle something · \(n) waiting · ⌃⌥C" : "Circle something · ⌃⌥C"
         case .window:
-            return c.screenRecordingGranted ? "Capture the front window for Jarhead" : "Capture the front window for Jarhead — needs Screen Recording"
+            return c.screenRecordingGranted ? "Capture the front window for Jarhead" : "Capture the front window for Jarhead. Needs Screen Recording"
         case .ask:
-            if !awake { return c.typedWakes ? "What's this? — wakes · billed" : "What's this? — press Go first" }
-            return c.pendingMarks > 0 ? "What's this? — ask about what you circled" : "What's this? — circle first, then ask"
+            if !awake { return c.typedWakes ? "What's this? Wakes · billed" : "What's this? Press Go first" }
+            return c.pendingMarks > 0 ? "What's this? Ask about what you circled" : "What's this? Circle first, then ask"
         case .clear:
             let used = c.marks.filter(\.consumed).count
             return "Clear · \(c.marks.count) circled" + (used > 0 ? " · \(used) already used" : "")
@@ -4155,19 +4155,19 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             let name = c.threads.first(where: { $0.id == id })?.name ?? "thread"
             return "Stop \(name)"
         case .console: return "Console (⌃⌥J)"
-        case .sleep: return awake ? "Sleep — back to the notch" : "Asleep"
+        case .sleep: return awake ? "Sleep. Back to the notch" : "Asleep"
         case .remedy:
             guard let p = c.problem else { return "" }
-            return p.text + (p.remedyLabel.map { " — " + $0 } ?? "")
+            return p.text + (p.remedyLabel.map { " · " + $0 } ?? "")
         case .field:
             return fieldPlaceholder()
         case .snooze(let m):
-            return "Snooze — rings again in \(m) min"
+            return "Snooze. Rings again in \(m) min"
         case .done:
-            return "Done — stops the \(c.ring?.kind ?? "ring")"
+            return "Done. Stops the \(c.ring?.kind ?? "ring")"
         case .ringOpen(let target):
             guard let r = c.ring else { return "" }
-            return target == "console" ? "\(r.head) — Console" : "Open — \(target)"
+            return target == "console" ? "\(r.head) · Console" : "Open \(target)"
         }
     }
 
@@ -4184,8 +4184,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// `.console` appears up to three times in one hit list; the tooltip tells them apart by the rect.
     private func consoleHelp(rect: NSRect, zones z: Zones) -> String {
         let c = content
-        if z.kind == .plain, rect == z.headRight.insetBy(dx: 0, dy: -1) { return "\(c.marks.count) circled · \(c.pendingMarks) pending — Console" }
-        if z.kind == .marks, let over = filmSlots(z).overflow, rect == over.rect { return "\(over.count) more circled — Console" }
+        if z.kind == .plain, rect == z.headRight.insetBy(dx: 0, dy: -1) { return "\(c.marks.count) circled · \(c.pendingMarks) pending · Console" }
+        if z.kind == .marks, let over = filmSlots(z).overflow, rect == over.rect { return "\(over.count) more circled · Console" }
         return helpText(for: .console)
     }
 
@@ -4214,7 +4214,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             let foot = footText(now: CACurrentMediaTime()).text
             // The notice row took the meter's place: the meter's own words wait here.
             if noticeShown, parts.isEmpty { parts.append(meterFigures(now: CACurrentMediaTime()).right) }
-            return parts.isEmpty ? foot : foot + " — " + parts.joined(separator: " · ")
+            return parts.isEmpty ? foot : foot + " · " + parts.joined(separator: " · ")
         }
         return ""
     }

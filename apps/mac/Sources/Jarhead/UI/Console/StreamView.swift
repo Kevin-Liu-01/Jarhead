@@ -1429,7 +1429,7 @@ struct ComposerBar: View {
         switch AppState.transportPress(for: phase) {
         case .go: return "Go"
         case .pause: return "Pause"
-        case .stop: return "Connecting — press to stop"
+        case .stop: return "Connecting. Press to stop"
         }
     }
 

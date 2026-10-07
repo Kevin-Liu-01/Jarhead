@@ -25,35 +25,35 @@ enum HelpCopy {
     // MARK: the transport and the composers
 
     static let go = Entry(name: "Go", hint: "Open the live session", key: "⌘P")
-    static let pause = Entry(name: "Pause", hint: "Close the session — the context stays", key: "⌘P")
-    static let stop = Entry(name: "Stop", hint: "Stop this turn — the threads carry on", key: "⌥⌘.")
-    static let stopAll = Entry(name: "Stop all", hint: "Stop everything — close the session, sleep", key: "⌘.")
+    static let pause = Entry(name: "Pause", hint: "Close the session. The context stays", key: "⌘P")
+    static let stop = Entry(name: "Stop", hint: "Stop this turn. The threads carry on", key: "⌥⌘.")
+    static let stopAll = Entry(name: "Stop all", hint: "Stop everything: close the session, sleep", key: "⌘.")
     /// The composer's Stop while asleep (design13 § Stop): the button is spent — grey, still a button — and the tip says why.
-    static let stopSpent = Entry(name: "Stop", hint: "Stopped — nothing running", key: "⌘.")
+    static let stopSpent = Entry(name: "Stop", hint: "Stopped. Nothing running", key: "⌘.")
     static let check = Entry(name: "Check", hint: "Probe the brain again")
     static let search = Entry(name: "Search", hint: "Find a line in every conversation", key: "⌘F")
-    static let circle = Entry(name: "Circle", hint: "Circle something — needs Screen Recording", key: "⌃⌥C")
-    static let mute = Entry(name: "Mute", hint: "Stop sending — the session and the mic stay open")
+    static let circle = Entry(name: "Circle", hint: "Circle something. Needs Screen Recording", key: "⌃⌥C")
+    static let mute = Entry(name: "Mute", hint: "Stop sending. The session and the mic stay open")
     static let unmute = Entry(name: "Unmute", hint: "Listen again")
     static let send = Entry(name: "Send", hint: "Send the line", key: "⏎")
-    static let sendAsleep = Entry(name: "Send", hint: "Asleep: the engine keeps the words — press Go", key: "⏎")
+    static let sendAsleep = Entry(name: "Send", hint: "Asleep: the engine keeps the words. Press Go", key: "⏎")
     static let sendYes = Entry(name: "Allow", hint: "Send “yes” to the session")
     static let sendNo = Entry(name: "Deny", hint: "Send “no” to the session")
-    static let allow = Entry(name: "Allow", hint: "Yes — a click, never Return")
-    static let deny = Entry(name: "Deny", hint: "No — the question is dropped")
+    static let allow = Entry(name: "Allow", hint: "Yes. A click, never Return")
+    static let deny = Entry(name: "Deny", hint: "No. The question is dropped")
 
     // MARK: the stream and the panes
 
     static let backStream = Entry(name: "Stream", hint: "Back to the live stream")
-    static let backStreamEsc = Entry(name: "Stream", hint: "Back to the live stream — Esc from the composer")
-    static let backNow = Entry(name: "Now", hint: "Back to Now — Esc from the composer", key: "⌘0")
+    static let backStreamEsc = Entry(name: "Stream", hint: "Back to the live stream (Esc from the composer)")
+    static let backNow = Entry(name: "Now", hint: "Back to Now (Esc from the composer)", key: "⌘0")
     static let latest = Entry(name: "Latest", hint: "Jump to the latest")
     static let undoCleared = Entry(name: "Undo", hint: "Bring the cleared items back")
     static let retryPage = Entry(name: "Try again", hint: "Ask the engine for the page again")
     static let undoMove = Entry(name: "Undo", hint: "Put it back where it was", key: "⌘Z")
-    static let liveThread = Entry(name: "Live", hint: "Live — the thread is working")
-    static let liveWriting = Entry(name: "Live", hint: "Live — the session is writing")
-    static let liveQuiet = Entry(name: "Live", hint: "Live — following the session; quiet for now")
+    static let liveThread = Entry(name: "Live", hint: "Live. The thread is working")
+    static let liveWriting = Entry(name: "Live", hint: "Live. The session is writing")
+    static let liveQuiet = Entry(name: "Live", hint: "Live. Following the session; quiet for now")
     static let pinned = Entry(name: "Pinned", hint: "Kept at the top of the rail")
     static let restoreTrash = Entry(name: "Restore", hint: "Back from the Trash")
     static let restoreArchive = Entry(name: "Restore", hint: "Back from Archived")
@@ -61,42 +61,42 @@ enum HelpCopy {
     static let conversationView = Entry(name: "Conversation", hint: "The conversation as the stream showed it")
 
     /// The threads' verbs carry the thread's name; the rule set is the same.
-    static func resumeThread(_ name: String) -> Entry { Entry(name: "Resume", hint: "Resume \(name) — one continuation turn") }
-    static func pauseThread(_ name: String) -> Entry { Entry(name: "Pause", hint: "Pause \(name) — its turn stops, its place is kept") }
-    static func stopThread(_ name: String) -> Entry { Entry(name: "Stop", hint: "Stop \(name) — the others carry on", key: "⌥⌘.") }
-    static func allowThread(_ name: String) -> Entry { Entry(name: "Allow", hint: "Yes to \(name) — a click, never Return") }
-    static func denyThread(_ name: String) -> Entry { Entry(name: "Deny", hint: "No — \(name) drops the question") }
-    static func sendMode(_ words: String?) -> Entry { words.map { Entry(name: "Send", hint: "Send — \($0)", key: "⏎") } ?? send }
+    static func resumeThread(_ name: String) -> Entry { Entry(name: "Resume", hint: "Resume \(name): one continuation turn") }
+    static func pauseThread(_ name: String) -> Entry { Entry(name: "Pause", hint: "Pause \(name). Its turn stops, its place is kept") }
+    static func stopThread(_ name: String) -> Entry { Entry(name: "Stop", hint: "Stop \(name). The others carry on", key: "⌥⌘.") }
+    static func allowThread(_ name: String) -> Entry { Entry(name: "Allow", hint: "Yes to \(name). A click, never Return") }
+    static func denyThread(_ name: String) -> Entry { Entry(name: "Deny", hint: "No. \(name) drops the question") }
+    static func sendMode(_ words: String?) -> Entry { words.map { Entry(name: "Send", hint: "Send (\($0))", key: "⏎") } ?? send }
 
     // MARK: automations (design11) — the ring's presses, a row's verbs, the recipes
 
     /// Snooze carries the minutes the island's press would use (Settings.snoozeMinutes).
-    static func snooze(_ minutes: Int) -> Entry { Entry(name: "Snooze", hint: "Snooze — rings again in \(minutes) min", key: "⌃⌥S") }
-    static let done = Entry(name: "Done", hint: "Done — stops the ring, the row stays")
-    static let skip = Entry(name: "Skip", hint: "Skip — the next fire rolls past without ringing")
-    static let pauseAutomation = Entry(name: "Pause", hint: "Pause — keeps it, fires nothing")
-    static let runNow = Entry(name: "Run now", hint: "Fire it now — only while someone is here to hear it")
-    static let trashAutomation = Entry(name: "Trash", hint: "Move to Trash — hidden, restorable, never deleted")
+    static func snooze(_ minutes: Int) -> Entry { Entry(name: "Snooze", hint: "Snooze. Rings again in \(minutes) min", key: "⌃⌥S") }
+    static let done = Entry(name: "Done", hint: "Done. Stops the ring, the row stays")
+    static let skip = Entry(name: "Skip", hint: "Skip. The next fire rolls past without ringing")
+    static let pauseAutomation = Entry(name: "Pause", hint: "Pause. Keeps it, fires nothing")
+    static let runNow = Entry(name: "Run now", hint: "Fire it now, only while someone is here to hear it")
+    static let trashAutomation = Entry(name: "Trash", hint: "Move to Trash: hidden, restorable, never deleted")
     static let addRecipe = Entry(name: "Add recipe", hint: "Name a command a routine may run unattended")
-    static let asksRecipe = Entry(name: "Asks", hint: "The shell gate would ask about this — listed, never armed")
+    static let asksRecipe = Entry(name: "Asks", hint: "The shell gate would ask about this. Listed, never armed")
 
     // MARK: audio (design12) — the island's mute box while the guard holds, the recording chip, the menu row
 
     /// The mute box while the software echo guard holds the wire (Recording, or the fallback rung).
-    static let micHeld = Entry(name: "Mute", hint: "Mic held while he speaks — a word over him opens it")
+    static let micHeld = Entry(name: "Mute", hint: "Mic held while he speaks. A word over him opens it")
     /// The peek chip while Recording is on (a glyph, no figure).
-    static let recordingChip = Entry(name: "Recording", hint: "Recording — mic shared, echo guarded")
+    static let recordingChip = Entry(name: "Recording", hint: "Recording: mic shared, echo guarded")
     /// The status menu row (and the Dock menu's); the key rides last as the menu's own equivalent.
-    static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic, guard the echo — apps keep their sound", key: "⌃⌥R")
+    static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic, guard the echo. Apps keep their sound", key: "⌃⌥R")
 
     // MARK: voices (design13) — the composer chip, Switch now at rest and while work runs
 
     /// The composer's `🇬🇧 Ballad ⌄` chip: a pick is free; only Switch now (or Kevin asking aloud) pays.
-    static let voiceChip = Entry(name: "Voice", hint: "Voice and accent — a pick is free; Switch now hears it")
+    static let voiceChip = Entry(name: "Voice", hint: "Voice and accent. A pick is free; Switch now hears it")
     /// Switch now: one paid restart, behind this press alone.
-    static let switchVoice = Entry(name: "Switch now", hint: "Pause, then resume on the new voice — one restart")
+    static let switchVoice = Entry(name: "Switch now", hint: "Pause, then resume on the new voice (one restart)")
     /// The same button while a delegation or a thread runs (the engine refuses the reopen).
-    static let switchVoiceBusy = Entry(name: "Switch now", hint: "Pause, then resume on the new voice — not while work runs")
+    static let switchVoiceBusy = Entry(name: "Switch now", hint: "Pause, then resume on the new voice. Not while work runs")
 
     static let all: [Entry] = [go, pause, stop, stopAll, stopSpent, check, search, circle, mute, unmute, send, sendAsleep, sendYes, sendNo, allow, deny,
                                backStream, backStreamEsc, backNow, latest, undoCleared, retryPage, undoMove, liveThread, liveWriting, liveQuiet,

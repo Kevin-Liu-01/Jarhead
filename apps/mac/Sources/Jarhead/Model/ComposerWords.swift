@@ -9,7 +9,7 @@ public enum ComposerWords {
     /// unless typed lines wake, and the placeholder says which — a typed line under
     /// `typedWakes` opens a paid session.
     public static func placeholder(phase: Phase, paused: Bool, typedWakes: Bool) -> String {
-        if paused || phase == .paused { return "Paused — press Go or type to resume" }
+        if paused || phase == .paused { return "Paused. Press Go or type to resume" }
         if AppState.inSessionPhases.contains(phase) || phase == .connecting { return "Say something…" }
         return typedWakes ? "Type to wake Jarhead…" : "Type to Jarhead… (asleep: press Go)"
     }

@@ -88,7 +88,7 @@ enum LocalBrainWords {
     /// The Server field's placeholder: the discovered root and server, or where the engine looked.
     static func serverPlaceholder(_ status: LocalServerStatus) -> String {
         if status.reachable, !status.baseUrl.isEmpty { return "\(host(status.baseUrl)) · \(serverName(status))" }
-        return "nothing found — 11434, 1234, 8080"
+        return "nothing found (11434, 1234, 8080)"
     }
 
     /// The Server row is drawn when a pin exists or nothing answered; a found server needs no row.
@@ -148,9 +148,9 @@ enum LocalBrainWords {
     static func canCallTools(_ n: Int) -> String { n == 1 ? "1 can call tools" : "\(n) can call tools" }
     static func bestFitMeta(_ status: LocalServerStatus) -> String { "the engine picks for this Mac · \(gigabytes(status.ramBytes))" }
     static func notOn(_ status: LocalServerStatus) -> String { "not on \(serverName(status))" }
-    static let noToolsFoot = "cannot call tools — the hands need them, so it is listed and greyed"
+    static let noToolsFoot = "cannot call tools. The hands need them, so it is listed and greyed"
     static let bestFitFoot = "The engine picks the best model that fits this Mac and moves when a better one lands."
-    static let savedFoot = "Saved, but the server does not list it now — pull it again or pick another."
+    static let savedFoot = "Saved, but the server does not list it now. Pull it again or pick another."
 
     private static func model(_ id: String, _ status: LocalServerStatus) -> LocalModel? { status.models.first { $0.id == id } }
 
@@ -270,9 +270,9 @@ enum LocalBrainWords {
         let size = m.sizeBytes.map(gigabytes) ?? "size unknown"
         if !m.hasTools { return "\(id) \(noToolsFoot)." }
         switch m.fit {
-        case .good: return "\(id) · \(size) on a \(ram) Mac — fits."
-        case .tight: return "\(id) · \(size) on a \(ram) Mac — tight: slow first token, swaps under load."
-        case .no: return "\(id) · \(size) on a \(ram) Mac — too big: it will not load."
+        case .good: return "\(id) · \(size) on a \(ram) Mac. Fits."
+        case .tight: return "\(id) · \(size) on a \(ram) Mac. Tight: slow first token, swaps under load."
+        case .no: return "\(id) · \(size) on a \(ram) Mac. Too big: it will not load."
         case .unknown: return "\(id) · the server does not say its size."
         }
     }

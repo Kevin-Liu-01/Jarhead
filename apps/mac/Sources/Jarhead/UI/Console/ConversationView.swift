@@ -178,7 +178,7 @@ extension ConversationPane {
         let detail = agent.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let hint = detail.components(separatedBy: " · ").last?.trimmingCharacters(in: .whitespaces) ?? ""
         if agent.status == .offline {
-            return hint.isEmpty ? "Offline — this session can't take messages." : "Offline — \(hint)"
+            return hint.isEmpty ? "Offline. This session can't take messages." : "Offline. " + ConsoleFormat.sentence(hint)
         }
         let lower = detail.lowercased()
         for cue in ["read-only", "cannot send", "can't send", "archived", "has ended", "not signed in"] where lower.contains(cue) {
@@ -719,10 +719,10 @@ private struct ToolCallCard: View {
                         } else if call.status == .interrupted {
                             // No result ever came: the session's process ended (or its file went)
                             // with this call open. Said plainly, in the settled grey.
-                            Text("interrupted — the session ended before this call answered")
+                            Text("interrupted: the session ended before this call answered")
                                 .font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.titanium)
                         } else if call.status == .running {
-                            Text(typing ? "running…" : "running — no result yet").font(ConsoleTheme.sans(11)).italic().foregroundStyle(ConsoleTheme.fg3)
+                            Text(typing ? "running…" : "running, no result yet").font(ConsoleTheme.sans(11)).italic().foregroundStyle(ConsoleTheme.fg3)
                         }
                     }
                     .padding(EdgeInsets(top: 0, leading: 10, bottom: 8, trailing: 10))
