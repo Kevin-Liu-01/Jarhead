@@ -220,3 +220,26 @@ test("real Live: the late-name clock is still LATE_NAME_MS from the answer's own
   assert.equal(head.verdict, "named");
   assert.equal(head.released.length, 0);
 });
+
+test("real Live: a name that lands after the answer's words and before the hand-over frame grants it, and the handed-over frame plays", () => {
+  const { a, at, say, frame } = gate();
+  at(10_000);
+  say(" what time is it,", 10_000, 10_400, "t_k");
+  at(10_500);
+  a.ask({ aside: true, content: CLAUSE });
+  at(10_800);
+  a.output(" going to", 10_600, 10_800, "o1");
+  at(11_000);
+  a.output(" sleep.", 10_800, 11_000, "o1");
+  for (const t of [11_000, 11_100, 11_200, 11_300]) assert.equal(frame(t, LIVE_FRAME), true, "the clause");
+  at(11_330);
+  say(" Jar", 10_400, 10_600, "t_k");
+  at(11_350);
+  a.output(" it's", 11_200, 11_400, "o2");
+  at(11_370);
+  const head = say("head", 10_600, 10_800, "t_k2");
+  assert.equal(head.verdict, "named");
+  assert.equal(frame(11_400, LIVE_FRAME), true, "the handed-over frame plays: the answer is granted");
+  frame(11_500, LIVE_FRAME, false);
+  for (const t of [11_600, 11_700, 11_800]) assert.equal(frame(t, LIVE_FRAME), true, "the answer's own sound");
+});

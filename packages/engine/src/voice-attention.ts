@@ -687,8 +687,9 @@ export class VoiceAttention {
     if (turn && turn.grant === undefined && audible) {
       // Handed over: it may be the old turn's sound running past its words (LC-7 " night.": 200 ms of words, 500 ms of
       // sound). So it does not lock this turn; its lock waits for an audible frame past the old bound. Its sound
-      // counts: a later split of this turn ends its tail sooner, never later.
-      if (this.tail?.handing) {
+      // counts: a later split of this turn ends its tail sooner, never later. A turn granted already (a name landed after
+      // its words) locks and plays now: held, its frames would never be released, as the ring empties at a grant.
+      if (this.tail?.handing && !this.grantFor(turn, false)) {
         this.stats.droppedFrames++;
         this.stats.droppedAudibleFrames++;
         this.hold(pcm);
