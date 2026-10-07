@@ -1,4 +1,5 @@
 import type { TranscriptItem } from "@jarhead/protocol";
+import { BYTES_PER_MS } from "./audio-telemetry.ts";
 
 /**
  * The engine asks (LC-7, 2026-10-06). GPT-Live-1 answers what it hears on its own: the protocol has no turn-detection
@@ -24,13 +25,17 @@ import type { TranscriptItem } from "@jarhead/protocol";
  *   result of work the gate admitted only because it began inside the window asks as `window` — heard, never an anchor
  *   — so a TV whose lines Live delegates cannot renew the cap through their results (ADV-2).
  * - **A voice turn** is the voice's words or sound with no gap of VOICE_TURN_GAP_MS. One that takes an ask, or begins
- *   inside the open exchange, is decided at once; any other at its first audible frame (160-350 ms behind its words in
- *   every LC-7 reply), on what it answers by the session timeline (Kevin's last utterance begun before it): a reply
- *   to an addressed utterance that ended under EXCHANGE_WINDOW_MS before it, or words for addressed work still running
- *   with nothing from the room since. A locked turn's frames are all dropped, silence too, unless the
- *   utterance it answers is named within LATE_NAME_MS: then its frames from the first audible one (RING_FRAMES kept)
- *   go to the speaker after all. An ask that lands while a dropped or undecided turn streams starts a turn of its own
- *   at the first sentence end, at words that say what was asked, or after a pause.
+ *   inside the open exchange, is decided at once; any other at its first audible frame (160-350 ms after its words
+ *   arrive, 347-547 ms after their `start_ms`, in every LC-7 reply), on what it answers by the session timeline
+ *   (Kevin's last utterance begun before it): a reply to an addressed utterance that ended under EXCHANGE_WINDOW_MS
+ *   before it, or words for addressed work still running with nothing from the room since. A locked turn's frames
+ *   are all dropped, silence too, unless the utterance it answers is named within LATE_NAME_MS: then its frames from
+ *   the first audible one (RING_FRAMES kept) go to the speaker after all. An ask that lands while a dropped or
+ *   undecided turn streams starts a turn of its own at the first sentence end, at words that say what was asked, or
+ *   after a pause. When new words split a turn, the old turn's sound still on its way stays its own; a granted one
+ *   keeps only its words' worth. Once it has had as much PCM from its first audible frame as its words cover on Live's
+ *   timeline, the next frame is the next turn's (CI 1c140d8: an answer to the room sounded 219 ms behind its words,
+ *   and three of its frames played as the clause).
  * - **A delegation** is judged on the utterance Live raised it for. One that looks like room talk waits up to
  *   DELEGATION_LATE_MS for a late name before it is refused.
  *
@@ -167,6 +172,13 @@ interface VoiceTurn {
   /** Wall clock of its first audible frame, when it was locked. */
   lockedAt?: number;
   words: string;
+  /**
+   * Live's timeline its words cover: its first delta's start to its last one's end, less any gap shorter than
+   * WORD_GAP_MS between two of them. The sound its words take. It stops at a split: later words are the next turn's.
+   */
+  wordsMs: number;
+  /** PCM it was given from its first audible frame on, silence too (Live streams in real time); undefined before it. */
+  soundMs?: number;
 }
 
 /** Jarhead's own question: a line the engine asked for, with a "?". */
@@ -226,11 +238,21 @@ export class VoiceAttention {
   /** Frames a locked turn keeps for a late name: 0.8 s of Live's 100 ms deltas. */
   static readonly RING_FRAMES = 8;
   /**
-   * A word's sound reaches the client 350-550 ms after its `start_ms` (LC-7: " on it" 440, " hello ke" 459, " night."
-   * 412, " i didn't" 547): when a turn is split at new words, frames that arrive sooner than this after those words'
-   * start on the session timeline are the old turn's sound still streaming, and go as it went (ADV-1).
+   * When a turn is split at new words, a frame that arrives sooner than this after those words' `start_ms` (session
+   * timeline) is the old turn's sound still streaming, and goes as it went (ADV-1). LC-7 heard a reply's first sound
+   * 347-547 ms after its `start_ms` (" on it" 347 and 440, " night." 412, " hello ke" 459, " i didn't" 547). The dry
+   * stand-in sounds a reply to the room 200 ms after its words, 219 ms under load (CI 1c140d8). So for a granted turn
+   * this is only a cap: its tail ends sooner, once it has had its words' worth of sound (`sounded`). A dropped turn's
+   * tail keeps all of it.
    */
   static readonly SPLIT_SOUND_LAG_MS = 250;
+  /**
+   * A gap this long or longer between two of a turn's transcript deltas is the voice still sounding: Live's
+   * transcript runs on a 200 ms grid and skips a slot with no new text ("hello kevin, here and listening.": 1200 ms of
+   * deltas, 1800 ms from first start to last end, 1801 ms of frames, LC-7). A shorter gap is the stand-in's clock
+   * running late, not sound (CI 1c140d8: 2 and 4 ms).
+   */
+  static readonly WORD_GAP_MS = 100;
   /**
    * A delegation whose words look like room talk waits this long for a late name before it is refused: Live's
    * delegation comes 190-727 ms before its reply's first words (LC-7, LC-10), plus LATE_NAME_MS. Only room-looking
@@ -255,7 +277,7 @@ export class VoiceAttention {
   /** Each ear segment: when its first partial came, and the name's count in it so far (a partial repeats the segment's earlier words; only a new name counts). */
   private readonly earSegments = new Map<number, { readonly firstAt: number; names: number }>();
   private turn: VoiceTurn | undefined;
-  /** The turn a split ended, while its sound still streams (`SPLIT_SOUND_LAG_MS`), and the one being split now. */
+  /** The turn a split ended, while its sound still streams (`SPLIT_SOUND_LAG_MS`, `sounded`), and the one being split now. */
   private tail: { readonly turn: VoiceTurn; readonly untilMs: number; readonly untilAt: number } | undefined;
   private splitOff: VoiceTurn | undefined;
   private ring: Buffer[] = [];
@@ -597,6 +619,9 @@ export class VoiceAttention {
     this.expire();
     const turn = this.turnAt(startMs, itemId, delta);
     turn.sentenceEnded = SENTENCE_END.test(delta);
+    const prev = turn.endMs;
+    const from = prev === undefined ? startMs : startMs - prev >= VoiceAttention.WORD_GAP_MS ? prev : Math.max(startMs, prev);
+    turn.wordsMs += Math.max(0, endMs - from);
     turn.endMs = Math.max(turn.endMs ?? endMs, endMs);
     turn.words += delta;
     const fresh = !turn.itemIds.has(itemId);
@@ -621,18 +646,25 @@ export class VoiceAttention {
   /**
    * An output audio frame (`nowMs`: the session timeline now): true to play it. An audible frame decides its turn at the
    * latest; a turn nobody asked for is dropped whole, its silence too, until the voice has been quiet VOICE_TURN_GAP_MS.
+   * A granted turn a split ended takes the frames after the split only until it has had its words' worth of sound.
    */
   frame(pcm: Buffer, audible: boolean, nowMs: number): boolean {
     this.expire();
+    const ms = pcm.length / BYTES_PER_MS;
     const tail = this.tail;
     if (tail && (nowMs >= tail.untilMs || this.now() > tail.untilAt)) this.tail = undefined;
-    else if (tail && tail.turn.grant !== undefined) {
+    else if (tail && sounded(tail.turn)) {
+      this.tail = undefined;
+      this.seams.log?.(`attention: a split's granted turn had its sound (${tail.turn.soundMs} ms for ${tail.turn.wordsMs} ms of words); the next frame is the next turn's`);
+    } else if (tail && tail.turn.grant !== undefined) {
+      hear(tail.turn, audible, ms);
       if (tail.turn.grant) return true;
       this.stats.droppedFrames++;
       if (audible) this.stats.droppedAudibleFrames++;
       return false;
     }
     const turn = audible ? this.turnAt(nowMs) : this.openTurn();
+    if (turn) hear(turn, audible, ms);
     if (turn && turn.grant === undefined && audible) this.lock(turn);
     if (turn?.grant !== null || !turn) return true;
     this.stats.droppedFrames++;
@@ -695,7 +727,7 @@ export class VoiceAttention {
     const ask = this.liveAsk();
     const takes = ask !== undefined && (this.takeable(ask) || (delta !== undefined && saysWhatWasAsked(delta, ask.content)));
     if (takes) this.pendingAsk = undefined;
-    const turn: VoiceTurn = { startMs, firstAt: now, lastAt: now, ask: takes ? ask.kind : undefined, grant: undefined, itemIds: new Set(), words: "", ...(itemId !== undefined ? { itemId } : {}) };
+    const turn: VoiceTurn = { startMs, firstAt: now, lastAt: now, ask: takes ? ask.kind : undefined, grant: undefined, itemIds: new Set(), words: "", wordsMs: 0, ...(itemId !== undefined ? { itemId } : {}) };
     this.turn = turn;
     this.ring = [];
     // Asked for, or inside the open exchange (the room there is the exchange's too): decided at its first words. Any
@@ -938,6 +970,25 @@ export class VoiceAttention {
     const now = this.now();
     for (const w of [...this.waiters]) if (now >= w.deadline) w.settle(false);
   }
+}
+
+/** A frame given to the turn: its sound counts from its first audible frame on, silence too. */
+function hear(turn: VoiceTurn, audible: boolean, ms: number): void {
+  if (turn.soundMs !== undefined) turn.soundMs += ms;
+  else if (audible) turn.soundMs = ms;
+}
+
+/**
+ * A granted turn a split ended has had its sound: as much PCM from its first audible frame as its words cover on
+ * Live's timeline. Every later frame is the next turn's, however soon it comes after the next turn's words (CI
+ * 1c140d8: an answer to the room sounded 219 ms behind its words, inside SPLIT_SOUND_LAG_MS, and three of its frames
+ * played as the clause). No slack, and a tie goes to the next turn: the stand-in's clause has 60 ms of words and 60 ms
+ * of sound, and the answer's first frame can come straight after. The price is a granted turn's last frame when a
+ * dropped turn follows mid-stream: LC-7's replies sounded 0-300 ms longer than their words. A dropped turn's tail is
+ * never cut short: that could only play its last sound as the next turn's.
+ */
+function sounded(turn: VoiceTurn): boolean {
+  return Boolean(turn.grant) && turn.wordsMs > 0 && turn.soundMs !== undefined && turn.soundMs >= turn.wordsMs;
 }
 
 /** Words too common to say two utterances are the same speech, or that the voice is saying what an append asked for. */

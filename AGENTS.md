@@ -711,9 +711,12 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   its first audible frame releases it. An ask that lands while a dropped or
   undecided turn streams starts a turn of its own at a pause (measured when the
   ask landed), at the first sentence end once acked, or at words that say what
-  was asked; the old turn's sound still on its way (250 ms behind the new words'
-  `start_ms`) stays its own. A room delegation waits ≤ 1.2 s for a late name,
-  then is refused before the brain and closed with a silent `thinking` append;
+  was asked. The old turn's sound still on its way stays its own: up to 250 ms
+  behind the new words' `start_ms`, and a granted turn's only until it has had
+  its words' worth of PCM (CI on 1c140d8: an answer to the room sounded 219 ms
+  behind its words and three of its frames played as the clause). A room
+  delegation waits ≤ 1.2 s for a late name, then is refused before the brain
+  and closed with a silent `thinking` append;
   when it may have been Kevin's unnamed answer (a confirmation waiting, or a
   question of Jarhead's under 2 min old and unanswered) he hears one aside cue,
   "say jarhead with …". A confirmation's yes past the exchange needs the name

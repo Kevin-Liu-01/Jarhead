@@ -17,8 +17,8 @@ import type { AudioState, LedgerRow, LiveAudio } from "@jarhead/protocol";
  * Numbers only: no line or row carries a word Kevin or Jarhead said.
  */
 
-/** PCM16 mono at 24 kHz. */
-const BYTES_PER_MS = 48;
+/** Live's output: PCM16 mono at 24 kHz (SAMPLE_RATE, packages/live/src/events.ts). The room-talk gate counts sound in it. */
+export const BYTES_PER_MS = 48;
 /** Audio received this long past real time without a delta ends a reply (PlayoutModel.dryResetFrames). */
 const REPLY_GAP_MS = 500;
 /** A reply this short says nothing about running ahead. */
