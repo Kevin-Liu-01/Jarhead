@@ -119,7 +119,7 @@ test("alarm-fires-asleep: an alarm armed for +2 h rings when the clock gets ther
     assert.equal(snap.automations[0]?.fires, 1);
     const says = events.filter((e) => e.type === "local.say");
     assert.equal(says.length, 1);
-    assert.deepEqual(says[0], { type: "local.say", sound: "Hero", automationId: a.id });
+    assert.deepEqual(says[0], { type: "local.say", sound: "Hero", ring: "alarm", automationId: a.id });
     const notes = events.filter((e) => e.type === "notify");
     assert.equal(notes.length, 1);
     assert.equal(notes[0]!.type === "notify" && notes[0]!.automationId, a.id);
@@ -800,7 +800,7 @@ test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `ca
     const snap = engine.snapshot();
     assert.equal(snap.ringing?.kind, "timer");
     assert.deepEqual(snap.ringing?.presses, [{ kind: "snooze", minutes: 5 }, { kind: "done" }], "timers snooze 5");
-    assert.deepEqual(events.filter((e) => e.type === "local.say"), [{ type: "local.say", sound: "Glass", automationId: a.id }]);
+    assert.deepEqual(events.filter((e) => e.type === "local.say"), [{ type: "local.say", sound: "Glass", ring: "timer", automationId: a.id }]);
     assert.equal(rows(w, "automation.missed").length, 0);
 
     // Snooze (the timer's default, 5) holds the Mac again; Done kills that hold.
@@ -824,6 +824,133 @@ test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `ca
 });
 
 // the wire's `by` (integration seam 2)
+test("palette defaults: a chime that names no sound rings Ping for a timer, Hero for an alarm and Glass for anything else — the app's timer, alarm and chime; every chime carries its ring kind, an open's Pop none", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, events } = w;
+  try {
+    await engine.start();
+    const t0 = clock.t;
+    const timer = armed(w, engine.automations.arm({ name: "tea", when: { kind: "in", ms: 5 * M }, then: [{ kind: "chime", line: "tea is up" }], echo: "In 5 minutes, chime." }, "brain"));
+    const ring = armed(w, engine.automations.arm({ name: "Up", when: { kind: "at", at: t0 + 10 * M }, then: [{ kind: "chime", line: "up" }], clauses: { quiet: "override" }, echo: "At ten past, ring." }, "brain"));
+    const call = armed(w, engine.automations.arm({ name: "Call", when: { kind: "at", at: t0 + 15 * M }, then: [{ kind: "say", line: "call mum" }, { kind: "chime", line: "call" }], clauses: { quiet: "override" }, echo: "At quarter past, say it and chime." }, "brain"));
+    assert.deepEqual([timer, ring, call].map((a) => a.then.find((x) => x.kind === "chime")), [{ kind: "chime", line: "tea is up" }, { kind: "chime", line: "up" }, { kind: "chime", line: "call" }], "no sound named");
+    events.length = 0;
+    for (const [at, n] of [[5, 1], [10, 2], [15, 3]] as const) {
+      clock.t = t0 + at * M;
+      tick(engine);
+      await fired(w, n);
+    }
+    // The first sound per row (the alarm re-rings every 30 s while it lingers; those are Hero too).
+    const first = new Map<string, string>();
+    for (const e of events) if (e.type === "local.say" && e.sound !== undefined && !first.has(e.automationId)) first.set(e.automationId, `${e.sound} ${e.ring ?? "-"}`);
+    assert.deepEqual([...first], [[timer.id, "Ping timer"], [ring.id, "Hero alarm"], [call.id, "Glass chime"]]);
+    assert.ok(events.some((e) => e.type === "local.say" && e.automationId === call.id && e.text === "call mum" && e.sound === undefined && e.ring === undefined), "the say line rides alone: the app plays its cue before it");
+
+    // The kind decides the ring, not the name: a timer that names Pop is a timer ring (Sounds off cannot silence it),
+    // and the alarm's re-ring carries `alarm` whatever its chime names. An open's Pop is no ring.
+    const popTimer = armed(w, engine.automations.arm({ name: "eggs", when: { kind: "in", ms: 5 * M }, then: [{ kind: "chime", line: "eggs", sound: "Pop" }], echo: "In 5 minutes, chime." }, "brain"));
+    const glassAlarm = armed(w, engine.automations.arm({ name: "Rise", when: { kind: "at", at: clock.t + 6 * M }, then: [{ kind: "chime", line: "rise", sound: "Glass" }], clauses: { quiet: "override" }, echo: "At six past, ring." }, "brain"));
+    const notes = armed(w, engine.automations.arm(openAt("notes", clock.t + 7 * M, "Notes", "override"), "brain"));
+    events.length = 0;
+    for (const [at, n] of [[5, 4], [6, 5], [7, 6]] as const) {
+      clock.t = t0 + 15 * M + at * M;
+      tick(engine);
+      await fired(w, n);
+    }
+    await until(() => events.some((e) => e.type === "local.say" && e.automationId === notes.id), 1500);
+    clock.t += 30_000;
+    tick(engine);
+    const says = events.filter((e): e is Extract<typeof e, { type: "local.say" }> => e.type === "local.say");
+    assert.deepEqual(says.filter((e) => e.automationId === popTimer.id).map((e) => `${e.sound} ${e.ring}`), ["Pop timer"]);
+    const glass = says.filter((e) => e.automationId === glassAlarm.id).map((e) => `${e.sound} ${e.ring}`);
+    assert.ok(glass.length >= 2 && glass.every((x) => x === "Glass alarm"), `the fire and its re-rings: ${glass.join(", ")}`);
+    assert.deepEqual(says.filter((e) => e.automationId === notes.id).map((e) => `${e.sound} ${e.ring ?? "-"}`), ["Pop -"]);
+  } finally {
+    await engine.stop();
+  }
+});
+
+/** A session whose start() answers only when the test says so (the handshake held open). */
+function holdStart(live: { start: () => Promise<{ id: string; expires_at: number }> }): () => void {
+  let release: (() => void) | undefined;
+  const realStart = live.start.bind(live);
+  live.start = () =>
+    new Promise((resolve, reject) => {
+      release = () => void realStart().then(resolve, reject);
+    });
+  return () => release?.();
+}
+
+test("a fire during the handshake is neither rung into the opening mic nor lost: the session that opens says it, once, and the speaker stays quiet", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, events, live } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    const tea = armed(w, engine.automations.arm({ name: "tea", when: { kind: "in", ms: 5 * M }, then: [{ kind: "chime", line: "tea is up" }], echo: "In 5 minutes, chime." }, "brain"));
+    const release = holdStart(live);
+    const waking = engine.wake("test");
+    await settle();
+    assert.equal(engine.currentPhase, "connecting");
+    events.length = 0;
+    clock.t += 5 * M;
+    tick(engine);
+    await fired(w);
+    assert.equal(events.filter((e) => e.type === "local.say").length, 0, "nothing rings into the opening mic");
+    assert.equal(engine.snapshot().automations.find((x) => x.id === tea.id)?.lastDetail, "held for the opening session");
+    release();
+    await waking;
+    assert.equal(engine.currentPhase, "listening");
+    assert.deepEqual(live.instructions.filter((i) => i.includes("tea")), ["Kevin's tea fired: say 'tea is up' once, with its name, and nothing more."]);
+    assert.equal(events.filter((e) => e.type === "local.say").length, 0, "the voice said it; the speaker stays quiet");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a fire during a handshake that ends with no session (the server refuses it) rings on the speaker then, with its ring kind and its line; an alarm that was ringing does not re-ring into the opening mic, and re-rings after", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, events, live } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    const up = armed(w, engine.automations.arm(alarm("Up", clock.t + M), "brain"));
+    clock.t += M;
+    tick(engine);
+    await fired(w);
+    const tea = armed(w, engine.automations.arm({ name: "tea", when: { kind: "in", ms: 5 * M }, then: [{ kind: "chime", line: "tea is up" }, { kind: "say", line: "the pot is warm" }], echo: "In 5 minutes, chime and say." }, "brain"));
+    const release = holdStart(live);
+    const waking = engine.wake("test");
+    await settle();
+    assert.equal(engine.currentPhase, "connecting");
+    events.length = 0;
+    clock.t += 5 * M;
+    tick(engine);
+    await fired(w, 2);
+    clock.t += 31_000;
+    tick(engine);
+    assert.equal(events.filter((e) => e.type === "local.say").length, 0, "neither the timer nor the alarm's re-ring sounds into the opening mic");
+    live.failStart = true;
+    release();
+    await waking;
+    assert.equal(engine.currentPhase, "error");
+    const says = events.filter((e) => e.type === "local.say");
+    assert.deepEqual(says, [
+      { type: "local.say", sound: "Ping", ring: "timer", automationId: tea.id },
+      { type: "local.say", text: "the pot is warm", automationId: tea.id },
+    ]);
+    tick(engine);
+    assert.deepEqual(events.filter((e) => e.type === "local.say" && e.automationId === up.id), [{ type: "local.say", sound: "Hero", ring: "alarm", automationId: up.id }], "the alarm re-rings at the next tick");
+  } finally {
+    await engine.stop();
+  }
+});
+
 test("automation.set from the wire stamps who sent it: by: \"cli\" → createdBy.by cli on the row and the ledger's automation.set; absent → console (an older Console); the brain's rows come through its tool and never this command; a rename wears its surface; the CLI's set is never a yes", async () => {
   const { exec } = fakeExec();
   const w = world({ automations: { exec } });

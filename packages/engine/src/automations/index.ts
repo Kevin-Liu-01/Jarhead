@@ -168,6 +168,10 @@ export interface AutomationsOptions {
   readonly clearProblems?: ((kind: ProblemKind, where?: (text: string) => boolean) => void) | undefined;
   /** The open Live session, when one is up. */
   readonly live: () => LiveLike | undefined;
+  /** A session is opening: a fire's lines are held for it (`holdForSession`), and an alarm does not re-ring into the opening mic. */
+  readonly opening?: (() => boolean) | undefined;
+  /** Say `instruction` through the session once it opens; emit `fallback` (the rings it would have sounded) if none does. */
+  readonly holdForSession?: ((instruction: string, fallback: readonly EngineEvent[]) => void) | undefined;
   readonly brain: WakeBrainSeam;
   /** Kevin is here (a session is open, he spoke recently, or his hands moved): `automation.run` needs it. */
   readonly present: () => Promise<boolean>;
@@ -307,6 +311,8 @@ export class Automations implements AutomationSource {
       shell,
       shellGate,
       live: opts.live,
+      opening: opts.opening,
+      holdForSession: opts.holdForSession,
       brain: opts.brain,
       home: this.home,
       repoRoot: opts.repoRoot,
@@ -534,12 +540,13 @@ export class Automations implements AutomationSource {
         }
         continue;
       }
-      if (kind !== "alarm" || this.opts.live() || a.clauses.quiet === "respect" && inQuiet(this.opts.settings().automations.quietHours, now)) continue;
+      // Awake or opening, the mic runs: no re-ring into it (an opening that fails re-rings at the next tick).
+      if (kind !== "alarm" || this.opts.live() || this.opts.opening?.() || a.clauses.quiet === "respect" && inQuiet(this.opts.settings().automations.quietHours, now)) continue;
       const last = this.lastChimeAt.get(a.id) ?? since;
       if (now - last >= AUTOMATION_REPEAT_CHIME_MS) {
         this.lastChimeAt.set(a.id, now);
         const chime = a.then.find((x) => x.kind === "chime");
-        this.opts.emit({ type: "local.say", sound: chime?.kind === "chime" && chime.sound ? chime.sound : "Hero", automationId: a.id });
+        this.opts.emit({ type: "local.say", sound: chime?.kind === "chime" && chime.sound ? chime.sound : "Hero", ring: "alarm", automationId: a.id });
       }
     }
   }

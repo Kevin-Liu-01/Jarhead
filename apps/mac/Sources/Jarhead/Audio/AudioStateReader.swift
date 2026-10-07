@@ -24,6 +24,8 @@ struct AudioLocalFacts: Equatable {
     var chunks = 0
     var breakthroughs = 0
     var heldSeconds = 0.0
+    /// Seconds of wire the `awake` earcon held (`EarconWire`), since the graph was asked to start.
+    var earconHeldSeconds = 0.0
     /// The private route's microphone, the plain path's microphone, the input AU's device.
     var privateRouteMicUID: String?
     var activeInputUID: String?
@@ -44,6 +46,7 @@ struct AudioLocalFacts: Equatable {
         chunks = stats.chunks
         breakthroughs = stats.breakthroughs
         heldSeconds = stats.heldSeconds
+        earconHeldSeconds = EarconWire.shared.counters.heldSeconds
     }
 }
 
@@ -112,6 +115,7 @@ extension AudioStateReadback {
         chunks = l.chunks
         breakthroughs = l.breakthroughs
         heldSeconds = l.heldSeconds
+        earconHeldSeconds = l.earconHeldSeconds
         hears = h.hears
         speaks = h.speaks
         sharedWith = h.sharedWith

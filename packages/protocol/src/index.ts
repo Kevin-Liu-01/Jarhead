@@ -432,7 +432,10 @@ export type SystemEvent =
 
 /** What happens. Each kind is a chip in Settings.automations.unattended; off there = refused at set-up. */
 export type AutomationAction =
-  /** sound + island line with Snooze · Done (+ banner) */
+  /**
+   * sound + island line with Snooze · Done (+ banner). `sound` keeps the old system names; the app plays its palette:
+   * Pop a small pop · Glass the chime · Ping the timer · Hero the alarm. Absent: Hero for an alarm, Ping for a timer, else Glass.
+   */
   | { readonly kind: "chime"; readonly line: string; readonly sound?: "Pop" | "Glass" | "Ping" | "Hero" }
   /** LocalSpeaker reads a FIXED line ≤ 160, written at set-up, redacted */
   | { readonly kind: "say"; readonly line: string }
@@ -491,6 +494,15 @@ export const AUTOMATION_TERMINAL: ReadonlySet<AutomationState> = new Set<Automat
 
 /** The Console's word for a row, derived — nothing stores it. */
 export type AutomationKind = "alarm" | "timer" | "reminder" | "routine" | "watcher";
+/**
+ * What a `local.say` rings for, set by the engine from the row's kind: the app's ring is the kind's, never the
+ * sound's name — it sounds with Settings › Audio › Sounds off, Snooze and Done fade it, and an alarm keeps its own
+ * level whatever the Volume says. An open's confirmation carries none (it is the interface's tink).
+ */
+export type LocalSayRing = "alarm" | "timer" | "chime";
+export function ringOf(kind: AutomationKind): LocalSayRing {
+  return kind === "alarm" ? "alarm" : kind === "timer" ? "timer" : "chime";
+}
 export function automationKind(a: Pick<Automation, "when" | "then">): AutomationKind {
   const w = a.when.kind, first = a.then[0]?.kind;
   if (w === "in") return "timer";
@@ -707,8 +719,8 @@ export interface WakeSettings {
 }
 
 /**
- * design12: the audio graph's one user decision. Nested like `wake`: merged field-wise at
- * load, so a settings.json from before the block still validates.
+ * design12: the audio block. Nested like `wake`: merged field-wise at load, so a settings.json
+ * from before a field still validates. The daemon keeps it; the app reads it.
  */
 export interface AudioSettings {
   /**
@@ -717,9 +729,35 @@ export interface AudioSettings {
    * the island and the status menu while on.
    */
   readonly recording: boolean;
+  /**
+   * Settings › Audio › Sounds: the palette's interface sounds (heard, awake, pause, sleep, snooze, opened,
+   * mark, cue, problem). Absent until Kevin flips it: the app follows macOS's "Play user interface sound
+   * effects" (read, never written). The rings (a `local.say` with a `ring`: chime, timer, alarm) sound either way.
+   */
+  readonly sounds?: boolean;
+  /**
+   * Settings › Audio › Volume, 0…1, times the system output volume; absent = DEFAULT_SOUND_VOLUME. The alarm ignores it:
+   * its first ring is level with the system Hero it replaced (−19.5 LUFS), each repeat 1 dB louder up to the file's −16.
+   */
+  readonly soundVolume?: number;
 }
 
 export const DEFAULT_AUDIO: AudioSettings = { recording: false };
+export const DEFAULT_SOUND_VOLUME = 0.7;
+
+/**
+ * The audio block as the engine keeps it: DEFAULT_AUDIO under whatever the file or a patch says, with each
+ * field kept only when well typed (`soundVolume` finite and clamped to 0…1). The app's decoder is strict —
+ * a string where a number belongs would blank its whole snapshot — so nothing malformed is ever kept.
+ */
+export function audioSettingsOf(value: unknown): AudioSettings {
+  const v = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const recording = typeof v["recording"] === "boolean" ? v["recording"] : DEFAULT_AUDIO.recording;
+  const sounds = typeof v["sounds"] === "boolean" ? { sounds: v["sounds"] } : {};
+  const raw = v["soundVolume"];
+  const soundVolume = typeof raw === "number" && Number.isFinite(raw) ? { soundVolume: Math.min(1, Math.max(0, raw)) } : {};
+  return { recording, ...sounds, ...soundVolume };
+}
 
 export interface Settings {
   readonly voice: string;
@@ -765,7 +803,7 @@ export interface Settings {
   readonly warmThreads: number;
   /** Alarms, timers, reminders, routines and watchers the daemon carries out while asleep: the master switch, the unattended kinds, quiet hours, the recipes. */
   readonly automations: AutomationSettings;
-  /** The audio graph's one decision (design12): Recording on/off. The daemon keeps it; the app's graph reads it. */
+  /** The audio block (design12): Recording on/off, and the palette's Sounds and Volume. The daemon keeps it; the app reads it. */
   readonly audio: AudioSettings;
   /**
    * What the voice and the brain call the person they work for. "" = unset: the engine falls back to
@@ -1023,6 +1061,8 @@ export interface AudioState {
   readonly guardTailMs: number;
   /** Total milliseconds the guard has held the wire since start (the `held 3.2 s` figure); absent from a build that does not count it. */
   readonly guardHeldMs?: number;
+  /** Milliseconds of wire the `awake` earcon held since the graph was asked to start (either policy: the sound is outside the echo reference); absent from a build before the palette. */
+  readonly earconHeldMs?: number;
   /** Chunks zero-filled / chunks sent / break-throughs since start. */
   readonly gated: number;
   readonly chunks: number;
@@ -1215,7 +1255,7 @@ export function isAudioState(value: unknown, shed?: AudioTelemetryShed[]): value
   if (!(bool("running") && bool("voiceProcessing") && bool("recording") && bool("fallback") && bool("guardOn") && bool("inputMuted") && bool("aggregatePresent"))) return false;
   if (!(num("rung") && num("guardTailMs") && num("gated") && num("chunks") && num("breakthroughs"))) return false;
   if (!(typeof v["wiring"] === "string" && typeof v["tapFormat"] === "string")) return false;
-  if (!(optNum("duckLevel") && optBool("advancedDucking") && optBool("agc") && optBool("bypassed") && optNum("guardHeldMs") && optNum("since"))) return false;
+  if (!(optNum("duckLevel") && optBool("advancedDucking") && optBool("agc") && optBool("bypassed") && optNum("guardHeldMs") && optNum("earconHeldMs") && optNum("since"))) return false;
   if (!(device("hears") && device("speaks"))) return false;
   const shared = v["sharedWith"];
   if (!(shared === undefined || (Array.isArray(shared) && shared.every((s) => typeof s === "string")))) return false;
@@ -1420,8 +1460,11 @@ export type EngineEvent =
   | { readonly type: "thread.transcript"; readonly transcript: ThreadTranscript; readonly mode: "replace" | "append" | "prepend" }
   /** One change on one automation row (broadcast, coalesced 50 ms per id; ≤ 200 B except `fired`, ≈ 270 B with its presses). */
   | { readonly type: "automation.event"; readonly event: AutomationEvent }
-  /** The app plays the earcon and the local speaker reads `text`; never model text except a redacted wake-brain line ≤ AUTOMATION_LINE_CHARS. */
-  | { readonly type: "local.say"; readonly text?: string; readonly sound?: "Pop" | "Glass" | "Ping" | "Hero"; readonly automationId: string }
+  /**
+   * The app plays the earcon and the local speaker reads `text`; never model text except a redacted wake-brain line ≤ AUTOMATION_LINE_CHARS.
+   * `sound` picks the file; `ring` (a chime's, set from the row's kind) makes it a ring. An app before `ring` reads the name alone.
+   */
+  | { readonly type: "local.say"; readonly text?: string; readonly sound?: "Pop" | "Glass" | "Ping" | "Hero"; readonly ring?: LocalSayRing; readonly automationId: string }
   /** A banner with the ring's presses; a press lands on the same row as the island's. */
   | { readonly type: "notify"; readonly id: string; readonly title: string; readonly body?: string; readonly presses: readonly AutomationPress[]; readonly automationId: string };
 

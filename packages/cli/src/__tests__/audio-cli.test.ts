@@ -129,6 +129,14 @@ test("status · Recording on: voice processing off · recording · guard on, hea
   assert.ok(muted[3]?.endsWith(" · input muted"), "mute is said on the counters line");
 });
 
+test("status · the awake earcon's wire hold rides the counters line in both policies (it plays outside the echo reference); zero or absent says nothing", () => {
+  const aec = audioStatusLines({ ...AEC_ON_AIRPODS, earconHeldMs: 740 }, { recording: false });
+  assert.equal(aec[3], "             recording off · guard off · released at sleep · awake held 0.7 s");
+  const rec = audioStatusLines({ ...RECORDING, earconHeldMs: 700, inputMuted: true }, { recording: true });
+  assert.equal(rec[3], "             guard tail 420 ms · held 3.2 s · gated 12 of 340 · 1 break · awake held 0.7 s · input muted");
+  assert.equal(audioStatusLines({ ...AEC_ON_AIRPODS, earconHeldMs: 0 }, { recording: false })[3], "             recording off · guard off · released at sleep");
+});
+
 test("status · the fallback rung says so; a stopped graph says the graph is down and whether the unit was released; no app: one line, with the profiler's defaults when read and never without --no-levels' consent", () => {
   assert.equal(audioStatusLines(FALLBACK, { recording: false })[0], `  audio      voice processing off · fallback (echo cancellation refused) · guard on · rung 4 hardware · since ${clock(FALLBACK.since as number)}`);
   const down = audioStatusLines({ ...omit(AEC_ON_AIRPODS, "hears", "speaks", "since"), running: false, voiceProcessing: false, aggregatePresent: false }, { recording: false });

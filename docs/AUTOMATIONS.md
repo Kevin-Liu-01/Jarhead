@@ -46,7 +46,7 @@ alarm", "pause the standup routine", "bin the backup" are the same verbs by voic
 | kind | what happens, with the meter at zero |
 |---|---|
 | alarm | chime (`Hero`) + the island opens pinned with `07:10 · Wake up, Kevin` and **Snooze 10 · Done** in the consent rects; a banner with the same two buttons; re-chimes every 30 s; rings through quiet hours |
-| timer | chime (`Glass`) + `pasta · 12:00 is up`, Snooze 5 · Done; while running, `pasta 4:12` on the peek chip / foot / lip pill; `caffeinate -t` keeps the Mac from idle sleep for it, an hour at a time, taken again a minute before each hour runs out; a closed lid can still sleep the Mac (§7) |
+| timer | chime (`Ping`, the app's timer sound) + `pasta · 12:00 is up`, Snooze 5 · Done; while running, `pasta 4:12` on the peek chip / foot / lip pill; `caffeinate -t` keeps the Mac from idle sleep for it, an hour at a time, taken again a minute before each hour runs out; a closed lid can still sleep the Mac (§7) |
 | reminder | the local speaker reads the fixed line once; banner; island line |
 | routine · open | `open_app` through the toolset (policy `run`), one soft `Pop`; deferred by quiet hours. If Kevin's key, click or scroll came in the last 1.5 s, it waits for his quiet window, up to 8 s, then sends once more; still busy, the step fails: `Kevin was using the keyboard or mouse, so Zoom was not opened.` |
 | routine · recipe | the recipe on the background lane, scrubbed env, capped, output redacted into the row's detail; a red exit is a `failed` row, a quiet banner, and the `automation.failed` problem (below) |
@@ -79,9 +79,16 @@ A ring takes the island's Allow/Deny rects for **Snooze · Done** (a 500 ms dead
 kind change closes the mis-press); folded, a bell chip comes first and the lip pill reads `🔔 Wake
 up, Kevin · Snooze ⌃⌥S`; tucked, a running timer shows `pasta · 4:12` under the lip. The banner
 is a `UNNotificationCategory("jarhead.automation")` with Snooze · Done (Open · Done when the
-press carries a target); its buttons land the same row as the island's presses. The chime is an
-earcon through the app's `LocalSpeaker`, the wake gate's own instance, so the wake listener
-never hears "It's seven ten" as the word. A ring stays up ten minutes; an alarm then self-snoozes
+press carries a target); its buttons land the same row as the island's presses. The chime is one
+of the app's own sounds (docs/AUDIO.md §10: `Hero` the alarm, `Ping` the timer, `Glass` the chime,
+`Pop` an open; a line with no sound gets the cue), never played while a session's microphone runs.
+The row's kind, sent as `local.say`'s `ring`, makes it a ring, whatever sound it names: it sounds
+with Settings › Audio › Sounds off, and an alarm keeps its own level. A chime or a say that fires
+while a session is opening is said by that session once it opens, or rung and read here if none
+does; an alarm does not re-ring into an opening session. The line is read by the app's
+`LocalSpeaker`, the wake gate's own instance, on the sound's tail, and
+the wake listener ignores words until 0.35 s after both, so it never hears "It's seven ten" as the
+word. Snooze and Done fade a sounding ring. A ring stays up ten minutes; an alarm then self-snoozes
 once and the second linger ends it (`unanswered`); anything else counts as Done. `⌃⌥S` snoozes
 from anywhere while something rings; the status menu shows `Next · 07:10 Wake up, Kevin` and,
 while ringing, the two hot rows. A fire that only acted (an open, a recipe, a press) puts no

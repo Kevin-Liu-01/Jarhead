@@ -106,6 +106,9 @@ public final class AppState: ObservableObject {
     /// Mark mode (Kevin circles something on screen). Installed by the app.
     public var beginMarkModeHandler: () -> Void = {}
     public func beginMarkMode() { beginMarkModeHandler() }
+    /// A mark was kept while asleep or paused (it waits for the next session): the app plays the `mark` earcon.
+    /// A handler, not a call, because Audio/ is not compiled with UI/ in the harnesses.
+    public var markKeptHandler: () -> Void = {}
     /// Mark mode is on: every overlay window takes the stroke. Set by OverlayManager.beginMarkMode
     /// (true, before ctl.begin()) and MarkModeController.end (false). Read by the dock to fold and
     /// to read "Circle something · Esc".

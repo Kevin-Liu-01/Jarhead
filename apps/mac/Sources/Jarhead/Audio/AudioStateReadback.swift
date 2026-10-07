@@ -167,6 +167,8 @@ struct AudioStateReadback: Equatable {
     var chunks = 0
     var breakthroughs = 0
     var heldSeconds = 0.0
+    /// Seconds of wire the `awake` earcon held since the graph was asked to start (both policies).
+    var earconHeldSeconds = 0.0
     /// Bundle ids of other processes running input on `hears`; nil = the HAL cannot say.
     var sharedWith: [String]?
     /// `AVAudioApplication.shared.isInputMuted`.

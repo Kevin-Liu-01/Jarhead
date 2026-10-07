@@ -31,6 +31,9 @@ enum SettingsWords {
     static let heardTip = "settings.heard"
     /// design12: the Recording toggle and the two route rows (the cards hang from the row ids).
     static let recording = "settings.recording"
+    /// The palette: Sounds (the interface sounds) and their volume.
+    static let sounds = "settings.sounds"
+    static let soundVolume = "settings.soundVolume"
     static let hearsRow = "settings.hears"
     static let speaksRow = "settings.speaks"
     static func leavesRow(_ what: String) -> String { "settings.leaves.\(what)" }
@@ -53,6 +56,8 @@ enum SettingsWords {
     static let hears = "Hears"
     static let speaks = "Speaks"
     static let recordingRow = "Recording"
+    static let soundsRow = "Sounds"
+    static let volumeRow = "Volume"
     static let voiceKeyRow = "Voice key"
     static let model = "Model"
     static let serverRow = "Server"
@@ -79,6 +84,8 @@ enum SettingsWords {
     static let autoWakeHint = "wakes on launch"
     static let rememberHint = "learns while on"
     static let recordingHint = "shares the mic"
+    /// Off silences the interface sounds only: an alarm, a timer and a chime still ring (99.6 pt at sans 11; the rail has 112).
+    static let soundsHint = "rings always sound"
     // words on the rows
     static let minutes = "min"
     static let notch = "Notch"
@@ -244,6 +251,9 @@ enum SettingsWords {
     static let autoWakeLabel = "Auto-wake on launch"
     static let rememberLabel = "Remember across sessions"
     static let recordingLabel = "Recording a demo: hand the mic back, guard the echo"
+    static let soundsLabel = "Sounds: heard, awake, pause, sleep and the other small cues"
+    static let volumeLabel = "Sound volume"
+    static let percent = "%"
     static let idleLabel = "Idle sleep, minutes"
     static func orbHome(_ notch: Bool) -> String { "Orb home: \(notch ? SettingsWords.notch : SettingsWords.free)" }
     static func accentLabel(_ accent: String) -> String { "Accent: \(accent)" }
@@ -1661,6 +1671,7 @@ struct SettingsPanel: View {
                 }
                 routeRows
                 recordingRows
+                soundRows
             }
         }
     }
@@ -1693,12 +1704,39 @@ struct SettingsPanel: View {
                           accessibilityLabel: SettingsWords.recordingLabel) { on in
                 var a = settings.audioSettings
                 a.recording = on
-                var p = SettingsPatch()
-                p.setAudio(a)
-                patch(p)
+                patchAudio(a)
             }
         }
         if settings.audioSettings.recording { hint(SettingsWords.recordingOn).transition(Motion.appear) }
+    }
+
+    /// The palette: Sounds turns the interface sounds on or off (until flipped it follows macOS's "Play user
+    /// interface sound effects"); chimes, timers and alarms ring either way. Volume is 0–100 %, times the
+    /// system's; an alarm keeps its own level.
+    /// Both go out as the whole audio block through `set-settings`, like Recording.
+    @ViewBuilder private var soundRows: some View {
+        ConsoleFormRow(SettingsWords.soundsRow) {
+            ConsoleToggle(on: settings.audioSettings.soundsOn, hint: SettingsWords.soundsHint, id: SettingsWords.sounds,
+                          accessibilityLabel: SettingsWords.soundsLabel) { on in
+                var a = settings.audioSettings
+                a.sounds = on
+                patchAudio(a)
+            }
+        }
+        ConsoleFormRow(SettingsWords.volumeRow) {
+            ConsoleStepper(value: Int((settings.audioSettings.volume * 100).rounded()), unit: SettingsWords.percent, range: 0...100, step: 10,
+                           id: SettingsWords.soundVolume, accessibilityLabel: SettingsWords.volumeLabel) { percent in
+                var a = settings.audioSettings
+                a.soundVolume = Double(percent) / 100
+                patchAudio(a)
+            }
+        }
+    }
+
+    private func patchAudio(_ a: AudioSettings) {
+        var p = SettingsPatch()
+        p.setAudio(a)
+        patch(p)
     }
 
     private var hearsLine: ConsoleRouteLine { ConsoleRouteLine.from(name: route.hearsName, rate: route.hearsRate, state: route.hearsState) }

@@ -916,6 +916,11 @@ export function guardWords(s: AudioState): string {
   return `guard tail ${s.guardTailMs} ms${held} · gated ${s.gated} of ${s.chunks} · ${s.breakthroughs} ${s.breakthroughs === 1 ? "break" : "breaks"}`;
 }
 
+/** ` · awake held 0.7 s` when the `awake` earcon held the wire this graph (the sound plays outside the echo reference); else empty. */
+export function earconWords(s: AudioState): string {
+  return s.earconHeldMs !== undefined && s.earconHeldMs > 0 ? ` · awake held ${(s.earconHeldMs / 1000).toFixed(1)} s` : "";
+}
+
 function clockWords(ms: number): string {
   return new Date(ms).toTimeString().slice(0, 8);
 }
@@ -1482,10 +1487,11 @@ export function audioStatusLines(state: AudioState | undefined, settings: AudioS
   if (state.hears) lines.push(device("hears", state.hears, hearsState(state)));
   if (state.speaks) lines.push(device("speaks", state.speaks, speaksState(state.speaks)));
   const muted = state.inputMuted ? " · input muted" : "";
-  if (state.guardOn) lines.push(`${STATUS_PAD}${guardWords(state)}${muted}`);
+  const earcon = earconWords(state);
+  if (state.guardOn) lines.push(`${STATUS_PAD}${guardWords(state)}${earcon}${muted}`);
   else {
     const rest = state.running ? "released at sleep" : state.voiceProcessing ? "voice processing still on after stop" : state.aggregatePresent ? "released · aggregate still present" : "released";
-    lines.push(`${STATUS_PAD}recording ${onOff(state.recording)} · guard off · ${rest}${muted}`);
+    lines.push(`${STATUS_PAD}recording ${onOff(state.recording)} · guard off · ${rest}${earcon}${muted}`);
   }
   // The playback lines (voice PLAN W1.5): the playout cushion, the duck, the output level, Live's arrival.
   lines.push(...playbackBlock(state, extras));

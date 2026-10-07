@@ -170,6 +170,28 @@ test("V6 · a settings.json from before 2026-09-16 (no `audio`) loads DEFAULT_AU
   assert.equal(engine.snapshot().settings.audio.recording, true, "null on a required block keeps its value");
 });
 
+test("the palette's two knobs ride the audio block: sounds and soundVolume load and persist; a malformed field is dropped, a volume out of range is clamped, and neither is invented when absent", () => {
+  const stateDir = tempDir("jh-settings-sounds-");
+  const path = join(stateDir, "settings.json");
+  writeFileSync(path, JSON.stringify({ audio: { recording: false, sounds: false, soundVolume: 0.4 } }));
+  assert.deepEqual(bare(stateDir).snapshot().settings.audio, { recording: false, sounds: false, soundVolume: 0.4 });
+
+  // A hand-edited file: the app's decoder is strict, so nothing malformed reaches the snapshot.
+  writeFileSync(path, JSON.stringify({ audio: { recording: "yes", sounds: "on", soundVolume: 7 } }));
+  assert.deepEqual(bare(stateDir).snapshot().settings.audio, { recording: false, soundVolume: 1 });
+  writeFileSync(path, JSON.stringify({ audio: { soundVolume: -2 } }));
+  assert.deepEqual(bare(stateDir).snapshot().settings.audio, { recording: false, soundVolume: 0 });
+
+  // A patch replaces the block whole (Settings › Audio sends it all): what it leaves out falls back to the defaults.
+  const engine = bare(stateDir);
+  engine.updateSettings({ audio: { recording: true, sounds: true, soundVolume: 0.55 } });
+  assert.deepEqual((JSON.parse(readFileSync(path, "utf8")) as { audio: unknown }).audio, { recording: true, sounds: true, soundVolume: 0.55 });
+  engine.updateSettings({ audio: { recording: true } });
+  assert.deepEqual(engine.snapshot().settings.audio, { recording: true }, "no sounds key: the app follows macOS's switch again");
+  engine.updateSettings({ audio: { recording: false, soundVolume: Number.NaN } });
+  assert.deepEqual(engine.snapshot().settings.audio, { recording: false }, "a NaN volume is dropped, never stored");
+});
+
 const RECORDING_STATE: AudioState = {
   running: true,
   voiceProcessing: false,

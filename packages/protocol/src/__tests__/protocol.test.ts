@@ -36,8 +36,11 @@ import {
   AUTOMATION_GRACE_MS,
   DEFAULT_AUTOMATIONS,
   DEFAULT_AUDIO,
+  DEFAULT_SOUND_VOLUME,
+  audioSettingsOf,
   isAudioState,
   automationKind,
+  ringOf,
   grantOf,
   isEngineCommand,
   liveRecipes,
@@ -48,6 +51,7 @@ import {
   type AudioSettings,
   type AudioState,
   type ClockTime,
+  type EngineEvent,
   type LedgerRow,
   type Permissions,
   type Settings,
@@ -461,6 +465,36 @@ test("isAudioState accepts the app's frame (devices, counters and the optional k
   assert.equal(isAudioState({ ...AEC_ON_AIRPODS, sharedWith: [42] }), false, "sharers are names");
   const { guardOn: _g, ...noGuard } = AEC_ON_AIRPODS;
   assert.equal(isAudioState(noGuard), false, "guardOn is what the ledger line keys on");
+});
+
+test("the palette's knobs: AudioSettings carries sounds and soundVolume only when set (absent = the app follows macOS and 0.7); audioSettingsOf keeps well-typed fields, clamps the volume and invents nothing", () => {
+  assert.equal(DEFAULT_SOUND_VOLUME, 0.7);
+  assert.deepEqual(audioSettingsOf(undefined), DEFAULT_AUDIO);
+  assert.deepEqual(audioSettingsOf(null), { recording: false });
+  assert.deepEqual(audioSettingsOf({ recording: true, sounds: false, soundVolume: 0.25 }), { recording: true, sounds: false, soundVolume: 0.25 });
+  assert.deepEqual(audioSettingsOf({ sounds: "yes", soundVolume: "0.5" }), { recording: false }, "strings are not booleans or numbers");
+  assert.deepEqual(audioSettingsOf({ soundVolume: 1.5 }), { recording: false, soundVolume: 1 });
+  assert.deepEqual(audioSettingsOf({ soundVolume: -0.1 }), { recording: false, soundVolume: 0 });
+  assert.deepEqual(audioSettingsOf({ soundVolume: Number.POSITIVE_INFINITY }), { recording: false });
+  assert.deepEqual(audioSettingsOf({ recording: true, extra: 1 }), { recording: true }, "unknown keys are not kept");
+  const patch: SettingsPatch = { audio: { recording: false, sounds: true, soundVolume: 0.7 } };
+  assert.equal(patch.audio?.sounds, true);
+});
+
+test("local.say carries the ring's kind from the row's kind (alarm · timer · chime), so the app never reads a ring from the sound's name; an open's Pop carries none", () => {
+  assert.deepEqual((["alarm", "timer", "reminder", "routine", "watcher"] as const).map(ringOf), ["alarm", "timer", "chime", "chime", "chime"]);
+  const timer: Automation["when"] = { kind: "in", ms: 60_000 };
+  assert.equal(ringOf(automationKind({ when: timer, then: [{ kind: "chime", line: "tea", sound: "Pop" }] })), "timer", "a timer that names Pop is still a timer ring");
+  const say: EngineEvent = { type: "local.say", sound: "Pop", ring: "chime", automationId: "auto_1" };
+  const open: EngineEvent = { type: "local.say", sound: "Pop", automationId: "auto_1" };
+  assert.equal(JSON.stringify(say), '{"type":"local.say","sound":"Pop","ring":"chime","automationId":"auto_1"}');
+  assert.equal("ring" in open, false);
+});
+
+test("isAudioState takes the awake earcon's held milliseconds as an optional counter", () => {
+  assert.ok(isAudioState({ ...AEC_ON_AIRPODS, earconHeldMs: 740 }));
+  assert.equal(isAudioState({ ...AEC_ON_AIRPODS, earconHeldMs: "740" }), false);
+  assert.equal(isAudioState({ ...AEC_ON_AIRPODS, earconHeldMs: Number.NaN }), false);
 });
 
 test("the audio.guard ledger row carries the counters the self-talk fuse reads, and readers fall through on it like any other type", () => {
