@@ -89,6 +89,19 @@ test("V1: a task running when the server drops the session is cut with it — ab
   }
 });
 
+test("V1 after LC-7: a room refusal kept after the task a drop cut does not take its place; the reconnect still names the cut task", () => {
+  const w = world();
+  const engine = w.engine as unknown as { lastDelegations: readonly unknown[]; continuityFor(pause: { at: number; sessionId?: string }, how: string): string };
+  const base = { offsetMs: 0, timings: {}, steps: [] };
+  engine.lastDelegations = [
+    { ...base, id: "d1", liveId: "item_1", request: "jarhead send the quarterly report to Ben", status: "cancelled", summary: Engine.CONNECTION_DROPPED },
+    { ...base, id: "d2", liveId: "item_room_wait", request: "scroll down a bit", status: "cancelled", summary: "not addressed: the session ended before a name came" },
+  ];
+  const text = engine.continuityFor({ at: w.clock.t - 5000 }, "reconnected");
+  assert.match(text, /The drop cut the task that was running \("jarhead send the quarterly report to Ben"\)/);
+  assert.doesNotMatch(text, /Last task: "scroll down a bit"/);
+});
+
 test("V1: a brain turn the runner still carries with no delegation behind it (a turn that ignored its abort) is cancelled and let go by Stop", async () => {
   const w = world();
   const { engine, brain } = w;

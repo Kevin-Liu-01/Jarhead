@@ -20,7 +20,7 @@ const WORD: Record<S, string> = { asleep: PHASES.asleep.word, gate: row(F, 0), h
 const SAY = part(HERO.lead, "Say jarhead");
 const SAY_VERB = SAY.split(" ")[0] ?? "";
 const SAY_WORD = SAY.slice(SAY_VERB.length + 1);
-const TOUCH_ID = part(WAKE.h2[1], "Touch ID");
+const TOUCH_ID = part(WAKE.lead, "Touch ID");
 /** The four ways through the gate, cut from the lead; Touch ID is the one the pad plays. */
 const WAYS: ReadonlyArray<{ readonly icon: IconName; readonly text: string }> = [
   { icon: "fingerprint", text: TOUCH_ID },

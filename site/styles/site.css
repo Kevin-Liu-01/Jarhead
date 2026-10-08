@@ -132,12 +132,9 @@ html[data-arrive] .hero-char { opacity: 0; animation: jh-show 0s linear 3s forwa
 /* the calls line up by their tops (the key's cap with Read the source); the key's wall hangs below */
 .hero-calls { margin-top: clamp(28px, 4.6svh, 52px); display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 14px; }
 .hero-terms { margin-top: 18px; font: 400 13px/1.4 var(--font-mono); color: var(--jh-fg-3-word); font-variant-numeric: tabular-nums; }
-/* the licence: the Open Source Initiative's keyhole (thesvg, mono) before MIT, in the line's colour (currentColor), its
-   24-unit box set at the mono's cap height (0.73 em) and sat on the baseline like a capital, a narrow space after it. Its
-   ring is 0.79 of 24 units, a third of a px at this size: a 1.2-unit stroke in the same colour sets it at the mono's stem
-   (about 0.8 px), so it reads beside MIT rather than as a grey wire */
+/* the licence: MIT's mark in the line's colour (components/kit/MitMark.tsx, styles/kit.css .mit), the one Glyphfield sets;
+   a selection or a copy across it reads "MIT" */
 .hero-terms-lic { white-space: nowrap; }
-.hero-terms-mark { display: inline-block; width: 0.73em; height: 0.73em; margin-right: 0.4em; vertical-align: baseline; fill: currentColor; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
 
 /* the glass Install as a physical key (components/site/InstallKey.tsx; the one glass surface): the anchor is the key's
    steady box (the cap and its body, the focus ring's frame, the hit target); inside it the key leans toward the pointer,
@@ -328,8 +325,9 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
   @media (max-width: 346px) { .glass-cap { padding: 0 14px; gap: 12px; } .glass-l2 { font-size: 11.5px; line-height: 1.25; white-space: normal; text-wrap: balance; } }
   .source { height: 56px; justify-content: center; }
   .sec-in { padding-top: calc(var(--top-dock) + 40px); padding-bottom: 64px; min-height: 0; }
-  /* one sentence a line as on the desk (Hands' three steps on three), at a size the longest, Say's first, fits from 360 up */
-  .sec-h2 > span, .sec-h2 .h2-step { display: block; text-wrap: balance; }
+  /* the h2's two lines as on the desk (Hands' label and click steps share the first), at a size the longest lines,
+     Say's and Numbers' first, fit from 360 up */
+  .sec-h2 > span { display: block; text-wrap: balance; }
   .h2-mark { width: calc(1.45em * 0.714); }
   .ins-char { left: calc(1.45em * -0.143); bottom: calc(1.45em * -0.143); width: 1.45em; height: 1.45em; }
   .term-one { padding: 22px 18px; }

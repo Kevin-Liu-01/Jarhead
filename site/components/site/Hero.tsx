@@ -1,8 +1,8 @@
 import Github from "@thesvg/react/github";
-import OpenSourceInitiative from "@thesvg/react/open-source-initiative";
 import type { ReactElement } from "react";
 import { HERO, INSTALL, REPO_URL } from "@/content/deck";
 import { first, parts, row } from "@/lib/cut";
+import { MitMark } from "@/components/kit/MitMark";
 import { Field } from "./Field";
 import { HeroCharacter, HeroPoke } from "./HeroCharacter";
 import { InstallKey } from "./InstallKey";
@@ -27,9 +27,8 @@ const PRICE = row(FACTS, 4);
  * then looks at the visitor (HeroCharacter); on a phone it springs up to stand over the line and leaves the stop behind.
  * Two short sentences under it, then the two calls (the glass Install as a physical key the blob loves, InstallKey; Read
  * the source with the live star count) sitting on the one picture, a horizon of the accent dithered up from the hero's
- * foot and thinned to paper before the hero ends (--field-foot), and one quiet line: the Open Source Initiative's keyhole
- * before MIT (thesvg's mark, mono, in the line's colour: the licence has no logo of its own, and MIT's bars are the
- * university's), then the price.
+ * foot and thinned to paper before the hero ends (--field-foot), and one quiet line: MIT's mark in the line's colour (the
+ * one Glyphfield sets; a selection or a copy reads "MIT", components/kit/MitMark.tsx), then the price.
  */
 export function Hero({ stars }: { readonly stars: number | null }): ReactElement {
   return (
@@ -57,8 +56,7 @@ export function Hero({ stars }: { readonly stars: number | null }): ReactElement
         </div>
         <p className="hero-terms">
           <span className="hero-terms-lic">
-            <OpenSourceInitiative variant="mono" className="hero-terms-mark" aria-hidden="true" focusable="false" />
-            {LICENCE}
+            <MitMark word={LICENCE} />
           </span>
           {" · "}
           {PRICE}

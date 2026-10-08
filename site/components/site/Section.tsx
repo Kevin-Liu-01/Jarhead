@@ -40,8 +40,9 @@ export function Notes({ items }: { readonly items: ReadonlyArray<{ readonly icon
 }
 
 /**
- * One idea per screen: a section's h2 in Newsreader (two lines, the second quieter), one short lead, at most two quiet
- * lines, and the plate where the idea is played. `h2` may be given already set (Hands steps its three sentences).
+ * One idea per screen: a section's h2 in Newsreader (one sentence on two lines, the second quieter), one short lead, at
+ * most two quiet lines, and the plate where the idea is played. `h2` may be given already set (Hands steps its three
+ * clauses).
  */
 export function Section({
   meta,

@@ -10,7 +10,7 @@ import { Plate } from "./Plate";
 const RATE = row(COSTS.figures, 0); // $0.05 per minute of open session
 const HOUR = row(COSTS.figures, 1); // $3 an hour of talking
 const ZERO = row(COSTS.figures, 2); // $0 the voice, asleep
-/** The section's h2 (Section renders it as `${id}-h`) names the Listening and Asleep group; its first line, "Five cents a minute.", names the slider. */
+/** The section's h2 (Section renders it as `${id}-h`) names the Listening and Asleep group; its first line, "It's five cents a minute", names the slider. */
 const HEAD = `${COSTS.id}-h`;
 const HEAD_1 = `${HEAD}-1`;
 const PER_MIN = Number(RATE.value.slice(1));

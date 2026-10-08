@@ -51,6 +51,8 @@ const log = logger("delegator");
 
 /** A delegation the room-talk gate refused: its ledger summary, and the silent note that closes it for the voice. */
 const NOT_ADDRESSED = "not addressed: room talk, heard and not run";
+/** A refusal the session's end settled: no verdict came before the voice went, so it says so (a paid LC-7 reads both as refusals). */
+const NOT_ADDRESSED_ENDED = "not addressed: the session ended before a name came";
 const NOT_ADDRESSED_THINKING = "Not run: those words were not said to you. Say nothing about them.";
 
 /**
@@ -460,6 +462,16 @@ interface Prefired {
 }
 
 /**
+ * Live's delegation while the room-talk gate waits for a late name on its words: what `dispose` needs to refuse it on
+ * the record if the session goes first. `heard` reads its words from the transcript as the wait's end would.
+ */
+interface AwaitingName {
+  readonly liveId: string;
+  readonly offsetMs: number;
+  readonly heard: () => readonly TranscriptItem[];
+}
+
+/**
  * A delegation holding a slot — running, or draining. `abort` is the brain turn's signal (a
  * supersede or a cut ends the turn); `cut` is the whole delegation's, aborted only
  * by a cut verb — the drain waits on it, so Kevin's next request never ends the
@@ -528,6 +540,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   private movedOnFrom: string | undefined;
   /** The session is gone (`dispose`): records still close, but the engine owns the phase from here. */
   private disposed = false;
+  /** Delegations whose words looked like room talk, while the gate waits for a late name (`onDelegation`). */
+  private readonly awaitingName = new Set<AwaitingName>();
 
   constructor(private readonly opts: DelegatorOptions) {
     super();
@@ -570,8 +584,9 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * The running turn's signal is aborted, the brain's cancel sent, and its record closes as cancelled.
    * A draining delegation's wait ends, and its record closes with its brain's own result: its threads
    * are the scheduler's and carry on, so the record never says they were cancelled. A reflex that ran
-   * ahead and was never adopted closes once it settles. Quiet: nothing is said to a voice that is gone,
-   * and the engine owns its phase across the detach.
+   * ahead and was never adopted closes once it settles. A delegation still waiting for a late name is
+   * refused here, on the record and as not addressed: no name can come after the close. Quiet: nothing is
+   * said to a voice that is gone, and the engine owns its phase across the detach.
    */
   dispose(): void {
     this.disposed = true;
@@ -583,6 +598,14 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.pendingStop = undefined;
     for (const q of this.commentaryQueue.values()) if (q.timer) clearTimeout(q.timer);
     this.commentaryQueue.clear();
+    // Now, not when the gate's wait ends: LC-7's dry runs lost the record when the idle sleep came 77 to 687 ms into
+    // the 1.2 s wait (16 of 566 on bc937ae), and a run or a daemon that ends inside it never sees the wait end.
+    const waiting = [...this.awaitingName];
+    this.awaitingName.clear();
+    for (const w of waiting) {
+      const { aside, words } = this.recordNotAddressed(w.liveId, w.offsetMs, w.heard(), true);
+      log.info(`delegation ${aside.id} (${w.liveId}): not addressed ("${words.slice(0, 80)}"); the session ended while it waited for a name`);
+    }
     const run = this.running;
     const parked = [...this.parked.values()];
     this.running = undefined;
@@ -1014,17 +1037,20 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       const last = heardItems[heardItems.length - 1];
       let ok = judge ? judge(liveId, last) : last === undefined || saidTo!(last);
       if (typeof ok !== "boolean") {
-        ok = await ok;
-        // The session went while the name was awaited: nothing starts on a delegator no stop can reach.
+        const waiting: AwaitingName = { liveId, offsetMs, heard: heardSince };
+        this.awaitingName.add(waiting);
+        try {
+          ok = await ok;
+        } finally {
+          this.awaitingName.delete(waiting);
+        }
+        // The session went while the name was awaited: `dispose` refused it on the record, and nothing starts on a
+        // delegator no stop can reach, whatever the verdict.
         if (this.disposed) return;
         heardItems = heardSince();
       }
       if (!ok) {
-        const room = saidTo ? heardItems.filter((i) => !saidTo(i)) : heardItems;
-        const words = room.map((i) => i.text).join(" ").trim() || "(no words on the transcript)";
-        const aside = this.recordAside(liveId, offsetMs, words, this.speechEndAt(heardItems, offsetMs), heardItems);
-        this.addStep(aside.id, { kind: "note", text: `not addressed: "${words.slice(0, 120)}" — heard, kept on the record, not run` });
-        this.closeRecord(aside.id, "cancelled", NOT_ADDRESSED);
+        const { aside, words } = this.recordNotAddressed(liveId, offsetMs, heardItems, false);
         live.appendThinking(target === "responses" ? null : liveId, NOT_ADDRESSED_THINKING);
         log.info(`delegation ${aside.id} (${liveId}): not addressed ("${words.slice(0, 80)}"); refused before the brain`);
         this.opts.onNotAddressed?.(liveId);
@@ -1513,6 +1539,22 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.opts.ledger?.append({ at, type: "delegation.created", delegation });
     this.emit("change", delegation);
     return delegation;
+  }
+
+  /**
+   * Live's delegation `liveId` refused by the room-talk gate: created, noted and closed as cancelled, never run. Its
+   * request is the room's words (the lines not said to Jarhead). `ended`: the session went while it waited for a name.
+   * The voice is the caller's to close out; after `dispose` there is none.
+   */
+  private recordNotAddressed(liveId: string, offsetMs: number, heardItems: readonly TranscriptItem[], ended: boolean): { readonly aside: Delegation; readonly words: string } {
+    const saidTo = this.opts.addressed;
+    const room = saidTo ? heardItems.filter((i) => !saidTo(i)) : heardItems;
+    const words = room.map((i) => i.text).join(" ").trim() || "(no words on the transcript)";
+    const aside = this.recordAside(liveId, offsetMs, words, this.speechEndAt(heardItems, offsetMs), heardItems);
+    const quoted = `not addressed: "${words.slice(0, 120)}"`;
+    this.addStep(aside.id, { kind: "note", text: ended ? `${quoted}; the session ended before a name came, so it stays on the record and was not run` : `${quoted} — heard, kept on the record, not run` });
+    this.closeRecord(aside.id, "cancelled", ended ? NOT_ADDRESSED_ENDED : NOT_ADDRESSED);
+    return { aside, words };
   }
 
   /**

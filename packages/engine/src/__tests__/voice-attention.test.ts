@@ -106,6 +106,21 @@ test("a bare 'jarhead' opens the exchange for 8 s on the timeline; a TV after it
   assert.equal(a.stats.refused, 1);
 });
 
+test("a room-looking delegation still waiting for a late name when the session closes is the room's at the close, not at the deadline (its backup timer is unref'd)", async () => {
+  const { a, say, clock } = gate();
+  clock.t += 30_000;
+  const tv = say(" hit the like button", 30_000);
+  const v = a.delegation("item_tv", tv.item);
+  assert.ok(v instanceof Promise, "a room-looking delegation waits for a late name");
+  let settled: string | undefined;
+  void v.then((x) => (settled = x));
+  clock.t += 400;
+  a.close();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(settled, "room", "the wait outlived the close");
+  assert.equal(a.stats.refused, 1);
+});
+
 test("room talk inside the window of a bare 'jarhead' belongs to the exchange (it flows ~8 s); past the window it is the room's", () => {
   const { say, voice, frames, clock } = gate();
   say(" jarhead", 10_000);

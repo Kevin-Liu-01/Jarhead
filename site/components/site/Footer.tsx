@@ -1,5 +1,6 @@
 import { Fragment, type ReactElement } from "react";
 import { JarheadMark } from "@/components/kit/Mark";
+import { MitMark } from "@/components/kit/MitMark";
 import { FOOTER, HERO } from "@/content/deck";
 import { aroundQuote, parts, row } from "@/lib/cut";
 
@@ -35,7 +36,7 @@ export function Footer(): ReactElement {
           {FIGURES.map((f, i) => (
             <Fragment key={f}>
               {i > 0 ? " · " : null}
-              <span>{f}</span>
+              {f === FIGURES[1] ? <MitMark word={f} /> : <span>{f}</span>}
             </Fragment>
           ))}
         </p>

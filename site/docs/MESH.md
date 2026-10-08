@@ -239,7 +239,7 @@ A last review against Kevin's screenshot and the app found these, fixed on both 
   app's ink shadow on the web too.
 - **The bar's clock is the Mac's time**: Sleep's night moves it to 07:10 while the alarm rings (`Show.clock`).
 - **The phase word's fade-in plays to its end** (`WordCrossfade`), and a word still fading in is dropped, never flashed.
-- **The OSI keyhole** takes a 1.2-unit stroke in its own colour, so its ring reads at the mono's stem.
+- **The MIT mark** (it replaced the OSI keyhole, 2026-10-07) is MIT's bars at cap height in the line's colour.
 - **The ring's `o o` flares in the app** (`BlobSim.sparkleFace`): the sparkle steps on the pair drawn, not the sleeping
   sim's beads.
 - **The script's scale is the CSS one**: Top.tsx measures its probes with getBoundingClientRect, so hydration never

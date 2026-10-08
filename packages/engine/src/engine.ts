@@ -2843,8 +2843,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.outputLevel = 0;
     this.outlivedSince = 0;
     if (this.delegator) {
-      this.lastDelegations = [...this.lastDelegations, ...this.delegator.all()].slice(-Engine.MAX_DELEGATIONS);
+      // Disposed first: the records it closes as the session goes (a cut turn, a room delegation that waited for a
+      // name) are kept as the ledger has them.
       this.delegator.dispose();
+      this.lastDelegations = [...this.lastDelegations, ...this.delegator.all()].slice(-Engine.MAX_DELEGATIONS);
       this.delegator = undefined;
       // The main turn went with its Delegator; the spawned threads did not (the scheduler is the engine's).
       this.threads.publish(this.threads.table.status(MAIN_THREAD_ID, "idle"));
@@ -5120,7 +5122,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       lines.unshift(line);
       chars += line.length + 1;
     }
-    const last = this.lastDelegations[this.lastDelegations.length - 1];
+    // Kevin's last task: never a refusal of room talk, the gate's or one the session's end settled (LC-7). Those were not
+    // his, and one recorded as the session went came after the task a drop cut, which V1 must still name.
+    const last = [...this.lastDelegations].reverse().find((d) => !/^not addressed/.test(d.summary ?? ""));
     const task = last?.summary ? `Last task: "${last.request.replace(/\s+/g, " ").trim().slice(0, 160)}" — ${last.status}: ${last.summary}` : recalled?.task;
     const seconds = Math.max(1, Math.round(gapMs / 1000));
     const gap = seconds < 90 ? `${seconds} ${seconds === 1 ? "second" : "seconds"}` : `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
