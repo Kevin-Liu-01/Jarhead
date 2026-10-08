@@ -23,7 +23,7 @@ export const NAV = {
 /** Hero (COPY.md "Hero"). */
 export const HERO = {
   h1: ["Your Mac,", "by voice."], // README:14
-  lead: "Say jarhead, pass Touch ID, talk. It uses the computer for you. The brain is whatever you already have a login for.", // README:26, README:15, README:27
+  lead: "Say jarhead, pass Touch ID, then tell it what to do on your Mac. The brain is whatever you already have a login for.", // README:26, README:15, README:27
   install: "Install",
   source: "Read the source", // README:20
   figures: "v2.0.0 · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto", // the v2.0.0 tag (2026-10-06, D7), README:23, README:377, README:349, README:356
@@ -75,7 +75,7 @@ export const SAY: Story = {
   face: "- -",
   h2: ["Codex, Claude Code, a key,", "or a model on your Mac."], // README:27-28, README:69, LOCAL:3-4
   lead: "Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.", // README:61, README:269-270, README:59
-  lines: ['"Click Save" runs. The voice is told after.', "Same policy for every brain. A local one gets fewer tools.", "A local brain keeps memory on the Mac."], // README:61, README:59, LOCAL:4-5
+  lines: ['"Click Save" runs. The voice is told after.', "Every brain runs under the same policy, though a local one gets fewer tools.", "A local brain keeps memory on the Mac."], // README:61, README:59, LOCAL:4-5
 };
 
 /** 03 · Threads */
@@ -99,7 +99,7 @@ export const HANDS: Story = {
   face: "> >",
   h2: ["It finds the label, clicks it", "and checks a screenshot."], // README:70 and the lead below: find a control by label, click it, a screenshot checks the work. page.tsx lights the three clauses in the demo's order. No "last", "third" or "only" on the screenshot: each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen, engine brain-select.test.ts:565). C2, scripts/__tests__/c2-hands-copy.test.ts
   lead: "The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.", // README:28, README:70; not "only": each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen)
-  lines: ["Circle anything with ⌃⌥C. Every brain is told where it is.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:76 (a text-only brain gets the coordinates and no image: compatible.ts userContent, local.ts acceptsImages), README:77, README:75
+  lines: ["Circle anything with ⌃⌥C and every brain is told where it is.", "The blob moves to where the hands act.", "The Console lists every coding-agent session."], // README:76 (a text-only brain gets the coordinates and no image: compatible.ts userContent, local.ts acceptsImages), README:77, README:75
 };
 
 /** 05 · Rails */
@@ -110,7 +110,7 @@ export const RAILS: Story & { readonly never: { readonly label: string; readonly
   phase: "speaking",
   face: "^ ^",
   h2: ["It knows what to just do", "and when to ask first."], // Kevin asked for the judgment, not the mechanism (2026-10-07): run and confirm, README:74; the demo shows the third, refuse
-  lead: "Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.", // README:361
+  lead: "Every call is run, confirm or refuse. It says the reason out loud, and no tool gets an exception.", // README:361
   lines: ["A spoken yes covers one action once.", "Your key or click holds it 1.5 s.", "On-screen text is never an instruction."], // README:362, README:63, README:367
   never: {
     label: "NEVER",
@@ -172,13 +172,13 @@ export const COSTS = {
   id: "costs",
   name: "Costs",
   h2: ["It's five cents a minute", "and nothing asleep."] as const, // README:637: billed per second of open session, muted or not; asleep there is no session (README:79). The brain and memory reads are the lead's and the lines', not this sentence's
-  lead: "The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.", // README:551
+  lead: "The voice bills $0.05 a minute. It counts by the second, and Pause or Stop closes the session.", // README:551
   figures: [
     { value: "$0.05", label: "per minute of open session", tip: "billed per second, muted or not" }, // README:551
     { value: "$3", label: "an hour of talking", tip: "the meter is on the island and in the Console" }, // README:551
     { value: "$0", label: "the voice, asleep", tip: "the wake word runs on-device · memory reads closed conversations on your key" }, // README:551, README:553
   ] satisfies readonly Figure[],
-  lines: ["Codex runs on your ChatGPT plan.", "A local brain bills nothing. The voice does.", "The Ledger tab totals each day."] as const, // README:552, LOCAL:4, README:83
+  lines: ["Codex runs on your ChatGPT plan.", "A local brain is free, but the voice still bills.", "The Ledger tab totals each day."] as const, // README:552, LOCAL:4, README:83
 } as const;
 
 /** Install */
@@ -213,7 +213,7 @@ export const INSTALL = {
       "A brain you are already signed in to", // README:379-380
       "A Code Signing certificate, optional", // README:77, README:397-401, scripts/install.sh
     ] as const,
-    certNote: "Self-signed is enough. Without one the build signs ad-hoc. Every rebuild then resets the permission grants.", // README:77, README:397-401, scripts/install.sh
+    certNote: "A self-signed certificate is enough, and without one every rebuild resets the permission grants.", // README:77, README:397-401, scripts/install.sh
   },
 } as const;
 if (`${INSTALL.runs.cmd} ${INSTALL.runs.host}${INSTALL.runs.script} ${INSTALL.runs.tail}` !== INSTALL.code || `${INSTALL.runs.host}${INSTALL.runs.script}` !== INSTALL.url) throw new Error("the one-liner's runs drifted from INSTALL.code");

@@ -45,7 +45,7 @@ it, the island docked under the notch, the blob in it, on the desktop's ground.
 ## The hero words: three things
 
 Under the dock, with 32 px of air: the h1 on one line, the lead (two sentences max: cut COPY.md's lead to
-"Say jarhead, pass Touch ID, talk. It uses the computer for you."), then the two calls (the glass Install with
+"Say jarhead, pass Touch ID, then tell it what to do on your Mac."), then the two calls (the glass Install with
 its two lines, `Read the source · ★ n`). Nothing else: no note line, no badge row (the facts live in the glass
 button's second line and the right rail).
 

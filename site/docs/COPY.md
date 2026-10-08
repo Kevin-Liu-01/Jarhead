@@ -38,7 +38,7 @@ eyebrow LINES above a heading, so never set them as a line. The `desk caption` m
 
 - h1, line 1: `Your Mac,` (README:14)
 - h1, line 2: `by voice.` (README:14)
-- lead: `Say jarhead, pass Touch ID, talk. It uses the computer for you. The brain is whatever you already have a login for.` (README:26, README:15, README:27)
+- lead: `Say jarhead, pass Touch ID, then tell it what to do on your Mac. The brain is whatever you already have a login for.` (README:26, README:15, README:27)
 - button, solid: `Install` → `#install`
 - button, text tile: `Read the source` → `https://github.com/Kevin-Liu-01/Jarhead` (README:20)
 - note under the buttons: `Send, pay, delete, post and purchase ask every time.` (README:362)
@@ -84,7 +84,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 - lead: `Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.` (README:61, README:269-270, README:59)
 - the brain card's badge: `SAY_BADGE` (`7.0 s`, deck.ts), a brain's first visible action in real use with Codex (the author's ledger, 7.0 s median, 27.6 s p95, n = 15, 2026-09-12 to 09-28). It replaced `NUMBERS.figures[3].value` (`4.5 s`), the canned-hands harness figure (docs/latency/after.json, n = 6, 2026-09-12), which stays in Numbers with its label.
 - line 1: `"Click Save" runs. The voice is told after.` (README:61)
-- line 2: `Same policy for every brain. A local one gets fewer tools.` (README:59, LOCAL:78-79, brain local.ts LOCAL_TOOLS)
+- line 2: `Every brain runs under the same policy, though a local one gets fewer tools.` (README:59, LOCAL:78-79, brain local.ts LOCAL_TOOLS)
 - line 3: `A local brain keeps memory on the Mac.` (LOCAL:4-5, LOCAL:62-64)
 
 ---
@@ -107,7 +107,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 - h2, line 1: `It finds the label, clicks it` (README:70)
 - h2, line 2 *grey*: `and checks a screenshot.` (README:70, the lead's third sentence). The page lights its three clauses, `It finds the label,` · `clicks it` · `and checks a screenshot.`, as label, click and shot (page.tsx HANDS_STEPS). Nothing in it puts the screenshot last or makes it the only use: each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen, engine brain-select.test.ts:565), and a click by coordinates aims at the latest one (brain tools.ts `screenshot`). It was `Label first. Click second. / Screenshot last.` until 2026-10-06 (C2), which was false for that reason, then `Label first. Click second. / Screenshots when they help.` until 2026-10-07. `scripts/__tests__/c2-hands-copy.test.ts` checks the words, the cuts and README:70.
 - lead: `The hands are a Swift helper. They find a control by label and click it. A screenshot checks the work.` (README:28, README:70). The 71 tools are the brain's; 31 of them reach the helper. Not "only verifies": each delegation starts with a screenshot unless the brain is Live's own Responses delegation or cannot take pixels, or the hands are not there (engine.ts lookAtScreen).
-- line 1: `Circle anything with ⌃⌥C. Every brain is told where it is.` (README:76). A brain that takes images also gets the image; a text-only one gets the coordinates alone (brain compatible.ts userContent, local.ts acceptsImages).
+- line 1: `Circle anything with ⌃⌥C and every brain is told where it is.` (README:76). A brain that takes images also gets the image; a text-only one gets the coordinates alone (brain compatible.ts userContent, local.ts acceptsImages).
 - line 2: `The blob moves to where the hands act.` (README:77)
 - line 3: `The Console lists every coding-agent session.` (README:75)
 
@@ -118,7 +118,7 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 - eyebrow: `Speaking` · `It is talking. Say stop to interrupt.` · `^ ^`
 - h2, line 1: `It knows what to just do` (Kevin, 2026-10-07: the judgment, not the mechanism; README:74)
 - h2, line 2 *grey*: `and when to ask first.` (README:74, run and confirm; the demo shows refuse). Rails.tsx cuts run, confirm and refuse from the lead.
-- lead: `Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.` (README:361)
+- lead: `Every call is run, confirm or refuse. It says the reason out loud, and no tool gets an exception.` (README:361)
 - line 1: `A spoken yes covers one action once.` (README:362)
 - line 2: `Your key or click holds it 1.5 s.` (README:63, README:353; scroll is in Numbers figure 12)
 - line 3: `On-screen text is never an instruction.` (README:367)
@@ -186,13 +186,13 @@ Figures, value · label · tooltip:
 - label: `what it bills`
 - h2, line 1: `It's five cents a minute` (README:637)
 - h2, line 2 *grey*: `and nothing asleep.` (README:637: billed per second of open session, muted or not, asleep there is no session, README:79). The brain and memory reads are the lead's and the lines'.
-- lead: `The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.` (README:551)
+- lead: `The voice bills $0.05 a minute. It counts by the second, and Pause or Stop closes the session.` (README:551)
 - figures, value · label · tooltip:
   - `$0.05` · `per minute of open session` · `billed per second, muted or not` (README:551)
   - `$3` · `an hour of talking` · `the meter is on the island and in the Console` (README:551)
   - `$0` · `the voice, asleep` · `the wake word runs on-device · memory reads closed conversations on your key` (README:551, README:553)
 - line 1: `Codex runs on your ChatGPT plan.` (README:552)
-- line 2: `A local brain bills nothing. The voice does.` (README:552, LOCAL:4)
+- line 2: `A local brain is free, but the voice still bills.` (README:552, LOCAL:4)
 - line 3: `The Ledger tab totals each day.` (README:83)
 
 ---
@@ -245,7 +245,7 @@ Requirements, head `Requirements · 6`:
 3. `Node 24 or newer and pnpm 10` (README:378-379)
 4. `An OpenAI API key for the voice` (README:379)
 5. `A brain you are already signed in to` (README:379-380)
-6. `A Code Signing certificate, optional` · note `Self-signed is enough. Without one the build signs ad-hoc. Every rebuild then resets the permission grants.` (README:77, README:397-401, scripts/install.sh)
+6. `A Code Signing certificate, optional` · note `A self-signed certificate is enough, and without one every rebuild resets the permission grants.` (README:77, README:397-401, scripts/install.sh)
 
 - Setup line: `Setup has seven steps. Welcome, Voice, Brain, Permissions, Wake, Agents, Done.` (README:81)
 - onboarding alts: `Setup, Welcome` · `Setup, Brain` · `Setup, Permissions` · `Setup, Wake` (README:217-222)
@@ -311,7 +311,7 @@ named so a reviewer can put it back.
 ### Hero (d:97-102)
 
 - d:97 h1 `Say jarhead. Pass Touch ID. Talk.` → h1 `Your Mac, / by voice.`; the words move to the lead's first sentence.
-- d:98 lead `A voice-first Mac assistant that uses the computer for you. The voice is GPT-Live-1, full duplex. The brain is whatever you already have a login for. The hands are a Swift helper on the real Mac.` → `Say jarhead, pass Touch ID, talk. It uses the computer for you. The brain is whatever you already have a login for.` GPT-Live-1 moves to Numbers figure 3 and the Costs lead; the Swift helper moves to the Hands lead.
+- d:98 lead `A voice-first Mac assistant that uses the computer for you. The voice is GPT-Live-1, full duplex. The brain is whatever you already have a login for. The hands are a Swift helper on the real Mac.` → `Say jarhead, pass Touch ID, then tell it what to do on your Mac. The brain is whatever you already have a login for.` GPT-Live-1 moves to Numbers figure 3 and the Costs lead; the Swift helper moves to the Hands lead.
 - d:101 `Mic is hot.` (idiom) → `The mic is open. The meter runs.`
 - d:101 `The brain is working.` → `The brain has the task.`
 - d:101 `Jarhead is using the computer.` → `The hands are using the Mac.`
@@ -331,11 +331,11 @@ named so a reviewer can put it back.
 
 - d:145 h2 `Tell Ben on Slack I'm late and put on Focus on Spotify.` → the Threads lead's first sentence; the Say h2 is now the brain list `Codex, Claude Code, a key, / or a model on this Mac.`
 - d:145 lead `Unambiguous commands go straight through the hands in milliseconds. Everything else goes to the brain, and the brain is whatever you already have a login for.` (a joined clause) → `Unambiguous commands reach the hands in milliseconds. The voice hands tasks to the brain. You pick the brain in Settings.`
-- d:146 the seven-row brain ledger and its foot `Every brain drives the same 71 tools through one runner, so policy, ledger, screenshots and the confirmation handshake are identical whichever model is thinking.` → `Same policy for every brain. A local one gets fewer tools.` Cut: the seven kind names and their one-liners (README:59, facts:70-77); `auto` never picks `local` (LOCAL:48).
+- d:146 the seven-row brain ledger and its foot `Every brain drives the same 71 tools through one runner, so policy, ledger, screenshots and the confirmation handshake are identical whichever model is thinking.` → `Every brain runs under the same policy, though a local one gets fewer tools.` Cut: the seven kind names and their one-liners (README:59, facts:70-77); `auto` never picks `local` (LOCAL:48).
 - d:147-155 the SayStrip's eight said/read-back pairs → cut. They are quotes (README:26, README:61, README:62, AUTOMATIONS:21-22, README:510, facts:429-441); two survive in the Threads lead and line 3.
 - d:157 `Reflexes under the model` (metaphor) → `"Click Save" runs. The voice is told after.`
 - d:157 `The brain is a setting` (metaphor) → `You pick the brain in Settings.`
-- d:157 `A local brain · Ollama, LM Studio or llama.cpp found on this Mac. Jarhead never pulls, installs, starts or deletes a model. The brain and memory stay here; the voice stays cloud and still bills.` → `A local brain keeps memory on the Mac.` and Costs line 2 `A local brain bills nothing. The voice does.` Cut: the three servers and ports (LOCAL:3-4); never pulls, installs, starts or deletes (LOCAL:5); needs tools and a 16k+ window (LOCAL:20, LOCAL:77).
+- d:157 `A local brain · Ollama, LM Studio or llama.cpp found on this Mac. Jarhead never pulls, installs, starts or deletes a model. The brain and memory stay here; the voice stays cloud and still bills.` → `A local brain keeps memory on the Mac.` and Costs line 2 `A local brain is free, but the voice still bills.` Cut: the three servers and ports (LOCAL:3-4); never pulls, installs, starts or deletes (LOCAL:5); needs tools and a 16k+ window (LOCAL:20, LOCAL:77).
 - d:157 `Remembers you, quietly · After a conversation closes, a small model reads it once and keeps one-sentence items about you in an append-only store. At most 250 tokens a task, 120 a session, never read back to you. Forget hides. Off with one switch.` → cut (README:72). Facts: one-sentence items, 250 and 120 token caps, Forget hides, one switch.
 - d:157 `One constitution · The standing orders have an explicit precedence: invariants and a never-list, then your words, then the task. Whatever it reads from a screen, page, file or transcript is data. Under 1250 words, versioned, pinned by tests.` → Rails line 3 `On-screen text is never an instruction.` Cut: the precedence order and the 1250-word cap (README:80).
 - d:157 `Narrates intent · One clause per state change: "found the invoice", "typing the amount". Per-click lines stay on the Console's timeline.` → cut (README:70).
@@ -352,7 +352,7 @@ named so a reviewer can put it back.
 - d:192 lead `71 tools in ten families. The hands are AX-first: find a control by label, read the focused text, click the element, screenshot only to verify.` (a colon list) → the h2 `Label first. Click second. / Screenshot last.` and the new lead. Cut: "AX-first"; read the focused text (README:60).
 - d:193 the ten family chips → cut (README:60). The count stays in the hero figures line and in Numbers figure 10.
 - d:195 `The blob flies to where the hands act and stays where it worked. Brains draw by hand: the blob becomes the pen and drags the line. Jelly drag, sticky walls, momentum.` (the pen metaphor; "brains draw by hand") → `The blob moves to where the hands act.` Cut: brains can draw shapes on screen through the blob (README:67, README:200); the drag physics.
-- d:196 `Press ⌃⌥C, draw around anything. The mark snaps to the largest control under it and every brain gets the image with the task. Films of what you circled sit on the island; a used one dims.` → `Circle anything with ⌃⌥C. Every brain is told where it is.` Cut: the snap to the largest control; films on the island (README:66, README:114-117).
+- d:196 `Press ⌃⌥C, draw around anything. The mark snaps to the largest control under it and every brain gets the image with the task. Films of what you circled sit on the island; a used one dims.` → `Circle anything with ⌃⌥C and every brain is told where it is.` Cut: the snap to the largest control; films on the island (README:66, README:114-117).
 - d:197 `Lives in the notch · Tucked asleep, peeking awake, an island under the pointer: 420 by 184 points in four bands. Anchor, display, control row, foot. The peek carries glance chips, never sentences. Drag the blob into the notch and it sleeps.` → cut as a card; the hero desk shows the island live and its caption keeps `island 420×184` (README:68).
 - d:198 `Knows your agents · The Console lists every Claude Code, Codex and other coding-agent session on the Mac with its own mark. Step into one, watch it grow live, answer its Allow · Deny, talk to it. Every utterance, tool call and grant is a row in an append-only ledger; the Console shows only what was recorded.` → `The Console lists every coding-agent session.` and Made line 2. Cut: step into a session, answer its Allow / Deny, talk to it (README:65).
 - d:199 `A face per state` → cut; the hero's phase buttons show the faces (README:181).
@@ -360,7 +360,7 @@ named so a reviewer can put it back.
 
 ### Rails (d:214-221)
 
-- d:215 lead `One policy table decides run, confirm or refuse per call, with a spoken reason. Send, pay, delete, post and purchase ask every time, in every lane. A confirmation is your own spoken yes, for that action, once.` (three trailing phrases) → lead `Every call is run, confirm or refuse. The reason is spoken. No tool is special-cased.`, the never-list's closing line, and line 1 `A spoken yes covers one action once.`
+- d:215 lead `One policy table decides run, confirm or refuse per call, with a spoken reason. Send, pay, delete, post and purchase ask every time, in every lane. A confirmation is your own spoken yes, for that action, once.` (three trailing phrases) → lead `Every call is run, confirm or refuse. It says the reason out loud, and no tool gets an exception.`, the never-list's closing line, and line 1 `A spoken yes covers one action once.`
 - d:215 precedence line → cut (README:80).
 - d:216 NeverPanel label `NEVER · REFUSED OUTRIGHT, IN EVERY LANE` → `NEVER`; the list keeps README:364's seven items; the line keeps README:362-363.
 - d:217 § 1 `Go · Pause · Stop` → Costs lead. § 2 → the lead. § 3 → the closing line. § 4 `Same tool, same arguments, once. Return is never a yes.` → line 1; "Return is never a yes" cut (its source is outside the allowed set). § 5 `Scoped grants` → the closing line's second sentence; cut: one conversation, one app, one action class (README:363). § 6 `Your hands win` (metaphor) → `Your key or click holds it 1.5 s.`; scroll stays in Numbers figure 12; cut: a focus change mid-type cancels the type and says how many characters landed (README:63). § 7 → the never-list. § 8 `Presence gate` → Wake h2 line 2. § 9 `Secrets flow one way · Keys go into a 0600 file. Spawned processes get none; every text result passes a redactor before a model reads it.` → Install line 1 keeps the 0600 file; cut: spawned processes get no keys, the redactor (README:366). § 10 `Content is data` (metaphor) → `On-screen text is never an instruction.` § 11 → Made line 2. § 12 `No Delete anywhere` → Made line 2. § 13 `Unattended is the run tier` → Sleep lines 1 and 2. § 14 `Self-edits name their rails` → cut; Made line 3 keeps "apply only on your yes" (README:370). § 15 `The voice path never waits · Speech goes out and comes back as speech, waiting on no tool.` → cut (README:371).
@@ -386,7 +386,7 @@ named so a reviewer can put it back.
 
 ### Costs (d:264-268)
 
-- d:265 lead `$0.05 a minute, billed per second, only while a session is open. The meter is on the capsule, the island and the Console.` (stacked qualifiers) → `The voice bills $0.05 a minute. It counts per second. Pause and Stop close the session.`; the meter's places move to figure 2's tooltip.
+- d:265 lead `$0.05 a minute, billed per second, only while a session is open. The meter is on the capsule, the island and the Console.` (stacked qualifiers) → `The voice bills $0.05 a minute. It counts by the second, and Pause or Stop closes the session.`; the meter's places move to figure 2's tooltip.
 - d:267 the nine rows → three figures and three lines. Cut: `claude-code` on your Claude login; the three API brains bill their own keys; memory's ≈ 20k tokens a day; the benchmarks spend nothing (README:552-554).
 - d:268 caption `… 17.0 min · $0.85 on the harness's fixed data.` → the alt `The Ledger tab. A day's rows and what it billed.`
 

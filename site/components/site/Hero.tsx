@@ -12,8 +12,8 @@ import { Stars } from "./Stars";
 const H1 = HERO.h1.join(" ");
 if (!H1.endsWith(".")) throw new Error("the h1 no longer ends on a full stop");
 const H1_WORDS = H1.slice(0, -1);
-/** The lead's first two sentences: Say jarhead, pass Touch ID, talk. It uses the computer for you. */
-const LEAD = first(HERO.lead, 2);
+/** The lead's first sentence: Say jarhead, pass Touch ID, then tell it what to do on your Mac. */
+const LEAD = first(HERO.lead, 1);
 /** The glass button's second line: two parts of the figures line and Install's label. */
 const FACTS = parts(HERO.figures);
 const REQUIREMENTS = [row(FACTS, 2), row(FACTS, 3), INSTALL.label].join(" · ");
