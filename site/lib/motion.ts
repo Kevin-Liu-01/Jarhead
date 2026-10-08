@@ -1,9 +1,9 @@
 /**
  * The motion language, one set of tokens (app/globals.css mirrors the durations and eases as --jh-*): durations 80 to 600
- * ms, one ease out for arrivals, one ease in-out for state changes, two springs (the interface's and the character's),
- * staggers of at most three elements 60 ms apart (the sections' rise, styles/site.css). `useCalm` is the one switch to calm cuts: reduced motion or `#still`
- * turns every transition into an instant change (`cut`). A namespace import of React, so the server layout can read
- * ARRIVE_BOOT from here without pulling a hook into a server module.
+ * ms, one ease out for arrivals, one ease in-out for state changes, three springs (the interface's, the character's and the
+ * hand's), staggers of at most three elements 60 ms apart (the sections' rise, styles/site.css). `useCalm` is the one
+ * switch to calm cuts: reduced motion or `#still` turns every transition into an instant change (`cut`). A namespace
+ * import of React, so the server layout can read ARRIVE_BOOT from here without pulling a hook into a server module.
  */
 import * as React from "react";
 import { isStill } from "@/lib/theme";
@@ -15,6 +15,22 @@ const EASE_IN_OUT = [0.65, 0, 0.35, 1] as const;
 export const SPRING = { type: "spring", visualDuration: 0.36, bounce: 0.14 } as const;
 /** The character's spring: the blob's own moves, with a little more give. */
 export const SPRING_CHAR = { type: "spring", visualDuration: 0.52, bounce: 0.34 } as const;
+/**
+ * The hand's spring: the hero's blob held trails the hand by about 56 ms of its speed and rings at 2.8 Hz when it stops
+ * (the app's drag spring, 300 / 17, BlobPhysics.swift). The one exception to "direct manipulation never springs".
+ */
+export const SPRING_DRAG = { type: "spring", visualDuration: 0.3, bounce: 0.51 } as const;
+
+/**
+ * A spring token as stiffness and damping (unit mass), for a body stepped by hand (lib/body.ts): motion-dom 14's own
+ * conversion (getSpringOptions, bounce at or over 0), so the body rings as Motion would animate it.
+ */
+export function springKC(sp: { readonly visualDuration: number; readonly bounce: number }): { k: number; c: number } {
+  const root = (2 * Math.PI) / (1.2 * sp.visualDuration);
+  const k = root * root;
+  const zeta = Math.max(0.05, 1 - sp.bounce);
+  return { k, c: 2 * zeta * Math.sqrt(k) };
+}
 
 /** An instant change: what every transition becomes when the visitor asked for calm. */
 export const CUT = { duration: 0 } as const;

@@ -104,6 +104,19 @@ its face never under 32 px.
   joy (not again within 2 s), then gazes with lit eyes (starstruck, quicker flares, stars popping round its head) and a
   brighter halo, and goes back to the
   pointer when it is let go; a press makes it squint again and hop. Calm: one pose, turned to the key with lit eyes.
+  Once it stands it can be picked up by its disc (`components/site/heroPlay.ts`; the body is `lib/body.ts`, the app's
+  BlobBody scaled to the page by R / 59, and the jelly is `lib/blob.ts` in play, BlobField.swift's). Held, it trails the
+  hand on `SPRING_DRAG`, stretches into the app's teardrop toward it with the held side leading, and its mass sloshes and
+  rings with every change of speed, once more when it is let go. Let go, it keeps its momentum, bounces off the hero's
+  edges and the island (a hard hit splats first) or, slower, sticks to an edge and sags into a dome that breathes; pushed
+  into an edge by hand it squashes flat on it, and pulled off a stuck edge it clings by a neck that narrows and snaps. The
+  island puts it to bed when it is dropped in or under it, or tossed gently up into its underside: asleep at once (the
+  island wears `- -`, the body turns titanium), it slides under the island, sleeps 1.6 s, drops out and flies home asleep.
+  At rest away from home it watches the visitor and flies home after 3 s (held there while the pointer is near it); it is
+  cut home when the hero scrolls out of sight, the tab hides or the width changes. While it is away the h1's stop shows its
+  ink. A tap is the step plus a poke (`O o`, then a blink) and a hop; HeroPoke does the same. Calm: carried 1:1 and cut
+  home on release (the island still puts it to bed), and a tap only steps. On a phone only the 77 px disc takes a touch,
+  so a swipe anywhere else scrolls as ever.
 - **The glass Install** (`components/site/InstallKey.tsx`): the one glass surface, as a key. The cap is the frosted glass;
   its body, 6 px of the blob's ramp in 1.5 px cells, shows as a lit wall and as a halo on the paper that pools under the
   key and fades in up its sides to the same height on both (its density evened for each colour's contrast). Near the
@@ -247,12 +260,16 @@ One set of tokens, in `app/globals.css` and mirrored in `lib/motion.ts`:
 - **Durations**: `--jh-instant` 80, `--jh-quick` 160, `--jh-base` 240, `--jh-slow` 400, `--jh-drift` 600 ms.
 - **Eases**: out `(0.16, 1, 0.3, 1)` for what arrives, in-out `(0.65, 0, 0.35, 1)` for what changes in place.
 - **Springs**: `SPRING` (visualDuration 0.36, bounce 0.14) for the interface (chips, cards, the island's settle);
-  `SPRING_CHAR` (0.52, 0.34) for the blob's own moves (the arrival, the flight to Save, the thread split).
+  `SPRING_CHAR` (0.52, 0.34) for the blob's own moves (the arrival, the flight to Save, the thread split, the hero's way
+  home); `SPRING_DRAG` (0.30, 0.51), the hand's spring for the hero's blob held (the app's drag spring, 300 / 17), which
+  `springKC` turns into stiffness and damping as Motion does.
 - **Rules**: paths draw along their length (Motion `pathLength`, `slow` in-out); the island crossfades its kinds; chips
   move by shared layout; numbers count (the race, the clock, the cost); each section's h2, words and plate rise once on
-  first view, 60 ms apart (three at most); direct manipulation never springs (the Costs range writes its value straight).
+  first view, 60 ms apart (three at most); direct manipulation never springs (the Costs range writes its value straight),
+  except the hero's blob, which is a body held on `SPRING_DRAG`.
   Every loop pauses off screen and on a hidden tab; a section's CSS loops pause while it is off screen (`data-inview`).
-- **Calm**: `useCalm()` (reduced motion or `#still`, live through `hashchange`) turns every transition into `CUT`; the boot
+- **Calm**: `useCalm()` (reduced motion or `#still`, live through `hashchange`) turns every transition into `CUT` (the
+  hero's blob in the hand is carried 1:1 and cut home); the boot
   script stamps `html[data-still]` for `#still`, so the CSS loops (a spoken chip's level trace, the working dots, the alarm's
   ring) stop exactly as under reduced motion. Scroll-linked choreography only as plain sticky (Hands), never a hijack.
 

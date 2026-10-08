@@ -121,7 +121,19 @@ html[data-theme="dark"] .hero { --field-peak: 0.34; --field-band: 0.3; }
    1440, 1280 and 1920 so the wobble never takes it under a sixth of an em (it was 0.14 em and the wobble closed it) */
 .h1-stop, .h2-stop { color: transparent; }
 .h1-mark { display: inline-block; position: relative; width: calc(var(--hb) * 0.714); height: 0; margin-left: 0.07em; vertical-align: baseline; }
-.hero-char { position: absolute; left: calc(var(--hb) * -0.143); bottom: calc(var(--hb) * -0.143); width: var(--hb); height: var(--hb); }
+/* the blob in play (components/site/heroPlay.ts): the wrapper is what flies (play writes its transform; the arrival owns the
+   host's inside it), over the key and Read the source inside .hero-in and always under the top (z 50). Only the disc, the
+   body's own radius, takes a press: the halo, the host and the canvases let the h1's letters under them be selected and a
+   phone's swipe scroll; the disc alone keeps the touch from panning */
+.hero-body { position: absolute; left: calc(var(--hb) * -0.143); bottom: calc(var(--hb) * -0.143); width: var(--hb); height: var(--hb); z-index: 3; pointer-events: none; transition-property: none; }
+.hero-body > .hero-char { position: absolute; inset: 0; width: 100%; height: 100%; }
+.hero-grab { position: absolute; left: 14.29%; top: 14.29%; width: 71.42%; height: 71.42%; border-radius: 50%; pointer-events: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-user-drag: none; -webkit-tap-highlight-color: transparent; }
+.hero-body[data-play] .hero-grab { pointer-events: auto; cursor: grab; }
+.hero-body[data-play="tucked"] .hero-grab { pointer-events: none; }
+html[data-grabbing], html[data-grabbing] *, html[data-grabbing] .hero-body[data-play] .hero-grab { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+/* the stop's ink while the blob is away is Motion's alone, and calm's cut lands in the frame it is asked for (the calm rule's
+   0.01 ms transitions would hold it a frame), as the wrapper's translate does */
+.h1-stop { transition-property: none; }
 /* the arrival: the stop shows and the blob waits until the hero takes over; if the script never runs, both settle at 3 s */
 html[data-arrive] .h1-stop { color: inherit; animation: jh-clear 0s linear 3s forwards; }
 html[data-arrive] .hero-char { opacity: 0; animation: jh-show 0s linear 3s forwards; }
@@ -361,7 +373,7 @@ html[data-rise] .sec:not([data-seen]) .rise { opacity: 0; transform: translateY(
   .hero-h1 { position: relative; }
   .h1-stop { color: inherit; }
   .h1-mark { position: absolute; left: 50%; bottom: 100%; width: 0; height: 0; margin: 0; }
-  .hero-char { width: 108px; height: 108px; left: -54px; bottom: 12px; }
+  .hero-body { width: 108px; height: 108px; left: -54px; bottom: 12px; }
   .hero-lead { margin-top: 20px; }
   .hero-calls { margin-top: 26px; }
 }

@@ -1,6 +1,6 @@
 "use client";
 import { forwardRef, useEffect, useImperativeHandle, useRef, type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
-import { mountBlob, type BlobHandle } from "@/lib/blob";
+import { mountBlob, type BlobHandle, type BlobMotion } from "@/lib/blob";
 import type { Phase } from "@/lib/phase";
 import { useTheme } from "@/lib/theme";
 import { useCalm } from "@/lib/motion";
@@ -31,6 +31,14 @@ export interface CharacterHandle {
   attend(at: readonly [number, number] | null): void;
   /** A happy squint (0.75 s unless told) and a hop. */
   cheer(seconds?: number): void;
+  /** The body's motion in play (the hero in the hand), or null at home; nothing while the engine is released. */
+  setMotion(m: BlobMotion | null): void;
+  /** A tap: `O o`, then a blink. */
+  poke(): void;
+  /** A patch let go of a wall: the recoil and a ripple. */
+  snap(nx: number, ny: number): void;
+  /** A hard landing, 0 to 1. */
+  splat(strength: number): void;
   readonly el: HTMLElement | null;
 }
 
@@ -54,6 +62,8 @@ interface CharacterProps {
   readonly lead?: boolean;
   /** A span host where only phrasing content may stand (inside the h1). */
   readonly inline?: boolean;
+  /** The field's side over the host's, for a blob that flies (the hero's, 1.6): lib/blob.ts `overscan`. */
+  readonly overscan?: number;
 }
 
 /**
@@ -62,7 +72,7 @@ interface CharacterProps {
  * draws over the still, pauses off screen, on a hidden tab and after a quiet spell asleep, and is released after a while
  * away. Its eyes follow the pointer anywhere on the page. Under calm it draws one pose per change.
  */
-export const Character = forwardRef<CharacterHandle, CharacterProps>(function Character({ phase, face = null, size, label, onPress, pressMode = "button", className, style, ignoreScale, lead, inline }, ref): ReactElement {
+export const Character = forwardRef<CharacterHandle, CharacterProps>(function Character({ phase, face = null, size, label, onPress, pressMode = "button", className, style, ignoreScale, lead, inline, overscan }, ref): ReactElement {
   const host = useRef<HTMLElement>(null);
   const handle = useRef<BlobHandle | null>(null);
   const theme = useTheme();
@@ -79,6 +89,10 @@ export const Character = forwardRef<CharacterHandle, CharacterProps>(function Ch
       handle.current?.attend(at);
     },
     cheer: (seconds) => handle.current?.cheer(seconds),
+    setMotion: (m) => handle.current?.setMotion(m),
+    poke: () => handle.current?.poke(),
+    snap: (nx, ny) => handle.current?.snap(nx, ny),
+    splat: (strength) => handle.current?.splat(strength),
     get el() {
       return host.current;
     },
@@ -104,6 +118,7 @@ export const Character = forwardRef<CharacterHandle, CharacterProps>(function Ch
         pointerRoot: document.body,
         ignoreScale,
         lead,
+        overscan,
       });
       if (latest.current.face) h.setFace(latest.current.face);
       if (attending.current) h.attend(attending.current);
@@ -144,7 +159,7 @@ export const Character = forwardRef<CharacterHandle, CharacterProps>(function Ch
       window.clearTimeout(away);
       unmount();
     };
-  }, [calm, size, ignoreScale, lead]);
+  }, [calm, size, ignoreScale, lead, overscan]);
 
   useEffect(() => {
     handle.current?.setPhase(phase);

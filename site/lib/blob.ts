@@ -22,6 +22,15 @@
  * The body is blue in every awake phase (ORB_STOPS) and titanium asleep / paused / muted
  * (QUIET_STOPS); the phase colour lives on the halo, read from `--jh-<phase>` once per change
  * (thinking wears the accent blue: no violet anywhere on the orb).
+ *
+ * Play (the hero's blob in the hand, components/site/heroPlay.ts): `setMotion` hands the engine the body's motion each
+ * frame (lib/body.ts) and the field becomes the app's jelly (BlobField.swift stepMotion, deformed, stretched, the eyes'
+ * reactions): the stretch along the lag or the flight into a teardrop that keeps its volume, the held side leading, the
+ * mass sloshing and the low modes ringing with every change of velocity, the squash flat on a wall and clipped at it, the
+ * neck while it clings, the snap's recoil and ripple, and the faces (a poke's `O o`, a flick's `O O`, the wall-side
+ * squint). In play the field is overscanned (`overscan`, whole Bayer tiles each side) so the jelly has room; home again
+ * it is the host's own square, the canvases exactly as without play. Motion set, the vectors to the pointer and to what
+ * it loves are measured from the body's centre, never from a layout read.
  */
 import { BAYER8, ORB_STOPS, QUIET_STOPS, cellCss, clamp01, lut, mix3, parseColor, smoothstep, watchDpr, type RGB } from "@/lib/dither";
 import { EYES, FaceHold, HOLD, TONE, TWINKLE, asleepPair, faceCells, flareSize, popSize, type FaceCells, type FacePose } from "@/lib/eyes";
@@ -43,7 +52,38 @@ export interface BlobHandle {
   attend(at: readonly [number, number] | null): void;
   /** A happy squint (`^^`) for `seconds` (0.75 by default) and a hop. */
   cheer(seconds?: number): void;
+  /** The body's motion this frame (the hero in the hand, lib/body.ts), or null at home: the jelly. Ignored under calm. */
+  setMotion(m: BlobMotion | null): void;
+  /** A tap: `O o` wide, then a blink. */
+  poke(): void;
+  /** A patch let go of a surface whose outward normal is (nx, ny): the recoil and a ripple. */
+  snap(nx: number, ny: number): void;
+  /** A hard landing (0 to 1): the patch spreads wide and the low modes ring. */
+  splat(strength: number): void;
   destroy(): void;
+}
+
+/** What the body is pressed against (px from its centre): lib/body.ts Contact. */
+export interface BlobContact {
+  readonly nx: number;
+  readonly ny: number;
+  readonly press: number;
+  readonly d: number;
+  readonly stuck: boolean;
+  readonly neck: number;
+}
+/**
+ * The body's motion as the engine reads it: whether a hand holds it, the drag's lag and where it is held (px from the
+ * centre), its velocity (px/s), its contacts, its centre (client px) and whether it is on its way home.
+ */
+export interface BlobMotion {
+  readonly held: boolean;
+  readonly lag: readonly [number, number];
+  readonly grab: readonly [number, number] | null;
+  readonly v: readonly [number, number];
+  readonly contacts: readonly BlobContact[];
+  readonly at: readonly [number, number];
+  readonly homing: boolean;
 }
 
 interface BlobOptions {
@@ -59,6 +99,12 @@ interface BlobOptions {
   ignoreScale?: boolean;
   /** The page's lead (the hero's blob): its eyes glint on the quicker clock (TWINKLE.rest, not TWINKLE.demo). */
   lead?: boolean;
+  /**
+   * The field's side over the host's in play (1.6 for the hero, which flies): the canvases reach past the host by whole
+   * Bayer tiles, so the stretched, squashed and necked body has room. The body's centre stays where it is, and at rest
+   * the canvases are the host's own.
+   */
+  overscan?: number;
 }
 
 interface Personality { amp: number; speed: number; churn: number; squash: number; spin: number; glow: number; fps: number; face: string; quiet: boolean; rest: readonly [number, number]; blinks: boolean }
@@ -121,6 +167,18 @@ const GLINTS = /[Oo^]/;
 const isOpen = (pair: string): boolean => /[Oo]/.test(pair);
 const INK: RGB = [7, 7, 7];
 const TAU = Math.PI * 2;
+/** The raster's rate while the body in play is live (held, flying, ringing): every frame. */
+const PLAY_FPS = 60;
+/**
+ * The jelly (BlobField.swift :441-516, :982-1081): elongation per px·s of lag and its ceiling, the flight's per px/s·s
+ * and its ceiling (the stretch eases on the hover law's 0.07 s), the most Δv one frame feeds the wobble (px/s·s), the
+ * slosh's ceiling (R; the app's 0.9 row), the contact springs (k, c), the parked dome's breath, the ripple after a snap
+ * (s, its gain).
+ */
+const JELLY = { perLag: 1 / 90, maxStretch: 0.75, perSpeed: 1 / 3600, maxFlight: 0.42, maxDv: 800, sloshCap: 0.158, k: 165, c: 15, dome: 0.07, ripple: 0.36, rippleGain: 0.12 } as const;
+/** One contact as the engine draws it: its press sprung toward the contact's, its normal, distance and stick. */
+interface Slot { p: number; v: number; target: number; nx: number; ny: number; d: number; stuck: boolean; neck: number }
+const slot = (): Slot => ({ p: 0, v: 0, target: 0, nx: 0, ny: -1, d: Infinity, stuck: false, neck: 0 });
 
 function gauss(): number {
   let u = 0;
@@ -163,9 +221,18 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   const stillMode = !!o.still || (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
   let size = o.size;
   let cell = cellCss(1.5);
+  // The field: n cells a side with the body's centre c cells in; the host's own square is n0 cells round c0, `ko` cells in
+  // from the field's corner. Only in play is the field overscanned: at rest ko is 0, n = n0 and c = c0, the canvases
+  // exactly as without play (on a 3x screen a bigger canvas lands its 5 px rows a device px apart in places, so a rest
+  // frame on it would not be the same picture).
   let n = 0;
   let c = 0;
+  let n0 = 0;
+  let c0 = 0;
+  let ko = 0;
   let R = size / 2.8;
+  // TRACE (scripts/check-play.mjs): each full draw is a `blob-draw` measure when the page asked before the mount.
+  const trace = typeof window !== "undefined" && (window as unknown as { __jhTrace?: unknown }).__jhTrace === true;
   const field = document.createElement("canvas");
   const faceCv = document.createElement("canvas");
   field.className = "desk-blob-field";
@@ -207,8 +274,13 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const rect = host.getBoundingClientRect();
     const scale = !o.ignoreScale && rect.width > 0 && host.clientWidth > 0 ? rect.width / host.clientWidth : 1;
     cell = cellCss(1.5) / (scale > 0 ? scale : 1);
-    n = Math.max(4, Math.ceil(size / cell));
-    c = n / 2;
+    n0 = Math.max(4, Math.ceil(size / cell));
+    c0 = n0 / 2;
+    // In play, overscan by whole Bayer tiles (8 cells), so every cell keeps its threshold and the face its grid.
+    const os = motion && !stillMode ? (o.overscan ?? 1) : 1;
+    ko = os > 1 ? 8 * Math.ceil((((os - 1) / 2) * n0) / 8) : 0;
+    n = n0 + 2 * ko;
+    c = c0 + ko;
     R = size / 2.8;
     field.width = n;
     field.height = n;
@@ -218,6 +290,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     faceCv.height = n;
     faceCv.style.width = `${n * cell}px`;
     faceCv.style.height = `${n * cell}px`;
+    // the overscan reaches out from the host's corner by a transform, so growing and shrinking never shifts the layout
+    for (const cv of [field, faceCv]) cv.style.transform = ko ? `translate(${-ko * cell}px, ${-ko * cell}px)` : "";
     img = g!.createImageData(n, n);
     px = new Uint32Array(img.data.buffer);
     faceImg = fg!.createImageData(n, n);
@@ -344,6 +418,36 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let lastDraw = 0;
   let lastFace = 0;
   let destroyed = false;
+  // Play (setMotion): the body's motion, the Δv summed since the last step, whether a hand held it last step; the slosh
+  // (R) and the motion axis the low modes align to; the shear; the eased speed; the two contact slots; the poke, its
+  // blink, the last snap's ripple and the splat; the pointer and what it loves in client px (rebased from `motion.at`).
+  let motion: BlobMotion | null = null;
+  let lastV: readonly [number, number] = [0, 0];
+  let dvX = 0;
+  let dvY = 0;
+  let wasHeld = false;
+  const sloshX = mode(3.2, 0.14, JELLY.sloshCap);
+  const sloshY = mode(3.2, 0.14, JELLY.sloshCap);
+  let axX = 1;
+  let axY = 0;
+  let shear = 0;
+  let speedE = 0;
+  let flick = 0;
+  let neck = 0;
+  const slots: [Slot, Slot] = [slot(), slot()];
+  let pressMoving = false;
+  let pokedAt = -9;
+  let pokeBlinkAt = -1;
+  let rippleAt = -9;
+  let splatK = 0;
+  let rawPointer: [number, number] | null = null;
+  let rawAttend: [number, number] | null = null;
+  /** The play frame's drawn offset (px): the mass toward the hand and the slosh, which the face rides. */
+  let playOff: readonly [number, number] = [0, 0];
+  // The slots as drawn this frame: the press, 1 - compression, 1 + spread.
+  const BP = new Float32Array(2);
+  const CK = new Float32Array(2);
+  const SK = new Float32Array(2);
 
   function resolveTheme(): void {
     const ground = cssVar("--jh-blob-ground");
@@ -377,7 +481,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     haloTo = phaseColor(p);
     fadeAt = t;
     kick();
-    if (!(LOW.has(lastPair[0] ?? "") && LOW.has(P.face[0] ?? ""))) blinkUntil = t + 0.09;
+    if (!(LOW.has(lastPair[0] ?? "") && LOW.has(P.face[0] ?? "")) && t - pokedAt > 0.3) blinkUntil = t + 0.09;
     // eyes opening on a wake catch the light once the lids have lifted
     if (!faceOverride && !isOpen(lastPair) && isOpen(P.face)) glint(TWINKLE.wake);
     lastPair = P.face;
@@ -459,7 +563,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const B = Math.max(1, Math.round(A * 0.7));
     const up = Math.max(1e-3, Math.abs(Math.sin(a)));
     const side = Math.max(1e-3, Math.abs(Math.cos(a)));
-    const most = Math.min(((c - 2 - A) * cell) / R / up, ((c - 2 - B) * cell) / R / side);
+    // the host's own room (c0), overscan or not: the stars stand where they always have
+    const most = Math.min(((c0 - 2 - A) * cell) / R / up, ((c0 - 2 - B) * cell) / R / side);
     return { most, want: Math.max(at, edgeAt(a) + SPARK.gap + (0.3 * A * cell) / R) };
   }
 
@@ -496,6 +601,103 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     sparks.push({ slot, x: Math.cos(a) * r, y: Math.sin(a) * r, born: 0, size, still: true });
   }
 
+  /** A contact's press as drawn: its share of a corner, eased off as a neck takes over. */
+  function drawnPress(sl: Slot, share: number): number {
+    return Math.max(0, sl.p) * share * (1 - 0.55 * sl.neck);
+  }
+  function drawnShare(): number {
+    return slots[0].p > 0.01 && slots[1].p > 0.01 ? 0.68 : 1;
+  }
+  function drawnTotal(): number {
+    const share = drawnShare();
+    return drawnPress(slots[0], share) + drawnPress(slots[1], share);
+  }
+
+  /**
+   * The jelly's step (BlobField.swift stepMotion, :982-1081): the shear from the hold, the axis the low modes ring along,
+   * the wobble rung by the body's change of velocity (summed by setMotion, drained here) and by the release, the contact
+   * slots' springs, the slosh, the splat's decay; and how startled it is.
+   */
+  function stepJelly(dt: number, ks: number, want: number, vLen: number): void {
+    const m = motion;
+    if (!m) return;
+    const ps = R / 59;
+    let ws = 0;
+    if (m.held && m.grab && want > 0.02) {
+      const perp = -m.grab[0] * sy + m.grab[1] * sx;
+      ws = Math.max(-1, Math.min(1, perp / (1.31 * R))) * 1.2 * want;
+    }
+    shear += (ws - shear) * ks;
+    if (vLen > 40 * ps) {
+      const a = Math.min(1, dt * 10);
+      axX += (m.v[0] / vLen - axX) * a;
+      axY += (m.v[1] / vLen - axY) * a;
+    }
+    let jx = dvX;
+    let jy = dvY;
+    dvX = 0;
+    dvY = 0;
+    const jl = Math.hypot(jx, jy);
+    const cap = JELLY.maxDv * ps;
+    if (jl > cap) {
+      jx *= cap / jl;
+      jy *= cap / jl;
+    }
+    sloshX.v -= (0.35 * jx) / R;
+    sloshY.v -= (0.35 * jy) / R;
+    const jr = Math.min(jl, cap) / R;
+    m2.v += 0.7 * jr;
+    m3.v += 0.35 * jr * (m3.x >= 0 ? -1 : 1);
+    if (wasHeld && !m.held) {
+      // Let go: the spring's force vanished, and the body jiggles with what it had.
+      const k = 0.35 + str;
+      sloshX.v += sx * 0.42 * k;
+      sloshY.v += sy * 0.42 * k;
+      m2.v += 0.18 * k * TAU * m2.hz;
+      m3.v += 0.08 * k * TAU * m3.hz;
+    }
+    wasHeld = m.held;
+    const st = Math.min(dt, 1 / 30);
+    pressMoving = false;
+    for (const sl of slots) {
+      sl.v += ((sl.target - sl.p) * JELLY.k - sl.v * JELLY.c) * st;
+      sl.p += sl.v * st;
+      if (Math.abs(sl.v) > 0.002 || Math.abs(sl.target - sl.p) > 0.002) pressMoving = true;
+    }
+    advance(sloshX, dt);
+    advance(sloshY, dt);
+    splatK *= Math.exp(-dt / 0.09);
+    flick = m.held ? clamp01((str - 0.3) / 0.35) : clamp01((speedE - 900 * ps) / (900 * ps));
+  }
+
+  /** The contacts into the two slots, each to the slot already pressing along its normal, else a free one. */
+  function assignSlots(cs: readonly BlobContact[]): void {
+    const used = [false, false];
+    for (let i = 0; i < Math.min(2, cs.length); i++) {
+      const ct = cs[i]!;
+      let j = -1;
+      for (let k = 0; k < 2 && j < 0; k++) if (!used[k] && slots[k]!.p > 0.01 && slots[k]!.nx * ct.nx + slots[k]!.ny * ct.ny > 0.85) j = k;
+      for (let k = 0; k < 2 && j < 0; k++) if (!used[k] && slots[k]!.p <= 0.01) j = k;
+      if (j < 0) j = used[0] ? 1 : 0;
+      used[j] = true;
+      const sl = slots[j]!;
+      sl.target = ct.press;
+      sl.nx = ct.nx;
+      sl.ny = ct.ny;
+      sl.d = ct.d;
+      sl.stuck = ct.stuck;
+      sl.neck = ct.neck;
+    }
+    for (let k = 0; k < 2; k++) {
+      if (used[k]) continue;
+      const sl = slots[k]!;
+      sl.target = 0;
+      sl.d = Infinity;
+      sl.stuck = false;
+      sl.neck = 0;
+    }
+  }
+
   function step(dt: number): void {
     t += dt;
     const k = 1 - Math.exp(-dt / 0.28);
@@ -526,11 +728,51 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       else if (h.a < -cap) h.a = -cap;
       h.ph += (h.d * cur.speed + gauss() * 0.12) * st;
     }
-    // Stretch: the hover law within 1.6 R.
+    // In play the pointer and what it loves are measured from where the body is now, never from a layout read.
+    const play = motion !== null && !stillMode;
+    const ps = R / 59;
+    let lagLen = 0;
+    let vLen = 0;
+    if (motion && play) {
+      pointer = rawPointer ? [rawPointer[0] - motion.at[0], rawPointer[1] - motion.at[1]] : null;
+      attention = rawAttend ? [rawAttend[0] - motion.at[0], rawAttend[1] - motion.at[1]] : null;
+      lagLen = Math.hypot(motion.lag[0], motion.lag[1]);
+      vLen = Math.hypot(motion.v[0], motion.v[1]);
+      speedE += (vLen - speedE) * Math.min(1, dt * 14);
+    }
+    // Stretch: in play the lag (held: a teardrop toward the hand, longer as a patch pulls a neck) or the flight; else the
+    // hover law within 1.6 R.
     let want = 0;
     let dx = sx;
     let dy = sy;
-    if (pointer && !stillMode) {
+    let nk = 0;
+    let nkx = 0;
+    let nky = 0;
+    for (const sl of slots) {
+      if (sl.neck > nk) {
+        nk = sl.neck;
+        nkx = sl.nx;
+        nky = sl.ny;
+      }
+    }
+    neck = play ? nk : 0;
+    const asks = play && motion !== null && (motion.held || vLen > 60 * ps);
+    if (asks && motion) {
+      if (motion.held) {
+        want = Math.min(JELLY.maxStretch, (lagLen * JELLY.perLag) / ps + 0.5 * neck);
+        if (lagLen > 3 * ps) {
+          dx = motion.lag[0] / lagLen;
+          dy = motion.lag[1] / lagLen;
+        } else if (neck > 0) {
+          dx = nkx;
+          dy = nky;
+        }
+      } else {
+        want = Math.min(JELLY.maxFlight, (vLen * JELLY.perSpeed) / ps);
+        dx = motion.v[0] / vLen;
+        dy = motion.v[1] / vLen;
+      }
+    } else if (pointer && !stillMode) {
       const l = Math.hypot(pointer[0], pointer[1]);
       if (l > 3 && l < R * 1.6) {
         want = Math.min(0.35, (l / 90) * 0.35) * (1 - smoothstep(R * 1.3, R * 1.6, l));
@@ -538,7 +780,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         dy = pointer[1] / l;
       }
     }
-    if (attention && want < 0.13 && !stillMode) {
+    if (!play && attention && want < 0.13 && !stillMode) {
       // it leans toward what it loves
       const l = Math.hypot(attention[0], attention[1]) || 1;
       want = 0.13;
@@ -553,6 +795,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     sy /= ln;
     str += (want - str) * ks;
     if (stillMode) str = 0;
+    if (play && motion) stepJelly(dt, ks, want, vLen);
+    else flick = 0;
     advance(m2, dt);
     advance(m3, dt);
     // The look: the pointer within 300 px, else the phase's rest (connecting glances about).
@@ -573,17 +817,48 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       wy = Math.max(-1, Math.min(1, (attention[1] / al) * 1.6));
     } else if (pointer && !stillMode) {
       const pl = Math.hypot(pointer[0], pointer[1]);
-      // The look follows the pointer across the page: within 300 px, or two and a half bodies of a big blob.
-      if (pl < Math.max(300, size * 2.5) && pl > 1) {
+      // The look follows the pointer across the page: within 300 px, or two and a half bodies of a big blob; in play,
+      // wherever it has flown, within 900 px.
+      if (pl < (play ? 900 : Math.max(300, size * 2.5)) && pl > 1) {
         const m = Math.min(1, pl / 120);
         wx = (pointer[0] / pl) * m;
         wy = (pointer[1] / pl) * m;
+      }
+    }
+    if (play && motion) {
+      // Startled (a hard pull, a fast throw) it looks where it is pulled; held, half way along the stretch; pressed
+      // against a wall, away from it.
+      if (flick > 0.35) {
+        wx = wx * (1 - flick) + sx * flick;
+        wy = wy * (1 - flick) + sy * flick;
+      } else if (motion.held && str > 0.05) {
+        wx = wx * 0.5 + sx * 0.5;
+        wy = wy * 0.5 + sy * 0.5;
+      }
+      let bx = 0;
+      let by = 0;
+      let tot = 0;
+      for (const sl of slots) {
+        if (sl.p <= 0.01) continue;
+        bx += sl.nx * sl.p;
+        by += sl.ny * sl.p;
+        tot += sl.p;
+      }
+      if (tot > 0.05) {
+        const k = Math.min(1, tot);
+        wx = wx * (1 - k) + (bx / tot) * k;
+        wy = wy * (1 - k) + (by / tot) * k;
       }
     }
     lit += ((attention ? 1 : 0) - lit) * (1 - Math.exp(-dt / 0.22));
     const lk = Math.min(1, dt * 9);
     look[0] += (wx - look[0]) * lk;
     look[1] += (wy - look[1]) * lk;
+    // A poke's blink, after its `O o` (in any phase, blinks or not).
+    if (pokeBlinkAt >= 0 && t >= pokeBlinkAt) {
+      blinkUntil = t + 0.12;
+      pokeBlinkAt = -1;
+    }
     // Blinks: 120 ms every 3 to 6 s on the round eyes, one in ten doubled; never on ^ ^. The lids are a spring (LID).
     if (P.blinks && !stillMode && t >= nextBlink && t >= blinkUntil) {
       blinkUntil = t + 0.12;
@@ -629,7 +904,12 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         nextSpark = t + (burstLeft > 0 ? SPARK.stagger : SPARK.every[0] + Math.random() * SPARK.every[1]);
       }
     }
-    const target = t < blinkUntil ? 0 : 1;
+    // The lids: a poke opens them wide, a flick wider by how startled; pressed nearly flat they shut; a blink wins.
+    let target = 1;
+    if (!stillMode && t - pokedAt < 0.24) target = 1.15;
+    else if (play && flick > 0.35) target = 1 + 0.22 * flick;
+    if (play && drawnTotal() > 0.85) target = Math.min(target, 0.24);
+    if (t < blinkUntil) target = 0;
     if (stillMode) {
       open = target;
       openV = 0;
@@ -657,25 +937,67 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       if (t % 1.7 < 0.567) base = "~~";
     }
     if (!faceOverride && t < squintUntil) base = "^^";
+    // The reactions over any face but `x x`: a poke's `O o`, a flick's `O O` (even out of sleep or a squint of joy).
+    if (!stillMode && base[0] !== "x") {
+      if (t - pokedAt < 0.24) base = "Oo";
+      else if (motion && flick > 0.35) base = "OO";
+    }
     if (open < 0.3 && !LOW.has(base[0] ?? "")) return "--";
-    return base;
+    if (!motion || stillMode) return base;
+    // Pressed into a side wall, the eye on that side squints (`- O`, `O -`).
+    const pair = base.replace(/\s+/g, "");
+    const l = pair[0] ?? "-";
+    const r = pair[1] ?? l;
+    return `${squint(-1) < 0.3 && /[Oo]/.test(l) ? "-" : l}${squint(1) < 0.3 && /[Oo]/.test(r) ? "-" : r}`;
+  }
+
+  /** How open the eye on `side` (-1 left, 1 right) may be against the walls it is pressed to: 1 free, toward 0 shut. */
+  function squint(side: -1 | 1): number {
+    let k = 1;
+    const ex = side * EYES.spread;
+    const ey = EYES.row;
+    for (const sl of slots) {
+      if (sl.p <= 0.05) continue;
+      const toward = Math.max(0, -(ex * sl.nx + ey * sl.ny)) / EYES.spread;
+      k *= 1 - 0.75 * Math.min(1, sl.p) * Math.min(1, 1.6 * toward);
+    }
+    return k;
   }
 
   function draw(): void {
+    const t0 = trace ? performance.now() : 0;
+    const play = motion !== null && !stillMode;
     const breath = stillMode ? 1 : 1 + Math.sin(t * (1.1 + cur.speed * 1.6)) * (0.03 + cur.speed * 0.016);
     const ear = phase === "asleep" && !stillMode ? 1 + 0.18 * Math.sin((TAU * t) / 4) : 1;
     // A blink dips the body a little (and the reopening's overshoot lifts it as much).
     const sq = cur.squash * (1 - LID.dip * (1 - Math.max(0, Math.min(1.15, open))));
-    const Rb = (R * breath) / (1 + (0.3 + 0.4 * sy * sy) * str);
-    const ampScale = cur.amp * AMP_SCALE * (1 - 0.4 * str) * ear;
-    polar(sq);
+    // In play the volume is kept through the ripple after a snap, the contacts' presses as drawn (a corner shares them, a
+    // neck eases them off, a parked dome breathes), and the outline smooths under the press as a skin under tension.
+    const ripple = play && t - rippleAt < JELLY.ripple ? 1 + JELLY.rippleGain * Math.sin((Math.PI * (t - rippleAt)) / JELLY.ripple) : 1;
+    const Rb = (R * breath * ripple) / (1 + (0.3 + 0.4 * sy * sy) * str);
+    let total = 0;
+    if (play && motion) {
+      const share = drawnShare();
+      const dome = motion.held ? 0 : JELLY.dome * Math.sin((TAU * t) / 4);
+      for (let j = 0; j < 2; j++) {
+        const sl = slots[j]!;
+        const bp = drawnPress(sl, share) * (sl.stuck && sl.neck === 0 ? 1 + dome : 1);
+        BP[j] = bp;
+        CK[j] = 1 - Math.min(0.55, 0.47 * bp);
+        SK[j] = 1 + Math.min(0.8, 0.66 * bp) + (j === 0 ? 0.7 * splatK : 0);
+        total += bp;
+      }
+    }
+    const ampScale = cur.amp * AMP_SCALE * (1 - 0.4 * str) * ear * (play ? 1 - 0.65 * Math.min(1, total) : 1);
+    if (!play) polar(sq);
     for (let i = 0; i < 512; i++) {
       const a = (i / 512) * TAU + spin;
       let s = 0;
       for (const h of H) s += h.a * Math.sin(h.k * a + h.ph);
       OUT[i] = 1 + (s / wsum) * ampScale;
     }
-    const ma = Math.atan2(sy, sx);
+    // the low modes ring along the stretch at rest, along the motion in play
+    const ma = play ? Math.atan2(axY, axX) : Math.atan2(sy, sx);
     const m2x = m2.x;
     const m3x = m3.x;
     edgeRb = Rb;
@@ -731,7 +1053,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const hi = Math.min(n, Math.ceil(c + reach));
     px.fill(0);
     const invRb = 1 / Rb;
-    for (let y = lo; y < hi; y++) {
+    if (play && motion) drawPlay(Rb, sq, m2x, m3x, rimR, rimG, rimB, hr, hg, hb, ga, ba, bkr, bkg, bkb);
+    else for (let y = lo; y < hi; y++) {
       for (let x = lo; x < hi; x++) {
         const i = y * n + x;
         const th = TH[i]!;
@@ -805,10 +1128,16 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     g!.putImageData(img, 0, 0);
     // The face (lib/eyes.ts): it turns with the look and leans into a stretch, on the field's cells (the body's centre is
     // the field's middle, c cells in). Its size is the resting body's, never the breath's or the stretch's, so its edges
-    // hold still while it moves. The happy sparkle pops as `^ ^` appears (a pop playing is never started over).
+    // hold still while it moves. The happy sparkle pops as `^ ^` appears (a pop playing is never started over). In play
+    // it rides the drawn body (the mass shifted toward the hand and sloshing) instead of leaning.
     facePair = pairNow();
-    faceCx = c * cell + look[0] * EYES.look[0] * R + sx * str * 0.39 * R;
-    faceCy = c * cell + EYES.row * Rb * sq + look[1] * EYES.look[1] * R + sy * str * 0.39 * R;
+    if (play) {
+      faceCx = c * cell + playOff[0] + look[0] * EYES.look[0] * R;
+      faceCy = c * cell + playOff[1] + EYES.row * Rb * sq + look[1] * EYES.look[1] * R;
+    } else {
+      faceCx = c * cell + look[0] * EYES.look[0] * R + sx * str * 0.39 * R;
+      faceCy = c * cell + EYES.row * Rb * sq + look[1] * EYES.look[1] * R + sy * str * 0.39 * R;
+    }
     faceR = R * (phase === "muted" ? 0.9 : 1);
     if (Math.abs(look[0] * 10 - faceTurn * 10) > HOLD) faceTurn = Math.round(look[0] * 10) / 10;
     const happy = facePair[0] === "^";
@@ -816,6 +1145,146 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     wasHappy = happy;
     drawEyes();
     if (!host.dataset["live"]) host.dataset["live"] = "1";
+    if (trace) performance.measure("blob-draw", { start: t0, end: performance.now() });
+  }
+
+  /**
+   * The field in play, every cell of the overscanned square (BlobField.swift render, deformed, stretched): a cell past a
+   * wall's plane is cleared, body and halo alike (the flat face on the real edge); the rest is mapped back onto the
+   * undeformed body from the drawn centre (the mass toward the hand and the slosh), squashed along each contact's normal
+   * and spread across it, then stretched into the teardrop with the shear and the neck's pinch; while a stuck patch
+   * clings, its neck is drawn from the patch to the body in rim material with its own halo.
+   */
+  function drawPlay(Rb: number, sq: number, m2x: number, m3x: number, rimR: number, rimG: number, rimB: number, hr: number, hg: number, hb: number, ga: number, ba: number, bkr: number, bkg: number, bkb: number): void {
+    const m = motion;
+    if (!m) return;
+    const tw = 0.585 * Rb * Math.max(0, str - 0.5 * neck);
+    const offX = sx * tw + sloshX.x * R;
+    const offY = sy * tw + sloshY.x * R;
+    playOff = [offX, offY];
+    const invRb = 1 / Rb;
+    const pinch = 2.5 * neck * neck;
+    const bend = str > 0.004 || Math.abs(shear) > 0.001;
+    const s0 = slots[0];
+    const s1 = slots[1];
+    const clip0 = Number.isFinite(s0.d);
+    const clip1 = Number.isFinite(s1.d);
+    const sq0 = BP[0]! > 0.01;
+    const sq1 = BP[1]! > 0.01;
+    const ca0 = CK[0]!;
+    const sb0 = SK[0]!;
+    const ca1 = CK[1]!;
+    const sb1 = SK[1]!;
+    // the neck: the stuck patch pulling hardest, while held
+    let nk: Slot | null = null;
+    if (m.held) for (const sl of slots) if (sl.stuck && sl.neck > 0 && Number.isFinite(sl.d) && (!nk || sl.neck > nk.neck)) nk = sl;
+    const nnx = nk ? nk.nx : 0;
+    const nny = nk ? nk.ny : 0;
+    const nd = nk ? nk.d : 0;
+    const a0 = nk ? (0.66 - 0.16 * nk.neck) * Math.min(nd, Rb) : 0;
+    const span = nd - a0 > 1e-3 ? nd - a0 : 1e-3;
+    const root = 0.5 * Rb;
+    const waist = nk ? Math.max(0.021, 0.4 * Math.pow(1 - nk.neck, 0.8)) * Rb : 0;
+    const foot = nk ? (0.35 + 0.25 * Math.min(1, nk.p)) * Rb : 0;
+    const gHalo = 1.28 + 0.08 * lit;
+    const glow = 0.85 + 0.12 * lit;
+    const shade = (nx: number, ny: number, dm: number, th: number): number => {
+      const diag = clamp01(0.5 + (nx + ny) / 2.6);
+      const col = L[Math.min(5, (diag * 5 + th) | 0)]!;
+      const rr = smoothstep(0.55, 1, dm) * clamp01(0.5 + (nx + ny) / 2) * 0.42;
+      const rim = Math.min(6, (rr * 6 + th) | 0) / 6;
+      const ex = nx + 0.36;
+      const ey = ny + 0.76;
+      const eu = ((ex * ex + ey * ey) / (2 * 0.17 * 0.17)) * 16;
+      const gl = eu >= 256 ? 0 : glow * EXP[eu | 0]!;
+      const glq = Math.min(8, (gl * 8 + th) | 0) / 8;
+      const r = (col[0] + (rimR - col[0]) * rim) * (1 - glq) + 255 * glq;
+      const gg = (col[1] + (rimG - col[1]) * rim) * (1 - glq) + 255 * glq;
+      const b = (col[2] + (rimB - col[2]) * rim) * (1 - glq) + 255 * glq;
+      return (255 << 24) | ((b & 255) << 16) | ((gg & 255) << 8) | (r & 255);
+    };
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const i = y * n + x;
+        const qx = PX[i]!;
+        const qy = PY[i]!;
+        if (clip0 && -(qx * s0.nx + qy * s0.ny) > s0.d) continue;
+        if (clip1 && -(qx * s1.nx + qy * s1.ny) > s1.d) continue;
+        const th = TH[i]!;
+        let ox = qx - offX;
+        let oy = qy - offY;
+        if (sq0) {
+          const a = (ox * s0.nx + oy * s0.ny) / ca0;
+          const b = (oy * s0.nx - ox * s0.ny) / sb0;
+          ox = a * s0.nx - b * s0.ny;
+          oy = a * s0.ny + b * s0.nx;
+        }
+        if (sq1) {
+          const a = (ox * s1.nx + oy * s1.ny) / ca1;
+          const b = (oy * s1.nx - ox * s1.ny) / sb1;
+          ox = a * s1.nx - b * s1.ny;
+          oy = a * s1.ny + b * s1.nx;
+        }
+        ox *= invRb;
+        oy = (oy * invRb) / sq;
+        if (bend) {
+          let u = ox * sx + oy * sy;
+          let w = -ox * sy + oy * sx;
+          u -= shear * w;
+          const tl = smoothstep(0, 1, u * 0.9 + 0.5);
+          const al = (1 + 0.95 * str) * (1 - tl) + (1 - 0.22 * str) * tl;
+          const tail = u < 0 ? Math.min(1, -u) : 0;
+          u /= al;
+          w *= (1 + str * (0.5 * tail + 1.4 * tail * tail) + pinch * tail) / (1 + 0.22 * str * tl);
+          ox = u * sx - w * sy;
+          oy = u * sy + w * sx;
+        }
+        const d = Math.hypot(ox, oy);
+        const idx = ((((Math.atan2(oy, ox) / TAU) * 512) | 0) + 512) & 511;
+        let mul = OUT[idx]! + m2x * C2[idx]! + m3x * C3[idx]!;
+        if (mul < 0.35) mul = 0.35;
+        if (d <= mul) {
+          px[i] = ns && d > 0.72 * mul && sparkAt(x, y, th) ? sparkBody : shade(ox / mul, oy / mul, d / mul, th);
+          continue;
+        }
+        let ng = 0;
+        if (nk) {
+          const along = -(qx * nnx + qy * nny);
+          if (along >= a0 && along <= nd) {
+            const u = (along - a0) / span;
+            const hw = waist + (root - waist) * (1 - u) * (1 - u) + (foot - waist) * u * u;
+            const ac = Math.abs(qy * nnx - qx * nny);
+            if (ac <= hw) {
+              const ql = Math.hypot(qx, qy) || 1;
+              px[i] = shade(qx / ql, qy / ql, 1, th);
+              continue;
+            }
+            if (ac <= 1.45 * hw) ng = (1.45 - ac / hw) / 0.45;
+          }
+        }
+        if (ns) {
+          const sc = sparkAt(x, y, th);
+          if (sc) {
+            px[i] = sc === 1 ? sparkCore : sparkArm;
+            continue;
+          }
+        }
+        let gq = (gHalo * mul - d) / (0.85 * mul);
+        if (ng > gq) gq = ng;
+        if (gq <= 0) continue;
+        if (gq > 1) gq = 1;
+        gq = gq * gq * (3 - 2 * gq);
+        const f = Math.min(5, (gq * 5 + th) | 0) / 5;
+        if (f <= 0) continue;
+        const ag = f * ga;
+        const ab = f * ba * (1 - ag);
+        const A = ag + ab;
+        const r = (hr * ag + bkr * ab) / A;
+        const gg = (hg * ag + bkg * ab) / A;
+        const b = (hb * ag + bkb * ab) / A;
+        px[i] = (((A * 255) & 255) << 24) | ((b & 255) << 16) | ((gg & 255) << 8) | (r & 255);
+      }
+    }
   }
 
   /**
@@ -883,6 +1352,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
 
   function shouldRun(): boolean {
     if (destroyed || stillMode || !visible || document.hidden) return false;
+    if (motion) return true;
     if (P.quiet && !pointer && !attention && t - activeAt > 20 && shiver < 0.02 && str < 0.005 && lit < 0.01) return false;
     return true;
   }
@@ -893,7 +1363,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     step(dt);
     // The whole frame at the phase's rate (24 while stars stand round the head); a flare or a pop alone redraws only the
     // face, at 60, over the field as it was last drawn.
-    const live = t < blinkUntil + 0.28 ? 60 : shiver > 0.03 || str > 0.01 || t - fadeAt < 0.6 || pointer || sparks.length > 0 ? 24 : P.fps;
+    const live = playLive() ? PLAY_FPS : t < blinkUntil + 0.28 ? 60 : shiver > 0.03 || str > 0.01 || t - fadeAt < 0.6 || pointer || sparks.length > 0 ? 24 : P.fps;
     if (now - lastDraw >= 1000 / live - 2) {
       draw();
       lastDraw = now;
@@ -903,6 +1373,14 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       lastFace = now;
     }
     if (shouldRun()) raf = requestAnimationFrame(frame);
+  }
+  /** In play and moving: held, flying, ringing, pressing, poked, rippling or splatted; a still perch draws at the phase's rate. */
+  function playLive(): boolean {
+    if (!motion || stillMode) return false;
+    if (motion.held || Math.hypot(motion.v[0], motion.v[1]) > 1 || pressMoving) return true;
+    if (Math.abs(sloshX.x) + Math.abs(sloshY.x) + Math.abs(m2.x) + Math.abs(m3.x) > 0.012) return true;
+    if (Math.abs(sloshX.v) + Math.abs(sloshY.v) + Math.abs(m2.v) + Math.abs(m3.v) > 0.08) return true;
+    return t - pokedAt < 0.6 || t - rippleAt < JELLY.ripple || splatK > 0.02;
   }
   function wake(): void {
     if (raf || !shouldRun()) return;
@@ -946,17 +1424,24 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
 
   // Pointer over the desk reaches the blob; a press advances the phase.
   const root = o.pointerRoot ?? host;
-  const onMove = (e: PointerEvent): void => {
-    // Off screen the eyes have nothing to follow: no layout read for a blob nobody sees.
-    if (stillMode || !visible) return;
+  /** The vector from the host's centre to a point on the screen, in its own px (one layout read). */
+  function fromCentre(at: readonly [number, number]): [number, number] {
     const rect = host.getBoundingClientRect();
     const scale = rect.width / (size || 1) || 1;
-    pointer = [(e.clientX - (rect.left + rect.width / 2)) / scale, (e.clientY - (rect.top + rect.height / 2)) / scale];
+    return [(at[0] - (rect.left + rect.width / 2)) / scale, (at[1] - (rect.top + rect.height / 2)) / scale];
+  }
+  const onMove = (e: PointerEvent): void => {
+    // Off screen the eyes have nothing to follow: no layout read for a blob nobody sees. In play the step measures it from
+    // the body's centre, so the move only keeps the point.
+    if (stillMode || !visible) return;
+    rawPointer = [e.clientX, e.clientY];
+    if (!motion) pointer = fromCentre(rawPointer);
     activeAt = t;
     wake();
   };
   const onLeave = (): void => {
     pointer = null;
+    rawPointer = null;
   };
   const onClick = (): void => {
     o.onPhaseAdvance?.();
@@ -1006,12 +1491,12 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     attend(at) {
       if (!at) {
         attention = null;
+        rawAttend = null;
       } else {
         const onset = !attention;
-        // One layout read per change: the vector from the blob's centre, in its own px.
-        const rect = host.getBoundingClientRect();
-        const scale = rect.width / (size || 1) || 1;
-        attention = [(at[0] - (rect.left + rect.width / 2)) / scale, (at[1] - (rect.top + rect.height / 2)) / scale];
+        rawAttend = [at[0], at[1]];
+        // One layout read per change: the vector from the blob's centre, in its own px (in play, from where it is now).
+        attention = motion && !stillMode ? [at[0] - motion.at[0], at[1] - motion.at[1]] : fromCentre(at);
         // what it loves lights up: stars pop round its head and the nearer eye catches the light (on a squint of joy,
         // the happy sparkle pulses instead)
         if (onset) {
@@ -1029,6 +1514,81 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       blinkUntil = Math.max(blinkUntil, t + 0.06);
       burst();
       kick();
+      activeAt = t;
+      wake();
+    },
+    setMotion(m) {
+      if (stillMode || destroyed) return;
+      const grows = (o.overscan ?? 1) > 1;
+      if (m) {
+        const starting = !motion;
+        // Δv is summed here and drained by the step, so no kick between the two loops is lost.
+        dvX += m.v[0] - lastV[0];
+        dvY += m.v[1] - lastV[1];
+        lastV = m.v;
+        motion = m;
+        assignSlots(m.contacts);
+        if (starting && grows) {
+          // into play: the overscanned field, drawn at once so no frame is blank
+          alloc(size);
+          draw();
+        }
+        activeAt = t;
+        wake();
+        return;
+      }
+      if (!motion) return;
+      motion = null;
+      lastV = [0, 0];
+      dvX = 0;
+      dvY = 0;
+      wasHeld = false;
+      flick = 0;
+      shear = 0;
+      speedE = 0;
+      splatK = 0;
+      neck = 0;
+      for (const sl of slots) Object.assign(sl, slot());
+      for (const md of [sloshX, sloshY]) {
+        md.x = 0;
+        md.v = 0;
+      }
+      // Home again: one layout read rebases the pointer and what it loves on the host; the field is the host's own again.
+      pointer = rawPointer ? fromCentre(rawPointer) : null;
+      attention = rawAttend ? fromCentre(rawAttend) : null;
+      if (grows) {
+        alloc(size);
+        draw();
+      }
+      activeAt = t;
+      wake();
+    },
+    poke() {
+      if (stillMode || destroyed) return;
+      pokedAt = t;
+      blinkUntil = -1;
+      pokeBlinkAt = t + 0.26;
+      nextBlink = Math.max(nextBlink, t + 0.5);
+      activeAt = t;
+      wake();
+    },
+    snap(nx, ny) {
+      if (stillMode || destroyed) return;
+      sloshX.v -= nx * 0.56;
+      sloshY.v -= ny * 0.56;
+      m2.v += 0.22 * TAU * m2.hz;
+      m3.v += 0.1 * TAU * m3.hz;
+      shiver = Math.min(4, shiver + 0.7);
+      for (const h of H) h.a += gauss() * 0.084 * h.w;
+      rippleAt = t;
+      activeAt = t;
+      wake();
+    },
+    splat(strength) {
+      if (stillMode || destroyed) return;
+      splatK = Math.max(splatK, strength);
+      m2.v += 0.25 * strength * TAU * m2.hz;
+      m3.v += 0.12 * strength * TAU * m3.hz;
       activeAt = t;
       wake();
     },

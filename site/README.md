@@ -5,6 +5,9 @@ tokens in `app/globals.css`. Self-hosted fonts in `app/fonts` with their licence
 Inter 4.1 (cut to the page), JetBrains Mono.
 
 - Run: `pnpm -C site dev` (http://localhost:3939); check: `pnpm -C site typecheck`; ship: `pnpm -C site build`.
+- Check the hero's blob in the hand: its body's unit tests from the repo root,
+  `TSX_TSCONFIG_PATH=site/tsconfig.json node --import tsx --test site/lib/body.test.ts`, and against a built site served
+  by `pnpm -C site start`, `node site/scripts/check-play.mjs` (headless Chromium: the desk, a phone by touch, calm).
 - `predev` and `prebuild` copy `scripts/install.sh` to `public/install.sh` (gitignored; the repo's file is the only source).
 - The page (`app/page.tsx`) is built from `components/site/*` on `styles/site.css`, the Mac's top edge and the blob from
   `components/desk/*` on `styles/desk.css`, the kit's twins in `components/kit/*`, and one playable demo per feature in
