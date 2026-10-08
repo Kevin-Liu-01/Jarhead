@@ -117,8 +117,10 @@
 #   transcript the model trims to 400 — then a daemon reconnect at 1.0 s, the window hidden at 1.4 s and
 #   shown at 1.8 s: run.log must carry agent.open, agent.close, agent.open naming ONE viewer; then "Load
 #   earlier" (60 rows, mode prepend) at 2.4 s between two `geometry` lines: the bottom stays pinned
-#   (distance 0) and `shown 400→460`. PREVIEW_SETTLE=3.4 for it. PREVIEW_CONNECTED=0 on `resumed` is the
-#   caret gate's control (the streaming caret must not blink while disconnected).
+#   (distance 0) and `shown 400→460`. PREVIEW_SETTLE=3.4 for it. The caret gate's control is
+#   `PREVIEW_CONNECTED=0 PREVIEW_ACTION=check-stream@0.3 apps/mac/Scripts/console-preview.sh resumed` (the same
+#   without PREVIEW_CONNECTED is the positive run): with the default actions overridden, "Hey. Still here." stays
+#   the last, non-final line, and the streaming caret must not blink while disconnected.
 #   `loading` is the dither pass's loading states: a ledger day picked and its read pinned in
 #   flight, a search pinned in flight — the stream's "Reading…" (16×2 glyphs), the rail's
 #   "Reading" row and the Jarhead section's "Searching…" (8×1); its default action prints the
@@ -301,7 +303,8 @@ case "$SCENARIO" in local|local-empty|buttons) export PREVIEW_WINDOW_SIZE="${PRE
 # `conversation` and `jarhead` under Ready's Hands and Gemini CLI. A row that changes height moves these
 # edges: measure again before the next shot. They are measured on the daytime rail, Today holding the
 # paused → resumed chain (3 h 05 min old); from midnight to about 03:05 that chain sits under Yesterday,
-# Today is gone and the left rail's rows below Pinned move up 59 pt.
+# and the left rail's rows below Pinned move up (59 pt on the awake shots; asleep, Today keeps the open
+# session's chain and moves one row).
 case "$SCENARIO" in threads) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x806}";; esac
 case "$SCENARIO" in conversation|jarhead) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x808}";; esac
 case "$SCENARIO" in settings|problems) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1035}";; esac

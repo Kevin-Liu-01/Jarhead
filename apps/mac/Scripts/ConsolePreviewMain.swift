@@ -46,8 +46,10 @@ import SwiftUI
 //                    the rest). Then a daemon reconnect at 1.0 s (the pane must re-send ONE agent.open naming
 //                    its viewer — the same token as its first), the window hidden at 1.4 s (agent.close, same
 //                    viewer) and shown at 1.8 s (agent.open again): run.log's `send:` lines are the check.
-//                    PREVIEW_CONNECTED=0 on `resumed` is the caret gate's control: its last line, the one
-//                    non-final item, sits still while disconnected (`live` ends on a final line).
+//                    The caret gate's control is `PREVIEW_CONNECTED=0 PREVIEW_ACTION=check-stream@0.3` on
+//                    `resumed` (the same without PREVIEW_CONNECTED is the positive run): overriding the default
+//                    actions keeps "Hey. Still here." the last, non-final line at the shot, and its caret must
+//                    not blink while disconnected (`live` ends on a final line).
 //     timing       = the pane switch at REAL speed (no PREVIEW_WIPE_SECONDS), traced: live data (with the
 //                    agents' transcripts and marks, so the conversation pane has rows), then four switches
 //                    — into the Jarhead chain, back to Now, into the blocked Claude session, back — the
@@ -2701,7 +2703,7 @@ struct FakeData {
     func transcript() -> [TranscriptItem] {
         [
             TranscriptItem(id: "u1", speaker: .kevin, text: "Hey Jarhead, what's the Claude session doing on the auth branch?", startMs: 0, endMs: 2400, at: ago(140), final: true),
-            TranscriptItem(id: "u2", speaker: .jarhead, text: "Two sessions are active in gt. The auth one has been blocked for six minutes on a failing test in auth.spec.ts — want me to look?", startMs: 2600, endMs: 6100, at: ago(139), final: true),
+            TranscriptItem(id: "u2", speaker: .jarhead, text: "Two sessions are active in gt. The auth one has been blocked for six minutes on a failing test in auth.spec.ts, want me to look?", startMs: 2600, endMs: 6100, at: ago(139), final: true),
             TranscriptItem(id: "u3", speaker: .kevin, text: "Yeah, go ahead and fix it if it's obvious.", startMs: 7000, endMs: 9200, at: ago(138), final: true),
             TranscriptItem(id: "u4", speaker: .jarhead, text: "On it.", startMs: 9400, endMs: 9800, at: ago(137), final: true),
         ]
@@ -3012,7 +3014,7 @@ struct FakeData {
             (.kevin, "Hello"),
         ]
         let live: [(SpeakerRole, String)] = [
-            (.kevin, "Are you back?"), (.jarhead, "Back, yes — same conversation, new voice."),
+            (.kevin, "Are you back?"), (.jarhead, "Back, yes, same conversation and a new voice."),
             (.kevin, "Nice"), (.kevin, "Hello again"), (.jarhead, "Hey. Still here."),
         ]
         func items(_ words: [(SpeakerRole, String)], from t0: Double, final: Bool) -> [TranscriptItem] {
@@ -3057,7 +3059,7 @@ struct FakeData {
         r = row(t0 + 90_800, "session.started"); r.sessionId = "live_2"; r.voice = "marin"; r.language = "en"; r.accent = "british"; r.resumedFrom = "live_1"; r.ms = 700; rows.append(r)
         rows.append(said(t0 + 92_000, "sw5", "Marin here."))
         rows.append(heard(t0 + 120_000, "sw6", "Are you back?"))
-        rows.append(said(t0 + 123_000, "sw7", "Back, yes — same conversation, new voice."))
+        rows.append(said(t0 + 123_000, "sw7", "Back, yes, same conversation and a new voice."))
         var end = row(t0 + 300_000, "session.closed"); end.sessionId = "live_2"; end.reason = "close_requested"; end.usageSeconds = 209; rows.append(end)
         return rows
     }
@@ -3238,7 +3240,7 @@ struct FakeData {
 
     /// The one problem the live day carries: Accessibility denied, with Request as its remedy.
     var accessibilityProblem: Problem {
-        Problem(kind: "permission.accessibility", text: "Accessibility permission denied — hands can click but cannot read the UI tree.",
+        Problem(kind: "permission.accessibility", text: "Accessibility not granted: the hands can click but cannot read the UI tree.",
                 remedy: ProblemRemedy(label: "Request", command: ["type": .string("request-permission"), "which": .string("accessibility")], open: nil), since: ago(40 * 60))
     }
 
@@ -3392,7 +3394,7 @@ struct FakeData {
                 DelegationStep(id: "ja-s2", at: t + 11_700, kind: .tool, text: nil, tool: ToolStep(name: "agents_list", input: .object(["project": .string("gt")]), output: nil, ok: true, ms: 188), screenshotPath: nil),
                 DelegationStep(id: "ja-s3", at: t + 12_300, kind: .commentary, text: "One session is stuck: gt · sdk, waiting on a prompt.", tool: nil, screenshotPath: nil),
             ])
-            rows.append(said(t + 14_000, "ja2", "The gt · sdk session is waiting for you — it wants to know whether to delete the old migrations."))
+            rows.append(said(t + 14_000, "ja2", "The gt · sdk session is waiting for you: it wants to know whether to delete the old migrations."))
             rows.append(heard(t + 61_000, "ja3", "Tell it yes, keep going."))
             rows.append(said(t + 63_500, "ja4", "Told it yes. It is running the migration now."))
             var stop = row(t + 4 * 60_000, "stop"); stop.how = "said"; stop.cancelled = "del_9x1vk"; rows.append(stop)
@@ -3409,7 +3411,7 @@ struct FakeData {
                 DelegationStep(id: "jb-s2", at: t + 8_400, kind: .tool, text: nil, tool: ToolStep(name: "agent_transcript", input: .object(["agentId": .string("sessions:codex:1"), "last": .number(12)]), output: nil, ok: true, ms: 412), screenshotPath: nil),
             ])
             rows.append(said(t + 11_000, "jb2", "Codex finished the api hotfix and opened PR #412; 85 tests pass."))
-            var problem = row(t + 40_000, "problem"); problem.text = "Accessibility permission denied — hands can click but cannot read the UI tree."; rows.append(problem)
+            var problem = row(t + 40_000, "problem"); problem.text = "Accessibility not granted: the hands can click but cannot read the UI tree."; rows.append(problem)
             rows.append(heard(t + 95_000, "jb3", "Great, that's all for now."))
             // The dismissal: the voice's one-word farewell, the sleep row (why, the cue, that the
             // farewell was said) before the close, then the server's word for the close it asked for.
@@ -3477,11 +3479,11 @@ struct FakeData {
         r = row(d.createdAt, "delegation.created"); r.delegation = created; rows.append(r)
         for s in d.steps { r = row(s.at, "delegation.step"); r.delegationId = d.id; r.step = s; rows.append(r) }
         r = row(d.timings.doneAt!, "delegation.finished"); r.delegationId = d.id; r.status = .done; r.summary = d.summary; rows.append(r)
-        r = row(ago(595), "said"); r.item = TranscriptItem(id: "l2", speaker: .jarhead, text: "The gt · sdk session is waiting for you — it wants to know whether to delete the old migrations.", startMs: 5000, endMs: 9000, at: ago(595), final: true); rows.append(r)
+        r = row(ago(595), "said"); r.item = TranscriptItem(id: "l2", speaker: .jarhead, text: "The gt · sdk session is waiting for you: it wants to know whether to delete the old migrations.", startMs: 5000, endMs: 9000, at: ago(595), final: true); rows.append(r)
         // Two problems in the same millisecond, the way the engine writes them on a fresh install.
         let sameMs = ago(586)
         r = row(sameMs, "problem"); r.text = "Screen recording permission was revoked by the system."; rows.append(r)
-        r = row(sameMs, "problem"); r.text = "Accessibility permission denied — hands can click but cannot read the UI tree."; rows.append(r)
+        r = row(sameMs, "problem"); r.text = "Accessibility not granted: the hands can click but cannot read the UI tree."; rows.append(r)
         r = row(ago(583), "agent"); r.agent = agents()[6]; rows.append(r)
         // An idle sleep: the sleep row says why, then the server's word for the close it asked for.
         r = row(ago(61), "sleep"); r.sessionId = "sess_7f3a9c2e41b0"; r.cause = "idle"; rows.append(r)

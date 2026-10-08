@@ -41,8 +41,9 @@
 #   scenario's framing lives in one place. console-preview.sh also holds the clocks' digits still for these
 #   (PREVIEW_STILL_DIGITS=1: Listening mm:ss, Expires in and a timer's left swap in place, never caught half
 #   rolled), and the harness keeps overlay scrollers whatever the Mac's setting, so no pane reserves a gutter.
-#   The framings are measured on the daytime rail: from midnight to about 03:05 the rail's Today is empty and
-#   its rows below Pinned sit 59 pt higher, so shoot after that (the run says so before it starts):
+#   The framings are measured on the daytime rail: from midnight to about 03:05 the paused → resumed chain moves
+#   under Yesterday and the rail's rows below Pinned move up (59 pt on the awake shots), so shoot after that (the
+#   run says so before it starts):
 #     threads         console-threads.jpg       the split: Notes + Spotify on the background lane, Slack on the
 #                                               screen lane; Slack asking in the left rail and in the Now panel
 #                                               with its Stop, one chip per spawned thread in its parent card
@@ -256,9 +257,9 @@ shoot_window() {
 # ---------------------------------------------------------------- console
 if want console; then
   echo "console"
-  # The framings assume the daytime rail (see the header): before 03:05 the left rail comes out 59 pt off.
+  # The framings assume the daytime rail (see the header): before 03:05 the left rail comes out of its framing.
   if (( 10#$(date +%H%M) < 305 )); then
-    echo "  note: it is before 03:05, so the rail's Today is empty and the Console shots' left rail lands 59 pt off its framing" >&2
+    echo "  note: it is before 03:05, so the resumed chain sits under Yesterday and the Console shots' left rail lands off its framing" >&2
   fi
   # console <scenario> <name> [WxH]: one Console scenario at the window size console-preview.sh gives it
   # (its own, else 1180x760); a WxH here overrides that. An empty size never reaches the harness as one.
