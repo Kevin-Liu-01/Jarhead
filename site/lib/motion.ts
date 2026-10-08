@@ -16,8 +16,9 @@ export const SPRING = { type: "spring", visualDuration: 0.36, bounce: 0.14 } as 
 /** The character's spring: the blob's own moves, with a little more give. */
 export const SPRING_CHAR = { type: "spring", visualDuration: 0.52, bounce: 0.34 } as const;
 /**
- * The hand's spring: the hero's blob held trails the hand by about 56 ms of its speed and rings at 2.8 Hz when it stops
- * (the app's drag spring, 300 / 17, BlobPhysics.swift). The one exception to "direct manipulation never springs".
+ * The hand's spring: the hero's blob held trails the hand by about 56 ms of its speed and rings at about 2.4 Hz when it
+ * stops (the damped ring of the app's drag spring, 300 / 17, BlobPhysics.swift). The one exception to "direct
+ * manipulation never springs".
  */
 export const SPRING_DRAG = { type: "spring", visualDuration: 0.3, bounce: 0.51 } as const;
 

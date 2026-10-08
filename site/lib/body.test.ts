@@ -161,6 +161,43 @@ test("stuck, then pulled straight off by hand, it snaps at 40·s of pull", () =>
   assert.ok(Math.abs(pull - 40 * s) <= 1, `snap at ${pull.toFixed(2)} vs ${(40 * s).toFixed(2)}`);
 });
 
+test("stuck, pulled slowly off by hand and let go before the snap, it sags back, rests and flies home", () => {
+  const box: Box = { l: -100, t: -1e6, r: 1e6, b: 1e6 };
+  const w: World = { box, island: null };
+  // pulls of 15 to 85 % of the snap's 40·s, let go while the hand still moves and after it has held still 0.4 s (stale)
+  for (const frac of [0.15, 0.5, 0.85]) {
+    for (const hold of [0, 0.4]) {
+      const at = `pull ${frac}, hold ${hold} s`;
+      let snapped = false;
+      const b = body({ onSnap: () => (snapped = true) });
+      b.fling(-300, 0);
+      run(b, w, 4, undefined, () => b.atRest);
+      assert.equal(b.stuckCount, 1, `${at}: stuck first`);
+      const x0 = b.x;
+      const pull = frac * 40 * s;
+      b.beginDrag(x0, 0, 0);
+      let ms = 0;
+      run(b, w, 0.8, (t) => {
+        ms = t * 1000;
+        b.moveDrag(x0 + pull * Math.min(1, t / 0.7), 0, ms);
+      });
+      run(b, w, hold, (t) => b.moveDrag(x0 + pull, 0, ms + t * 1000));
+      assert.ok(b.neck > 0 && b.neck < 1, `${at}: necked ${b.neck}`);
+      b.endDrag(ms + hold * 1000);
+      const t = run(b, w, 6, undefined, () => b.atRest);
+      assert.ok(!snapped, `${at}: no snap`);
+      assert.equal(b.mode, "rest", `${at}: at rest after ${t.toFixed(2)} s, neck ${b.neck}`);
+      assert.equal(b.neck, 0, `${at}: no neck left`);
+      assert.equal(b.stuckCount, 1, `${at}: still stuck`);
+      assert.ok(Math.abs(b.x - box.l - 0.62 * R) <= 0.6, `${at}: on its dome, ${(b.x - box.l).toFixed(2)}`);
+      // what heroPlay does HOME_AFTER later
+      b.home(true);
+      run(b, w, 3, undefined, () => b.atRest);
+      assert.ok(b.atHome, `${at}: home, at ${b.x.toFixed(2)}, ${b.y.toFixed(2)}`);
+    }
+  }
+});
+
 test("home(true) flies home under the cap and lands exactly on it", () => {
   const b = body();
   b.place(-400, 200);

@@ -33,7 +33,7 @@
  * it loves are measured from the body's centre, never from a layout read.
  */
 import { BAYER8, ORB_STOPS, QUIET_STOPS, cellCss, clamp01, lut, mix3, parseColor, smoothstep, watchDpr, type RGB } from "@/lib/dither";
-import { EYES, FaceHold, HOLD, TONE, TWINKLE, asleepPair, faceCells, flareSize, popSize, type FaceCells, type FacePose } from "@/lib/eyes";
+import { EYES, FaceHold, HOLD, TONE, TWINKLE, asleepPair, faceCells, flareSize, pairCells, popSize, type FaceCells, type FacePose } from "@/lib/eyes";
 import { glintTurn } from "@/lib/live";
 import { cssVar, type Theme } from "@/lib/theme";
 import type { Phase } from "@/lib/phase";
@@ -176,6 +176,14 @@ const PLAY_FPS = 60;
  * (s, its gain).
  */
 const JELLY = { perLag: 1 / 90, maxStretch: 0.75, perSpeed: 1 / 3600, maxFlight: 0.42, maxDv: 800, sloshCap: 0.158, k: 165, c: 15, dome: 0.07, ripple: 0.36, rippleGain: 0.12 } as const;
+/**
+ * The eyes' fit onto the body in play (BlobField.swift renderEyes, fittedColumn), in R. `eye` is an eye's widest ink
+ * either side of its middle (a lid's half and half its stroke, lib/eyes.ts, and a hair): body under that is the loose
+ * fit, and the strict one wants `more` beyond it and `up` above and below. The rows are tried from the eyes' own down the
+ * face (the app's half rows, a tenth of R each); `gap` is the least distance between the eyes' middles, a cell clear of
+ * touching; the pull eases over `tau` s.
+ */
+const FIT = { eye: 0.17, more: 0.05, up: 0.12, rows: [0, -0.05, 0.05, -0.1, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], gap: 0.36, tau: 0.09 } as const;
 /** One contact as the engine draws it: its press sprung toward the contact's, its normal, distance and stick. */
 interface Slot { p: number; v: number; target: number; nx: number; ny: number; d: number; stuck: boolean; neck: number }
 const slot = (): Slot => ({ p: 0, v: 0, target: 0, nx: 0, ny: -1, d: Infinity, stuck: false, neck: 0 });
@@ -261,6 +269,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let TH = new Float32Array(0);
   let R0 = new Float32Array(0);
   let TI = new Uint16Array(0);
+  /** In play, the cells drawn as body this frame (drawPlay): what the eyes are fitted onto. */
+  let BODY = new Uint8Array(0);
   let cacheSq = -1;
   const OUT = new Float32Array(512);
   const C2 = new Float32Array(512);
@@ -303,6 +313,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     TH = new Float32Array(n * n);
     R0 = new Float32Array(n * n);
     TI = new Uint16Array(n * n);
+    BODY = new Uint8Array(n * n);
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         const i = y * n + x;
@@ -389,6 +400,13 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let faceCx = 0;
   let faceCy = 0;
   let faceR = 0;
+  /** In play, the pair's half spread as fitted onto the body (fitFace); 0 at rest, where faceCells spaces it. */
+  let faceHalf = 0;
+  /** The fit's pull on the left eye, the right eye and the row (px, eased), and when it was last eased (-1: not yet). */
+  let fitL = 0;
+  let fitR = 0;
+  let fitY = 0;
+  let fitAt = -1;
   /**
    * The face's turn as drawn: the look's sideways part in tenths, held until the look is HOLD of a tenth past it (as the
    * island's), so an easing look re-draws the narrowing eye only as it steps, never every frame.
@@ -1140,6 +1158,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     }
     faceR = R * (phase === "muted" ? 0.9 : 1);
     if (Math.abs(look[0] * 10 - faceTurn * 10) > HOLD) faceTurn = Math.round(look[0] * 10) / 10;
+    faceHalf = 0;
+    if (play) fitFace();
     const happy = facePair[0] === "^";
     if (happy && !wasHappy && t >= joyAt + TWINKLE.pop) joyAt = t;
     wasHappy = happy;
@@ -1203,6 +1223,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       const b = (col[2] + (rimB - col[2]) * rim) * (1 - glq) + 255 * glq;
       return (255 << 24) | ((b & 255) << 16) | ((gg & 255) << 8) | (r & 255);
     };
+    BODY.fill(0);
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         const i = y * n + x;
@@ -1245,6 +1266,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         if (mul < 0.35) mul = 0.35;
         if (d <= mul) {
           px[i] = ns && d > 0.72 * mul && sparkAt(x, y, th) ? sparkBody : shade(ox / mul, oy / mul, d / mul, th);
+          BODY[i] = 1;
           continue;
         }
         let ng = 0;
@@ -1257,6 +1279,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
             if (ac <= hw) {
               const ql = Math.hypot(qx, qy) || 1;
               px[i] = shade(qx / ql, qy / ql, 1, th);
+              BODY[i] = 1;
               continue;
             }
             if (ac <= 1.45 * hw) ng = (1.45 - ac / hw) / 0.45;
@@ -1287,6 +1310,104 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     }
   }
 
+  /** Whether the cell under a point (field px) was drawn as body this play frame. */
+  function isBody(x: number, y: number): boolean {
+    const i = Math.floor(x / cell);
+    const j = Math.floor(y / cell);
+    return i >= 0 && j >= 0 && i < n && j < n && BODY[j * n + i] === 1;
+  }
+
+  /** Body under an eye's middle at (x, y): loosely, under its ink either side; strictly, FIT.more past it and FIT.up up and down. */
+  function bodyUnder(x: number, y: number, strict: boolean): boolean {
+    const a = (strict ? FIT.eye + FIT.more : FIT.eye) * R;
+    if (!isBody(x, y) || !isBody(x - a, y) || !isBody(x + a, y)) return false;
+    return !strict || (isBody(x, y - FIT.up * R) && isBody(x, y + FIT.up * R));
+  }
+
+  /** The body's run along the row through (x, y), from its first cell's left to its last cell's right (field px); null off body. */
+  function runAt(x: number, y: number): readonly [number, number] | null {
+    const j = Math.floor(y / cell);
+    const i = Math.floor(x / cell);
+    if (j < 0 || j >= n || i < 0 || i >= n || BODY[j * n + i] !== 1) return null;
+    let a = i;
+    let b = i;
+    while (a > 0 && BODY[j * n + a - 1] === 1) a--;
+    while (b < n - 1 && BODY[j * n + b + 1] === 1) b++;
+    return [a * cell, (b + 1) * cell];
+  }
+
+  /** An eye's middle pulled toward `toward` until body lies under it (BlobField.swift fittedColumn), or null. */
+  function fitColumn(x: number, y: number, toward: number, strict: boolean): number | null {
+    let u = x;
+    for (let k = 0; k < 9; k++) {
+      if (bodyUnder(u, y, strict)) return u;
+      u += (toward - u) * 0.35;
+      if (Math.abs(toward - u) < 0.6 * cell) return null;
+    }
+    return null;
+  }
+
+  /**
+   * The pair on the body in play (BlobField.swift renderEyes): squashed on a wall, pulled thin or necked, the eyes are
+   * pulled toward the body's middle until body lies under both, on their own row first and then half a step up and down
+   * the face, strictly and then loosely, never closer than FIT.gap. A sliver too thin for that (where the app shows no
+   * eyes) takes them closed up in the middle of its run, as far apart as its ink allows, touching at the least. The pull
+   * eases (FIT.tau) so a squash moving under them shifts them, unless the eased spot has left the body. Free in the open,
+   * the pull is 0 and the face is where draw put it. Moves faceCx and faceCy and sets faceHalf.
+   */
+  function fitFace(): void {
+    const half = EYES.spread * faceR * (1 - 0.08 * Math.abs(faceTurn));
+    const l0 = faceCx - half;
+    const r0 = faceCx + half;
+    const y0 = faceCy;
+    const toward = c * cell + playOff[0];
+    const gap = FIT.gap * R;
+    let tl = 0;
+    let tr = 0;
+    let ty = 0;
+    let placed = false;
+    for (let pass = 0; pass < 2 && !placed; pass++) {
+      for (const k of FIT.rows) {
+        const y = y0 + k * R;
+        const l = fitColumn(l0, y, toward, pass === 0);
+        if (l === null) continue;
+        const r = fitColumn(r0, y, toward, pass === 0);
+        if (r === null || r - l < gap) continue;
+        tl = l - l0;
+        tr = r - r0;
+        ty = y - y0;
+        placed = true;
+        break;
+      }
+    }
+    const run = placed ? null : runAt(toward, y0);
+    if (run) {
+      const e = FIT.eye * R;
+      const mid = (run[0] + run[1]) / 2;
+      const h = Math.max(e, Math.min(half, (run[1] - run[0]) / 2 - e));
+      tl = mid - h - l0;
+      tr = mid + h - r0;
+    }
+    if (fitAt >= 0) {
+      const k = 1 - Math.exp(-Math.max(0, t - fitAt) / FIT.tau);
+      const el = fitL + (tl - fitL) * k;
+      const er = fitR + (tr - fitR) * k;
+      const ey = fitY + (ty - fitY) * k;
+      if (bodyUnder(l0 + el, y0 + ey, false) && bodyUnder(r0 + er, y0 + ey, false)) {
+        tl = el;
+        tr = er;
+        ty = ey;
+      }
+    }
+    fitL = tl;
+    fitR = tr;
+    fitY = ty;
+    fitAt = t;
+    faceCx = (l0 + tl + r0 + tr) / 2;
+    faceCy = y0 + ty;
+    faceHalf = Math.max(cell, (r0 + tr - (l0 + tl)) / 2);
+  }
+
   /**
    * The face canvas alone, where the last full frame put the face: the catchlights breathe, a flare stretches and twists a
    * star (the second eye TWINKLE.lag after the first), the happy sparkle pops and pulses with each flare. Calm: at rest.
@@ -1303,7 +1424,13 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         spark: popSize((t - joyAt) / TWINKLE.pop) * (1 + 0.4 * flareSize(u)),
       };
     }
-    const f = faceCells(facePair, faceCx, faceCy, faceR, pose, { cell, x: 0, y: 0 }, { hold: faceHold });
+    const grid = { cell, x: 0, y: 0 };
+    // in play the pair's spread is the fit's (fitFace); at rest faceCells spaces it, exactly as without play
+    const pair = facePair.replace(/\s+/g, "");
+    const f =
+      faceHalf > 0
+        ? pairCells(pair[0] ?? "-", pair[1] ?? pair[0] ?? "-", faceCx, faceCy, faceHalf, faceR, pose, grid, { hold: faceHold })
+        : faceCells(facePair, faceCx, faceCy, faceR, pose, grid, { hold: faceHold });
     // the glow: the ink lit by the halo's tone (toward the paper, as the body's light is), half way
     eyeGlow = pixel(mix3(under, mix3(halo, eyePaper, GLOW_LIFT), 0.5));
     // clear the last face's cells, write this one's, and put back only the cells either covered
@@ -1318,15 +1445,19 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     if (x1 > x0 && y1 > y0) fg!.putImageData(faceImg, 0, 0, x0, y0, x1 - x0, y1 - y0);
   }
 
-  /** The face's cells into the face buffer: the ink, the glow and the paper (the blob's eyes wear no rim). */
+  /**
+   * The face's cells into the face buffer: the ink, the glow and the paper (the blob's eyes wear no rim). In play only the
+   * cells over body: the fit puts the eyes there, and this keeps the cell the face holds (FaceHold) from hanging one off.
+   */
   function paintFace(f: FaceCells): void {
+    const onBody = faceHalf > 0;
     for (let j = 0; j < f.h; j++) {
       const y = f.row + j;
       if (y < 0 || y >= n) continue;
       for (let i = 0; i < f.w; i++) {
         const x = f.col + i;
         const tone = f.tone[j * f.w + i];
-        if (x < 0 || x >= n || !tone) continue;
+        if (x < 0 || x >= n || !tone || (onBody && BODY[y * n + x] !== 1)) continue;
         facePx[y * n + x] = tone === TONE.light ? eyeLight : tone === TONE.glow ? eyeGlow : eyeInk;
       }
     }
@@ -1548,6 +1679,10 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       speedE = 0;
       splatK = 0;
       neck = 0;
+      fitL = 0;
+      fitR = 0;
+      fitY = 0;
+      fitAt = -1;
       for (const sl of slots) Object.assign(sl, slot());
       for (const md of [sloshX, sloshY]) {
         md.x = 0;

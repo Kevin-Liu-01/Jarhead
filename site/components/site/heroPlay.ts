@@ -220,22 +220,42 @@ export function startHeroPlay(d: HeroPlayDeps): HeroPlay {
   // ---- the h1's stop ----
 
   const phone = (): boolean => window.matchMedia("(max-width: 600px)").matches;
-  function setInk(on: boolean, force = false): void {
-    if (!stop || phone() || (on === inkOn && !force)) return;
+  function setInk(on: boolean): void {
+    if (!stop || phone() || on === inkOn) return;
     inkOn = on;
+    // From a stop with no inline ink (none yet, or cut clear), the fade starts at 0 whatever Motion last left it at.
+    let from: number | null = null;
     if (!inkReady) {
       inkReady = true;
-      // The arrival left the stop inked and clear; without one it has no inline style yet.
+      // The arrival left the stop inked and clear; without one, or after a cut, it has no inline style.
       if (!stop.style.color) stop.style.color = "var(--jh-fg)";
-      if (!stop.style.opacity) stop.style.opacity = "0";
+      if (!stop.style.opacity) {
+        stop.style.opacity = "0";
+        from = 0;
+      }
     }
     inkAnim?.stop();
-    if (calm || force) {
-      inkAnim = animate(stop, { opacity: on ? 1 : 0 }, CUT);
-      stop.style.opacity = on ? "1" : "0";
+    const to = on ? 1 : 0;
+    if (calm) {
+      // the cut is the inline write; a keyframed cut would show its first frame for a frame
+      inkAnim = animate(stop, { opacity: to }, CUT);
+      stop.style.opacity = String(to);
       return;
     }
-    inkAnim = animate(stop, { opacity: on ? 1 : 0 }, on ? ease("base") : ease("quick"));
+    inkAnim = animate(stop, { opacity: from === null ? to : [from, to] }, on ? ease("base") : ease("quick"));
+  }
+  /**
+   * A cut home, at any width: the ink's inline styles go, so the stylesheet's stop stands (clear on a desk, a stop on a
+   * phone) and a width that crossed to a phone and back never leaves the ink beside the blob.
+   */
+  function clearInk(): void {
+    if (!stop) return;
+    inkAnim?.stop();
+    inkAnim = null;
+    inkOn = false;
+    inkReady = false;
+    stop.style.removeProperty("color");
+    stop.style.removeProperty("opacity");
   }
   const ink = (): void => setInk(Math.hypot(curX, curY) >= STOP_INK * R);
 
@@ -361,7 +381,7 @@ export function startHeroPlay(d: HeroPlayDeps): HeroPlay {
     body?.cut();
     clearWrap();
     d.ch()?.setMotion(null);
-    if (inkOn) setInk(false, true);
+    if (inkOn) clearInk();
     delete root.dataset["grabbing"];
     setState("home");
     detachAway();
@@ -389,6 +409,8 @@ export function startHeroPlay(d: HeroPlayDeps): HeroPlay {
       const B = world.box;
       if (Math.min(b.x - B.l, B.r - b.x, b.y - B.t, B.b - b.y) < SCROLL_FLY * R) flyHome();
     }
+    // Perched, no loop sends the motion: its screen spot moved with the page, so the eyes measure from the new one.
+    if (b && state === "perched") send(b.contacts(world), b.x, b.y);
     return false;
   }
 
@@ -523,7 +545,7 @@ export function startHeroPlay(d: HeroPlayDeps): HeroPlay {
     try {
       d.grab.setPointerCapture(e.pointerId);
     } catch {
-      // a synthetic pointer: the window's moves still reach the grab
+      // a pointer that cannot be captured (a synthetic one): its moves reach the disc only while they are over it
     }
     // a mouse press selects nothing and focuses nothing
     if (e.pointerType === "mouse") e.preventDefault();

@@ -909,9 +909,9 @@ final class BlobBody {
     /// How fast the centre is moving, pt/s.
     var speed: Double { (velocity.dx * velocity.dx + velocity.dy * velocity.dy).squareRoot() }
 
-    /// A released stick is still sagging toward its dome: not at rest yet.
+    /// A released stick still sagging toward its dome, or still necked, is not at rest yet.
     private var domeSettled: Bool {
-        adhesions.allSatisfy { abs($0.restDepth - Double(radius) * Self.stuckDepth) < 0.6 && $0.neck == 0 }
+        adhesions.allSatisfy { abs($0.restDepth - Double(radius) * Self.stuckDepth) < 0.6 && $0.neck * Self.clingLength < 0.6 }
     }
 
     private func settle() {
@@ -956,8 +956,8 @@ final class BlobBody {
     /// `clingLength` the patch lets go (`onSnap`) — the recoil is the drag spring's,
     /// suddenly unopposed. Pressed deeper instead, it re-sticks deeper. Let go: the
     /// stuck spot sags to `stuckDepth` (the dome) and `resolveWalls` holds the centre
-    /// there, so a body released mid-cling is drawn back over `stickRelaxTau`; the
-    /// neck it was left with shrinks with the pull that is left, and never grows.
+    /// there, so a body released mid-cling is drawn back over `stickRelaxTau`; its neck
+    /// shrinks with the pull left, never grows, and within 0.6 pt of the dome is none.
     private func cling(_ dt: Double) {
         guard !adhesions.isEmpty else { return }
         let r = Double(radius)
@@ -983,7 +983,7 @@ final class BlobBody {
             } else {
                 let want = r * Self.stuckDepth
                 a.restDepth += (want - a.restDepth) * (1 - exp(-dt / Self.stickRelaxTau))
-                a.neck = max(0, min(a.neck, (d - want) / Self.clingLength))
+                a.neck = d - want < 0.6 ? 0 : min(a.neck, (d - want) / Self.clingLength)
             }
             kept.append(a)
         }

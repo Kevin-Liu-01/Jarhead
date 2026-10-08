@@ -116,6 +116,7 @@ const STUCK_DEPTH = 0.62; // :328, × R, the parked dome
 const STICK_RELAX_TAU = 0.35; // :330
 const CLING_LENGTH = 40; // ·s :335
 const CLING_STIFFNESS = 230; // :338
+const DOME_SETTLE = 0.6; // px, :913, a released stick this near its dome (and its neck's pull this short) is at rest
 const ADHERE_DEPTH = 0.72; // :341, × R
 const STICK_FRICTION = 0.55; // :343
 const UNSTICK_SPEED = 300; // ·s :346
@@ -292,7 +293,10 @@ export function createBody(o: BodyOptions): Body {
       } else {
         const want = R * STUCK_DEPTH;
         a.restDepth += (want - a.restDepth) * (1 - Math.exp(-dt / STICK_RELAX_TAU));
-        a.neck = Math.max(0, Math.min(a.neck, (w.d - want) / (CLING_LENGTH * s)));
+        // The sag only approaches the dome, so the pull left only approaches 0 (it stalls near 1e-15): within the dome's
+        // settle of it, the neck is none.
+        const pull = w.d - want;
+        a.neck = pull < DOME_SETTLE ? 0 : Math.min(a.neck, pull / (CLING_LENGTH * s));
       }
       kept.push(a);
     }
@@ -423,8 +427,9 @@ export function createBody(o: BodyOptions): Body {
     resolveIsland();
   }
 
-  /** A released stick still sagging toward its dome is not at rest yet (:913). */
-  const domeSettled = (): boolean => adhesions.every((a) => Math.abs(a.restDepth - R * STUCK_DEPTH) < 0.6 && a.neck === 0);
+  /** A released stick still sagging toward its dome, or still necked, is not at rest yet (:913). */
+  const domeSettled = (): boolean =>
+    adhesions.every((a) => Math.abs(a.restDepth - R * STUCK_DEPTH) < DOME_SETTLE && a.neck * CLING_LENGTH * s < DOME_SETTLE);
 
   /** Let go (:474), the hand's velocity blended in unless it is stale or zeroed. */
   function release(tMs: number, zeroHand: boolean): void {
