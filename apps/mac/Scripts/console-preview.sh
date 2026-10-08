@@ -117,7 +117,7 @@
 #   transcript the model trims to 400 — then a daemon reconnect at 1.0 s, the window hidden at 1.4 s and
 #   shown at 1.8 s: run.log must carry agent.open, agent.close, agent.open naming ONE viewer; then "Load
 #   earlier" (60 rows, mode prepend) at 2.4 s between two `geometry` lines: the bottom stays pinned
-#   (distance 0) and `shown 400→460`. PREVIEW_SETTLE=3.4 for it. PREVIEW_CONNECTED=0 on `live` is the
+#   (distance 0) and `shown 400→460`. PREVIEW_SETTLE=3.4 for it. PREVIEW_CONNECTED=0 on `resumed` is the
 #   caret gate's control (the streaming caret must not blink while disconnected).
 #   `loading` is the dither pass's loading states: a ledger day picked and its read pinned in
 #   flight, a search pinned in flight — the stream's "Reading…" (16×2 glyphs), the rail's
@@ -283,26 +283,37 @@ if [[ "$SCENARIO" == "memory-chips" ]]; then export PREVIEW_WINDOW_SIZE="${PREVI
 if [[ "$SCENARIO" == "list-keys" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
 if [[ "$SCENARIO" == "list-verbs" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}"; fi
 # Automations: the Now rail with six rows and the Trash fold is tall; the card and the probes run to 1.5 s.
+# `automations` is a README shot: 1180x1086 ends the right rail under Ready's two rows, above its hairline.
 # Settings › Automations sits under Session and holds the recipes: the tall window, scrolled to it.
-case "$SCENARIO" in automations|automations-ring) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+case "$SCENARIO" in automations) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1086}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+case "$SCENARIO" in automations-ring) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
 if [[ "$SCENARIO" == "settings-automations" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2}"; fi
 # The Brain section and "Leaves the Mac" under it on the Settings tab; the Problems section under
 # Permissions on the Now tab: a taller window shows them whole.
 case "$SCENARIO" in local|local-empty|buttons) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac
 # The README's Console shots (scripts/make-readme-shots.sh passes no size, so these hold). The stream is pinned
 # to its end, so its top edge lands wherever the rows above the end add up to; these heights put that edge in
-# a gap between rows, never through a line of text. `threads` opens on "Nice. What's Codex up to?"; `cleanup`
+# a gap between rows, never through a line of text. `threads` opens on the failed Codex card's head; `cleanup`
 # and `light` open on the screenshot step, so the light shot's error toast sits on the picture, clear of text;
 # `settings` ends with Session whole (idle sleep, auto-wake, the notch home) and its stream opens on Kevin's
-# first line, as does `problems` (its rail scrolled to Circled, all four problems whole). A row that changes
-# height moves these edges: measure again before the next shot.
-case "$SCENARIO" in threads) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x800}";; esac
+# first line, as does `problems` (its rail scrolled to Circled, all four problems whole). The bottom edge ends
+# both rails between rows: `threads` under the first memory's `seen` line and `jarhead · console`;
+# `conversation` and `jarhead` under Ready's Hands and Gemini CLI. A row that changes height moves these
+# edges: measure again before the next shot. They are measured on the daytime rail, Today holding the
+# paused → resumed chain (3 h 05 min old); from midnight to about 03:05 that chain sits under Yesterday,
+# Today is gone and the left rail's rows below Pinned move up 59 pt.
+case "$SCENARIO" in threads) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x806}";; esac
+case "$SCENARIO" in conversation|jarhead) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x808}";; esac
 case "$SCENARIO" in settings|problems) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1035}";; esac
 case "$SCENARIO" in cleanup|light|ledger) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x737}";; esac
+# The README's clocks (Listening mm:ss, Expires in, a timer's left) tick under the shot: their digits swap in
+# place (ConsoleMotion.stillDigits), so the capture never lands on one half rolled. PREVIEW_STILL_DIGITS=0 rolls them.
+case "$SCENARIO" in threads|conversation|jarhead|ledger|settings|problems|cleanup|light|automations) PREVIEW_STILL_DIGITS="${PREVIEW_STILL_DIGITS:-1}";; esac
 if [[ -n "${PREVIEW_CONNECTED:-}" ]]; then export PREVIEW_CONNECTED; fi
 if [[ -n "${PREVIEW_WIPE_SECONDS:-}" ]]; then export PREVIEW_WIPE_SECONDS; fi
 if [[ -n "${PREVIEW_SLOW_THUMBS:-}" ]]; then export PREVIEW_SLOW_THUMBS; fi
 if [[ -n "${PREVIEW_REDUCE_MOTION:-}" ]]; then export PREVIEW_REDUCE_MOTION; fi
+if [[ -n "${PREVIEW_STILL_DIGITS:-}" ]]; then export PREVIEW_STILL_DIGITS; fi
 if [[ -z "$OUT" ]]; then
   exec "$BUILD/console-preview"
 fi

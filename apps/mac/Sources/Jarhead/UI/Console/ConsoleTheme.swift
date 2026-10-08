@@ -718,8 +718,12 @@ enum ConsoleMotion {
     /// A symbol whose name changes: the SF Symbol replace effect, a fade under Reduce Motion.
     static var symbol: ContentTransition { Motion.reduced ? .opacity : .symbolEffect(.replace) }
 
-    /// Digits that count (a meter, a message count): each changed digit rolls; a fade under Reduce Motion.
-    static var numeric: ContentTransition { Motion.reduced ? .opacity : .numericText() }
+    /// Digits that count (a meter, a message count): each changed digit rolls; a fade under Reduce Motion;
+    /// swapped in place while a harness holds them still (`stillDigits`).
+    static var numeric: ContentTransition { stillDigits ? .identity : (Motion.reduced ? .opacity : .numericText()) }
+    /// Set only by the Console preview harness (PREVIEW_STILL_DIGITS=1, the README shots): a clock that
+    /// ticks swaps its digits in place, so a shot never lands on one half rolled. False in the app.
+    static var stillDigits = false
 }
 
 /// A row arriving in a feed: the fade and 6pt rise of `Motion.appear`, done on the row's

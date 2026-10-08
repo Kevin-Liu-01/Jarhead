@@ -46,8 +46,8 @@ import SwiftUI
 //                    the rest). Then a daemon reconnect at 1.0 s (the pane must re-send ONE agent.open naming
 //                    its viewer — the same token as its first), the window hidden at 1.4 s (agent.close, same
 //                    viewer) and shown at 1.8 s (agent.open again): run.log's `send:` lines are the check.
-//                    PREVIEW_CONNECTED=0 on `live` is the caret gate's control: a non-final item sits still
-//                    while disconnected.
+//                    PREVIEW_CONNECTED=0 on `resumed` is the caret gate's control: its last line, the one
+//                    non-final item, sits still while disconnected (`live` ends on a final line).
 //     timing       = the pane switch at REAL speed (no PREVIEW_WIPE_SECONDS), traced: live data (with the
 //                    agents' transcripts and marks, so the conversation pane has rows), then four switches
 //                    — into the Jarhead chain, back to Now, into the blocked Claude session, back — the
@@ -184,6 +184,8 @@ import SwiftUI
 //   PREVIEW_GATE=off|awake          the gate switched off, or resting because the engine is awake
 //   PREVIEW_REDUCE_MOTION=1         pin Motion.reduced on (Motion.reducedOverride): plain fades, halved
 //                                   durations, no rise/slide, still two-tone dither glyphs — the Reduce Motion path for real
+//   PREVIEW_STILL_DIGITS=1          the clocks' digits swap in place (ConsoleMotion.stillDigits), so a shot never
+//                                   lands on one half rolled; console-preview.sh sets it for the README scenarios
 //   PREVIEW_SLOW_THUMBS=1           hold every screenshot thumbnail for a minute before it decodes
 //                                   (Thumbnails.holdForPreview), so the dithered skeletons are shot
 //   PREVIEW_WIPE_SECONDS=2          stretch Motion.wipe to that long (Motion.wipeSecondsOverride; the
@@ -311,6 +313,12 @@ struct ConsolePreviewMain {
     static func main() {
         // Line-buffered, so the `send:` / `action:` trail survives the screenshot script's kill.
         setlinebuf(stdout)
+        // Overlay scrollers whatever "Show scroll bars" says or a plugged-in mouse makes of it, so no pane reserves
+        // a gutter in a shot (the light shot once kept one in all three panes). The argument domain, set before
+        // AppKit first asks NSScroller.preferredScrollerStyle.
+        var arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        arguments["AppleShowScrollBars"] = "WhenScrolling"
+        UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory) // never a Dock tile: previews are throwaway
         let delegate = PreviewDelegate()
@@ -360,6 +368,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         if env["PREVIEW_REDUCE_MOTION"] == "1" {
             Motion.reducedOverride = true
             print("reduce motion: pinned on")
+        }
+        // PREVIEW_STILL_DIGITS=1 (console-preview.sh's README scenarios): the clocks' digits swap in place.
+        if env["PREVIEW_STILL_DIGITS"] == "1" {
+            ConsoleMotion.stillDigits = true
+            print("digits: held still")
         }
         // PREVIEW_SLOW_THUMBS=1: thumbnails never land during the shot, so the skeletons show.
         if env["PREVIEW_SLOW_THUMBS"] == "1" {
@@ -2491,7 +2504,7 @@ struct FakeData {
             AgentInfo(id: "sessions:cc:2", kind: .sessions, tool: .claude, name: "kevin-wiki", status: .idle, detail: "claude · 42 msgs · kevin-wiki · waiting for input", cwd: "/Users/kevinliu/Documents/GitHub/kevin-wiki", updatedAt: ago(31 * 60), messageCount: 42, hint: "quiet"),
             AgentInfo(id: "sessions:codex:1", kind: .sessions, name: "gt · api hotfix", status: .done, detail: "codex · 57 msgs · gt · opened PR #412", cwd: "/Users/kevinliu/gt", updatedAt: ago(48 * 60), messageCount: 57, hint: "archived"),
             AgentInfo(id: "claude-code:jarhead", kind: .claudeCode, name: "brain", status: .working, detail: "Delegation 5knl2 in flight", cwd: "/Users/kevinliu", updatedAt: ago(3)),
-            AgentInfo(id: "sessions:claude:w1p2", kind: .sessions, name: "gt · api auth", status: .blocked, detail: "claude · 61 msgs · gt · needs Kevin's yes or no: Bash — pnpm test --filter auth", cwd: "/Users/kevinliu/gt", updatedAt: ago(6 * 60), messageCount: 61, hint: "blocked"),
+            AgentInfo(id: "sessions:claude:w1p2", kind: .sessions, name: "gt · api auth", status: .blocked, detail: "claude · 62 msgs · gt · needs Kevin's yes or no: Bash — pnpm test --filter auth", cwd: "/Users/kevinliu/gt", updatedAt: ago(6 * 60), messageCount: 62, hint: "blocked"),
             AgentInfo(id: "sessions:claude:w1p1", kind: .sessions, name: "gt · api tests", status: .done, detail: "claude · 33 msgs · api · pnpm test — 84 passed", cwd: "/Users/kevinliu/gt/apps/api", updatedAt: ago(7 * 60), messageCount: 33),
             // Over: its `codex exec` was killed mid-tool 40 minutes ago; the lease made it `ended`
             // at the next poll and the engine flipped the open call to `interrupted`.
@@ -2538,7 +2551,7 @@ struct FakeData {
             msg("c2", .assistant, "The spec wants 401 when the Authorization header is absent and 403 when a token is present but fails verification. requireBearer collapses both into 403. Read the handler and the spec before touching anything.", a0 + 4_000, thinking: true),
             msg("c3", .tool, "", a0 + 6_000, tool: call("Read", "{\"file_path\": \"apps/api/src/auth.ts\"}", "export function requireBearer(req: Request) {\n  const h = req.headers.authorization;\n  if (!h || !verify(h)) throw new HttpError(403, \"forbidden\");\n  return decode(h);\n}")),
             msg("c4", .tool, "", a0 + 7_000, tool: call("Read", "{\"file_path\": \"apps/api/src/__tests__/auth.spec.ts\"}", "it(\"rejects a missing bearer token with 401\", async () => {\n  const res = await app.inject({ url: \"/v1/me\" });\n  expect(res.statusCode).toBe(401);\n});")),
-            msg("c5", .assistant, "Found it: `requireBearer` throws 403 for both a missing and an invalid token. The spec wants 401 when the header is absent. I'll split the two cases.", a0 + 12_000),
+            msg("c5", .assistant, "Found it: requireBearer throws 403 for both a missing and an invalid token. The spec wants 401 when the header is absent. I'll split the two cases.", a0 + 12_000),
             msg("c6", .tool, "", a0 + 15_000, tool: call("Edit", "{\"file_path\": \"apps/api/src/auth.ts\", \"old_string\": \"if (!h || !verify(h)) throw new HttpError(403, \\\"forbidden\\\");\", \"new_string\": \"if (!h) throw new HttpError(401, \\\"unauthorized\\\");\\n  if (!verify(h)) throw new HttpError(403, \\\"forbidden\\\");\"}", "Edited apps/api/src/auth.ts (1 replacement)")),
             msg("c7", .assistant, "Edited. Running the auth suite to confirm.", a0 + 17_000),
             msg("c8", .tool, "", a0 + 18_000, tool: call("Bash", "pnpm test --filter auth", nil, .running)),
@@ -2970,9 +2983,9 @@ struct FakeData {
     func live() -> Snapshot {
         var t = transcript()
         t.append(TranscriptItem(id: "u5", speaker: .kevin, text: "Yes, do it.", startMs: 12000, endMs: 12600, at: ago(60), final: true))
-        t.append(TranscriptItem(id: "u6", speaker: .jarhead, text: "Done — the auth session is green again. The handler now returns 401 for a missing bearer token.", startMs: 12800, endMs: 16000, at: ago(58), final: true))
+        t.append(TranscriptItem(id: "u6", speaker: .jarhead, text: "The auth session is green again: the handler now returns 401 for a missing bearer token.", startMs: 12800, endMs: 16000, at: ago(58), final: true))
         t.append(TranscriptItem(id: "u7", speaker: .kevin, text: "Nice. What's Codex up to?", startMs: 17000, endMs: 18200, at: ago(22), final: true))
-        t.append(TranscriptItem(id: "u8", speaker: .jarhead, text: "Codex finished the api hotfix and opened PR #412; the landing refresh session is archived", startMs: 19000, endMs: 22000, at: ago(18), final: false))
+        t.append(TranscriptItem(id: "u8", speaker: .jarhead, text: "Codex finished the api hotfix and opened PR #412; the landing refresh session is archived.", startMs: 19000, endMs: 22000, at: ago(18), final: true))
         var running = runningDelegation(awaiting: false)
         running.status = .done
         running.summary = "Diagnosed the blocked session and dispatched a one-line fix to gt · api auth."
@@ -3183,15 +3196,20 @@ struct FakeData {
         }
     }
 
-    /// Asleep, the alarm ringing, six rows set, the foot's next fire the alarm. The stream is the short
-    /// exchange that set them, so a card pinned beside a rail row lands on bare ground, not on a line.
+    /// Asleep, the alarm ringing, six rows set, the foot's next fire the pasta timer: the engine's soonest
+    /// waiting clocked row (AutomationTable.nextFire), so the summary's `next` agrees with the rows under it.
+    /// The stream is the short exchange that set them, so a card pinned beside a rail row lands on bare
+    /// ground, not on a line.
     func automationsSnapshot() -> Snapshot {
         var s = asleep()
         s.transcript = automationsTranscript()
         s.delegations = []
-        s.automations = automations()
+        let rows = automations()
+        s.automations = rows
         s.ringing = ringLine()
-        s.nextFire = NextFire(id: Self.wakeId, kind: "alarm", name: "Wake up, Kevin", at: nextWeekday(7, 10))
+        if let pasta = rows.first(where: { $0.id == Self.pastaId }), let at = pasta.nextAt {
+            s.nextFire = NextFire(id: pasta.id, kind: "timer", name: pasta.name, at: at)
+        }
         s.settings.automations = automationSettings()
         return s
     }
@@ -3467,7 +3485,7 @@ struct FakeData {
         r = row(ago(583), "agent"); r.agent = agents()[6]; rows.append(r)
         // An idle sleep: the sleep row says why, then the server's word for the close it asked for.
         r = row(ago(61), "sleep"); r.sessionId = "sess_7f3a9c2e41b0"; r.cause = "idle"; rows.append(r)
-        r = row(ago(60), "session.closed"); r.sessionId = "sess_7f3a9c2e41b0"; r.reason = "close_requested"; r.usageSeconds = 1020; rows.append(r)
+        r = row(ago(60), "session.closed"); r.sessionId = "sess_7f3a9c2e41b0"; r.reason = "close_requested"; r.usageSeconds = 840; rows.append(r)
         return rows
     }
 }

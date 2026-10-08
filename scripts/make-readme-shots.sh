@@ -38,16 +38,23 @@
 #
 #   console (apps/mac/Scripts/console-preview.sh <scenario>; the window shot @2x, JPEG). Each scenario is
 #   shot at the window size console-preview.sh gives it (1180x760 unless it names its own), so a
-#   scenario's framing lives in one place:
+#   scenario's framing lives in one place. console-preview.sh also holds the clocks' digits still for these
+#   (PREVIEW_STILL_DIGITS=1: Listening mm:ss, Expires in and a timer's left swap in place, never caught half
+#   rolled), and the harness keeps overlay scrollers whatever the Mac's setting, so no pane reserves a gutter.
+#   The framings are measured on the daytime rail: from midnight to about 03:05 the rail's Today is empty and
+#   its rows below Pinned sit 59 pt higher, so shoot after that (the run says so before it starts):
 #     threads         console-threads.jpg       the split: Notes + Spotify on the background lane, Slack on the
 #                                               screen lane; Slack asking in the left rail and in the Now panel
 #                                               with its Stop, one chip per spawned thread in its parent card
-#                                               (1180x800: the stream opens on a whole row)
+#                                               (1180x806: the stream opens on a whole card, both rails end
+#                                               between rows)
 #     conversation    console-conversation.jpg  a Claude Code session stepped into: tool calls, folded reasoning,
 #                                               a permission question with Allow / Deny, circled regions
 #                                               (the harness opens the pane once the app is active, so the
-#                                               title bar is active in the shot without any re-keying)
-#     jarhead         console-jarhead.jpg       a past Jarhead conversation (paused → resumed chain, "resumed ×1")
+#                                               title bar is active in the shot without any re-keying;
+#                                               1180x808: both rails end between rows)
+#     jarhead         console-jarhead.jpg       a past Jarhead conversation (paused → resumed chain, "resumed ×1";
+#                                               1180x808, the height of conversation beside it)
 #     ledger          console-ledger.jpg        the Ledger tab: day picker, the day's rows, thread and sleep rows
 #                                               (1180x737, the height of cleanup beside it in the README's table)
 #     settings        console-settings.jpg      asleep, Settings tab: Audio, Brain, Leaves the Mac, then Session
@@ -60,7 +67,8 @@
 #                                               screenshot step, clear of text (1180x737)
 #     automations     console-automations.jpg   design11: the Automations rail with the ring line under the tabs, the six
 #                                               rows, the Trash fold open, the Downloads → Papers card pinned over the
-#                                               bare stream under the exchange that set them (1180x1040)
+#                                               bare stream under the exchange that set them (1180x1086: Ready's
+#                                               two rows whole)
 #
 #   onboarding (apps/mac/Scripts/onboarding-preview.sh <step>; the content + title bar, shot @2x)
 #     welcome         onboarding-welcome.png    620x520 → 1240x1104 px
@@ -248,6 +256,10 @@ shoot_window() {
 # ---------------------------------------------------------------- console
 if want console; then
   echo "console"
+  # The framings assume the daytime rail (see the header): before 03:05 the left rail comes out 59 pt off.
+  if (( 10#$(date +%H%M) < 305 )); then
+    echo "  note: it is before 03:05, so the rail's Today is empty and the Console shots' left rail lands 59 pt off its framing" >&2
+  fi
   # console <scenario> <name> [WxH]: one Console scenario at the window size console-preview.sh gives it
   # (its own, else 1180x760); a WxH here overrides that. An empty size never reaches the harness as one.
   console() {

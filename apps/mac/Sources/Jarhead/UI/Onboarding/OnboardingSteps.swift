@@ -53,7 +53,7 @@ struct OnboardingWelcomeStep: View, Equatable {
                 }
                 ConsoleHint(OnboardingWords.nameHint, indent: 0)
             }
-            ConsoleHint("Seven short steps. Everything here is also in the status menu under Set Up…", indent: 0)
+            ConsoleHint("All seven steps are also in the status menu under Set Up…", indent: 0)
         }
         .onAppear {
             guard loadedFrom == nil else { return }

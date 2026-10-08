@@ -39,7 +39,7 @@ enum OnboardingWords {
     static let keyOnFile = "on file"
     static let passphraseSet = "set"
     static let openAIKey = "OPENAI_API_KEY"
-    static let passphraseHint = "Set. Say it or type it when asked."
+    static let passphraseHint = "Say it or type it when asked."
     // Welcome: the name the brain reads back (Settings.userName); empty = the account's full name.
     static let nameField = "setup.name"
     static let nameRow = "Your name"

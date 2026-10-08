@@ -480,8 +480,8 @@ public enum BrainKind: String, Codable, CaseIterable {
     public var needs: String {
         switch self {
         case .auto: return "Whatever is signed in on this Mac (Codex, Claude Code) or a key you add."
-        case .codex: return "Your ChatGPT / Codex login on this Mac. No key."
-        case .claudeCode: return "Your Claude Code login on this Mac. No key."
+        case .codex: return "Your ChatGPT or Codex login on this Mac."
+        case .claudeCode: return "Your Claude Code login on this Mac."
         case .anthropicApi: return "An Anthropic API key."
         case .openaiResponses: return "The OpenAI key you already use for the voice."
         case .openaiCompatible: return "A base URL and a key: OpenRouter, vLLM, a hosted server. For Ollama or LM Studio on this Mac, pick Local model."

@@ -169,12 +169,12 @@ screen lane stops to ask before it sends, with its Stop in the Now panel.
     <td>Nothing is deleted: Pinned, Archived, Trash with Restore, a hidden agent with Unhide.</td>
   </tr>
   <tr>
-    <td><img src="docs/media/console-settings.jpg" alt="The Settings tab: voice and accent, mic ranking, Recording, Sounds, volume, the Claude Code brain with its model and effort, Leaves the Mac, then Session with idle sleep, auto-wake and the notch home"></td>
+    <td><img src="docs/media/console-settings.jpg" alt="The Settings tab: voice, language and accent, mic ranking, Recording, Sounds, volume, the Claude Code brain with its model, effort and status, Leaves the Mac, then Session with your name, idle sleep, auto-wake and the notch home"></td>
     <td><img src="docs/media/console-problems.jpg" alt="The Now tab scrolled to its Problems with Clear all: Accessibility not granted with Ask under Grants, then under Engine low disk with Reveal, GPT-Live-1 refusing a note with Retry and the Claude Code brain unavailable with Retry"></td>
   </tr>
   <tr>
-    <td>Settings: voice, accent, mic, recording, sounds, the brain and its model, which parts leave the Mac, idle sleep, auto-wake and the notch home.</td>
-    <td>Four typed problems; each that has a remedy carries its button.</td>
+    <td>Settings: voice, accent, mic, recording, sounds, the brain and its model, which parts leave the Mac, your name, idle sleep, auto-wake and the notch home.</td>
+    <td>Four typed problems in two groups, each with its remedy as a button.</td>
   </tr>
 </table>
 
@@ -228,7 +228,7 @@ A brain said `show_rect` with a label. The blob became the pen and drew it.
     <td width="50%"><img src="docs/media/onboarding-brain.png" alt="Setup's Brain step: Claude Code picked, its login ready"></td>
   </tr>
   <tr>
-    <td><img src="docs/media/onboarding-permissions.png" alt="Setup's Permissions step: the required seven first, Ask for everything, Request and Open Settings"></td>
+    <td><img src="docs/media/onboarding-permissions.png" alt="Setup's Permissions step: Ask for everything, then the required group at 3 of 7, with Open Settings on Accessibility and Request on Input Monitoring"></td>
     <td><img src="docs/media/onboarding-wake.png" alt="Setup's Wake step: the phrases, Touch ID / Passphrase / Either / None, a passphrase set, the listening card"></td>
   </tr>
 </table>
@@ -309,7 +309,7 @@ apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wa
 ### Automations
 
 <p align="center">
-  <img src="docs/media/console-automations.jpg" width="920" alt="The Console asleep with an alarm ringing under the tabs: the lines that set the rows, then the Automations section with its summary and Add…, one row per alarm, timer, reminder, routine and watcher with its next fire and verb, a snoozed badge, a paused row with Resume, the Trash open with Restore, and the Downloads → Papers card pinned beside its row">
+  <img src="docs/media/console-automations.jpg" width="920" alt="The Console asleep with an alarm ringing under the tabs: the lines that set the alarm, the PDF watcher and the timer, then the Automations section with its summary and Add…, one row per alarm, timer, reminder, routine and watcher with its next fire and verb, a snoozed badge, a paused row with Resume, the Trash open with Restore, and the Downloads → Papers card pinned beside its row">
 </p>
 
 <p align="center">
