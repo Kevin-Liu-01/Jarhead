@@ -49,6 +49,7 @@
 #                                               title bar is active in the shot without any re-keying)
 #     jarhead         console-jarhead.jpg       a past Jarhead conversation (paused → resumed chain, "resumed ×1")
 #     ledger          console-ledger.jpg        the Ledger tab: day picker, the day's rows, thread and sleep rows
+#                                               (1180x737, the height of cleanup beside it in the README's table)
 #     settings        console-settings.jpg      asleep, Settings tab: Audio, Brain, Leaves the Mac, then Session
 #                                               whole (1180x1035: idle sleep, auto-wake and the notch home in frame)
 #     problems        console-problems.jpg      the Now tab's typed problems, one remedy button each

@@ -413,17 +413,20 @@ struct ConsoleFormRow<C: View>: View {
 }
 
 /// One quiet line under a control: sans 11 titanium, indented to the control column (90 in the
-/// rail; the wizard's rows pass their own), red for a rejection. A command in backticks
-/// (`` `claude` ``) is set in the kit's mono, the face for ids and commands, without the ticks.
+/// rail; the wizard's rows pass their own), red for a rejection. With `code`, a command in
+/// backticks (`` `claude` ``) is set in the kit's mono without the ticks; it is opt-in, so text
+/// that carries its own backticks (a recipe's shell command, a typed name) is shown as typed.
 struct ConsoleHint: View {
     let text: String
     var tone: Color = ConsoleTheme.titanium
     var indent: CGFloat = 90
+    var code = false
 
-    init(_ text: String, tone: Color = ConsoleTheme.titanium, indent: CGFloat = 90) {
+    init(_ text: String, tone: Color = ConsoleTheme.titanium, indent: CGFloat = 90, code: Bool = false) {
         self.text = text
         self.tone = tone
         self.indent = indent
+        self.code = code
     }
 
     /// The line with each backticked span in mono 11; an unpaired tick stays as typed.
@@ -442,7 +445,7 @@ struct ConsoleHint: View {
     }
 
     var body: some View {
-        Text(Self.styled(text)).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(tone)
+        Text(code ? Self.styled(text) : AttributedString(text)).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(tone)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.leading, indent)
             .frame(maxWidth: .infinity, alignment: .leading)

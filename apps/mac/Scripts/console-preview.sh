@@ -298,7 +298,7 @@ case "$SCENARIO" in local|local-empty|buttons) export PREVIEW_WINDOW_SIZE="${PRE
 # height moves these edges: measure again before the next shot.
 case "$SCENARIO" in threads) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x800}";; esac
 case "$SCENARIO" in settings|problems) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1035}";; esac
-case "$SCENARIO" in cleanup|light) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x737}";; esac
+case "$SCENARIO" in cleanup|light|ledger) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x737}";; esac
 if [[ -n "${PREVIEW_CONNECTED:-}" ]]; then export PREVIEW_CONNECTED; fi
 if [[ -n "${PREVIEW_WIPE_SECONDS:-}" ]]; then export PREVIEW_WIPE_SECONDS; fi
 if [[ -n "${PREVIEW_SLOW_THUMBS:-}" ]]; then export PREVIEW_SLOW_THUMBS; fi

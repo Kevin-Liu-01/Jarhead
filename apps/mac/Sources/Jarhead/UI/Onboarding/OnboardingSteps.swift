@@ -409,9 +409,9 @@ struct OnboardingBrainStep: View, Equatable {
         }
     }
 
-    /// The Login row's one line; a command in backticks is set in mono (ConsoleHint).
+    /// The Login row's one line; its command in backticks is set in mono (ConsoleHint `code`).
     private func loginRow(_ text: String) -> some View {
-        setupRow("Login") { ConsoleHint(text, indent: 0) }
+        setupRow("Login") { ConsoleHint(text, indent: 0, code: true) }
     }
 
     /// Ghost "Open ollama.com": the download page in the browser. The app never installs.

@@ -312,13 +312,9 @@ apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wa
   <img src="docs/media/console-automations.jpg" width="920" alt="The Console asleep with an alarm ringing under the tabs: the lines that set the rows, then the Automations section with its summary and Add…, one row per alarm, timer, reminder, routine and watcher with its next fire and verb, a snoozed badge, a paused row with Resume, the Trash open with Restore, and the Downloads → Papers card pinned beside its row">
 </p>
 
-Nothing is deleted: one row per automation in the Console, the Trash open with Restore.
-
 <p align="center">
   <img src="docs/media/notch-island-alarm.png" width="920" alt="The island ringing an alarm while asleep: 07:10 · Wake up, Kevin as the hero, Snooze 10 · Done where Allow · Deny usually sit, the next timer in the foot">
 </p>
-
-An alarm on the island: the line as the hero, Snooze 10 · Done.
 
 Say it once while Jarhead is awake ("wake me at seven ten on weekdays", "twelve-minute timer for
 the pasta", "when a PDF lands in Downloads, file it under Papers and tell me") and it reads one

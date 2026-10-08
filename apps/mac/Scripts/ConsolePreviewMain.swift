@@ -2810,13 +2810,14 @@ struct FakeData {
                           timings: DelegationTimings(delegatedAt: t0, firstThinkingAt: t0 + 420, firstCommentaryAt: t0 + 4_900, doneAt: t0 + 5_100), threadId: "main")
     }
 
-    /// What was heard and said around the split: the ask, "on it", Notes' finish line, and Slack's
-    /// question spoken with its name. The split line itself is the card's spoken step (th-s5), so it
-    /// is not a row of its own here (the stream would show it twice).
+    /// What was heard and said around the split: the ask, "on it", the one coalesced split line,
+    /// Notes' finish line, and Slack's question spoken with its name. The split line is also the
+    /// card's spoken step, as the app shows it; the paged scenarios count these rows (pagedMain).
     func threadsTranscript(from t0: Double) -> [TranscriptItem] {
         [
             TranscriptItem(id: "th-u1", speaker: .kevin, text: "Jarhead, add today's standup line to my Notes, put on Focus on Spotify, and tell Ben on Slack I'm running late.", startMs: 0, endMs: 4200, at: t0 - 1200, final: true),
             TranscriptItem(id: "th-u2", speaker: .jarhead, text: "On it.", startMs: 4400, endMs: 4800, at: t0 - 500, final: true),
+            TranscriptItem(id: "th-u3", speaker: .jarhead, text: "Notes, Spotify and Slack alongside.", startMs: 6000, endMs: 7200, at: t0 + 5_000, final: true),
             TranscriptItem(id: "th-u4", speaker: .jarhead, text: "Notes: appended one line to Daily.", startMs: 8500, endMs: 10200, at: t0 + 4_100, final: true),
             TranscriptItem(id: "th-u5", speaker: .jarhead, text: "Slack asks: send “running late — there in 10” to Ben?", startMs: 11000, endMs: 13500, at: t0 + 10_800, final: true),
         ]
