@@ -331,7 +331,7 @@ private struct ThreadComposer: View {
 
     private var placeholder: String {
         if isMain {
-            if phase == .paused { return "Paused, press Go or type to resume" }
+            if phase == .paused { return "Paused: press Go or type to resume" }
             if asleep { return typedWakes ? "Type to wake Jarhead…" : "Type to Jarhead… (asleep: press Go)" }
             return ConsoleTheme.sessionPhases.contains(phase) ? "Say something…" : "Type to Jarhead…"
         }

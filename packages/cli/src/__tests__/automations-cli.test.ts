@@ -90,7 +90,7 @@ test("automationsLines: the summary line, then one row each — glyph · name ·
   ]);
   const ringing = { ...pointers, ringing: { id: "auto_1", kind: "alarm" as const, name: "Wake up, Kevin", line: "07:10 · Wake up, Kevin", at: NOW, presses: [], more: 1 } };
   assert.match(automationsSummary(table, ringing, NOW), / · ringing: 07:10 · Wake up, Kevin \(\+1 more\)$/);
-  assert.equal(automationsSummary([], {}, NOW), "  automations 0 · next none · ringing: none");
+  assert.equal(automationsSummary([], {}, NOW), "  automations 0 · nothing next · ringing: none");
 });
 
 test("automationsLines: --state filters; an empty table says how to set one; an empty filter names the states present", () => {
@@ -160,8 +160,8 @@ test("parseClockAutomation: the asking kinds are refused by name with where the 
   assert.match(error("daily 18:00 press cmd+s"), /^press is set up by voice/);
   assert.match(error("daily 18:00 wake 'summarise'"), /^wake is set up by voice/);
   assert.match(error("weekdays 09:00 file ~/Papers"), /^file is set up by voice/);
-  assert.match(error("at 7:10 weekdays"), /didn't catch what it does\. Say when, then what/);
-  assert.match(error("chime 'Wake up'"), /^the when comes first\. Say when, then what/);
+  assert.match(error("at 7:10 weekdays"), /didn't catch what it does, so say when, then what/);
+  assert.match(error("chime 'Wake up'"), /^say when first, then what: chime/);
   assert.match(error("at 7:10 chime"), /^chime needs a line: chime 'Wake up'$/);
   assert.match(error("at 7:10 open"), /^open needs an app, an https URL or a path$/);
   assert.match(error("at sevenish chime hi"), /didn't catch "sevenish"/);

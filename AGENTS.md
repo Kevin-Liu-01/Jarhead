@@ -236,7 +236,7 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   in `UI/HelpCopy.swift`: the mute box at 0.48 while the guard holds, the 2 × 2 dot, the `record.circle`
   chip while tucked, fed by the `jarhead.dock.audio` notice (`NotchDock.audioNotification`, userInfo
   `recording` · `guardHeld` · `shared`); no new zone, no gesture), the status menu row + ⌃⌥R
-  (`HelpCopy.recordingRow`: `Recording` · `Hand back the mic and guard the echo; apps keep their sound` ·
+  (`HelpCopy.recordingRow`: `Recording` · `Hand back the mic, guard the echo, so apps keep their sound` ·
   `Hotkeys.Action.toggleRecording = 9`; the title never flips, the checkmark is the state), `pnpm
   jarhead status` / `doctor` (group `audio`, `--test-audio`). The cost fuse lives in `AppState`
   (`echoTurns`, `echoFuseTurns = 3`, toast `AppState.heardHimself`): three turns of Jarhead's own

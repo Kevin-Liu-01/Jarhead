@@ -106,8 +106,8 @@ type Pointers = Pick<Snapshot, "nextFire" | "ringing">;
 export function automationsSummary(all: readonly Automation[], pointers: Pointers, now: number): string {
   const rows = all.filter((a) => a.state !== "trashed");
   const states = byStateWords(rows);
-  const next = pointers.nextFire ? `${clockOf(pointers.nextFire.at)} ${pointers.nextFire.name} (${inWords(pointers.nextFire.at, now)})` : "none";
-  return `  automations ${rows.length}${states ? ` (${states})` : ""} · next ${next} · ringing: ${ringWords(pointers.ringing)}`;
+  const next = pointers.nextFire ? `next ${clockOf(pointers.nextFire.at)} ${pointers.nextFire.name} (${inWords(pointers.nextFire.at, now)})` : "nothing next";
+  return `  automations ${rows.length}${states ? ` (${states})` : ""} · ${next} · ringing: ${ringWords(pointers.ringing)}`;
 }
 
 /** The ring as one phrase: the line, `+N more`; "none" when nothing rings. */
@@ -197,7 +197,8 @@ export function landedAutomation(rows: readonly Automation[], name: string, sent
   return rows.find((a) => a.name.toLowerCase() === wanted && a.createdBy.by === "cli" && (a.state === "armed" || a.state === "snoozed") && a.createdAt >= sentAt);
 }
 
-const USAGE = "Say when, then what: chime 'Wake up' · say 'call mum' · notify 'stand-up' · open Notes (e.g. \"at 7:10 weekdays chime 'Wake up'\", \"in 12m chime pasta\", \"weekdays 09:00 open Notes\")";
+const USAGE_WHAT = "chime 'Wake up' · say 'call mum' · notify 'stand-up' · open Notes (e.g. \"at 7:10 weekdays chime 'Wake up'\", \"in 12m chime pasta\", \"weekdays 09:00 open Notes\")";
+const USAGE = `Say when, then what: ${USAGE_WHAT}`;
 
 /**
  * `jarhead automations add "<words>"`: `<when> <chime|say|notify|open> <what>`, the when
@@ -212,11 +213,11 @@ export function parseClockAutomation(words: string, now: number): ParsedAutomati
   const toks = tokens(words.trim());
   if (toks.length === 0) return { error: USAGE };
   const verbAt = toks.findIndex((t) => FREE_VERBS.has(t.toLowerCase()) || ASKING_VERBS.has(t.toLowerCase()));
-  if (verbAt < 0) return { error: `didn't catch what it does. ${USAGE}` };
+  if (verbAt < 0) return { error: `didn't catch what it does, so say when, then what: ${USAGE_WHAT}` };
   const verb = (toks[verbAt] ?? "").toLowerCase();
   if (ASKING_VERBS.has(verb)) return { error: `${verb} is set up by voice or in the Console, where the yes is heard; the CLI arms chime · say · notify · open` };
   const whenPhrase = toks.slice(0, verbAt).join(" ");
-  if (!whenPhrase) return { error: `the when comes first. ${USAGE}` };
+  if (!whenPhrase) return { error: `say when first, then what: ${USAGE_WHAT}` };
   const when = parseWhen(whenPhrase, now);
   if ("error" in when) return when;
   const what = toks.slice(verbAt + 1).join(" ").trim();

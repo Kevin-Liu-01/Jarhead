@@ -279,7 +279,7 @@ export function describeDock(a: DockAudit | undefined, skipped?: string): string
   if (a.pinned > 1) notes.push(`${a.pinned - 1} duplicate pin${a.pinned - 1 === 1 ? "" : "s"}`);
   const rebuild = a.changes.find((c) => c.kind === "rebuild-pin");
   if (rebuild && rebuild.urlWas !== INSTALLED_URL) notes.push(`pin points at ${rebuild.urlWas ?? "nothing"}`);
-  return `${base}, ${notes.join(", ") || "needs a repair"}${cause}`;
+  return `${base} · ${notes.join(", ") || "needs a repair"}${cause}`;
 }
 
 /** What a repair did, for the summary line: "removed 1 recent tile, pin rebuilt". */

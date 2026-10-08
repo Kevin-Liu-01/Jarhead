@@ -439,7 +439,7 @@ enum ConsoleTheme {
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
             // Paused: the word resumes without authentication (WakeGate.isPaused); say so, and name the button.
             if paused { return GateMeta(symbol: "ear.fill", color: listening, label: "paused · say “\(phrase)” or press Go") }
-            return GateMeta(symbol: "ear.fill", color: listening, label: "Listening for “\(phrase)”" + (auth == .none ? GateWords.noAuth : ""))
+            return GateMeta(symbol: "ear.fill", color: listening, label: "Listening for “\(phrase)”" + (auth == .none ? GateWords.noAuth() : ""))
         case .heard:
             return GateMeta(symbol: "waveform.circle.fill", color: acting, label: "Heard you")
         case .authenticating(let method):

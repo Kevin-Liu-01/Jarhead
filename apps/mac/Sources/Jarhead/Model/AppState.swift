@@ -1168,8 +1168,9 @@ public enum GateWords {
         "Not this time" + joint(island) + reason.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// After "Listening for “jarhead”" when the word alone opens the session.
-    public static let noAuth = " (no authentication)"
+    /// After "Listening for “jarhead”" when the word alone opens the session; the island
+    /// joins it with its dot: "Listening for “jarhead” · no authentication".
+    public static func noAuth(island: Bool = false) -> String { island ? " · no authentication" : " (no authentication)" }
 
     private static func joint(_ island: Bool) -> String { island ? " · " : ": " }
 }
@@ -1311,7 +1312,7 @@ extension AppState {
         switch transportPress(for: phase) {
         case .go: return phase == .paused ? ("play.fill", "Go: resume with the context") : ("play.fill", "Go")
         case .pause: return ("pause.fill", "Pause: the meter stops, the conversation is kept")
-        case .stop: return ("ellipsis", "Connecting, press to stop")
+        case .stop: return ("ellipsis", "Connecting: press to stop")
         }
     }
 

@@ -6,7 +6,7 @@ import Foundation
 // shape, the table, and the `check-copy` rules the harness pins over the whole table. Builders
 // add entries beside these as their controls migrate; a name that varies (a thread's) is a func.
 //
-// Rules (M§7): R1 one line, verb first, no full stop, ≤ 60 characters · R2 one em dash at most ·
+// Rules (M§7): R1 one line, verb first, no full stop, ≤ 60 characters · R2 no em dash ·
 // R3 the shortcut last (a keycap in the Console) · R4 figures ` · `-joined · R6 never the visible
 // label · R7 never the only carrier · R10 never "you" or "Kevin".
 
@@ -87,7 +87,7 @@ enum HelpCopy {
     /// The peek chip while Recording is on (a glyph, no figure).
     static let recordingChip = Entry(name: "Recording", hint: "Recording: mic shared, echo guarded")
     /// The status menu row (and the Dock menu's); the key rides last as the menu's own equivalent.
-    static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic and guard the echo; apps keep their sound", key: "⌃⌥R")
+    static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic, guard the echo, so apps keep their sound", key: "⌃⌥R")
 
     // MARK: voices (design13) — the composer chip, Switch now at rest and while work runs
 
@@ -116,7 +116,7 @@ enum HelpCopy {
         if e.name.split(separator: " ").count > maxNameWords { out.append("name over \(maxNameWords) words") }
         if e.hint.count > maxHintLength { out.append("hint over \(maxHintLength)") }
         if e.hint.hasSuffix(".") { out.append("full stop") }
-        if e.hint.filter({ $0 == "—" }).count > 1 { out.append("two em dashes") }
+        if e.hint.contains("—") { out.append("em dash") }
         if e.hint.contains("\n") { out.append("two lines") }
         if e.hint.lowercased().contains("kevin") { out.append("names Kevin") }
         if e.hint.split(separator: " ").contains(where: { $0.lowercased() == "you" || $0.lowercased() == "your" }) { out.append("says you") }

@@ -2038,7 +2038,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         expect("composer asleep, typed wakes off", ComposerBar.placeholder(phase: .asleep, typedWakes: false), "Type to Jarhead… (asleep: press Go)")
         expect("composer asleep, typed wakes on (Kevin's word)", ComposerBar.placeholder(phase: .asleep, typedWakes: true), "Type to wake Jarhead…")
         expect("composer in session", ComposerBar.placeholder(phase: .listening, typedWakes: false), "Say something…")
-        expect("composer paused", ComposerBar.placeholder(phase: .paused, typedWakes: false), "Paused, press Go or type to resume")
+        expect("composer paused", ComposerBar.placeholder(phase: .paused, typedWakes: false), "Paused: press Go or type to resume")
         expect("composer keeps the words while asleep (the engine refuses)", "\(ComposerBar.keepsText(phase: .asleep, typedWakes: false))\(ComposerBar.keepsText(phase: .error, typedWakes: false))\(ComposerBar.keepsText(phase: .asleep, typedWakes: true))\(ComposerBar.keepsText(phase: .listening, typedWakes: false))", "truetruefalsefalse")
         expect("Return is never a yes (ConsoleConfirm)", String(ConsoleConfirm.returnIsAYes), "false")
         expect("key ⌘0 → Now", String(ConsoleWindow.command(flags: .command, chars: "0") == .showNow), "true")
@@ -4245,7 +4245,7 @@ extension PreviewDelegate {
         expect("audio: recording words", [SettingsWords.recording, SettingsWords.recordingHint, SettingsWords.recordingLabel, SettingsWords.recordingOn].joined(separator: " / "),
                "settings.recording / shares the mic / Recording a demo: hand the mic back, guard the echo / No Apple unit. Jarhead holds the wire while he speaks; a word over him opens it.")
         expect("audio: RecordingWords", [RecordingWords.heldTip, RecordingWords.chipTip, RecordingWords.menuRow, RecordingWords.menuTipSpoken, RecordingWords.badge].joined(separator: " / "),
-               "Mic held while he speaks, but a word over him opens it / Recording: mic shared, echo guarded / Recording / Hand back the mic and guard the echo; apps keep their sound (⌃⌥R) / recording")
+               "Mic held while he speaks, but a word over him opens it / Recording: mic shared, echo guarded / Recording / Hand back the mic, guard the echo, so apps keep their sound (⌃⌥R) / recording")
         expect("audio: the mute tip says the mic stays open", HelpCopy.mute.hint, "Stop sending but keep the session and the mic open")
         let aec = MicRouteInfo(Self.micRouteFixture("aec-airpods"))
         let rec = MicRouteInfo(Self.micRouteFixture("recording-macbook"))

@@ -125,7 +125,7 @@ final class WakeWordListener {
     private static func describe(_ status: SFSpeechRecognizerAuthorizationStatus) -> (Bool, String) {
         switch status {
         case .authorized: return (true, "Speech Recognition granted")
-        case .denied: return (false, "Speech Recognition denied (enable it in System Settings › Privacy › Speech Recognition)")
+        case .denied: return (false, "Speech Recognition denied · enable it in System Settings › Privacy › Speech Recognition")
         case .restricted: return (false, "Speech Recognition restricted on this Mac")
         case .notDetermined: return (false, "Speech Recognition not decided")
         @unknown default: return (false, "Speech Recognition unavailable")
@@ -190,7 +190,7 @@ final class WakeWordListener {
             return
         }
         guard recognizer.supportsOnDeviceRecognition else {
-            status(.unavailable("on-device speech model missing (download it under System Settings › Keyboard › Dictation; nothing is sent to a server)"))
+            status(.unavailable("on-device speech model missing · download it under System Settings › Keyboard › Dictation (nothing is sent to a server)"))
             return
         }
         // Everything AVFoundation can raise from runs inside the ObjC shim (`objcTry`):

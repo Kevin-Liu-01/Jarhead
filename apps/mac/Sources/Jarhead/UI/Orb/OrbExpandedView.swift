@@ -178,7 +178,7 @@ enum OrbStyle {
         case .listening:
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
             if paused { return "paused · say “\(phrase)” or press Go" }
-            return "Listening for “\(phrase)”" + (auth == .none ? GateWords.noAuth : "")
+            return "Listening for “\(phrase)”" + (auth == .none ? GateWords.noAuth(island: island) : "")
         case .heard: return "Heard you"
         case .authenticating(let method): return "Waiting for \(method)"
         case .granted: return paused ? "Resuming…" : "Waking…"

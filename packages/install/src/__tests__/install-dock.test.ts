@@ -72,7 +72,7 @@ test("dock: the audit removes the recent tile, rebuilds the pin in place, and le
   for (const key of ["last-analytics-stamp", "lastShowIndicatorTime", "loc", "mod-count", "persistent-others", "region", "tilesize", "trash-full", "version", "wvous-br-corner"]) {
     assert.deepEqual(dictGet(a.doc, key), dictGet(doc, key), key);
   }
-  assert.match(describeDock(a), /^Dock: 1 pinned, 1 recent, two tiles$/);
+  assert.match(describeDock(a), /^Dock: 1 pinned, 1 recent · two tiles$/);
   assert.equal(describeDockChanges(a.changes), "removed 1 recent tile, pin rebuilt");
 });
 
@@ -105,7 +105,7 @@ test("dock: two pins keep the first and drop the second; a missing recent-apps k
   );
   assert.equal(tileNodes(a.doc, "persistent-apps").length, 2);
   assert.equal(integerAt(tileNodes(a.doc, "persistent-apps")[1]!, "GUID"), "2654545783", "the first pin kept its slot");
-  assert.match(describeDock(a), /2 pinned, 0 recent, 1 duplicate pin/);
+  assert.match(describeDock(a), /2 pinned, 0 recent · 1 duplicate pin/);
 });
 
 test("dock: no Jarhead pin means report only — never pin on Kevin's behalf", () => {

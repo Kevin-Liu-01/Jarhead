@@ -189,7 +189,7 @@ test("hygiene audit (doctor, `jarhead dock`): dump and export only — no -f, no
   assert.deepEqual(r.launchServices.unregistered, []);
   assert.deepEqual(r.launchServices.remaining.map((x) => x.path), STALE, "what a fix would unregister");
   assert.equal(r.dock.imported, false);
-  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent, two tiles (pnpm jarhead dock --fix repairs it)`);
+  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent · two tiles (pnpm jarhead dock --fix repairs it)`);
 });
 
 test("hygiene install (pnpm build:mac): LaunchServices is refreshed and cleaned with ONE dump — the -u exit codes are the report — and the Dock is only read", () => {
@@ -205,7 +205,7 @@ test("hygiene install (pnpm build:mac): LaunchServices is refreshed and cleaned 
   assert.deepEqual(r.launchServices.unregistered, STALE);
   assert.deepEqual(r.launchServices.remaining, []);
   assert.equal(r.dock.imported, false);
-  assert.match(r.line, /^one jarhead  LaunchServices: \/Applications\/Jarhead\.app registered · 3 stale records unregistered · Dock: 1 pinned, 1 recent, two tiles \(pnpm jarhead dock --fix repairs it\)$/);
+  assert.match(r.line, /^one jarhead  LaunchServices: \/Applications\/Jarhead\.app registered · 3 stale records unregistered · Dock: 1 pinned, 1 recent · two tiles \(pnpm jarhead dock --fix repairs it\)$/);
 
   // A -u that fails stays in `remaining` and on the line; verifyUnregister brings the second dump back.
   const failing = fake({ exports: [TWO], unregisterFails: [STALE[1]!] });
@@ -233,7 +233,7 @@ test("hygiene: a Foreground jarhead-hands in `lsappinfo list` is a helper tile �
   const r = runHygiene({ ...base, mode: "audit", exec: audit.exec });
   assert.deepEqual(r.running, { helperTiles: [HELPER] });
   assert.deepEqual(r.dock.before?.helperTiles, [HELPER], "the audit the doctor and the engine read carries the cause");
-  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent, two tiles; ${CLAUSE}`);
+  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent · two tiles; ${CLAUSE}`);
   assert.ok(!/repairs it/.test(r.line));
   // fix: the recent-apps leftover goes (it is a leftover), the pin is rebuilt, and the line refuses to call that repaired.
   const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
@@ -256,7 +256,7 @@ test("hygiene: no helper in `lsappinfo list` (the app alone, a node process, a B
   const quiet = RUNNING_APP + HELPER_BLOCK.replace('type="Foreground"', 'type="BackgroundOnly"');
   const r = runHygiene({ ...base, mode: "audit", exec: fake({ exports: [TWO], running: quiet }).exec });
   assert.deepEqual(r.running, { helperTiles: [] }, "a helper that set its activation policy is not a tile");
-  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent, two tiles (pnpm jarhead dock --fix repairs it)`);
+  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent · two tiles (pnpm jarhead dock --fix repairs it)`);
   assert.equal(r.dock.before?.helperTiles, undefined, "no helpers → the audit is the plain plist audit");
   const failed = runHygiene({ ...base, mode: "audit", exec: fake({ exports: [TWO], runningResult: { code: 1, stdout: "", stderr: "lsappinfo: no LaunchServices\nmore" } }).exec });
   assert.deepEqual(failed.running, { helperTiles: [], skipped: "lsappinfo list failed (1): lsappinfo: no LaunchServices" });
@@ -320,7 +320,7 @@ test("hygiene: a dump that times out or fails carries its reason (the ETIMEDOUT 
   assert.equal(r.launchServices.skipped, `lsregister -dump Bundle failed (1): spawnSync ${LSREGISTER} ETIMEDOUT`);
   assert.ok(!calls.some((c) => c.args[0] === "-u"), "no stale rule without a table");
   assert.equal(r.launchServices.refreshed, true, "-f still ran");
-  assert.match(r.line, /^one jarhead  LaunchServices: skipped \(lsregister -dump Bundle failed \(1\): spawnSync .*ETIMEDOUT\) · Dock: 1 pinned, 1 recent, two tiles/);
+  assert.match(r.line, /^one jarhead  LaunchServices: skipped \(lsregister -dump Bundle failed \(1\): spawnSync .*ETIMEDOUT\) · Dock: 1 pinned, 1 recent · two tiles/);
   assert.ok(logged.some((l) => /ETIMEDOUT/.test(l)), "the reason reaches the build log");
   // Only the first line of a chatty stderr travels.
   const chatty = fake({ exports: [TWO], dumpResult: { code: 2, stdout: "", stderr: "first line\nsecond line\n" } });
