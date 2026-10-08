@@ -413,7 +413,8 @@ struct ConsoleFormRow<C: View>: View {
 }
 
 /// One quiet line under a control: sans 11 titanium, indented to the control column (90 in the
-/// rail; the wizard's rows pass their own), red for a rejection.
+/// rail; the wizard's rows pass their own), red for a rejection. A command in backticks
+/// (`` `claude` ``) is set in the kit's mono, the face for ids and commands, without the ticks.
 struct ConsoleHint: View {
     let text: String
     var tone: Color = ConsoleTheme.titanium
@@ -425,8 +426,23 @@ struct ConsoleHint: View {
         self.indent = indent
     }
 
+    /// The line with each backticked span in mono 11; an unpaired tick stays as typed.
+    static func styled(_ text: String) -> AttributedString {
+        let parts = text.split(separator: "`", omittingEmptySubsequences: false)
+        guard parts.count >= 3 else { return AttributedString(text) }
+        var out = AttributedString()
+        for (i, part) in parts.enumerated() {
+            let isCode = i % 2 == 1 && i < parts.count - 1
+            if i % 2 == 1 && !isCode { out += AttributedString("`") }
+            var run = AttributedString(String(part))
+            if isCode { run.font = ConsoleTheme.mono(11) }
+            out += run
+        }
+        return out
+    }
+
     var body: some View {
-        Text(text).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(tone)
+        Text(Self.styled(text)).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(tone)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.leading, indent)
             .frame(maxWidth: .infinity, alignment: .leading)

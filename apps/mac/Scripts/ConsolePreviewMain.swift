@@ -74,7 +74,8 @@ import SwiftUI
 //                    "asleep · said “that's all for now”") before the close it explains.
 //     cleanup      = the rail with a pinned chain above the days, "Archived (2)" folded and
 //                    "Trash (2)" open with Restore on each row and the folder on its head; the
-//                    Agents section with "Hidden (1)" open; the trash figures in Settings › Retention
+//                    Agents section with "Hidden (1)" open; the trash figures in Settings › Retention.
+//                    Asleep, so no session clock (Expires, the elapsed mm:ss) rolls while the shot lands
 //     cleanup-select = the same with two chains ⌘-picked: the strip under the head (Archive ·
 //                    Move to Trash · Restore) and the check marks on the rows
 //     cleanup-rename = the pinned chain's title as the inline field
@@ -147,7 +148,8 @@ import SwiftUI
 //     automations  = the Now rail's Automations section (design11, Builder D): the mockup's six rows under
 //                    Clock 4 / Watchers 2, the Trash fold open (`fold:now.automations.trash:open`), the honest
 //                    line, the ring row `07:10 · Wake up, Kevin [Snooze] [Done]` under the tabs, the Downloads →
-//                    Papers card pinned (`tipOpen:now.automation.auto_papers`, `check-floats`); tall window.
+//                    Papers card pinned (`tipOpen:now.automation.auto_papers`, `check-floats`); tall window. The
+//                    stream is the short exchange that set three of the rows, so the card lands on bare ground.
 //     automations-ring = the ring row on the Ledger tab with its card pinned; `ringing:off` then
 //                    `ringing:<id>` (the `probe-ring:` lines say nil, then the id).
 //     settings-automations = Settings › Automations (`automationsFold`): the switch, the eight chips, quiet
@@ -444,10 +446,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                     state.snapshot.agents[i].hint = "blocked"
                 }
             }
-            // Fewer sessions in the `cleanup` shot, so the Agents section's "Hidden (1)" is on screen.
+            // Fewer sessions in the `cleanup` shot, so the Agents section's "Hidden (1)" is on screen; and asleep,
+            // so no session clock (Expires, the elapsed mm:ss) is caught mid-roll when the shot lands.
             if scenario == "cleanup" {
                 let keep: Set<String> = ["sessions:cc:1", "sessions:codex:thread-9"]
                 state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
+                state.snapshot.phase = .asleep
+                state.snapshot.session = nil
             }
         case "problems", "problems-groups":
             state.snapshot = fake.live()
@@ -764,7 +769,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // keyboard and ↓ ⏎ picking the next day (`list-focus:` lines say which).
         case "settings-index": defaultActions = "check-kit@0.3,snap:preview-console-settings-index-closed@0.7,fold:\(SettingsWords.memoryFold):open@0.9"
         case "permissions-groups": defaultActions = "check-kit@0.3,fold:\(NowWords.permissionsFold):open@0.5,fold:\(NowWords.sensesFold):open@0.8,rail-scroll:460@1.2"
-        case "problems": defaultActions = "fold:\(NowWords.problemsFold):open@0.4,rail-scroll:520@0.8"
+        // The rail scrolled 216 pt: Circled's head under the tabs, Problems whole below Ready and Permissions
+        // (console-preview.sh shoots it 1180x1035); 520 overshot the end and left a third of the column bare.
+        case "problems": defaultActions = "fold:\(NowWords.problemsFold):open@0.4,rail-scroll:216@0.8"
         case "problems-groups": defaultActions = "check-kit@0.3,fold:\(NowWords.problemsFold):open@0.5,fold:\(NowWords.engineFold):closed@0.8,rail-scroll:520@1.2"
         case "ledger-months": defaultActions = "check-kit@0.3,pick-day:2026-08-31@0.4,pick-day:2026-08-28@0.6,pick-day:2026-09-10@0.9,"
             + "focus:\(LedgerWords.listId)@1.4,keyDown:down+return@1.7,probe@2.4"
@@ -2803,13 +2810,13 @@ struct FakeData {
                           timings: DelegationTimings(delegatedAt: t0, firstThinkingAt: t0 + 420, firstCommentaryAt: t0 + 4_900, doneAt: t0 + 5_100), threadId: "main")
     }
 
-    /// What was heard and said around the split: the ask, "on it", the one coalesced split line,
-    /// Notes' finish line, and Slack's question spoken with its name.
+    /// What was heard and said around the split: the ask, "on it", Notes' finish line, and Slack's
+    /// question spoken with its name. The split line itself is the card's spoken step (th-s5), so it
+    /// is not a row of its own here (the stream would show it twice).
     func threadsTranscript(from t0: Double) -> [TranscriptItem] {
         [
             TranscriptItem(id: "th-u1", speaker: .kevin, text: "Jarhead, add today's standup line to my Notes, put on Focus on Spotify, and tell Ben on Slack I'm running late.", startMs: 0, endMs: 4200, at: t0 - 1200, final: true),
             TranscriptItem(id: "th-u2", speaker: .jarhead, text: "On it.", startMs: 4400, endMs: 4800, at: t0 - 500, final: true),
-            TranscriptItem(id: "th-u3", speaker: .jarhead, text: "Notes, Spotify and Slack alongside.", startMs: 6000, endMs: 7200, at: t0 + 5_000, final: true),
             TranscriptItem(id: "th-u4", speaker: .jarhead, text: "Notes: appended one line to Daily.", startMs: 8500, endMs: 10200, at: t0 + 4_100, final: true),
             TranscriptItem(id: "th-u5", speaker: .jarhead, text: "Slack asks: send “running late — there in 10” to Ben?", startMs: 11000, endMs: 13500, at: t0 + 10_800, final: true),
         ]
@@ -2831,6 +2838,8 @@ struct FakeData {
             ThreadEntry(kind: "status", seq: seq, delegationId: delegationId, status: st, summary: summary, timings: timings)
         }
         let talk = threadsTranscript(from: t0)
+        // A spoken line by its id (looked up, not counted, so a line can come or go).
+        func line(_ id: String) -> TranscriptItem { talk.first { $0.id == id }! }
         switch id {
         case FakeData.slackId:
             let s0 = t0 + 4_500
@@ -2845,7 +2854,7 @@ struct FakeData {
                 card(2, d),
                 step(3, d.id, DelegationStep(id: "sl-5", at: s0 + 6_100, kind: .confirm, text: "Send “running late — there in 10” to Ben?", tool: nil, screenshotPath: nil)),
                 status(4, d.id, .awaitingConfirmation, summary: nil, timings: d.timings),
-                utt(5, talk[4]),
+                utt(5, line("th-u5")),
             ], total: 5, complete: true, live: true, cursor: ThreadTranscript.Cursor(startSeq: 1, endSeq: 5), readMs: 3)
         case FakeData.spotifyId:
             let s0 = t0 + 3_500
@@ -2867,7 +2876,7 @@ struct FakeData {
             return ThreadTranscript(threadId: id, entries: [
                 sys(1, s0, ConsoleTheme.threadsSymbol, "Notes · started", mono: "background", trailing: "append today's standup line to the Notes daily page"),
                 card(2, d),
-                utt(3, talk[3]),
+                utt(3, line("th-u4")),
                 sys(4, s0 + 3_200, "checkmark.circle.fill", "Notes · done", mono: "3 steps · 00:03", trailing: "appended one line to Daily"),
             ], total: 4, complete: true, live: false, cursor: ThreadTranscript.Cursor(startSeq: 1, endSeq: 4), readMs: 2)
         default:
@@ -3154,9 +3163,31 @@ struct FakeData {
                            openAtLogin: false)
     }
 
-    /// Asleep, the alarm ringing, six rows set, the foot's next fire the alarm.
+    /// How three of the rows were set: said once while awake, each read back in one line (the row's echo),
+    /// then "night". The pasta line lands 7:48 before the shot, where the timer's 4:12 left puts it.
+    func automationsTranscript() -> [TranscriptItem] {
+        let lines: [(Double, SpeakerRole, String)] = [
+            (560, .kevin, "Wake me at seven ten on weekdays."),
+            (557, .jarhead, "Weekdays at 07:10, ring “Wake up, Kevin”."),
+            (531, .kevin, "When a PDF lands in Downloads, file it under Papers and tell me."),
+            (527, .jarhead, "When a PDF lands in Downloads, file it under ~/Documents/Papers and chime."),
+            (471, .kevin, "Twelve-minute timer for the pasta."),
+            (468, .jarhead, "In 12:00, ring “pasta”."),
+            (441, .kevin, "Night."),
+            (439, .jarhead, "Night, Kevin."),
+        ]
+        return lines.enumerated().map { i, line in
+            TranscriptItem(id: "au-u\(i + 1)", speaker: line.1, text: line.2, startMs: Double(i) * 3_000, endMs: Double(i) * 3_000 + 1_800,
+                           at: ago(line.0), final: true)
+        }
+    }
+
+    /// Asleep, the alarm ringing, six rows set, the foot's next fire the alarm. The stream is the short
+    /// exchange that set them, so a card pinned beside a rail row lands on bare ground, not on a line.
     func automationsSnapshot() -> Snapshot {
         var s = asleep()
+        s.transcript = automationsTranscript()
+        s.delegations = []
         s.automations = automations()
         s.ringing = ringLine()
         s.nextFire = NextFire(id: Self.wakeId, kind: "alarm", name: "Wake up, Kevin", at: nextWeekday(7, 10))

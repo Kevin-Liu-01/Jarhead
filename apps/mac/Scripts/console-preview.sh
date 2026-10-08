@@ -66,7 +66,8 @@
 #   Clock 4 (the alarm, the pasta timer ticking, call mum snoozed, the standup routine) · Watchers 2
 #   (Downloads → Papers, build red paused) · the Trash fold open with one row · the honest line — under the
 #   ring row `07:10 · Wake up, Kevin [Snooze] [Done]`, with the Downloads → Papers card pinned over the
-#   stream (`check-floats:now.automation.auto_papers`). `automations-ring` is the same ring row on the Ledger
+#   stream (`check-floats:now.automation.auto_papers`); the stream is the short exchange that set three of
+#   the rows, so the card lands on bare ground below it. `automations-ring` is the same ring row on the Ledger
 #   tab (it sits under the tabs on every tab) with its card pinned, then `ringing:off` / `ringing:<id>`
 #   (run.log's `probe-ring:` lines say nil, then the id). `settings-automations` is Settings › Automations
 #   (`automationsFold`): the On|Off switch, the eight chips (the run tier outlined), quiet hours 23:00 → 07:00,
@@ -147,14 +148,14 @@
 #   `threads` scenario's default actions print the sleep-word `check:` pins (check-sleep) too.
 #   The cleanup scenarios: `cleanup` is the rail with a pinned chain above the days, "Archived (2)"
 #   folded, "Trash (2)" open with Restore on each row and the folder on its head, and the Agents
-#   section's "Hidden (1)" open; `cleanup-select` adds two ⌘-picked chains and the strip under the
-#   head; `cleanup-rename` the inline title field; `cleanup-undo` a chain just moved to the Trash
-#   and the toast "Moved to Trash · Undo"; `search` the head as the search box with hits grouped
-#   by conversation; `search-hit` searches "codex did while" and opens its one hit the way the row
-#   would (the conversation scrolled to the row, lit; run.log's `probe:` line says what landed);
-#   `cleanup-undo-toast` presses the toast's Undo then ⌘Z then ⇧⌘Z (run.log: ⌘Z must find nothing);
-#   `problems` the Now tab's typed problems with a remedy each; `cleared` the Now stream cleared
-#   ("Cleared · Undo").
+#   section's "Hidden (1)" open, asleep so no session clock rolls under the shot; `cleanup-select` adds
+#   two ⌘-picked chains and the strip under the head; `cleanup-rename` the inline title field;
+#   `cleanup-undo` a chain just moved to the Trash and the toast "Moved to Trash · Undo"; `search` the
+#   head as the search box with hits grouped by conversation; `search-hit` searches "codex did while"
+#   and opens its one hit the way the row would (the conversation scrolled to the row, lit; run.log's
+#   `probe:` line says what landed); `cleanup-undo-toast` presses the toast's Undo then ⌘Z then ⇧⌘Z
+#   (run.log: ⌘Z must find nothing); `problems` the Now tab's typed problems with a remedy each (the
+#   rail scrolled to Circled); `cleared` the Now stream cleared ("Cleared · Undo").
 #   `settings` is asleep with the wake gate listening (Settings tab); `wake-locked`
 #   the same tab with the gate locked out and no passphrase set.
 #   `jarhead` steps into a past Jarhead conversation (the paused → resumed chain,
@@ -288,6 +289,16 @@ if [[ "$SCENARIO" == "settings-automations" ]]; then export PREVIEW_WINDOW_SIZE=
 # The Brain section and "Leaves the Mac" under it on the Settings tab; the Problems section under
 # Permissions on the Now tab: a taller window shows them whole.
 case "$SCENARIO" in local|local-empty|buttons) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac
+# The README's Console shots (scripts/make-readme-shots.sh passes no size, so these hold). The stream is pinned
+# to its end, so its top edge lands wherever the rows above the end add up to; these heights put that edge in
+# a gap between rows, never through a line of text. `threads` opens on "Nice. What's Codex up to?"; `cleanup`
+# and `light` open on the screenshot step, so the light shot's error toast sits on the picture, clear of text;
+# `settings` ends with Session whole (idle sleep, auto-wake, the notch home) and its stream opens on Kevin's
+# first line, as does `problems` (its rail scrolled to Circled, all four problems whole). A row that changes
+# height moves these edges: measure again before the next shot.
+case "$SCENARIO" in threads) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x800}";; esac
+case "$SCENARIO" in settings|problems) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1035}";; esac
+case "$SCENARIO" in cleanup|light) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x737}";; esac
 if [[ -n "${PREVIEW_CONNECTED:-}" ]]; then export PREVIEW_CONNECTED; fi
 if [[ -n "${PREVIEW_WIPE_SECONDS:-}" ]]; then export PREVIEW_WIPE_SECONDS; fi
 if [[ -n "${PREVIEW_SLOW_THUMBS:-}" ]]; then export PREVIEW_SLOW_THUMBS; fi

@@ -383,10 +383,11 @@ struct OnboardingBrainStep: View, Equatable {
                     }
                 }
             }
+        // The kind's `needs` line above already says whose login it uses; the Login row says how to sign in.
         case .codex:
-            loginRow("Uses your ChatGPT / Codex login on this Mac. Not signed in? Run `codex` once in a terminal.")
+            loginRow("If you are not signed in, run `codex` once in a terminal.")
         case .claudeCode:
-            loginRow("Uses your Claude login on this Mac. Not signed in? Run `claude` once in a terminal.")
+            loginRow("If you are not signed in, run `claude` once in a terminal.")
         case .anthropicApi:
             secretRow("Anthropic key", placeholder: "sk-ant-…")
             modelRow
@@ -408,6 +409,7 @@ struct OnboardingBrainStep: View, Equatable {
         }
     }
 
+    /// The Login row's one line; a command in backticks is set in mono (ConsoleHint).
     private func loginRow(_ text: String) -> some View {
         setupRow("Login") { ConsoleHint(text, indent: 0) }
     }

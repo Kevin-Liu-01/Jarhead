@@ -36,30 +36,39 @@
 #
 # Scenarios and the file each one becomes (all in docs/media/):
 #
-#   console (apps/mac/Scripts/console-preview.sh <scenario>; the window shot @2x, JPEG)
+#   console (apps/mac/Scripts/console-preview.sh <scenario>; the window shot @2x, JPEG). Each scenario is
+#   shot at the window size console-preview.sh gives it (1180x760 unless it names its own), so a
+#   scenario's framing lives in one place:
 #     threads         console-threads.jpg       the split: Notes + Spotify on the background lane, Slack on the
-#                                               screen lane; the Threads rail with Stop on the live ones, one chip
-#                                               per spawned thread under its parent card, [Name] tags
+#                                               screen lane; Slack asking in the left rail and in the Now panel
+#                                               with its Stop, one chip per spawned thread in its parent card
+#                                               (1180x800: the stream opens on a whole row)
 #     conversation    console-conversation.jpg  a Claude Code session stepped into: tool calls, folded reasoning,
 #                                               a permission question with Allow / Deny, circled regions
 #                                               (the harness opens the pane once the app is active, so the
 #                                               title bar is active in the shot without any re-keying)
 #     jarhead         console-jarhead.jpg       a past Jarhead conversation (paused → resumed chain, "resumed ×1")
 #     ledger          console-ledger.jpg        the Ledger tab: day picker, the day's rows, thread and sleep rows
-#     settings        console-settings.jpg      asleep, Settings tab, the wake gate listening
-#                                               (PREVIEW_WINDOW_SIZE=1180x900 so the retention block ends in frame)
+#     settings        console-settings.jpg      asleep, Settings tab: Audio, Brain, Leaves the Mac, then Session
+#                                               whole (1180x1035: idle sleep, auto-wake and the notch home in frame)
 #     problems        console-problems.jpg      the Now tab's typed problems, one remedy button each
-#                                               (PREVIEW_WINDOW_SIZE=1180x1040 so all four problems are in frame)
-#     cleanup         console-cleanup.jpg       Pinned above the days, Archived folded, Trash open with Restore
-#     light           console-light.jpg         the live scenario in the aqua appearance
-#     automations     console-automations.jpg   design11: the Automations rail — the ring line under the tabs, the six rows
-#                                               with no resting badge, the Trash fold open
+#                                               (1180x1035, the rail scrolled to Circled: all four problems whole)
+#     cleanup         console-cleanup.jpg       Pinned above the days, Archived folded, Trash open with Restore;
+#                                               asleep, so no session clock rolls under the shot (1180x737)
+#     light           console-light.jpg         the live scenario in the aqua appearance, its error toast on the
+#                                               screenshot step, clear of text (1180x737)
+#     automations     console-automations.jpg   design11: the Automations rail with the ring line under the tabs, the six
+#                                               rows, the Trash fold open, the Downloads → Papers card pinned over the
+#                                               bare stream under the exchange that set them (1180x1040)
 #
-#   onboarding (apps/mac/Scripts/onboarding-preview.sh <step>; the 620x520 content + title bar, shot @2x → 1240x1104 px)
-#     welcome         onboarding-welcome.png
-#     brain           onboarding-brain.png      kind, model, base URL, key, probe
+#   onboarding (apps/mac/Scripts/onboarding-preview.sh <step>; the content + title bar, shot @2x)
+#     welcome         onboarding-welcome.png    620x520 → 1240x1104 px
+#     brain           onboarding-brain.png      kind, model, base URL, key, probe (620x520)
 #     permissions     onboarding-permissions.png  the sixteen kinds, seven required, "Ask for everything"
-#     wake            onboarding-wake.png       the wake word and how it authenticates you
+#                                               (620x542 → 1240x1148 px: the footer meets the list under Input
+#                                               Monitoring, so no row is cut)
+#     wake            onboarding-wake.png       the wake word and how it authenticates you (620x542, the
+#                                               same as Permissions beside it in the README's table)
 #
 #   orb (apps/mac/Scripts/orb-preview.sh; knobs in UI/Orb/OrbPreviewApp.swift; in-process shots)
 #     notch run       notch-tucked.png · notch-peek.png · notch-island.png · notch-stay.png
@@ -238,9 +247,10 @@ shoot_window() {
 # ---------------------------------------------------------------- console
 if want console; then
   echo "console"
-  # console <scenario> <name> [WxH]: one Console scenario, the window at that frame size.
+  # console <scenario> <name> [WxH]: one Console scenario at the window size console-preview.sh gives it
+  # (its own, else 1180x760); a WxH here overrides that. An empty size never reaches the harness as one.
   console() {
-    local scenario="$1" name="$2" size="${3:-1180x760}"
+    local scenario="$1" name="$2" size="${3:-}"
     PREVIEW_SKIP_BUILD="$SKIP_BUILD" PREVIEW_WINDOW_SIZE="$size" \
       "$MAC/Scripts/console-preview.sh" "$scenario" "$TMP/console-$scenario.png" >/dev/null
     SKIP_BUILD=1   # compiled once; every later scenario reuses the binary
@@ -250,8 +260,8 @@ if want console; then
   console conversation  console-conversation
   console jarhead       console-jarhead
   console ledger        console-ledger
-  console settings      console-settings   1180x900
-  console problems      console-problems   1180x1040
+  console settings      console-settings
+  console problems      console-problems
   console cleanup       console-cleanup
   console light         console-light
   console automations   console-automations
@@ -269,8 +279,11 @@ if want onboarding; then
     PREVIEW_STEP=welcome PREVIEW_SCENARIO=ready shoot_window "$TMP/onboarding-welcome.png" "$TMP/onboarding-welcome.log" 1.5 "$ONB_BIN"
   fi
   place "$TMP/onboarding-welcome.png" onboarding-welcome
+  # Permissions and Wake share a README row: both 620x542, so Permissions' list ends under Input Monitoring whole.
   for step in brain permissions wake; do
-    PREVIEW_STEP="$step" PREVIEW_SCENARIO=ready shoot_window "$TMP/onboarding-$step.png" "$TMP/onboarding-$step.log" 1.5 "$ONB_BIN"
+    case "$step" in permissions|wake) size=620x542 ;; *) size=620x520 ;; esac
+    PREVIEW_STEP="$step" PREVIEW_SCENARIO=ready PREVIEW_SIZE="$size" \
+      shoot_window "$TMP/onboarding-$step.png" "$TMP/onboarding-$step.log" 1.5 "$ONB_BIN"
     place "$TMP/onboarding-$step.png" "onboarding-$step"
   done
 fi

@@ -145,12 +145,11 @@ The blob flew to its target and stays there. The perch is where it came from; th
 ### The Console
 
 <p align="center">
-  <img src="docs/media/console-threads.jpg" width="920" alt="The Console during a split: the Now stream with three thread_start calls and the split line; a chip per thread under the parent card; the Threads rail with Slack waiting for Kevin (its Stop), Spotify and Notes done">
+  <img src="docs/media/console-threads.jpg" width="920" alt="The Console during a split: three thread_start calls and a chip per thread in the parent card, Slack asking in the rail and in the Now panel with its Stop, Spotify and Notes done">
 </p>
 
-Three threads at once: Notes and Spotify on the background lane finish on their own,
-Slack on the screen lane stops to ask before it sends. The Threads rail lists each
-thread under its parent with its question and a Stop per thread.
+Three threads at once: Notes and Spotify on the background lane finish on their own, and Slack on the
+screen lane stops to ask before it sends, with its Stop in the Now panel.
 
 <table>
   <tr>
@@ -158,29 +157,29 @@ thread under its parent with its question and a Stop per thread.
     <td width="50%"><img src="docs/media/console-jarhead.jpg" alt="A past Jarhead conversation: paused, session closed, resumed after 8 min, a delegation card, 'night.', asleep · said"></td>
   </tr>
   <tr>
-    <td>A Claude Code session stepped into. Its tool calls, its question with Allow / Deny, and a composer that talks to it.</td>
+    <td>A Claude Code session stepped into: its tool calls, its question with Allow / Deny, and a composer that talks to it.</td>
     <td>A past Jarhead conversation: paused (meter stopped), resumed eight minutes later in a new session, then "night."</td>
   </tr>
   <tr>
     <td><img src="docs/media/console-ledger.jpg" alt="The Ledger tab: a day picked, its rows, the day's sessions, utterances, delegations and billing"></td>
-    <td><img src="docs/media/console-settings.jpg" alt="The Settings tab: voice, mic ranking, brain, model, effort, idle sleep, notch home, retention with Sweep now and Reveal in Finder"></td>
-  </tr>
-  <tr>
-    <td>The Ledger tab: a day's rows, sessions, delegations, what it billed.</td>
-    <td>Settings: voice, mic, brain, idle sleep, the notch home, retention. The Trash has <em>Reveal in Finder</em>, not <em>Empty</em>.</td>
-  </tr>
-  <tr>
-    <td><img src="docs/media/console-problems.jpg" alt="The Now panel's Problems section: Accessibility not granted with Request, the Claude Code brain unavailable with Retry, a Live input history full, low disk with the sweep: four typed problems, a remedy button on each that has one"></td>
     <td><img src="docs/media/console-cleanup.jpg" alt="The rail with Pinned above the days, Archived folded, Trash open with Restore on each row, and a Hidden agent with Unhide"></td>
   </tr>
   <tr>
+    <td>The Ledger tab: a day's rows, sessions, delegations, what it billed.</td>
+    <td>Nothing is deleted: Pinned, Archived, Trash with Restore, a hidden agent with Unhide.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/console-settings.jpg" alt="The Settings tab: voice and accent, mic ranking, Recording, Sounds, volume, the Claude Code brain with its model and effort, Leaves the Mac, then Session with idle sleep, auto-wake and the notch home"></td>
+    <td><img src="docs/media/console-problems.jpg" alt="The Now tab scrolled to its Problems with Clear all: Accessibility not granted with Ask under Grants, then under Engine low disk with Reveal, GPT-Live-1 refusing a note with Retry and the Claude Code brain unavailable with Retry"></td>
+  </tr>
+  <tr>
+    <td>Settings: voice, accent, mic, recording, sounds, the brain and its model, which parts leave the Mac, idle sleep, auto-wake and the notch home.</td>
     <td>Four typed problems; each that has a remedy carries its button.</td>
-    <td>Pinned, Archived, Trash with Restore, a hidden agent with Unhide. Nothing is deleted.</td>
   </tr>
 </table>
 
 <p align="center">
-  <img src="docs/media/console-light.jpg" width="920" alt="The Console in the light (aqua) appearance">
+  <img src="docs/media/console-light.jpg" width="920" alt="The Console in the light (aqua) appearance: the live stream under an error toast, the rails, the Now panel speaking">
 </p>
 
 ### The blob
@@ -225,12 +224,12 @@ A brain said `show_rect` with a label. The blob became the pen and drew it.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/media/onboarding-welcome.png" alt="Setup: Welcome"></td>
-    <td width="50%"><img src="docs/media/onboarding-brain.png" alt="Setup: Brain. Claude Code picked, its login probed: ready"></td>
+    <td width="50%"><img src="docs/media/onboarding-welcome.png" alt="Setup's Welcome step: the daemon connected and your name"></td>
+    <td width="50%"><img src="docs/media/onboarding-brain.png" alt="Setup's Brain step: Claude Code picked, its login ready"></td>
   </tr>
   <tr>
-    <td><img src="docs/media/onboarding-permissions.png" alt="Setup: Permissions. The required seven first, Ask for everything, a Request and an Open Settings button"></td>
-    <td><img src="docs/media/onboarding-wake.png" alt="Setup: Wake. The phrases, Touch ID / Passphrase / Either / None, the passphrase field, the live listening card"></td>
+    <td><img src="docs/media/onboarding-permissions.png" alt="Setup's Permissions step: the required seven first, Ask for everything, Request and Open Settings"></td>
+    <td><img src="docs/media/onboarding-wake.png" alt="Setup's Wake step: the phrases, Touch ID / Passphrase / Either / None, a passphrase set, the listening card"></td>
   </tr>
 </table>
 
@@ -310,11 +309,16 @@ apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wa
 ### Automations
 
 <p align="center">
-  <img src="docs/media/console-automations.jpg" width="920" alt="The Console's Automations section: a ringing alarm under the tabs, the rows with their verbs, the Trash fold">
+  <img src="docs/media/console-automations.jpg" width="920" alt="The Console asleep with an alarm ringing under the tabs: the lines that set the rows, then the Automations section with its summary and Add…, one row per alarm, timer, reminder, routine and watcher with its next fire and verb, a snoozed badge, a paused row with Resume, the Trash open with Restore, and the Downloads → Papers card pinned beside its row">
 </p>
+
+Nothing is deleted: one row per automation in the Console, the Trash open with Restore.
+
 <p align="center">
-  <img src="docs/media/notch-island-alarm.png" width="920" alt="The island ringing an alarm while asleep: 07:10 · Wake up, Kevin with Snooze 10 and Done">
+  <img src="docs/media/notch-island-alarm.png" width="920" alt="The island ringing an alarm while asleep: 07:10 · Wake up, Kevin as the hero, Snooze 10 · Done where Allow · Deny usually sit, the next timer in the foot">
 </p>
+
+An alarm on the island: the line as the hero, Snooze 10 · Done.
 
 Say it once while Jarhead is awake ("wake me at seven ten on weekdays", "twelve-minute timer for
 the pasta", "when a PDF lands in Downloads, file it under Papers and tell me") and it reads one
@@ -339,17 +343,6 @@ One you started in a terminal (`pnpm jarheadd`) keeps running and keeps firing. 
 Rows are never deleted: Move to Trash, Restore. `pnpm jarhead automations`,
 `pnpm jarhead recipes` (a recipe has the same Trash and `restore`), a `doctor` group,
 [`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md).
-
-<table>
-  <tr>
-    <td width="50%"><img src="docs/media/console-automations.jpg" alt="The Console's Automations section: the summary line and Add…, one row per alarm, timer, reminder, routine and watcher with its next fire and verb, a snoozed badge, a paused row with Resume, the Trash folded with Restore"></td>
-    <td width="50%"><img src="docs/media/notch-island-alarm.png" alt="The island ringing: the alarm's line as the hero on the black pool, Snooze 10 · Done where Allow · Deny usually sit"></td>
-  </tr>
-  <tr>
-    <td>Automations in the Console: one row each, the Trash folded with Restore. Nothing is deleted.</td>
-    <td>An alarm on the island: the line as the hero, Snooze 10 · Done.</td>
-  </tr>
-</table>
 
 ## Numbers
 
