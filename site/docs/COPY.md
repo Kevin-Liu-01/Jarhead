@@ -66,8 +66,8 @@ Island strings per kind stay as design.md §4.4 lists them; they are the app's o
 ## 01 · Wake  `id="story"`
 
 - eyebrow: `Listening` · `The mic is open. The meter runs.` · `O O`
-- h2, line 1: `It wakes up to its name` (README:67)
-- h2, line 2 *grey*: `“Hey, jarhead.”` (Kevin's words, 2026-10-07: the name it wakes to). Touch ID is the lead's and the demo's; Wake.tsx cuts it from the lead.
+- h2, line 1: `It sleeps until you say` (README:67: asleep, the on-device recogniser waits for the name)
+- h2, line 2 *grey*: `“Hey, jarhead.”` (Kevin's greeting, 2026-10-07; it finishes the sentence, 2026-10-08). Touch ID is the lead's and the demo's; Wake.tsx cuts it from the lead.
 - lead: `Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.` (README:57). Memory reads a closed conversation on your key at the next quiet tick (engine.ts:3208, :6111), so the voice is the subject.
 - line 1: `Three misses lock the gate for a minute.` (README:57)
 - line 2: `Speaker verification is not attempted.` (README:365)
@@ -419,7 +419,7 @@ named so a reviewer can put it back.
 
 Kevin: one sentence each, black into grey, never "blah blah. blah blah.". Say's was one sentence already.
 
-- Wake `Asleep, it wakes on a word. / Touch ID opens it.` → `It wakes up to its name / “Hey, jarhead.”` (2026-10-07, Kevin)
+- Wake `Asleep, it wakes on a word. / Touch ID opens it.` → `It wakes up to its name / “Hey, jarhead.”` (2026-10-07, Kevin) → `It sleeps until you say / “Hey, jarhead.”` (2026-10-08)
 - Threads `Several things at once. / Each with its own brain.` → `Tasks run side by side, / each with its own brain.`
 - Hands `Label first. Click second. / Screenshots when they help.` → `It finds the label, clicks it / and checks a screenshot.`
 - Rails `One policy table. / Run, confirm or refuse.` → `It knows what to just do / and when to ask first.` (2026-10-07, Kevin asked for something better than the mechanism)

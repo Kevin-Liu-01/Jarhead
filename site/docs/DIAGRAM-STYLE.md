@@ -214,7 +214,7 @@ their own values (`457 ms`, `9.0 s`), and the dithered lens shows the first is t
 Wake, Hands, Sleep and Costs were redrawn in this system in the same pass, and the Console window restyled; refine them
 against these briefs. Install is the one left in its earlier form.
 
-- **Wake** (`Wake.tsx`, split, listening, 600 × 264). Subject: `It wakes up to its name, “Hey, jarhead.”`
+- **Wake** (`Wake.tsx`, split, listening, 600 × 264). Subject: `It sleeps until you say “Hey, jarhead.”`
   Reading order left to right: asleep (quiet orb, `Asleep`), `one word` (the wave), `heard` (`O O`), into the `gate` card (lock) at a fork:
   Touch ID lit (`fingerprint`), Apple Watch, the Mac password, a passphrase dashed; out to `granted` (`^ ^`). Parts: three
   orbs from one sprite, `Wave`, `Card` with four rows, `Wire`s. The lead keeps the first sentence only.

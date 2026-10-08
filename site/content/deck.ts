@@ -60,7 +60,7 @@ export const WAKE: Story & { readonly faces: string } = {
   name: "Wake",
   phase: "listening",
   face: "O O",
-  h2: ["It wakes up to its name", "“Hey, jarhead.”"], // README:67 (Kevin's words, 2026-10-07): the name is "jarhead"; asleep, hearing it opens nothing until Touch ID does (README:417), which the lead and the demo say
+  h2: ["It sleeps until you say", "“Hey, jarhead.”"], // Kevin's greeting (2026-10-07), the sentence finished by it (2026-10-08); README:67: asleep the voice bills nothing and the on-device recogniser waits for "jarhead"; hearing it opens nothing until Touch ID does (README:417), which the lead and the demo say
   lead: "Asleep it listens on-device for one word. The voice bills nothing. Then Touch ID, Apple Watch, the Mac password or a passphrase.", // README:57; memory reads a closed conversation on your key at the next quiet tick (engine.ts:3208, :6111), so the voice is the subject
   lines: ["Three misses lock the gate for a minute.", "Speaker verification is not attempted.", "Say stop. It stops mid-sentence."], // README:57, README:365, README:56
   faces: "gate · heard · granted · denied · locked", // README:178
