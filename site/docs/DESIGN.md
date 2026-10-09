@@ -110,7 +110,9 @@ its face never under 32 px.
   rings with every change of speed, once more when it is let go. Let go, it keeps its momentum, bounces off the hero's
   edges and the island (a hard hit splats first) or, slower, sticks to an edge and sags into a dome that breathes; pushed
   into an edge by hand it squashes flat on it (its eyes pulled in until both sit whole on the body, and gone while it is
-  too thin for both, as the app's are, so it never wears one lid), and pulled off a stuck edge it clings by a neck that
+  too thin for both, as the app's are, so it never wears one lid; once gone they come back only after 0.35 s and once
+  both have had two cells of body to spare for 0.12 s, so a wobbling squash never blinks them), and pulled off a stuck
+  edge it clings by a neck that
   narrows and snaps. The
   island puts it to bed when it is dropped in or under it, or tossed gently up into its underside: asleep at once (the
   island wears `- -`, the body turns titanium), it slides under the island, sleeps 1.6 s, drops out and flies home asleep.

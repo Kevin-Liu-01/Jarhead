@@ -184,6 +184,12 @@ const JELLY = { perLag: 1 / 90, maxStretch: 0.75, perSpeed: 1 / 3600, maxFlight:
  * touching; the pull eases over `tau` s.
  */
 const FIT = { eye: 0.17, more: 0.05, up: 0.12, rows: [0, -0.05, 0.05, -0.1, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], gap: 0.36, tau: 0.09 } as const;
+/**
+ * The face's way back in play once no pair fits (fitFace): gone `gone` s at the least, it returns only where a pair has
+ * fitted with `spare` cells of body round its ink all the while for `dwell` s, so a squash wobbling in a corner or at a
+ * wall's cutoff never blinks it.
+ */
+const BACK = { gone: 0.35, spare: 2, dwell: 0.12 } as const;
 /** No face: what play draws where no pair fits the body whole. */
 const NO_FACE: FaceCells = { col: 0, row: 0, w: 0, h: 0, tone: new Uint8Array(0) };
 /** One contact as the engine draws it: its press sprung toward the contact's, its normal, distance and stick. */
@@ -411,6 +417,9 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let fitR = 0;
   let fitY = 0;
   let fitAt = -1;
+  /** In play, when the face went (-1: showing), and since when a pair has fitted with BACK.spare round it (-1: none). */
+  let goneAt = -1;
+  let backAt = -1;
   /**
    * The face's turn as drawn: the look's sideways part in tenths, held until the look is HOLD of a tenth past it (as the
    * island's), so an easing look re-draws the narrowing eye only as it steps, never every frame.
@@ -1353,9 +1362,15 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     return pairCells(pair[0] ?? "-", pair[1] ?? pair[0] ?? "-", (l + r) / 2, y, Math.max(cell, (r - l) / 2), faceR, pose, { cell, x: 0, y: 0 }, hold ? { hold } : {});
   }
 
+  /** Whether body runs `k` cells from field cell (x, y) each way, left, right, up and down. */
+  function spared(x: number, y: number, k: number): boolean {
+    for (let d = 1; d <= k; d++) if (!(bodyCell(x - d, y) && bodyCell(x + d, y) && bodyCell(x, y - d) && bodyCell(x, y + d))) return false;
+    return true;
+  }
+
   /**
    * Whether a face lies whole on this play frame's body, two eyes apart: every cell of its ink (the lids, the pupils and
-   * their glow) on body, with `margin` the cell beside it each way too, and a clear column between the eyes, so a pair
+   * their glow) on body, with `margin` cells beside it each way too, and a clear column between the eyes, so a pair
    * closed up never reads as one bar. Its lights alone may reach past the body (a flare's glint, the happy sparkle);
    * paintFace leaves those cells out.
    */
@@ -1370,7 +1385,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         if (tone !== TONE.ink && tone !== TONE.glow) continue;
         const y = f.row + j;
         if (!bodyCell(x, y)) return false;
-        if (margin && !(bodyCell(x - 1, y) && bodyCell(x + 1, y) && bodyCell(x, y - 1) && bodyCell(x, y + 1))) return false;
+        if (margin && !spared(x, y, margin)) return false;
         any = true;
       }
       if (any && !inked) parts++;
@@ -1395,11 +1410,12 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
    * pulled toward the body's middle until body lies under both, on their own row first and then half a step up and down
    * the face, strictly and then loosely, never closer than FIT.gap; a sliver they cannot be pulled onto takes them
    * closed up in the middle of a row's run, still FIT.gap apart. A spot counts only if the pair's cells, snapped as they
-   * will be drawn, lie whole on the body; failing all, the last spot holds while it still does, and past that (the app
-   * draws no eyes where its fit fails) there is no face (faceOff) until one fits again: whole or absent, never one lid or
-   * a cell of one. The pull eases (FIT.tau) so a squash moving under them shifts them, unless the eased spot would leave
-   * the body. Free in the open, the pull is 0 and the face is where draw put it. Moves faceCx and faceCy and sets
-   * faceHalf, or sets faceOff.
+   * will be drawn, lie whole on the body; failing all, the last spot holds while it still does (as the app's pen does),
+   * and past that (the app draws no eyes where its fit fails) the face goes (faceOff): whole or absent, never one lid or
+   * a cell of one. Gone, it stays gone BACK.gone s at the least and comes back only once a pair has fitted with
+   * BACK.spare cells of body round its ink for BACK.dwell s on end, so a squash wobbling under it never blinks it. The
+   * pull eases (FIT.tau) so a squash moving under them shifts them, unless the eased spot would leave the body. Free in
+   * the open, the pull is 0 and the face is where draw put it. Moves faceCx and faceCy and sets faceHalf, or sets faceOff.
    */
   function fitFace(pose: FacePose): void {
     const half = EYES.spread * faceR * (1 - 0.08 * Math.abs(faceTurn));
@@ -1408,8 +1424,9 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     const y0 = faceCy;
     const toward = c * cell + playOff[0];
     const gap = FIT.gap * R;
-    // a face that is off comes back only where a cell of body round its ink spares it, so a sliver's wobble never blinks it
-    const margin = fitAt >= 0 ? 0 : 1;
+    // showing, any whole spot keeps the face; gone, only one with BACK.spare cells of body round its ink counts
+    const gone = goneAt >= 0;
+    const margin = gone ? BACK.spare : 0;
     let tl = 0;
     let tr = 0;
     let ty = 0;
@@ -1437,7 +1454,7 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         break;
       }
     }
-    if (!placed && fitAt >= 0 && whole(pairAt(l0 + fitL, r0 + fitR, y0 + fitY, pose))) {
+    if (!placed && !gone && fitAt >= 0 && whole(pairAt(l0 + fitL, r0 + fitR, y0 + fitY, pose))) {
       // a frame the fit fails (the wobble pinching the row) keeps the last spot while it is whole, as the app's pen does,
       // rather than blinking the face out for that frame
       tl = fitL;
@@ -1445,10 +1462,17 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       ty = fitY;
       placed = true;
     }
-    if (!placed) {
-      // no eyes, and the next spot that fits is taken as it is, not eased toward from this one
-      faceOff = true;
-      fitAt = -1;
+    if (gone) {
+      // back only once it has been gone BACK.gone and a spared pair has fitted every frame for BACK.dwell
+      backAt = !placed ? -1 : backAt >= 0 ? backAt : t;
+      if (!placed || t - goneAt < BACK.gone || t - backAt < BACK.dwell) {
+        faceOff = true;
+        return;
+      }
+      goneAt = -1;
+      backAt = -1;
+    } else if (!placed) {
+      faceGone();
       return;
     }
     if (fitAt >= 0) {
@@ -1471,9 +1495,17 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     faceHalf = Math.max(cell, (r0 + tr - (l0 + tl)) / 2);
   }
 
+  /** The face goes in play (no pair lies whole on the body): BACK keeps it gone, and the spot it comes back to is taken as fitted, not eased toward. */
+  function faceGone(): void {
+    faceOff = true;
+    goneAt = t;
+    backAt = -1;
+    fitAt = -1;
+  }
+
   /**
    * The face in play, as fitFace spread and placed it: the cell the face holds gives way to the fitted spot's own when
-   * holding it would hang ink off the body (the fit found that spot whole), and a face still not whole is none.
+   * holding it would hang ink off the body (the fit found that spot whole), and a face still not whole is gone.
    */
   function playFace(pose: FacePose): FaceCells {
     const l = faceCx - faceHalf;
@@ -1482,7 +1514,9 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     if (whole(f)) return f;
     faceHold.reset();
     const g = pairAt(l, r, faceCy, pose, faceHold);
-    return whole(g) ? g : NO_FACE;
+    if (whole(g)) return g;
+    faceGone();
+    return NO_FACE;
   }
 
   /** The face's pose now: the lids, the light and the turn, and live, the catchlights' breath, a flare and the happy sparkle's pop. */
@@ -1762,6 +1796,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
       fitR = 0;
       fitY = 0;
       fitAt = -1;
+      goneAt = -1;
+      backAt = -1;
       for (const sl of slots) Object.assign(sl, slot());
       for (const md of [sloshX, sloshY]) {
         md.x = 0;
