@@ -109,8 +109,9 @@ its face never under 32 px.
   hand on `SPRING_DRAG`, stretches into the app's teardrop toward it with the held side leading, and its mass sloshes and
   rings with every change of speed, once more when it is let go. Let go, it keeps its momentum, bounces off the hero's
   edges and the island (a hard hit splats first) or, slower, sticks to an edge and sags into a dome that breathes; pushed
-  into an edge by hand it squashes flat on it (its eyes pulled in until both sit on the body, as the app's are), and
-  pulled off a stuck edge it clings by a neck that narrows and snaps. The
+  into an edge by hand it squashes flat on it (its eyes pulled in until both sit whole on the body, and gone while it is
+  too thin for both, as the app's are, so it never wears one lid), and pulled off a stuck edge it clings by a neck that
+  narrows and snaps. The
   island puts it to bed when it is dropped in or under it, or tossed gently up into its underside: asleep at once (the
   island wears `- -`, the body turns titanium), it slides under the island, sleeps 1.6 s, drops out and flies home asleep.
   At rest away from home it watches the visitor and flies home after 3 s (held there while the pointer is near it); it is

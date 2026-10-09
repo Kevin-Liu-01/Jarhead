@@ -184,6 +184,8 @@ const JELLY = { perLag: 1 / 90, maxStretch: 0.75, perSpeed: 1 / 3600, maxFlight:
  * touching; the pull eases over `tau` s.
  */
 const FIT = { eye: 0.17, more: 0.05, up: 0.12, rows: [0, -0.05, 0.05, -0.1, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], gap: 0.36, tau: 0.09 } as const;
+/** No face: what play draws where no pair fits the body whole. */
+const NO_FACE: FaceCells = { col: 0, row: 0, w: 0, h: 0, tone: new Uint8Array(0) };
 /** One contact as the engine draws it: its press sprung toward the contact's, its normal, distance and stick. */
 interface Slot { p: number; v: number; target: number; nx: number; ny: number; d: number; stuck: boolean; neck: number }
 const slot = (): Slot => ({ p: 0, v: 0, target: 0, nx: 0, ny: -1, d: Infinity, stuck: false, neck: 0 });
@@ -402,6 +404,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   let faceR = 0;
   /** In play, the pair's half spread as fitted onto the body (fitFace); 0 at rest, where faceCells spaces it. */
   let faceHalf = 0;
+  /** In play, no pair fits the body whole (a sliver on a wall): no face is drawn, as the app's renderEyes draws none. */
+  let faceOff = false;
   /** The fit's pull on the left eye, the right eye and the row (px, eased), and when it was last eased (-1: not yet). */
   let fitL = 0;
   let fitR = 0;
@@ -1159,7 +1163,8 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     faceR = R * (phase === "muted" ? 0.9 : 1);
     if (Math.abs(look[0] * 10 - faceTurn * 10) > HOLD) faceTurn = Math.round(look[0] * 10) / 10;
     faceHalf = 0;
-    if (play) fitFace();
+    faceOff = false;
+    if (play) fitFace(facePose());
     const happy = facePair[0] === "^";
     if (happy && !wasHappy && t >= joyAt + TWINKLE.pop) joyAt = t;
     wasHappy = happy;
@@ -1310,16 +1315,22 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     }
   }
 
-  /** Whether the cell under a point (field px) was drawn as body this play frame. */
-  function isBody(x: number, y: number): boolean {
-    const i = Math.floor(x / cell);
-    const j = Math.floor(y / cell);
+  /** Whether field cell (i, j) was drawn as body this play frame. */
+  function bodyCell(i: number, j: number): boolean {
     return i >= 0 && j >= 0 && i < n && j < n && BODY[j * n + i] === 1;
   }
 
-  /** Body under an eye's middle at (x, y): loosely, under its ink either side; strictly, FIT.more past it and FIT.up up and down. */
-  function bodyUnder(x: number, y: number, strict: boolean): boolean {
-    const a = (strict ? FIT.eye + FIT.more : FIT.eye) * R;
+  /** Whether the cell under a point (field px) was drawn as body this play frame. */
+  function isBody(x: number, y: number): boolean {
+    return bodyCell(Math.floor(x / cell), Math.floor(y / cell));
+  }
+
+  /**
+   * Body under an eye's middle at (x, y): loosely, under its ink either side; strictly, FIT.more past it and FIT.up up and
+   * down; `spare` px further either side.
+   */
+  function bodyUnder(x: number, y: number, strict: boolean, spare: number): boolean {
+    const a = (strict ? FIT.eye + FIT.more : FIT.eye) * R + spare;
     if (!isBody(x, y) || !isBody(x - a, y) || !isBody(x + a, y)) return false;
     return !strict || (isBody(x, y - FIT.up * R) && isBody(x, y + FIT.up * R));
   }
@@ -1336,11 +1347,43 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
     return [a * cell, (b + 1) * cell];
   }
 
+  /** The pair now showing, its middles at l and r (field px) on row y, posed, snapped as `hold` keeps it or, without one, to the nearest cells. */
+  function pairAt(l: number, r: number, y: number, pose: FacePose, hold?: FaceHold): FaceCells {
+    const pair = facePair.replace(/\s+/g, "");
+    return pairCells(pair[0] ?? "-", pair[1] ?? pair[0] ?? "-", (l + r) / 2, y, Math.max(cell, (r - l) / 2), faceR, pose, { cell, x: 0, y: 0 }, hold ? { hold } : {});
+  }
+
+  /**
+   * Whether a face lies whole on this play frame's body, two eyes apart: every cell of its ink (the lids, the pupils and
+   * their glow) on body, with `margin` the cell beside it each way too, and a clear column between the eyes, so a pair
+   * closed up never reads as one bar. Its lights alone may reach past the body (a flare's glint, the happy sparkle);
+   * paintFace leaves those cells out.
+   */
+  function whole(f: FaceCells, margin = 0): boolean {
+    let parts = 0;
+    let inked = false;
+    for (let i = 0; i < f.w; i++) {
+      const x = f.col + i;
+      let any = false;
+      for (let j = 0; j < f.h; j++) {
+        const tone = f.tone[j * f.w + i];
+        if (tone !== TONE.ink && tone !== TONE.glow) continue;
+        const y = f.row + j;
+        if (!bodyCell(x, y)) return false;
+        if (margin && !(bodyCell(x - 1, y) && bodyCell(x + 1, y) && bodyCell(x, y - 1) && bodyCell(x, y + 1))) return false;
+        any = true;
+      }
+      if (any && !inked) parts++;
+      inked = any;
+    }
+    return parts >= 2;
+  }
+
   /** An eye's middle pulled toward `toward` until body lies under it (BlobField.swift fittedColumn), or null. */
-  function fitColumn(x: number, y: number, toward: number, strict: boolean): number | null {
+  function fitColumn(x: number, y: number, toward: number, strict: boolean, spare: number): number | null {
     let u = x;
     for (let k = 0; k < 9; k++) {
-      if (bodyUnder(u, y, strict)) return u;
+      if (bodyUnder(u, y, strict, spare)) return u;
       u += (toward - u) * 0.35;
       if (Math.abs(toward - u) < 0.6 * cell) return null;
     }
@@ -1350,29 +1393,43 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   /**
    * The pair on the body in play (BlobField.swift renderEyes): squashed on a wall, pulled thin or necked, the eyes are
    * pulled toward the body's middle until body lies under both, on their own row first and then half a step up and down
-   * the face, strictly and then loosely, never closer than FIT.gap. A sliver too thin for that (where the app shows no
-   * eyes) takes them closed up in the middle of its run, as far apart as its ink allows, touching at the least. The pull
-   * eases (FIT.tau) so a squash moving under them shifts them, unless the eased spot has left the body. Free in the open,
-   * the pull is 0 and the face is where draw put it. Moves faceCx and faceCy and sets faceHalf.
+   * the face, strictly and then loosely, never closer than FIT.gap; a sliver they cannot be pulled onto takes them
+   * closed up in the middle of a row's run, still FIT.gap apart. A spot counts only if the pair's cells, snapped as they
+   * will be drawn, lie whole on the body; failing all, the last spot holds while it still does, and past that (the app
+   * draws no eyes where its fit fails) there is no face (faceOff) until one fits again: whole or absent, never one lid or
+   * a cell of one. The pull eases (FIT.tau) so a squash moving under them shifts them, unless the eased spot would leave
+   * the body. Free in the open, the pull is 0 and the face is where draw put it. Moves faceCx and faceCy and sets
+   * faceHalf, or sets faceOff.
    */
-  function fitFace(): void {
+  function fitFace(pose: FacePose): void {
     const half = EYES.spread * faceR * (1 - 0.08 * Math.abs(faceTurn));
     const l0 = faceCx - half;
     const r0 = faceCx + half;
     const y0 = faceCy;
     const toward = c * cell + playOff[0];
     const gap = FIT.gap * R;
+    // a face that is off comes back only where a cell of body round its ink spares it, so a sliver's wobble never blinks it
+    const margin = fitAt >= 0 ? 0 : 1;
     let tl = 0;
     let tr = 0;
     let ty = 0;
     let placed = false;
-    for (let pass = 0; pass < 2 && !placed; pass++) {
+    for (let pass = 0; pass < 3 && !placed; pass++) {
       for (const k of FIT.rows) {
         const y = y0 + k * R;
-        const l = fitColumn(l0, y, toward, pass === 0);
-        if (l === null) continue;
-        const r = fitColumn(r0, y, toward, pass === 0);
-        if (r === null || r - l < gap) continue;
+        let l: number | null;
+        let r: number | null;
+        if (pass < 2) {
+          l = fitColumn(l0, y, toward, pass === 0, margin * cell);
+          r = l === null ? null : fitColumn(r0, y, toward, pass === 0, margin * cell);
+        } else {
+          // a sliver: the pair closed up in the middle of the row's run, as far apart as its ink allows, FIT.gap at the least
+          const run = runAt(toward, y);
+          const h = run ? Math.max(gap / 2, Math.min(half, (run[1] - run[0]) / 2 - FIT.eye * R - margin * cell)) : 0;
+          l = run ? (run[0] + run[1]) / 2 - h : null;
+          r = run ? (run[0] + run[1]) / 2 + h : null;
+        }
+        if (l === null || r === null || r - l < gap || !whole(pairAt(l, r, y, pose), margin)) continue;
         tl = l - l0;
         tr = r - r0;
         ty = y - y0;
@@ -1380,20 +1437,26 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
         break;
       }
     }
-    const run = placed ? null : runAt(toward, y0);
-    if (run) {
-      const e = FIT.eye * R;
-      const mid = (run[0] + run[1]) / 2;
-      const h = Math.max(e, Math.min(half, (run[1] - run[0]) / 2 - e));
-      tl = mid - h - l0;
-      tr = mid + h - r0;
+    if (!placed && fitAt >= 0 && whole(pairAt(l0 + fitL, r0 + fitR, y0 + fitY, pose))) {
+      // a frame the fit fails (the wobble pinching the row) keeps the last spot while it is whole, as the app's pen does,
+      // rather than blinking the face out for that frame
+      tl = fitL;
+      tr = fitR;
+      ty = fitY;
+      placed = true;
+    }
+    if (!placed) {
+      // no eyes, and the next spot that fits is taken as it is, not eased toward from this one
+      faceOff = true;
+      fitAt = -1;
+      return;
     }
     if (fitAt >= 0) {
       const k = 1 - Math.exp(-Math.max(0, t - fitAt) / FIT.tau);
       const el = fitL + (tl - fitL) * k;
       const er = fitR + (tr - fitR) * k;
       const ey = fitY + (ty - fitY) * k;
-      if (bodyUnder(l0 + el, y0 + ey, false) && bodyUnder(r0 + er, y0 + ey, false)) {
+      if (whole(pairAt(l0 + el, r0 + er, y0 + ey, pose))) {
         tl = el;
         tr = er;
         ty = ey;
@@ -1409,45 +1472,61 @@ export function mountBlob(host: HTMLElement, o: BlobOptions): BlobHandle {
   }
 
   /**
+   * The face in play, as fitFace spread and placed it: the cell the face holds gives way to the fitted spot's own when
+   * holding it would hang ink off the body (the fit found that spot whole), and a face still not whole is none.
+   */
+  function playFace(pose: FacePose): FaceCells {
+    const l = faceCx - faceHalf;
+    const r = faceCx + faceHalf;
+    const f = pairAt(l, r, faceCy, pose, faceHold);
+    if (whole(f)) return f;
+    faceHold.reset();
+    const g = pairAt(l, r, faceCy, pose, faceHold);
+    return whole(g) ? g : NO_FACE;
+  }
+
+  /** The face's pose now: the lids, the light and the turn, and live, the catchlights' breath, a flare and the happy sparkle's pop. */
+  function facePose(): FacePose {
+    const pose: FacePose = { open, sparkle: lit, turn: faceTurn };
+    if (stillMode) return pose;
+    const u = (t - flare.at) / TWINKLE.flare;
+    const v = flare.both ? u - TWINKLE.lag / TWINKLE.flare : -1;
+    return {
+      ...pose,
+      twinkle: 0.5 + 0.5 * Math.sin((TAU * t) / TWINKLE.period),
+      flare: flare.lead < 0 ? [u, v] : [v, u],
+      spark: popSize((t - joyAt) / TWINKLE.pop) * (1 + 0.4 * flareSize(u)),
+    };
+  }
+
+  /**
    * The face canvas alone, where the last full frame put the face: the catchlights breathe, a flare stretches and twists a
    * star (the second eye TWINKLE.lag after the first), the happy sparkle pops and pulses with each flare. Calm: at rest.
    */
   function drawEyes(): void {
-    let pose: FacePose = { open, sparkle: lit, turn: faceTurn };
-    if (!stillMode) {
-      const u = (t - flare.at) / TWINKLE.flare;
-      const v = flare.both ? u - TWINKLE.lag / TWINKLE.flare : -1;
-      pose = {
-        ...pose,
-        twinkle: 0.5 + 0.5 * Math.sin((TAU * t) / TWINKLE.period),
-        flare: flare.lead < 0 ? [u, v] : [v, u],
-        spark: popSize((t - joyAt) / TWINKLE.pop) * (1 + 0.4 * flareSize(u)),
-      };
-    }
-    const grid = { cell, x: 0, y: 0 };
-    // in play the pair's spread is the fit's (fitFace); at rest faceCells spaces it, exactly as without play
-    const pair = facePair.replace(/\s+/g, "");
-    const f =
-      faceHalf > 0
-        ? pairCells(pair[0] ?? "-", pair[1] ?? pair[0] ?? "-", faceCx, faceCy, faceHalf, faceR, pose, grid, { hold: faceHold })
-        : faceCells(facePair, faceCx, faceCy, faceR, pose, grid, { hold: faceHold });
+    const pose = facePose();
+    // in play the fit's (or none, where no pair fits); at rest faceCells spaces it, exactly as without play
+    const f = faceOff ? NO_FACE : faceHalf > 0 ? playFace(pose) : faceCells(facePair, faceCx, faceCy, faceR, pose, { cell, x: 0, y: 0 }, { hold: faceHold });
     // the glow: the ink lit by the halo's tone (toward the paper, as the body's light is), half way
     eyeGlow = pixel(mix3(under, mix3(halo, eyePaper, GLOW_LIFT), 0.5));
     // clear the last face's cells, write this one's, and put back only the cells either covered
     const [ox, oy, ow, oh] = faceBox;
     for (let y = Math.max(0, oy); y < Math.min(n, oy + oh); y++) facePx.fill(0, y * n + Math.max(0, ox), y * n + Math.min(n, ox + ow));
     paintFace(f);
-    const x0 = Math.max(0, Math.min(ox, f.col));
-    const y0 = Math.max(0, Math.min(oy, f.row));
-    const x1 = Math.min(n, Math.max(ox + ow, f.col + f.w));
-    const y1 = Math.min(n, Math.max(oy + oh, f.row + f.h));
+    const was = ow > 0 && oh > 0;
+    const is = f.w > 0 && f.h > 0;
+    const x0 = Math.max(0, Math.min(was ? ox : n, is ? f.col : n));
+    const y0 = Math.max(0, Math.min(was ? oy : n, is ? f.row : n));
+    const x1 = Math.min(n, Math.max(was ? ox + ow : 0, is ? f.col + f.w : 0));
+    const y1 = Math.min(n, Math.max(was ? oy + oh : 0, is ? f.row + f.h : 0));
     faceBox = [f.col, f.row, f.w, f.h];
     if (x1 > x0 && y1 > y0) fg!.putImageData(faceImg, 0, 0, x0, y0, x1 - x0, y1 - y0);
   }
 
   /**
-   * The face's cells into the face buffer: the ink, the glow and the paper (the blob's eyes wear no rim). In play only the
-   * cells over body: the fit puts the eyes there, and this keeps the cell the face holds (FaceHold) from hanging one off.
+   * The face's cells into the face buffer: the ink, the glow and the paper (the blob's eyes wear no rim). In play the ink
+   * lies whole on the body (fitFace, drawEyes) and only a light reaching past it (a flare's glint, the happy sparkle) is
+   * left out where there is no body.
    */
   function paintFace(f: FaceCells): void {
     const onBody = faceHalf > 0;
