@@ -694,8 +694,15 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   own question within 30 s / room). A `window` utterance lapses to the room once
   its words start 8 s past the later of the exchange's end and its own start, or
   the cap closes (`EXCHANGE_MAX_MS`, 120 s past the last anchor: a name, a typed
-  line, a circle, Go, a wake, a resume, a line the engine asked for): a video Kevin
-  asked for, talking on, never keeps the window open to its commands. A split item carries only the name across the split.
+  line, a circle, Go, a wake, a resume, a line the engine asked for, a reply): a
+  video Kevin asked for, talking on, never keeps the window open to its commands.
+  A reply is Kevin taking his turn: his first utterance after a line of Jarhead's
+  he heard, begun within 8 s of its end, nothing of his side begun since that line
+  began. It is the exchange's even just past the cap and anchors it (2026-10-10:
+  two minutes after the only name, every reply was the room's and Jarhead went
+  quiet mid-conversation). A TV talks over Jarhead's lines, so it never takes a
+  turn; one that fell silent for each line and answered it would be held by the
+  30 min ceiling. A split item carries only the name across the split.
   The ear names Live's open utterance only when it is the same speech (begun
   after the ear's segment opened, less 600 ms; sharing a word that is not a
   stopword, or its tail), and a name spent on it names nothing else.
@@ -704,8 +711,8 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   `{ ask: false }` (the stop's "Stop speaking now", dictation's "Stay silent").
   An append on a delegation the gate admitted only as `window` asks as `window`:
   heard, the exchange goes on from it, but it anchors no cap and moves only the
-  idle clock, so a TV whose lines Live delegates sleeps by the cap plus the idle
-  limit (ADV-2: 186.5 s). Engine lines, typed and named work ask as `asked` and
+  idle clock, so a TV whose lines Live delegates, talking over Jarhead's answers,
+  sleeps by the cap plus the idle limit (ADV-2: 186.5 s). Engine lines, typed and named work ask as `asked` and
   anchor; the pre-sleep clause and the cue are `aside` (heard, count for
   nothing, one sentence). GPT-Live-1 acks every append (`session.*.appended`,
   with its `client_event_id`) 424-675 ms after the send and answers it later, so

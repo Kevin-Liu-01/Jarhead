@@ -84,12 +84,15 @@ test("ADV-2: a TV whose lines Live delegates inside the window: the results it a
       }
     };
     const pcm = Buffer.from(VOICED, "base64");
+    // The TV talks on: each line begins while Jarhead's last answer is still being said, so none is a reply of Kevin's.
+    let replyAt: number | undefined;
     const hear = (text: string): void => {
       const s = live.nowMs;
-      live.emit("inputTranscript", ` ${text}`, s - 1500, s);
+      live.emit("inputTranscript", ` ${text}`, replyAt !== undefined ? replyAt + 400 : s - 1500, s);
     };
     const reply = (text: string): void => {
       const s = live.nowMs;
+      replyAt = s;
       live.emit("outputTranscript", ` ${text}`, s, s + 800);
       live.emit("audio", pcm);
     };

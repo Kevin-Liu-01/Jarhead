@@ -325,7 +325,7 @@ test("a name that lands after the reply began to sound (within 600 ms) releases 
  * LC-7), would stay "mid-exchange" for ever and hold the paid session open (B2). The exchange lasts at most
  * EXCHANGE_MAX_MS (120 s) after the last turn that named Jarhead, was typed or circled, or pressed Go.
  */
-test("the exchange chain is bounded: a TV answered every 5 s after one named turn sleeps by the cap plus the idle limit", async () => {
+test("the exchange chain is bounded: a TV answered every 5 s after one named turn, talking over each answer, sleeps by the cap plus the idle limit", async () => {
   const w = world();
   const { engine, clock } = w;
   try {
@@ -342,12 +342,16 @@ test("the exchange chain is bounded: a TV answered every 5 s after one named tur
         if ((clock.t - t0) % 1000 === 0) tick(engine);
       }
     };
+    // A TV talks on: each of its lines begins while Jarhead's last answer is still being said (0.4 s into it), so none
+    // of them is Kevin taking his turn, and the cap counts from the one name.
+    let replyAt: number | undefined;
     const hear = (text: string): void => {
       const s = live.nowMs;
-      live.emit("inputTranscript", ` ${text}`, s - 1500, s);
+      live.emit("inputTranscript", ` ${text}`, replyAt !== undefined ? replyAt + 400 : s - 1500, s);
     };
     const reply = (text: string): void => {
       const s = live.nowMs;
+      replyAt = s;
       live.emit("outputTranscript", ` ${text}`, s, s + 800);
       live.emit("audio", Buffer.from(VOICED, "base64"));
     };
@@ -369,6 +373,63 @@ test("the exchange chain is bounded: a TV answered every 5 s after one named tur
     assert.ok(asleepAt !== undefined && asleepAt <= bound, `asleep at ${asleepAt === undefined ? "never (10 min)" : `${asleepAt / 1000} s`}, bound ${bound / 1000} s`);
     assert.deepEqual(rows<SleepRow>(w, "sleep").map((r) => r.cause), ["idle"]);
     console.log(`[measure] exchange chain: asleep at ${(asleepAt ?? 0) / 1000} s`);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("2026-10-10: a conversation with one name, Kevin taking his turn 0.6 s after each answer he heard, is answered for five minutes: past the cap nothing is refused and nothing goes unheard", async () => {
+  const w = world();
+  const { engine, clock, brain } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 1 });
+    await engine.wake("test");
+    const live = w.lives[w.lives.length - 1]!;
+    const t0 = clock.t;
+    const tickTo = (ms: number): void => {
+      while (clock.t - t0 < ms) {
+        clock.t += 500;
+        if ((clock.t - t0) % 1000 === 0) tick(engine);
+      }
+    };
+    let replyEnd: number | undefined;
+    const hear = (text: string): void => {
+      const s = live.nowMs;
+      live.emit("inputTranscript", ` ${text}`, replyEnd !== undefined ? replyEnd + 600 : s - 1500, s);
+    };
+    const reply = (text: string): void => {
+      const s = live.nowMs;
+      replyEnd = s + 800;
+      live.emit("outputTranscript", ` ${text}`, s, s + 800);
+      live.emit("audio", Buffer.from(VOICED, "base64"));
+    };
+    tickTo(2000);
+    hear("jarhead are you there");
+    tickTo(3500);
+    reply("yeah, what's up?");
+    let ran = 0;
+    for (let k = 1; k <= 60; k++) {
+      tickTo(3500 + k * 5000 - 1500);
+      assert.equal(engine.transportState, "awake", `asleep before turn ${k}`);
+      hear(`and can you check thing number ${k}`);
+      if (k % 10 === 0) {
+        // Every tenth line is work: past the cap too, it reaches the brain.
+        live.emit("delegation", `item_k_${k}`, "client", live.nowMs);
+        assert.ok(await until(() => brain.tasks.length === ran + 1, 1500), `the work of turn ${k} (${Math.round((clock.t - t0) / 1000)} s in) was refused`);
+        ran++;
+        brain.resolve?.({ status: "done", summary: `Thing ${k} is fine.` });
+      }
+      tickTo(3500 + k * 5000);
+      reply(`thing ${k} is fine.`);
+    }
+    await settle(50);
+    assert.equal(engine.transportState, "awake");
+    assert.equal(ran, 6);
+    const unheard = rows<Extract<LedgerRow, { type: "said" }>>(w, "said").filter((x) => x.item.unheard === true);
+    assert.deepEqual(unheard.map((x) => x.item.text), [], "lines of Jarhead's kept off the speaker");
+    assert.deepEqual(rows<FinishedRow>(w, "delegation.finished").filter((x) => /not addressed/.test(x.summary ?? "")).length, 0);
   } finally {
     await engine.stop();
   }

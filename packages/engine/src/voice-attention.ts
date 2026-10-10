@@ -20,7 +20,11 @@ import { BYTES_PER_MS } from "./audio-telemetry.ts";
  * - **The exchange** is `exchangeEndMs` on the session timeline: the session start, named or typed words, a circle,
  *   and Jarhead's own granted speech move it; room talk inside the window, an aside (the pre-sleep clause, the cue)
  *   and an answer nobody asked for do not. It is capped: EXCHANGE_MAX_MS after the last anchor (a name, a typed line,
- *   a circle, a Go, a wake, a resume, a line the engine asked for), nothing is "inside the exchange" any more.
+ *   a circle, a Go, a wake, a resume, a line the engine asked for, Kevin's reply to a line he heard), nothing is
+ *   "inside the exchange" any more.
+ * - **A reply** is Kevin taking his turn: his first utterance after a line of Jarhead's he heard, begun within
+ *   EXCHANGE_WINDOW_MS of its end, with nothing of his side begun since that line began. It is the exchange's even
+ *   just past the cap, and anchors the cap as the name does, so a back-and-forth never runs out mid-conversation.
  * - **An ask** is an engine append that wants words (LiveSession's `ask`), kept with its provenance (`AskKind`): the
  *   result of work the gate admitted only because it began inside the window asks as `window` — heard, never an anchor
  *   — so a TV whose lines Live delegates cannot renew the cap through their results (ADV-2).
@@ -61,7 +65,7 @@ export type SaidState = "heard" | "unheard" | "pending";
 
 /** "Mid-exchange": an addressed turn this recent (Engine.EXCHANGE_WINDOW_MS, and the voice's orders' "about eight seconds"). */
 export const EXCHANGE_WINDOW_MS = 8000;
-/** The exchange's cap after its anchor (a name, a typed line, a circle, a Go / wake / resume, a line the engine asked for). */
+/** The exchange's cap after its anchor (a name, a typed line, a circle, a Go / wake / resume, a line the engine asked for, a reply). */
 export const EXCHANGE_MAX_MS = 120_000;
 /**
  * Jarhead asked Kevin a question (a line the engine asked for, with a "?"): his first utterance after it, begun within
@@ -295,6 +299,8 @@ export class VoiceAttention {
   /** The utterance each delegation was judged on, for its results' provenance. */
   private readonly delegationItems = new Map<string, string | undefined>();
   private question: Question | undefined;
+  /** Jarhead's last line Kevin heard (a granted turn that is not an aside), on the session timeline: what a reply answers. */
+  private heardLine: { readonly turn: VoiceTurn; readonly startMs: number; endMs: number } | undefined;
   /** The confirmation the cue was said for. */
   private cuedConfirm: string | undefined;
   /** Jarhead's Transcript items and the turns that said them: whether Kevin heard them. */
@@ -327,6 +333,7 @@ export class VoiceAttention {
     this.delegations.clear();
     this.delegationItems.clear();
     this.question = undefined;
+    this.heardLine = undefined;
     this.cuedConfirm = undefined;
     this.saidBy.clear();
     this.exchangeEndMs = open ? 0 : Number.NEGATIVE_INFINITY;
@@ -458,8 +465,13 @@ export class VoiceAttention {
     if (was === undefined) {
       const earNamed = this.earNamedAt > 0 && this.now() - this.earNamedAt < VoiceAttention.EAR_NAME_MS;
       const answer = this.answerTo(item);
-      verdict = named || earNamed || joinedNamed ? "named" : this.inWindow(item.startMs) || this.seams.inExchange() || answer ? "window" : "room";
+      const reply = !named && !earNamed && !joinedNamed && this.replyTo(item);
+      verdict = named || earNamed || joinedNamed ? "named" : this.inWindow(item.startMs) || this.seams.inExchange() || answer || reply ? "window" : "room";
       if (answer && verdict === "window" && !this.inWindow(item.startMs)) this.seams.log?.(`attention: an answer to Jarhead's question ${Math.round((item.startMs - (this.question?.endMs ?? 0)) / 1000)} s after it: the exchange's`);
+      if (reply) {
+        if (!this.capOpen()) this.seams.log?.(`attention: a reply ${Math.round(item.startMs - (this.heardLine?.endMs ?? 0))} ms after Jarhead's line, past the cap: the exchange's, and the cap starts over`);
+        this.anchor();
+      }
       if (earNamed) this.earNamedAt = 0;
     } else if (named && was !== "typed") verdict = "named";
     else if (was === "window" && !this.stillWindow(item, fragmentStartMs)) {
@@ -491,6 +503,23 @@ export class VoiceAttention {
     if (!q || q.used || item.startMs < q.endMs - VoiceAttention.UTTERANCE_GAP_MS) return false;
     q.used = true;
     return item.startMs - q.endMs <= ANSWER_WINDOW_MS && this.capOpen() && this.seams.confirming?.() === undefined;
+  }
+
+  /**
+   * Kevin taking his turn: his first utterance after a line of Jarhead's he heard, begun within EXCHANGE_WINDOW_MS of
+   * its end, with nothing of his side begun since that line began — nobody talked over it — and not Jarhead's own words
+   * back through the microphone. Turn-taking is the conversation itself, so a reply anchors the cap as the name does.
+   * 2026-10-10: two minutes after the session's only name, mid-conversation, Kevin's "then why can't I hear anything",
+   * begun 0.6 s after Jarhead's line, was the room's, and so was every reply to it; Jarhead went quiet. A TV does not
+   * take turns: it talks over Jarhead's lines (Live's barge-in starts its utterance mid-line), and once the cap has
+   * closed on it nothing of Jarhead's is heard for it to answer.
+   */
+  private replyTo(item: TranscriptItem): boolean {
+    const line = this.heardLine;
+    if (!line || item.startMs < line.endMs || item.startMs - line.endMs >= EXCHANGE_WINDOW_MS) return false;
+    // A confirmation's yes past the exchange still needs the name or the Console, as an answer to a question does.
+    if (this.seams.echo(item.text) || this.seams.confirming?.() !== undefined) return false;
+    return !this.items.some((i) => i.id !== item.id && !i.typed && i.startMs >= line.startMs && !this.seams.echo(i.text));
   }
 
   /**
@@ -896,6 +925,8 @@ export class VoiceAttention {
     if (turn.ask !== "aside") {
       this.exchangeEndMs = Math.max(this.exchangeEndMs, endMs);
       if (turn.grant === "asked") this.anchor();
+      if (this.heardLine?.turn === turn) this.heardLine.endMs = Math.max(this.heardLine.endMs, endMs);
+      else this.heardLine = { turn, startMs: turn.startMs, endMs };
     }
     if (turn.grant === "asked" && turn.ask === "asked" && turn.words.includes("?")) {
       const q = this.question;

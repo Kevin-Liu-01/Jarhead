@@ -282,7 +282,7 @@ test("a typed line is addressed whatever the room said; Jarhead's own words back
   assert.equal(say(" say jarhead to wake me", 80_000).verdict, "room");
 });
 
-test("the exchange's cap: a room the voice keeps answering inside the window stops being the exchange's EXCHANGE_MAX_MS after the name", () => {
+test("the exchange's cap: a room the voice keeps answering inside the window — a TV that talks over each of Jarhead's lines, so never a reply — stops being the exchange's EXCHANGE_MAX_MS after the name", () => {
   const { say, voice, frames, clock } = gate();
   const t0 = clock.t;
   say(" jarhead what's the weather", 1000);
@@ -292,13 +292,115 @@ test("the exchange's cap: a room the voice keeps answering inside the window sto
   for (let k = 1; k <= 40 && roomAt === undefined; k++) {
     clock.t += 4400;
     const s = 2000 + k * 5000;
-    if (say(` and in other news, story ${k}`, s - 1500, `tv_${k}`, s - 500).verdict === "room") roomAt = clock.t - t0;
+    // The TV's next line began while Jarhead's last one (s - 5000 to s - 4800) was still being said.
+    if (say(` and in other news, story ${k}`, s - 4900, `tv_${k}`, s - 500).verdict === "room") roomAt = clock.t - t0;
     else {
       voice(` big story ${k}.`, s, `o${k}`);
       frames(300);
     }
   }
   assert.ok(roomAt !== undefined && roomAt >= EXCHANGE_MAX_MS && roomAt <= EXCHANGE_MAX_MS + 6000, `the room was the exchange's until ${roomAt} ms`);
+});
+
+test("a reply renews the cap: Kevin taking his turn after each line of Jarhead's he heard keeps a five-minute conversation the exchange's with one name", () => {
+  const { a, say, voice, frames, spoken, clock } = gate();
+  say(" jarhead open spotify", 1000);
+  voice(" on it.", 2000, "o0");
+  frames(300);
+  let ms = 2200;
+  for (let k = 1; k <= 60; k++) {
+    // Kevin answers 0.6-5 s after the line ends; Jarhead's answer comes a second after him.
+    const gap = 600 + ((k * 1700) % 4400);
+    clock.t += gap + 400;
+    const r = say(` and then the next thing ${k}`, ms + gap, `k_${k}`, ms + gap + 800);
+    assert.equal(r.verdict, "window", `reply ${k}, ${Math.round((ms + gap) / 1000)} s in`);
+    assert.equal(a.addressed(r.item), true);
+    clock.t += 1500;
+    const s = ms + gap + 1800;
+    assert.equal(voice(` sure, thing ${k}.`, s, `o${k}`, s + 1200), "spoke", `Jarhead's answer ${k}`);
+    frames(1200);
+    ms = s + 1200;
+  }
+  assert.ok(ms > 2.5 * EXCHANGE_MAX_MS, `the conversation ran ${ms} ms`);
+  assert.equal(a.capOpen(), true);
+  assert.ok(spoken.length >= 61);
+});
+
+test("2026-10-10: past the cap, Kevin's reply begun 0.6 s after a line he heard is the exchange's: its delegation runs and Jarhead's answer plays", () => {
+  const { a, say, voice, frames, state, clock } = gate();
+  say(" jarhead", 1000);
+  // Work admitted only by the window, running two minutes; its result asks as `window`, which anchors nothing.
+  const w = say(" open spotify and play something calm", 6000);
+  assert.equal(a.delegation("item_w", w.item), "window");
+  state.working = "item_w";
+  clock.t += EXCHANGE_MAX_MS + 4000;
+  a.ask({ delegationId: "item_w", content: "For Spotify, I'm checking the volume and output." });
+  assert.equal(voice(" for spotify, I'm checking the volume and output.", 124_600, "o1", 132_200), "spoke");
+  frames(800);
+  state.working = false;
+  assert.equal(a.capOpen(), false, "the cap counted from the name alone");
+  clock.t += 600;
+  const r = say(" then why can't I hear anything", 132_800);
+  assert.equal(r.verdict, "window", "a reply, past the cap");
+  assert.equal(a.capOpen(), true, "and the cap starts over");
+  assert.equal(a.delegation("item_r", r.item), "window");
+  clock.t += 1000;
+  assert.equal(voice(" still checking.", 137_400, "o2", 137_800), "spoke");
+  assert.equal(frames(300), 3);
+});
+
+/** A session with one name at its start and work the window admitted, whose result is heard 118 s later at `T` (a `window` line: it anchors nothing). */
+function heardPastName(lineMs: number) {
+  const g = gate();
+  g.say(" jarhead", 1000);
+  const w = g.say(" find my keys", 4000);
+  assert.equal(g.a.delegation("item_w", w.item), "window");
+  g.state.working = "item_w";
+  g.clock.t += EXCHANGE_MAX_MS - 2000;
+  const T = 120_000;
+  g.a.ask({ delegationId: "item_w", content: "They're on the desk." });
+  assert.equal(g.voice(" they're on the desk.", T, "o1", T + lineMs), "spoke");
+  g.frames(lineMs);
+  g.state.working = false;
+  return { ...g, T };
+}
+
+test("a reply begins within EXCHANGE_WINDOW_MS of the line: unnamed words 9 s after it, past the cap, are the room's", () => {
+  const { a, say, clock, T } = heardPastName(1000);
+  clock.t += 8000;
+  assert.equal(a.capOpen(), false);
+  assert.equal(say(" and the weather", T + 1000 + 9000).verdict, "room");
+});
+
+test("a line the room talked over is no turn to take: words after it, past the cap, are the room's", () => {
+  const { a, say, clock, T } = heardPastName(1500);
+  assert.equal(say(" in other news", T + 800, "tv_1", T + 1800).verdict, "window", "inside the exchange the line opened");
+  clock.t += 3000;
+  assert.equal(a.capOpen(), false);
+  assert.equal(say(" more news at eleven", T + 2400, "tv_2").verdict, "room", "the line was talked over");
+});
+
+test("while a confirmation waits, words after a line past the cap are no reply: the yes still needs the name or the Console", () => {
+  const { a, say, state, clock, T } = heardPastName(1000);
+  state.confirming = "confirm_send";
+  clock.t += 3000;
+  assert.equal(a.capOpen(), false);
+  assert.equal(say(" yes", T + 1600).verdict, "room");
+  state.confirming = undefined;
+});
+
+test("a dropped answer is no line to reply to: past the cap, the room's words right after the voice's answer to the room stay the room's", () => {
+  const { say, voice, frames, clock } = gate();
+  say(" jarhead", 1000);
+  voice(" yeah?", 1800, "o0", 2200);
+  frames(300);
+  clock.t += EXCHANGE_MAX_MS;
+  const T = 2200 + EXCHANGE_MAX_MS;
+  assert.equal(say(" did you see the game", T).verdict, "room");
+  assert.equal(voice(" I did.", T + 1000, "o1", T + 1400), "pending");
+  assert.equal(frames(400), 0, "dropped");
+  clock.t += 1500;
+  assert.equal(say(" what a finish", T + 1900).verdict, "room");
 });
 
 test("a line the engine asked for (a brain's question 3 min into the work) re-opens the exchange past the cap: Kevin's unnamed answer is the exchange's", () => {
@@ -364,9 +466,9 @@ test("ADV-2: the result of work the window admitted asks as `window` — heard, 
   say(" jarhead what's the weather", 1000);
   voice(" cold.", 2000, "o0");
   frames(300);
-  // A TV line inside the window; Live delegates it: `window`.
+  // A TV line inside the window, begun over Jarhead's line (so not a reply); Live delegates it: `window`.
   clock.t += 3000;
-  const tv = say(" tell me more about story one", 5000);
+  const tv = say(" tell me more about story one", 2100);
   assert.equal(tv.verdict, "window");
   assert.equal(a.delegation("item_tv", tv.item), "window");
   // Its result comes back as commentary on that delegation: the voice's turn for it is heard, granted as `window`.
