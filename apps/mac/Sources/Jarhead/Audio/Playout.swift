@@ -4,16 +4,24 @@ import Foundation
 /// The speaker's playout cushion, as a value: what goes in front of each chunk of Live's
 /// audio so that a late chunk is absorbed instead of heard as a hole.
 ///
-/// Live paces its stream at real time. With nothing queued ahead, any chunk that arrives
-/// late (the network, a busy queue, the daemon) leaves the player dry: a hole in a word,
-/// with a click at each edge. The model keeps the player `target` ahead, 120 ms by default:
+/// Live paces its stream at real time and never bursts to catch up, and it streams digital
+/// silence between sentences and between turns, so a session is one stream: the player never
+/// runs dry for a reset. With nothing queued ahead, any chunk that arrives late (the network,
+/// a busy queue, the daemon) leaves the player dry: a hole in a word, with a click at each
+/// edge. The model keeps the player `target` ahead, 120 ms by default:
 /// - **Reset** (start, flush, a graph restart, the player dry for ≥ 0.5 s, or no render
 ///   time yet on a stream not yet primed): the next chunk is preceded by `target` of
 ///   silence. Not an underrun. Chunks that follow before the player's first render continue
 ///   that stream: nothing has played, so they are contiguous.
-/// - **Underrun** (the player ran dry mid-stream, for less than 0.5 s): counted, scheduled
-///   at once behind a 5 ms fade-in, and `target` grows to `min(200 ms, longest gap + 40 ms)`
-///   for the resets that follow. No re-prime on the spot: that measured longer tail holes.
+/// - **Underrun** (the player ran dry mid-stream, for less than 0.5 s): counted, and `target`
+///   grows to `min(200 ms, longest gap + 40 ms)`. After speech the chunk plays at once behind a
+///   5 ms fade-in (the shortest hole); after a quiet join it waits behind the whole `target`.
+/// - **Refill** (a quiet join with less than `target` queued): the silence is stretched back
+///   to `target` before the chunk. A quiet join is one where what plays just before the chunk
+///   ends in silence (`quietBefore`): stretching it is unheard. Without it a late chunk spent
+///   the cushion for the rest of the session, and every late chunk after it was a hole
+///   (2026-10-10: 32 underruns, 1.07 s of holes, in 16 s of stream; replayed on 19 recorded
+///   GPT-Live-1 streams, the holes touching speech fell from 105 to 6).
 /// - **Otherwise**: contiguous, nothing added.
 ///
 /// Alongside it keeps today's zero-cushion policy on the same timeline
@@ -34,6 +42,12 @@ struct PlayoutModel: Equatable {
     static let dryResetFrames = 12_000
     /// The fade-in after silence: 5 ms.
     static let fadeFrames = 120
+    /// A chunk ends quietly when its last 10 ms are under this RMS (−60 dBFS) and its last sample
+    /// under `quietEdge`: Live's silence is digital zero (78% of the frames of the recorded
+    /// streams), so silence stretched after it never clicks.
+    static let quietTailFrames = 240
+    static let quietTailRMS = 0.001
+    static let quietEdge: Float = 0.002
 
     struct Plan: Equatable {
         /// Silence to schedule before the chunk.
@@ -52,6 +66,11 @@ struct PlayoutModel: Equatable {
         var underruns = 0
         var underrunFrames = 0
         var longestUnderrunFrames = 0
+        /// Underruns that broke into speech (what played before the hole did not end in silence): the ones heard.
+        var speechUnderruns = 0
+        /// Quiet joins stretched to bring the cushion back to `target`, and the silence they added.
+        var refills = 0
+        var refillFrames = 0
         /// What the zero-cushion policy (schedule on arrival) would have counted.
         var wouldBeUnderruns = 0
         var resets = 0
@@ -75,8 +94,10 @@ struct PlayoutModel: Equatable {
         primed = false
     }
 
-    /// The plan for a chunk of `frames` arriving with the player at `now`.
-    mutating func plan(frames: Int, now: Int64?) -> Plan {
+    /// The plan for a chunk of `frames` arriving with the player at `now`. `quietBefore`: what
+    /// plays just before it ends in silence, so the join may be stretched and a hole in it is
+    /// not heard (before a word it only delays the word).
+    mutating func plan(frames: Int, now: Int64?, quietBefore: Bool = false) -> Plan {
         let count = Int64(max(0, frames))
         stats.chunks += 1
         if now == nil, primed {
@@ -105,18 +126,43 @@ struct PlayoutModel: Equatable {
         }
         let backlog = scheduledEnd - now
         guard backlog < 0 else {
-            noteQueued(Int(backlog))
-            scheduledEnd += count
-            return Plan()
+            // A refill: a late chunk spent part of the cushion, and a quiet join gives it back.
+            let pad = quietBefore && backlog < Int64(targetFrames) ? targetFrames - Int(backlog) : 0
+            if pad > 0 {
+                stats.refills += 1
+                stats.refillFrames += pad
+            }
+            noteQueued(Int(backlog) + pad)
+            scheduledEnd += Int64(pad) + count
+            return pad > 0 ? Plan(prerollFrames: pad, fadeIn: true) : Plan()
         }
         let gap = Int(-backlog)
         stats.underruns += 1
+        if !quietBefore { stats.speechUnderruns += 1 }
         stats.underrunFrames += gap
         stats.longestUnderrunFrames = max(stats.longestUnderrunFrames, gap)
         targetFrames = max(targetFrames, min(PlayoutModel.maxTargetFrames, stats.longestUnderrunFrames + PlayoutModel.targetMarginFrames))
-        noteQueued(0)
-        scheduledEnd = now + count
-        return Plan(fadeIn: true, underrun: true, gapFrames: gap)
+        guard quietBefore else {
+            noteQueued(0)
+            scheduledEnd = now + count
+            return Plan(fadeIn: true, underrun: true, gapFrames: gap)
+        }
+        // The hole fell in a pause: the pause takes the whole cushion back at once.
+        stats.refills += 1
+        stats.refillFrames += targetFrames
+        noteQueued(targetFrames)
+        scheduledEnd = now + Int64(targetFrames) + count
+        return Plan(prerollFrames: targetFrames, fadeIn: true, underrun: true, gapFrames: gap)
+    }
+
+    /// Whether `samples` (the chunk as scheduled) end in silence: their last `quietTailFrames`
+    /// under `quietTailRMS` and the last one under `quietEdge`.
+    static func endsQuiet(_ samples: UnsafePointer<Float>, count: Int) -> Bool {
+        guard count > 0 else { return true }
+        let n = min(count, quietTailFrames)
+        var energy = 0.0
+        for i in (count - n) ..< count { energy += Double(samples[i] * samples[i]) }
+        return (energy / Double(n)).squareRoot() < quietTailRMS && abs(samples[count - 1]) < quietEdge
     }
 
     private mutating func noteQueued(_ frames: Int) {
@@ -173,6 +219,8 @@ final class SpeakerScheduler {
     private(set) var fading = false
     private var held: [Data] = []
     private var flushToken = 0
+    /// The last chunk scheduled ended in silence (`PlayoutModel.endsQuiet`): the next join may be stretched.
+    private var quietBefore = true
 
     init(player: AVAudioPlayerNode, format: AVAudioFormat) {
         self.player = player
@@ -183,6 +231,7 @@ final class SpeakerScheduler {
     func restart(mixer: AVAudioMixerNode) {
         self.mixer = mixer
         model = PlayoutModel()
+        quietBefore = true
         cancelFlush()
     }
 
@@ -227,6 +276,7 @@ final class SpeakerScheduler {
         guard fading, token == flushToken else { return [] }
         fading = false
         model.reset()
+        quietBefore = true
         let waiting = held
         held.removeAll()
         guard engineRunning else {
@@ -267,7 +317,9 @@ final class SpeakerScheduler {
             energy += Double(s * s)
             peak = max(peak, abs(s))
         }
-        let plan = model.plan(frames: frames, now: playerNow())
+        let rms = (energy / Double(frames)).squareRoot()
+        let plan = model.plan(frames: frames, now: playerNow(), quietBefore: quietBefore)
+        quietBefore = PlayoutModel.endsQuiet(dst, count: frames)
         if plan.fadeIn {
             for i in 0 ..< min(frames, PlayoutModel.fadeFrames) { dst[i] *= PlayoutModel.fadeGain(i) }
         }
@@ -280,7 +332,7 @@ final class SpeakerScheduler {
         player.scheduleBuffer(buf, completionHandler: nil)
         if !player.isPlaying { player.play() }
         let rate = format.sampleRate
-        return Scheduled(rms: clampLevel((energy / Double(frames)).squareRoot()), peak: clampLevel(Double(peak)), seconds: Double(frames) / rate, prerollSeconds: Double(plan.prerollFrames) / rate, plan: plan)
+        return Scheduled(rms: clampLevel(rms), peak: clampLevel(Double(peak)), seconds: Double(frames) / rate, prerollSeconds: Double(plan.prerollFrames) / rate, plan: plan)
     }
 }
 
@@ -397,6 +449,9 @@ final class PlaybackTelemetry: @unchecked Sendable {
         p.underrunMs = ms(stats.underrunFrames)
         p.longestUnderrunMs = ms(stats.longestUnderrunFrames)
         p.wouldBeUnderruns = stats.wouldBeUnderruns
+        p.speechUnderruns = stats.speechUnderruns
+        p.refills = stats.refills
+        p.refillMs = ms(stats.refillFrames)
         p.resets = stats.resets
         p.targetMs = ms(targetFrames)
         p.queuedMs = ms(stats.queuedFrames)

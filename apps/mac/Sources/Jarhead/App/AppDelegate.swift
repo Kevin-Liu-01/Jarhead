@@ -935,6 +935,9 @@ private extension AudioPlayoutInfo {
         underrunMs = Double(p.underrunMs)
         longestUnderrunMs = Double(p.longestUnderrunMs)
         wouldBeUnderruns = p.wouldBeUnderruns
+        speechUnderruns = p.speechUnderruns
+        refills = p.refills
+        refillMs = Double(p.refillMs)
         resets = p.resets
         targetMs = Double(p.targetMs)
         queuedMs = Double(p.queuedMs)

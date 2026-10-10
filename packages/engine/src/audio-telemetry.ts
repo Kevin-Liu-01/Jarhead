@@ -388,7 +388,10 @@ export function audioLine(state: AudioState | undefined, live: LiveAudio | undef
   // `late max` is the app's window (the line's caller folds every frame since the last line in); the figure since the
   // graph started rides beside it, so a stall in a window no frame carried still reaches the log.
   const graph = p?.lateMaxGraphMs !== undefined ? ` (${db0(p.lateMaxGraphMs)} ms since start)` : "";
-  if (p) parts.push(`playout ${p.underruns} underrun${p.underruns === 1 ? "" : "s"} (would be ${p.wouldBeUnderruns}) · queued ${db0(p.queuedMs)} ms${p.queuedMinMs !== undefined ? ` min ${db0(p.queuedMinMs)}` : ""} · late max ${db0(p.lateMaxMs)} ms${graph}`);
+  // The holes Kevin hears, and the pauses the cushion stretched to stay full: from an app that counts them.
+  const speech = p?.speechUnderruns !== undefined ? `${p.speechUnderruns} in speech, ` : "";
+  const refilled = p?.refills !== undefined ? ` · refilled ${p.refills} (${db0(p.refillMs ?? 0)} ms)` : "";
+  if (p) parts.push(`playout ${p.underruns} underrun${p.underruns === 1 ? "" : "s"} (${speech}would be ${p.wouldBeUnderruns})${refilled} · queued ${db0(p.queuedMs)} ms${p.queuedMinMs !== undefined ? ` min ${db0(p.queuedMinMs)}` : ""} · late max ${db0(p.lateMaxMs)} ms${graph}`);
   const d = state?.duck;
   if (d) {
     parts.push(`duck ${d.ducks} (${d.gate} gate · ${d.confirmed} confirmed${d.unconfirmed ? ` · ${d.unconfirmed} unconfirmed` : ""})`);

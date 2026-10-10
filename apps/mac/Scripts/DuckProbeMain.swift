@@ -1095,6 +1095,48 @@ struct PureSections {
                 let ok = after100 == 2_400 + PlayoutModel.targetMarginFrames && after300 == PlayoutModel.maxTargetFrames && m.targetFrames == PlayoutModel.maxTargetFrames && p.prerollFrames == PlayoutModel.maxTargetFrames && PlayoutModel.ms(PlayoutModel.maxTargetFrames) == 200
                 return ok ? nil : "after 100 ms \(after100), after 300 ms \(after300), then \(m.targetFrames), pre-roll \(p.prerollFrames)"
             }),
+            ("a refill: a quiet join with less than target queued is stretched back to target; a voiced join never is", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 0)
+                // One chunk has played and the next is 40 ms late for its slot: target - 40 ms queued.
+                let now = Int64(f + 960)
+                var v = m
+                let quiet = m.plan(frames: f, now: now, quietBefore: true)
+                let voiced = v.plan(frames: f, now: now)
+                let ok = quiet.prerollFrames == 960 && quiet.fadeIn && !quiet.underrun && !quiet.reset && m.stats.refills == 1 && m.stats.refillFrames == 960
+                    && m.stats.queuedFrames == target && m.scheduledEnd == now + Int64(target + f) && m.stats.underruns == 0
+                    && voiced == PlayoutModel.Plan() && v.stats.refills == 0 && v.stats.queuedFrames == target - 960
+                return ok ? nil : "quiet \(quiet) \(m.stats); voiced \(voiced) \(v.stats)"
+            }),
+            ("an underrun in a pause waits behind the whole target and is not heard; after speech it plays at once and is", {
+                var m = PlayoutModel()
+                _ = m.plan(frames: f, now: 0)
+                let end = m.scheduledEnd
+                var n = m
+                let pause = m.plan(frames: f, now: end + 960, quietBefore: true)
+                let speech = n.plan(frames: f, now: end + 960)
+                let ok = pause.underrun && pause.gapFrames == 960 && pause.prerollFrames == m.targetFrames && pause.fadeIn
+                    && m.stats.underruns == 1 && m.stats.speechUnderruns == 0 && m.stats.refills == 1 && m.stats.queuedFrames == m.targetFrames
+                    && m.scheduledEnd == end + 960 + Int64(m.targetFrames + f)
+                    && speech.underrun && speech.prerollFrames == 0 && n.stats.speechUnderruns == 1 && n.stats.refills == 0 && n.scheduledEnd == end + 960 + Int64(f)
+                return ok ? nil : "pause \(pause) \(m.stats); speech \(speech) \(n.stats)"
+            }),
+            ("one session-long stream 3% slower than real time (as GPT-Live-1 ran on 2026-10-10): the pauses give back what speech spent, so no word breaks; without refills every late delta after the first does", {
+                // 100 ms deltas: 1 s of speech then 0.6 s of digital silence, for 60 s, each delta 3% later than the last.
+                let d = 2_400
+                var refill = PlayoutModel()
+                var plain = PlayoutModel()
+                var heardPlain = 0
+                var prevSpeech = false
+                for i in 0 ..< 600 {
+                    let now = Int64(Double(i * d) * 1.03)
+                    _ = refill.plan(frames: d, now: now, quietBefore: !prevSpeech)
+                    if plain.plan(frames: d, now: now).underrun, prevSpeech { heardPlain += 1 }
+                    prevSpeech = i % 16 < 10
+                }
+                let ok = refill.stats.underruns == 0 && refill.stats.refills >= 30 && refill.stats.resets == 1 && heardPlain > 300
+                return ok ? nil : "refill \(refill.stats); without refills \(heardPlain) heard holes, \(plain.stats)"
+            }),
             ("the shadow counts the zero-cushion holes of a fixed trace (2), the cushion none", {
                 // 40 ms chunks; chunk 4 arrives 40 ms late, chunk 7 80 ms late with 8 and 9 behind it.
                 // Zero cushion by hand: dry at chunk 4 (3840 < 4800) and at chunk 7 (7680 < 8640): 2.

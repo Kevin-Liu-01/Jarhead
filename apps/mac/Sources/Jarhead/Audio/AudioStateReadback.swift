@@ -53,6 +53,10 @@ struct PlayoutReadback: Equatable {
     var longestUnderrunMs = 0
     /// The zero-cushion policy's count on the same timeline (`PlayoutModel.Stats.wouldBeUnderruns`).
     var wouldBeUnderruns = 0
+    /// Underruns whose hole touched speech, and the quiet joins stretched back to the target (`PlayoutModel.Stats`).
+    var speechUnderruns = 0
+    var refills = 0
+    var refillMs = 0
     var resets = 0
     var targetMs = 0
     var queuedMs = 0

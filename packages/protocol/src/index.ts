@@ -1098,6 +1098,11 @@ export interface AudioPlayout {
   readonly longestUnderrunMs: number;
   /** The shadow zero-cushion count: the player of before the cushion, measured in the same session. */
   readonly wouldBeUnderruns: number;
+  /** Underruns whose hole touched speech: the ones Kevin hears. Absent from an app before the field. */
+  readonly speechUnderruns?: number;
+  /** Quiet joins the cushion stretched back to its target, and the silence they added. Absent from an app before the fields. */
+  readonly refills?: number;
+  readonly refillMs?: number;
   /** Start, flush, restart, after a gate. */
   readonly resets: number;
   /** The current pre-roll target. */
@@ -1224,7 +1229,7 @@ function duckOk(value: unknown, shed: AudioTelemetryShed[] | undefined): boolean
 
 /** The telemetry objects an `audio-state` frame may carry, each with its own check. */
 const TELEMETRY_CHECKS: readonly (readonly [key: "playout" | "duck" | "output", ok: (value: unknown, shed: AudioTelemetryShed[] | undefined) => boolean])[] = [
-  ["playout", (v) => telemetryOk(v, PLAYOUT_REQUIRED, ["queuedMinMs", "lateMaxGraphMs"])],
+  ["playout", (v) => telemetryOk(v, PLAYOUT_REQUIRED, ["queuedMinMs", "lateMaxGraphMs", "speechUnderruns", "refills", "refillMs"])],
   ["duck", duckOk],
   ["output", (v) => telemetryOk(v, [], ["rmsDbfs", "peakDbfs", "heardRmsDbfs", "audibleMs", "volume"], ["mixFormat"])],
 ];

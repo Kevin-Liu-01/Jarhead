@@ -335,10 +335,48 @@ struct OfflineProbe {
             }
             results[trace.name] = row
         }
-        return gates(all, results, minutes: minutes)
+        // GPT-Live-1 as it streams: one session, no dry gaps (it streams silence between turns), each 100 ms frame
+        // arriving when the engine got it in LC-7 (2026-10-06): 95.5 s of audio over 99.5 s, 4.3% slower than real
+        // time, and never a burst to catch up. Continuous Live-like speech with its sentence pauses on that clock.
+        var replay: (trace: Trace, minutes: Double)?
+        if let arrivalMs = liveArrivals() {
+            // As many 40 ms chunks as the frames cover (makeContent rounds down to whole chunks and may run on past them).
+            let chunks = arrivalMs.count * 100 / 40
+            var continuous = makeContent(seconds: Double(arrivalMs.count) * 0.1, seed: 7, replies: false)
+            continuous.pcm = Array(continuous.pcm.prefix(chunks * chunkFrames))
+            var arrivals: [Double] = []
+            arrivals.reserveCapacity(chunks)
+            for i in 0 ..< chunks {
+                // A 40 ms chunk is there once the 100 ms frame holding its last sample has arrived.
+                let frame: Int = min(arrivalMs.count - 1, ((i + 1) * 40 - 1) / 100)
+                arrivals.append(arrivalMs[frame] / 1000)
+            }
+            let trace = Trace(name: "GPT-Live-1 replay (lc-7)", arrivals: inOrder(arrivals))
+            var row: [Policy: RunResult] = [:]
+            for policy in Policy.allCases {
+                let r = run(trace, policy, pcm: continuous.pcm)
+                row[policy] = r
+                var line = String(format: "  %-36@ %-8@ holes %3d (%6.1f ms, longest %5.1f; touching speech %3d, %6.1f ms) · clicks %3d · arrival→play p50 %5.1f p95 %5.1f ms", trace.name as NSString, policy.rawValue as NSString, r.holes, r.holeMs, r.longestMs, r.speechHoles, r.speechHoleMs, r.clicks, r.latencyP50, r.latencyP95)
+                if policy == .cushion { line += String(format: " · model: %d underruns (%d in speech), %d refills (%.0f ms), target %.0f ms", r.stats.underruns, r.stats.speechUnderruns, r.stats.refills, PlayoutModel.ms(r.stats.refillFrames), r.targetMs) }
+                say(line)
+            }
+            results[trace.name] = row
+            replay = (trace, continuous.seconds / 60)
+        } else {
+            say("  GPT-Live-1 replay: Scripts/fixtures/live-arrivals-lc7.json not found; its gates fail")
+        }
+        return gates(all, results, minutes: minutes, replay: replay?.trace)
     }
 
-    private func gates(_ all: [Trace], _ results: [String: [Policy: RunResult]], minutes: Double) -> Bool {
+    /// The fixture's arrival times (ms from the first frame), one per 100 ms frame of Live's output.
+    private func liveArrivals() -> [Double]? {
+        guard let data = FileManager.default.contents(atPath: "Scripts/fixtures/live-arrivals-lc7.json"),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ms = json["arrivalMs"] as? [NSNumber], ms.count > 100 else { return nil }
+        return ms.map(\.doubleValue)
+    }
+
+    private func gates(_ all: [Trace], _ results: [String: [Policy: RunResult]], minutes: Double, replay: Trace?) -> Bool {
         var fails: [String] = []
         var oks = 0
         func check(_ name: String, _ ok: Bool, _ detail: String) {
@@ -375,6 +413,18 @@ struct OfflineProbe {
             } else {
                 check("telemetry: the frame's playout and output objects match the render on \(trace.name)", false, "no readback")
             }
+        }
+        // GPT-Live-1's own stream: the refills keep the cushion through the session.
+        if let replay {
+            let c = r(replay.name, .cushion), t = r(replay.name, .today)
+            // The Wi-Fi model's bar. The replay's content is speech four fifths of the time, so the pauses that refill come
+            // every few seconds; Live's own sessions are mostly silence (36 of LC-7's 955 frames were audible).
+            check("cushion: ≤ 30% of today's speech-hole time on the GPT-Live-1 replay", t.speechHoleMs > 0 && c.speechHoleMs <= 0.3 * t.speechHoleMs, String(format: "%.1f ms (%d holes) vs %.1f ms (%d holes)", c.speechHoleMs, c.speechHoles, t.speechHoleMs, t.speechHoles))
+            check("cushion: refills on the GPT-Live-1 replay, and no more clicks than today", c.stats.refills > 0 && c.clicks <= t.clicks, "\(c.stats.refills) refills · clicks \(c.clicks) vs \(t.clicks)")
+            if let level = c.levelDb { check("cushion: level within 0.1 dB on the GPT-Live-1 replay", abs(level) <= 0.1, String(format: "%+.3f dB", level)) }
+            check("cushion: added p50 latency ≤ the target + 10 ms on the GPT-Live-1 replay", c.latencyP50 - t.latencyP50 <= c.targetMs + 10, String(format: "%.1f ms, target %.0f ms", c.latencyP50 - t.latencyP50, c.targetMs))
+        } else {
+            check("the GPT-Live-1 replay ran", false, "no fixture")
         }
         // The re-prime variant: keep it only if it has less speech-hole time at equal p50 latency.
         var reprimeWins = 0, ties = 0, losses = 0
@@ -425,6 +475,8 @@ struct OfflineProbe {
         var todayEnd: Int64 = 0
         var latencies: [Double] = []
         var cuts: [Int] = [0]
+        // Silence the cushion stretched at a quiet join (a refill), in output samples: meant, not the player gone dry.
+        var pads: [Range<Int>] = []
         var pending: (token: Int, at: Int)?
         var restore: (token: Int, at: Int)?
         var heldArrivals: [Double] = []
@@ -494,6 +546,11 @@ struct OfflineProbe {
                     if let scheduled = rig.speaker.schedule(pcm: data) {
                         telemetry.noteScheduled(scheduled, model: rig.speaker.model, gain: 1)
                         noteStart(rig.speaker.model.scheduledEnd - Int64(chunkFrames), arrival: arrival)
+                        if scheduled.plan.prerollFrames > 0, !scheduled.plan.reset {
+                            let start = Int(rig.speaker.model.scheduledEnd) - chunkFrames - scheduled.plan.prerollFrames
+                            // The mixer's converter delays the output by ~1.3 ms (cutTailFrames): the pad lands up to 2 ms later.
+                            pads.append((base48 + 2 * start - holeMinFrames) ..< (base48 + 2 * (start + scheduled.plan.prerollFrames) + cutTailFrames))
+                        }
                     } else {
                         heldArrivals.append(arrival)
                     }
@@ -506,7 +563,7 @@ struct OfflineProbe {
             }
             rig.pull()
         }
-        var result = analyze(rig.out, cuts: cuts)
+        var result = analyze(rig.out, cuts: cuts, pads: pads)
         if trace.flushes.isEmpty {
             var source = 0.0
             for s in pcm { source += Double(s) * Double(s) / (32_768.0 * 32_768.0) }
@@ -528,10 +585,22 @@ struct OfflineProbe {
         return result
     }
 
-    /// Holes inside each stream (between flush cuts), and clicks anywhere.
-    private func analyze(_ y: [Float], cuts: [Int]) -> RunResult {
+    /// Holes inside each stream (between flush cuts), less the refills' stretched silence, and clicks anywhere.
+    private func analyze(_ y: [Float], cuts: [Int], pads: [Range<Int>] = []) -> RunResult {
         var r = RunResult()
         let bounds = cuts + [y.count]
+        var padIndex = 0
+        /// Zeros of the run [lo, hi) that no pad covers.
+        func unpadded(_ lo: Int, _ hi: Int) -> Int {
+            while padIndex < pads.count, pads[padIndex].upperBound <= lo { padIndex += 1 }
+            var covered = 0
+            var k = padIndex
+            while k < pads.count, pads[k].lowerBound < hi {
+                covered += max(0, min(hi, pads[k].upperBound) - max(lo, pads[k].lowerBound))
+                k += 1
+            }
+            return (hi - lo) - covered
+        }
         for s in 0 ..< bounds.count - 1 {
             let lo = s == 0 ? bounds[s] : min(bounds[s + 1], bounds[s] + cutTailFrames), hi = bounds[s + 1]
             guard lo < hi, let first = y[lo ..< hi].firstIndex(where: { $0 != 0 }), let last = y[lo ..< hi].lastIndex(where: { $0 != 0 }) else { continue }
@@ -541,8 +610,9 @@ struct OfflineProbe {
                     run += 1
                     continue
                 }
-                if run >= holeMinFrames, run < streamGapFrames {
-                    let ms = Double(run) / 48
+                let dry = run >= holeMinFrames ? unpadded(n - run, n) : 0
+                if dry >= holeMinFrames, run < streamGapFrames {
+                    let ms = Double(dry) / 48
                     if ProcessInfo.processInfo.environment["PLAYOUT_PROBE_DEBUG"] != nil {
                         let start = n - run
                         let preVoiced = y[max(lo, start - 480) ..< start].filter { $0 != 0 }.count

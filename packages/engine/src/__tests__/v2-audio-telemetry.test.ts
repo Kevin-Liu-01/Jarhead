@@ -412,3 +412,9 @@ test("v2 telemetry: the audio: line's late max is the longest wait in any frame 
   t.frame(at(2, { chunks: 1 }));
   assert.match(lines.at(-1)!, /^audio: .* · late max 2 ms · /);
 });
+
+test("v2 telemetry: the audio: line says which underruns touched speech and how often the cushion refilled, from an app that counts them", () => {
+  const playout = { ...FRAME.playout!, chunks: 162, underruns: 32, underrunMs: 1071, longestUnderrunMs: 185, wouldBeUnderruns: 39, targetMs: 200, queuedMs: 200, speechUnderruns: 3, refills: 41, refillMs: 2450 };
+  assert.match(audioLine({ ...FRAME, playout }, undefined), /^playout 32 underruns \(3 in speech, would be 39\) · refilled 41 \(2450 ms\) · queued 200 ms min 96 · late max 7 ms · duck /);
+  assert.match(audioLine(FRAME, undefined), /^playout 0 underruns \(would be 4\) · queued 121 ms min 96 · late max 7 ms · duck /, "an app before the fields: as before");
+});

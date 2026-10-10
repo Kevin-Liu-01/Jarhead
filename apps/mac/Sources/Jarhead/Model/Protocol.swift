@@ -1464,6 +1464,10 @@ public struct AudioPlayoutInfo: Codable, Equatable {
     public var longestUnderrunMs: Double = 0
     /// The shadow zero-cushion count: the player of before the cushion, in the same session.
     public var wouldBeUnderruns: Int = 0
+    /// Underruns whose hole touched speech, and the quiet joins stretched back to the target; nil from an app before them.
+    public var speechUnderruns: Int?
+    public var refills: Int?
+    public var refillMs: Double?
     public var resets: Int = 0
     public var targetMs: Double = 0
     public var queuedMs: Double = 0
@@ -1486,6 +1490,9 @@ extension AudioPlayoutInfo: SoftTelemetry {
         underrunMs = c.soft(.underrunMs) ?? 0
         longestUnderrunMs = c.soft(.longestUnderrunMs) ?? 0
         wouldBeUnderruns = c.soft(.wouldBeUnderruns) ?? 0
+        speechUnderruns = c.soft(.speechUnderruns)
+        refills = c.soft(.refills)
+        refillMs = c.soft(.refillMs)
         resets = c.soft(.resets) ?? 0
         targetMs = c.soft(.targetMs) ?? 0
         queuedMs = c.soft(.queuedMs) ?? 0
@@ -1504,6 +1511,9 @@ extension AudioPlayoutInfo: SoftTelemetry {
         ]
         putNumber(&o, "queuedMinMs", queuedMinMs)
         putNumber(&o, "lateMaxGraphMs", lateMaxGraphMs)
+        if let speechUnderruns { o["speechUnderruns"] = speechUnderruns }
+        if let refills { o["refills"] = refills }
+        putNumber(&o, "refillMs", refillMs)
         return o
     }
 }

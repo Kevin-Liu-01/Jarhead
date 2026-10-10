@@ -124,15 +124,22 @@ Jarhead's voice reaches the speaker through three pieces, and each one reports w
 Nothing here opens a session or plays a sound on its own.
 
 **The cushion** (`PlayoutModel` in `Audio/Playout.swift`, played by `SpeakerScheduler`). Live
-paces its audio at real time, so a chunk that arrives late leaves the player dry: a hole in a
-word, with a click at each edge. After every reset (start, flush, a graph restart, the player
-dry for 0.5 s or more) the next chunk is preceded by 120 ms of silence. A shorter dry spell
-mid-reply is an underrun: it is counted, the chunk plays at once behind a 5 ms fade-in, and
-the target for later resets grows to the longest gap plus 40 ms, at most 200 ms. Beside it
+paces its audio at real time and never bursts to catch up, and it streams digital silence
+between sentences and turns, so a session is one stream. A chunk that arrives late leaves
+the player dry: a hole in a word, with a click at each edge. After every reset (start, flush,
+a graph restart, the player dry for 0.5 s or more) the next chunk is preceded by 120 ms of
+silence. A shorter dry spell is an underrun: it is counted, and the target grows to the
+longest gap plus 40 ms, at most 200 ms. After speech the chunk plays at once behind a 5 ms
+fade-in; after a chunk that ended in silence it waits behind the whole target. And whenever
+less than the target is queued at a join that ends in silence (its last 10 ms under −60 dBFS),
+the silence is stretched back to the target: a refill, which nobody hears. Before refills one
+late chunk spent the cushion for the rest of the session and every late chunk after it broke
+a word (2026-10-10: 32 underruns, 1.07 s of holes, in 16 s of stream). Replayed on the 19
+streams the live checks recorded, the holes touching speech fell from 105 to 6. Beside it
 the model counts `wouldBeUnderruns`, what scheduling on arrival with no cushion would have
-run dry on the same timeline, so one session gives the before and the after. A flush fades
-the main mixer for 30 ms before it drops the backlog, so a barge-in does not click. The cost
-is 120 ms (at most 200 ms) more between Live's audio and the speaker.
+run dry on the same timeline, `speechUnderruns`, the holes that broke into speech, and
+`refills`. A flush fades the main mixer for 30 ms before it drops the backlog, so a barge-in
+does not click. The cost is 120 ms (at most 200 ms) more between Live's audio and the speaker.
 
 **The queue.** The HAL reads (devices, the default output, who else holds the mic) run on
 their own `jarhead.audio.state` queue (`AudioStateReader`), never on the queue that schedules
