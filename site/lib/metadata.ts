@@ -13,7 +13,7 @@ import { first, parts } from "@/lib/cut";
  * 48/32/16 px `public/favicon.ico` and the 192 px PNG (listed so a browser can pick its size).
  */
 
-const SITE_URL = "https://jarhead.kevinliu.studio";
+export const SITE_URL = "https://jarhead.kevinliu.studio";
 export const SITE_NAME = FOOTER.brand;
 
 /** The footer line, the lead's first sentence, then three parts of the figures line. 125 characters today. */
@@ -60,6 +60,15 @@ export const metadata: Metadata = {
     apple: [{ url: "/apple-icon.png", sizes: "180x180", type: "image/png" }],
   },
 };
+
+/** The home page's JSON-LD: the site and its brand, the logo being the 512 px icon (Google wants a PNG of 112 px or more). */
+export const STRUCTURED_DATA = {
+  "@context": "https://schema.org",
+  "@graph": [
+    { "@type": "WebSite", "@id": `${SITE_URL}/#website`, name: SITE_NAME, url: `${SITE_URL}/` },
+    { "@type": "Organization", "@id": `${SITE_URL}/#organization`, name: SITE_NAME, url: `${SITE_URL}/`, logo: `${SITE_URL}/icon-512.png` },
+  ],
+} as const;
 
 // No `themeColor`: the one theme-color meta is the boot script's (lib/theme.ts themeBoot), so it follows html[data-theme].
 export const viewport: Viewport = {

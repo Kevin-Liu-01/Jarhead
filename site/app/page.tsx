@@ -15,6 +15,7 @@ import { section } from "@/components/site/sections";
 import { Top } from "@/components/site/Top";
 import { COSTS, HANDS, NAV, NUMBERS, RAILS, SAY, SLEEP, THREADS, WAKE } from "@/content/deck";
 import { from, nth, part } from "@/lib/cut";
+import { STRUCTURED_DATA } from "@/lib/metadata";
 import { fetchStars } from "@/lib/stars";
 
 /** Hands' h2, one sentence cut into its three clauses (label, click, shot) so each lights as the hands reach its step. */
@@ -30,6 +31,7 @@ export default async function Page() {
   const stars = await fetchStars();
   return (
     <div className="page">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(STRUCTURED_DATA).replace(/</g, "\\u003c") }} />
       <a href="#main" className="jh-skip">
         {NAV.skip}
       </a>
