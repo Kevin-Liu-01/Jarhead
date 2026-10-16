@@ -9,8 +9,8 @@ import { first, parts } from "@/lib/cut";
  * docs/DESIGN.md "The share pictures"), linked with a version query (OG_VERSION below); the
  * favicons are `scripts/make-icons.mts`'s output, the manifest is `app/manifest.ts`.
  * `app/icon.png` and `app/apple-icon.png` are Next's file conventions, but Next links them
- * only when `icons` is unset, so they are named in `icons` below beside the 16 px PNG (listed
- * so a browser can pick its size).
+ * only when `icons` is unset, so they are named in `icons` below beside the 16 px PNG, the
+ * 48/32/16 px `public/favicon.ico` and the 192 px PNG (listed so a browser can pick its size).
  */
 
 const SITE_URL = "https://jarhead.kevinliu.studio";
@@ -49,11 +49,13 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
   alternates: { canonical: "/" },
   // Next links its file-convention icons only when `icons` is unset, so the two file routes
-  // (`app/icon.png`, `app/apple-icon.png`) are named here beside the 16 px PNG.
+  // (`app/icon.png`, `app/apple-icon.png`) are named here beside the public/ icons.
   icons: {
     icon: [
+      { url: "/favicon.ico", sizes: "48x48 32x32 16x16", type: "image/x-icon" },
       { url: "/icon.png", sizes: "32x32", type: "image/png" },
       { url: "/favicon-16.png", sizes: "16x16", type: "image/png" },
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
     ],
     apple: [{ url: "/apple-icon.png", sizes: "180x180", type: "image/png" }],
   },
